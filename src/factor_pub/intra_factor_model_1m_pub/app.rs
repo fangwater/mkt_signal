@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mkt_parsers::msg::mkt_msg::Level;
@@ -10,10 +10,11 @@ use order_common::TradingVenue;
 use period_pbs::kafka::{decode_period_payload, PayloadCompressionMode, RawKafkaConsumer};
 use period_pbs::pb::{IncrementOrderBookInfo, PeriodMessage, TradeInfo};
 use period_pbs::period::normalize_timestamp_ms;
+use rolling_common::exact_rolling_window::ExactRollingWindow;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use crate::common::amount_threshold::AmountThreshold;
-use crate::common::sliding_quantile::SlidingQuantileWindow;
+use crate::depth_pub::orderbook::OrderBook;
 use crate::factor_pub::fusion_factor_pub::app::{
     load_amount_thresholds_from_tlen_server, load_online_symbols_from_tlen_server,
     BaselineReplayState,
@@ -33,6 +34,14 @@ const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
 const FACTOR_PLAN_CONFIG_TYPE: &str = "factor_plan_1m";
 const AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds_1m";
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
+const BAR_MS: i64 = 60_000;
+const FACTOR_LONG_QUANTILE: f64 = 0.9;
+const FACTOR_SHORT_QUANTILE: f64 = 0.1;
+const NQ_LOOKBACK_BARS: usize = 60;
+const NQ_QUANTILE_WINDOW: usize = 1_440;
+const NQ_MIN_PERIODS: usize = 720;
+const NQ_QUANTILE: f64 = 0.95;
+const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 
 pub const INTRA_FACTOR_NAMES: [&str; 9] = [
     "baseline_035",
@@ -55,7 +64,7 @@ struct FactorOutput {
 
 struct SymbolState {
     evaluator: BaselineReplayState,
-    windows: Vec<SlidingQuantileWindow>,
+    windows: Vec<ExactRollingWindow>,
     last_trade_flow_ts: Option<i64>,
 }
 
@@ -64,7 +73,7 @@ impl SymbolState {
         Self {
             evaluator: BaselineReplayState::default(),
             windows: (0..INTRA_FACTOR_NAMES.len())
-                .map(|_| SlidingQuantileWindow::new(window_size, window_size))
+                .map(|_| ExactRollingWindow::new(window_size))
                 .collect(),
             last_trade_flow_ts: None,
         }
@@ -76,14 +85,19 @@ impl SymbolState {
             .into_iter()
             .zip(self.windows.iter_mut())
             .map(|(score, window)| {
-                let score_quantile = window
-                    .push_f64(score)
-                    .then(|| window.percentile_rank_last())
-                    .flatten();
-                let score_ready = score_quantile.is_some() && window.sample_size() >= min_samples;
+                let observed = window.observe_slot(score);
+                let score_quantile = observed.then(|| window.percentile_rank_last()).flatten();
+                let score_long_threshold = window.quantile_linear(FACTOR_LONG_QUANTILE);
+                let score_short_threshold = window.quantile_linear(FACTOR_SHORT_QUANTILE);
+                let score_ready = observed
+                    && window.len() >= min_samples
+                    && score_long_threshold.is_some()
+                    && score_short_threshold.is_some();
                 FactorObservation {
                     score,
                     score_quantile,
+                    score_long_threshold,
+                    score_short_threshold,
                     score_ready,
                 }
             })
@@ -114,7 +128,126 @@ impl SymbolState {
 struct FactorObservation {
     score: f64,
     score_quantile: Option<f64>,
+    score_long_threshold: Option<f64>,
+    score_short_threshold: Option<f64>,
     score_ready: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NqObservation {
+    long_value: Option<f64>,
+    long_threshold: Option<f64>,
+    short_value: Option<f64>,
+    short_threshold: Option<f64>,
+    ready: bool,
+}
+
+struct SpotNqState {
+    orderbook: OrderBook,
+    next_update_id: i64,
+    current_start_ms: Option<i64>,
+    current_close: f64,
+    closes: VecDeque<f64>,
+    long_window: ExactRollingWindow,
+    short_window: ExactRollingWindow,
+}
+
+impl Default for SpotNqState {
+    fn default() -> Self {
+        Self {
+            orderbook: OrderBook::new(),
+            next_update_id: 1,
+            current_start_ms: None,
+            current_close: f64::NAN,
+            closes: VecDeque::with_capacity(NQ_LOOKBACK_BARS),
+            long_window: ExactRollingWindow::new(NQ_QUANTILE_WINDOW),
+            short_window: ExactRollingWindow::new(NQ_QUANTILE_WINDOW),
+        }
+    }
+}
+
+impl SpotNqState {
+    fn on_book(&mut self, book: &IncrementOrderBookInfo) -> Vec<(i64, NqObservation)> {
+        let timestamp_ms = normalize_timestamp_ms(book.timestamp);
+        let target_start = timestamp_ms.div_euclid(BAR_MS).saturating_mul(BAR_MS);
+        let mut closed = Vec::new();
+        match self.current_start_ms {
+            None => self.current_start_ms = Some(target_start),
+            Some(current) if target_start < current => return closed,
+            Some(mut current) => {
+                while current < target_start {
+                    closed.push((current.saturating_add(BAR_MS), self.close_current_bar()));
+                    current = current.saturating_add(BAR_MS);
+                    self.current_start_ms = Some(current);
+                    self.current_close = f64::NAN;
+                }
+            }
+        }
+
+        let bids: Vec<(f64, f64)> = book.bids.iter().map(|v| (v.price, v.amount)).collect();
+        let asks: Vec<(f64, f64)> = book.asks.iter().map(|v| (v.price, v.amount)).collect();
+        let update_id = self.next_update_id;
+        self.next_update_id = self.next_update_id.saturating_add(1);
+        self.orderbook
+            .apply_update(&bids, &asks, update_id, timestamp_as_micros(book.timestamp));
+        if !self.orderbook.is_valid() {
+            self.orderbook.prune_crossed_by_best_update_id();
+        }
+        if let (Some(bid), Some(ask)) = (
+            self.orderbook.best_bid_price(),
+            self.orderbook.best_ask_price(),
+        ) {
+            if bid.is_finite() && ask.is_finite() && bid > 0.0 && ask >= bid {
+                self.current_close = 0.5 * (bid + ask);
+            }
+        }
+        closed
+    }
+
+    fn close_current_bar(&mut self) -> NqObservation {
+        let close = self.current_close;
+        self.closes.push_back(close);
+        while self.closes.len() > NQ_LOOKBACK_BARS {
+            self.closes.pop_front();
+        }
+        let finite: Vec<f64> = self
+            .closes
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .collect();
+        let long_value = close.is_finite().then(|| {
+            let minimum = finite.iter().copied().fold(f64::INFINITY, f64::min);
+            (close - minimum) / minimum
+        });
+        let short_value = close.is_finite().then(|| {
+            let maximum = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            (close - maximum) / maximum
+        });
+        let long_raw = long_value.unwrap_or(f64::NAN);
+        let short_raw = short_value.unwrap_or(f64::NAN);
+        self.long_window.observe_slot(long_raw);
+        self.short_window.observe_slot(short_raw);
+        let long_threshold = self.long_window.quantile_linear(NQ_QUANTILE);
+        let short_threshold = self.short_window.quantile_linear(NQ_QUANTILE);
+        let ready = long_value.is_some()
+            && short_value.is_some()
+            && self.long_window.len() >= NQ_MIN_PERIODS
+            && self.short_window.len() >= NQ_MIN_PERIODS
+            && long_threshold.is_some()
+            && short_threshold.is_some();
+        NqObservation {
+            long_value,
+            long_threshold,
+            short_value,
+            short_threshold,
+            ready,
+        }
+    }
+}
+
+struct PendingFactorBar {
+    observations: Vec<FactorObservation>,
 }
 
 #[derive(Default)]
@@ -142,8 +275,13 @@ pub struct IntraFactorModel1mPubApp {
     kafka_consumer: RawKafkaConsumer,
     kafka_poll_timeout_ms: u64,
     kafka_payload_compression: PayloadCompressionMode,
+    factor_topic: String,
+    nq_topic: String,
     amount_thresholds: HashMap<String, AmountThreshold>,
     aggregators: HashMap<String, LocalBaselineAggregator>,
+    nq_states: HashMap<String, SpotNqState>,
+    pending_factors: HashMap<(String, i64), PendingFactorBar>,
+    pending_nq: HashMap<(String, i64), NqObservation>,
     history_start_ms: i64,
     outputs: Vec<FactorOutput>,
     allowed_symbols: HashSet<String>,
@@ -151,6 +289,7 @@ pub struct IntraFactorModel1mPubApp {
     last_symbol_reload: Instant,
     symbol_reload_interval: Duration,
     last_symbol_reload_warn: Instant,
+    last_pending_prune: Instant,
     last_stats_log: Instant,
     stats: IntraFactorModelStats,
 }
@@ -271,8 +410,13 @@ impl IntraFactorModel1mPubApp {
             kafka_consumer,
             kafka_poll_timeout_ms: kafka_config.poll_timeout_ms.max(1),
             kafka_payload_compression: kafka_config.payload_compression,
+            factor_topic: config.kafka.factor_topic.clone(),
+            nq_topic: config.kafka.nq_topic.clone(),
             amount_thresholds,
             aggregators: HashMap::new(),
+            nq_states: HashMap::new(),
+            pending_factors: HashMap::new(),
+            pending_nq: HashMap::new(),
             history_start_ms,
             outputs,
             allowed_symbols,
@@ -281,6 +425,7 @@ impl IntraFactorModel1mPubApp {
             symbol_reload_interval: Duration::from_secs(config.tlen_server.symbol_reload_secs),
             last_symbol_reload_warn: Instant::now()
                 - Duration::from_secs(SYMBOL_RELOAD_WARN_INTERVAL_SECS),
+            last_pending_prune: Instant::now(),
             last_stats_log: Instant::now(),
             stats: IntraFactorModelStats::default(),
         };
@@ -344,6 +489,12 @@ impl IntraFactorModel1mPubApp {
                     .retain(|symbol, _| self.allowed_symbols.contains(symbol));
                 self.aggregators
                     .retain(|symbol, _| self.allowed_symbols.contains(symbol));
+                self.nq_states
+                    .retain(|symbol, _| self.allowed_symbols.contains(symbol));
+                self.pending_factors
+                    .retain(|(symbol, _), _| self.allowed_symbols.contains(symbol));
+                self.pending_nq
+                    .retain(|(symbol, _), _| self.allowed_symbols.contains(symbol));
                 info!(
                     "IntraFactorModel1mPubApp symbols reloaded: venue={} enabled={} sample={} retired={} retired_sample={}",
                     self.venue_slug,
@@ -380,7 +531,28 @@ impl IntraFactorModel1mPubApp {
             record.offset,
             &record.payload,
         );
+        self.maybe_prune_pending_joins();
         Ok(())
+    }
+
+    fn maybe_prune_pending_joins(&mut self) {
+        if self.last_pending_prune.elapsed() < Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
+            return;
+        }
+        self.last_pending_prune = Instant::now();
+        let cutoff = now_millis().saturating_sub(PENDING_JOIN_RETENTION_MS);
+        let factors_before = self.pending_factors.len();
+        let nq_before = self.pending_nq.len();
+        self.pending_factors.retain(|(_, ts), _| *ts >= cutoff);
+        self.pending_nq.retain(|(_, ts), _| *ts >= cutoff);
+        let dropped_factors = factors_before.saturating_sub(self.pending_factors.len());
+        let dropped_nq = nq_before.saturating_sub(self.pending_nq.len());
+        if dropped_factors > 0 || dropped_nq > 0 {
+            warn!(
+                "intra factor 1m pruned stale unmatched joins: factor={} nq={} cutoff_ms={}",
+                dropped_factors, dropped_nq, cutoff
+            );
+        }
     }
 
     fn on_trade_flow(&mut self, symbol: String, msg: TradeFlowFeatureMsg, record_percentile: bool) {
@@ -404,11 +576,38 @@ impl IntraFactorModel1mPubApp {
             }
         };
         self.stats.accepted_messages = self.stats.accepted_messages.saturating_add(1);
+        self.pending_factors.insert(
+            (symbol.clone(), ts_in_ms),
+            PendingFactorBar { observations },
+        );
+        self.publish_if_complete(&symbol, ts_in_ms);
+    }
 
-        for (output, observation) in self.outputs.iter_mut().zip(observations) {
+    fn on_nq_observation(&mut self, symbol: &str, ts_in_ms: i64, observation: NqObservation) {
+        if ts_in_ms < self.history_start_ms {
+            return;
+        }
+        self.pending_nq
+            .insert((symbol.to_string(), ts_in_ms), observation);
+        self.publish_if_complete(symbol, ts_in_ms);
+    }
+
+    fn publish_if_complete(&mut self, symbol: &str, ts_in_ms: i64) {
+        let key = (symbol.to_string(), ts_in_ms);
+        if !(self.pending_factors.contains_key(&key) && self.pending_nq.contains_key(&key)) {
+            return;
+        }
+        let Some(factor_bar) = self.pending_factors.remove(&key) else {
+            return;
+        };
+        let Some(nq) = self.pending_nq.remove(&key) else {
+            return;
+        };
+
+        for (output, observation) in self.outputs.iter_mut().zip(factor_bar.observations) {
             output.seq_no = output.seq_no.saturating_add(1);
             let model_msg = ModelMsg::create(
-                symbol.clone(),
+                symbol.to_string(),
                 ts_in_ms,
                 now_millis(),
                 output.seq_no,
@@ -418,6 +617,15 @@ impl IntraFactorModel1mPubApp {
                 MODEL_STATUS_OK,
                 Vec::new(),
                 Vec::new(),
+            )
+            .with_decision_context(
+                observation.score_long_threshold,
+                observation.score_short_threshold,
+                nq.long_value,
+                nq.long_threshold,
+                nq.short_value,
+                nq.short_threshold,
+                nq.ready,
             );
             let published = model_msg
                 .to_bytes()
@@ -425,7 +633,7 @@ impl IntraFactorModel1mPubApp {
                 .unwrap_or(false);
             if published {
                 self.stats.published = self.stats.published.saturating_add(1);
-                if observation.score_ready {
+                if observation.score_ready && nq.ready {
                     self.stats.ready = self.stats.ready.saturating_add(1);
                 }
             } else {
@@ -528,10 +736,19 @@ impl IntraFactorModel1mPubApp {
                 return;
             }
         };
-        self.consume_period_message(&period);
+        if topic == self.factor_topic {
+            self.consume_factor_period_message(&period);
+        } else if topic == self.nq_topic {
+            self.consume_nq_period_message(&period);
+        } else {
+            warn!(
+                "intra factor 1m ignored unexpected Kafka topic={} factor_topic={} nq_topic={}",
+                topic, self.factor_topic, self.nq_topic
+            );
+        }
     }
 
-    fn consume_period_message(&mut self, period: &PeriodMessage) {
+    fn consume_factor_period_message(&mut self, period: &PeriodMessage) {
         for symbol_info in &period.symbol_infos {
             let symbol = normalize_symbol_for_venue(&symbol_info.symbol, self.venue);
             if !self.allowed_symbols.contains(&symbol) {
@@ -595,10 +812,33 @@ impl IntraFactorModel1mPubApp {
         }
     }
 
-    fn consume_kafka_bar(&mut self, symbol: &str, bar: BaselineBar) {
+    fn consume_nq_period_message(&mut self, period: &PeriodMessage) {
+        for symbol_info in &period.symbol_infos {
+            let symbol = normalize_symbol_for_venue(&symbol_info.symbol, self.venue);
+            if !self.allowed_symbols.contains(&symbol) {
+                continue;
+            }
+            let mut books: Vec<&IncrementOrderBookInfo> = symbol_info.incs.iter().collect();
+            books.sort_by_key(|book| normalize_timestamp_ms(book.timestamp));
+            let mut completed = Vec::new();
+            {
+                let state = self.nq_states.entry(symbol.clone()).or_default();
+                for book in books {
+                    completed.extend(state.on_book(book));
+                }
+            }
+            for (ts_in_ms, observation) in completed {
+                self.on_nq_observation(&symbol, ts_in_ms, observation);
+            }
+        }
+    }
+
+    fn consume_kafka_bar(&mut self, symbol: &str, mut bar: BaselineBar) {
         if !historical_bar_has_valid_prices(&bar) {
             return;
         }
+        // Research rows use the right-edge label: row t contains [t-60s, t).
+        bar.start_ms = bar.start_ms.saturating_add(BAR_MS);
         let payload = match bar.to_trade_flow_feature_payload(symbol, self.venue.to_u8()) {
             Ok(payload) => payload,
             Err(err) => {
@@ -768,8 +1008,8 @@ fn now_millis() -> i64 {
 mod tests {
     use super::{
         output_service_path, parse_trade_side, plan_has_required_factors, select_enabled_symbols,
-        sort_period_events, timestamp_as_micros, FactorObservation, PeriodEvent, SymbolState,
-        INTRA_FACTOR_NAMES,
+        sort_period_events, timestamp_as_micros, FactorObservation, PeriodEvent, SpotNqState,
+        SymbolState, INTRA_FACTOR_NAMES,
     };
     use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
     use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
@@ -833,14 +1073,87 @@ mod tests {
             FactorObservation {
                 score: 1.0,
                 score_quantile: Some(0.5),
+                score_long_threshold: Some(1.0),
+                score_short_threshold: Some(1.0),
                 score_ready: false,
             }
         );
         assert_eq!(second[0].score_quantile, Some(0.75));
+        assert!((second[0].score_long_threshold.unwrap() - 1.9).abs() < 1e-6);
+        assert!((second[0].score_short_threshold.unwrap() - 1.1).abs() < 1e-6);
         assert!(second[0].score_ready);
         assert!(invalid[0].score.is_nan());
         assert_eq!(invalid[0].score_quantile, None);
         assert!(!invalid[0].score_ready);
+    }
+
+    #[test]
+    fn nq_threshold_includes_current_bar_and_requires_720_valid_values() {
+        let mut state = SpotNqState::default();
+        for _ in 0..719 {
+            state.current_close = 100.0;
+            assert!(!state.close_current_bar().ready);
+        }
+        state.current_close = 101.0;
+        let observation = state.close_current_bar();
+        assert!(observation.ready);
+        assert!((observation.long_value.unwrap() - 0.01).abs() < 1e-12);
+        assert_eq!(observation.short_value, Some(0.0));
+        assert_eq!(observation.long_threshold, Some(0.0));
+        assert_eq!(observation.short_threshold, Some(0.0));
+
+        state.current_close = f64::NAN;
+        let missing = state.close_current_bar();
+        assert!(!missing.ready);
+        assert_eq!(missing.long_value, None);
+        assert_eq!(missing.short_value, None);
+    }
+
+    #[test]
+    fn nq_bar_is_labeled_by_right_edge_and_uses_last_bbo() {
+        let first = IncrementOrderBookInfo {
+            timestamp: 59_000,
+            is_snapshot: false,
+            bids: vec![PriceLevel {
+                price: 102.0,
+                amount: 1.0,
+            }],
+            asks: vec![PriceLevel {
+                price: 104.0,
+                amount: 1.0,
+            }],
+        };
+        let next = IncrementOrderBookInfo {
+            timestamp: 60_000,
+            is_snapshot: false,
+            bids: vec![
+                PriceLevel {
+                    price: 102.0,
+                    amount: 0.0,
+                },
+                PriceLevel {
+                    price: 103.0,
+                    amount: 1.0,
+                },
+            ],
+            asks: vec![
+                PriceLevel {
+                    price: 104.0,
+                    amount: 0.0,
+                },
+                PriceLevel {
+                    price: 105.0,
+                    amount: 1.0,
+                },
+            ],
+        };
+        let mut state = SpotNqState::default();
+        assert!(state.on_book(&first).is_empty());
+        let closed = state.on_book(&next);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].0, 60_000);
+        assert_eq!(closed[0].1.long_value, Some(0.0));
+        assert_eq!(state.current_close, 104.0);
     }
 
     #[test]

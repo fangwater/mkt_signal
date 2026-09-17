@@ -611,6 +611,7 @@ pub trait OpenStrategyCommon {
             return false;
         }
         let close_ts = self.open_terminal_close_ts();
+        let open_from_key = self.open_state().from_key.clone();
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let mut strategy_mgr = strategy_mgr.borrow_mut();
         if self.force_taker_taker_hedge()
@@ -633,6 +634,7 @@ pub trait OpenStrategyCommon {
             price,
             close_ts,
             open_client_order_id,
+            &open_from_key,
         );
         drop(strategy_mgr);
         if updated {

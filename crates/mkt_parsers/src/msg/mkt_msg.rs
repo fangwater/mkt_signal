@@ -304,6 +304,17 @@ pub struct ModelMsg {
     pub score: f64,
     pub score_quantile: Option<f64>,
     pub score_ready: bool,
+    /// Exact rolling thresholds for raw-score decisions. A producer that does
+    /// not publish threshold decisions leaves both fields as `None`.
+    pub score_long_threshold: Option<f64>,
+    pub score_short_threshold: Option<f64>,
+    /// Optional directional filter inputs and their exact rolling thresholds.
+    /// CTA uses long `value >= threshold` and short `value <= threshold`.
+    pub filter_long_value: Option<f64>,
+    pub filter_long_threshold: Option<f64>,
+    pub filter_short_value: Option<f64>,
+    pub filter_short_threshold: Option<f64>,
+    pub filter_ready: bool,
     pub status: u8,
     pub feature_dim: u16,
     pub factor_indices: Vec<u16>,
@@ -1418,11 +1429,39 @@ impl ModelMsg {
             score,
             score_quantile,
             score_ready,
+            score_long_threshold: None,
+            score_short_threshold: None,
+            filter_long_value: None,
+            filter_long_threshold: None,
+            filter_short_value: None,
+            filter_short_threshold: None,
+            filter_ready: false,
             status,
             feature_dim,
             factor_indices,
             factor_values,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_decision_context(
+        mut self,
+        score_long_threshold: Option<f64>,
+        score_short_threshold: Option<f64>,
+        filter_long_value: Option<f64>,
+        filter_long_threshold: Option<f64>,
+        filter_short_value: Option<f64>,
+        filter_short_threshold: Option<f64>,
+        filter_ready: bool,
+    ) -> Self {
+        self.score_long_threshold = score_long_threshold;
+        self.score_short_threshold = score_short_threshold;
+        self.filter_long_value = filter_long_value;
+        self.filter_long_threshold = filter_long_threshold;
+        self.filter_short_value = filter_short_value;
+        self.filter_short_threshold = filter_short_threshold;
+        self.filter_ready = filter_ready;
+        self
     }
 
     pub fn to_bytes(&self) -> Result<Bytes> {
@@ -1448,6 +1487,8 @@ impl ModelMsg {
             + dim * 2
             + dim * 4
             + 8
+            + 1
+            + 8 * 6
             + 1;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
@@ -1469,6 +1510,17 @@ impl ModelMsg {
         }
         buf.put_f64_le(self.score_quantile.unwrap_or(f64::NAN));
         buf.put_u8(if self.score_ready { 1 } else { 0 });
+        for value in [
+            self.score_long_threshold,
+            self.score_short_threshold,
+            self.filter_long_value,
+            self.filter_long_threshold,
+            self.filter_short_value,
+            self.filter_short_threshold,
+        ] {
+            buf.put_f64_le(value.unwrap_or(f64::NAN));
+        }
+        buf.put_u8(if self.filter_ready { 1 } else { 0 });
         Ok(buf.freeze())
     }
 
@@ -1506,7 +1558,7 @@ impl ModelMsg {
         cursor.advance(7);
 
         let feature_dim = cursor.get_u16_le() as usize;
-        let needed = feature_dim * 2 + feature_dim * 4 + 8 + 1;
+        let needed = feature_dim * 2 + feature_dim * 4 + 8 + 1 + 8 * 6 + 1;
         if cursor.remaining() < needed {
             bail!(
                 "ModelMsg truncated in feature/quantile/ready payload: remaining={} need={} dim={}",
@@ -1528,6 +1580,17 @@ impl ModelMsg {
         let raw = cursor.get_f64_le();
         let score_quantile = (raw.is_finite() && (0.0..=1.0).contains(&raw)).then_some(raw);
         let score_ready = cursor.get_u8() != 0;
+        let mut read_optional = || {
+            let value = cursor.get_f64_le();
+            value.is_finite().then_some(value)
+        };
+        let score_long_threshold = read_optional();
+        let score_short_threshold = read_optional();
+        let filter_long_value = read_optional();
+        let filter_long_threshold = read_optional();
+        let filter_short_value = read_optional();
+        let filter_short_threshold = read_optional();
+        let filter_ready = cursor.get_u8() != 0;
 
         Ok(Self {
             msg_type,
@@ -1539,6 +1602,13 @@ impl ModelMsg {
             score,
             score_quantile,
             score_ready,
+            score_long_threshold,
+            score_short_threshold,
+            filter_long_value,
+            filter_long_threshold,
+            filter_short_value,
+            filter_short_threshold,
+            filter_ready,
             status,
             feature_dim: feature_dim as u16,
             factor_indices,
@@ -1564,6 +1634,15 @@ mod tests {
             MODEL_STATUS_OK,
             vec![1, 7],
             vec![0.5, -0.25],
+        )
+        .with_decision_context(
+            Some(0.4),
+            Some(-0.4),
+            Some(0.03),
+            Some(0.02),
+            Some(-0.04),
+            Some(-0.03),
+            true,
         );
 
         let decoded = ModelMsg::from_bytes(msg.to_bytes().unwrap().as_ref()).unwrap();
@@ -1571,6 +1650,13 @@ mod tests {
         assert_eq!(decoded.score, 0.42);
         assert_eq!(decoded.score_quantile, Some(0.91));
         assert!(!decoded.score_ready);
+        assert_eq!(decoded.score_long_threshold, Some(0.4));
+        assert_eq!(decoded.score_short_threshold, Some(-0.4));
+        assert_eq!(decoded.filter_long_value, Some(0.03));
+        assert_eq!(decoded.filter_long_threshold, Some(0.02));
+        assert_eq!(decoded.filter_short_value, Some(-0.04));
+        assert_eq!(decoded.filter_short_threshold, Some(-0.03));
+        assert!(decoded.filter_ready);
         assert_eq!(decoded.factor_indices, vec![1, 7]);
         assert_eq!(decoded.factor_values, vec![0.5, -0.25]);
     }

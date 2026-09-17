@@ -59,6 +59,12 @@ def print_rule(index: int, rule: dict) -> None:
         f"trade_sides={_fmt(rule.get('trade_sides'), 'both')} "
         f"long_q={_fmt(rule.get('long_quantile'), 0.9)} "
         f"short_q={_fmt(rule.get('short_quantile'), 0.1)} "
+        f"freq={_fmt(rule.get('frequency_seconds'), 60)}s "
+        f"window={_fmt(rule.get('rolling_window'), 2880)}/"
+        f"{_fmt(rule.get('rolling_min_samples'), 1440)} "
+        f"delay={_fmt(rule.get('signal_delay_seconds'), 1)}s "
+        f"nq={'on' if rule.get('nq_change_enabled', True) else 'off'} "
+        f"max_age={_fmt(rule.get('max_signal_age_seconds'), 120)}s "
         f"app={_fmt(rule.get('application'), 'each_bar')} "
         f"cooldown={_fmt(rule.get('cooldown_seconds'), 0)}s"
     )
@@ -134,7 +140,7 @@ def main() -> int:
     exchange = env_name.split("-")[0] if "-" in env_name else ""
     open_venue = (args.open_venue or f"{exchange}-margin").strip()
     hedge_venue = (args.hedge_venue or f"{exchange}-futures").strip()
-    strat_key = f"cta_strategy_params_{open_venue}_{hedge_venue}"
+    strat_key = f"{env_name}:cta_strategy_params:{open_venue}:{hedge_venue}"
     exec_fields = (
         "order_notional_usdt", "open_offsets", "open_ttl_seconds",
         "max_position_notional_usdt", "take_profit", "reward_risk_ratio",

@@ -41,6 +41,10 @@ pub struct KafkaInputConfig {
     pub lookback_secs: u64,
     /// Maximum time to reach the Kafka high watermark captured at startup.
     pub catchup_timeout_secs: u64,
+    /// PeriodMessage topic used to rebuild the futures factor bars.
+    pub factor_topic: String,
+    /// PeriodMessage topic used to rebuild the spot BBO NQ filter.
+    pub nq_topic: String,
     #[serde(flatten)]
     pub consumer: KafkaConsumerConfig,
 }
@@ -50,6 +54,8 @@ impl Default for KafkaInputConfig {
         Self {
             lookback_secs: 2 * 24 * 60 * 60,
             catchup_timeout_secs: 300,
+            factor_topic: "binance-futures".to_string(),
+            nq_topic: "binance-spot".to_string(),
             consumer: KafkaConsumerConfig::default(),
         }
     }
@@ -92,7 +98,24 @@ impl IntraFactorModelPubConfig {
         if self.kafka.catchup_timeout_secs == 0 {
             anyhow::bail!("kafka.catchup_timeout_secs must be > 0");
         }
+        if self.kafka.factor_topic.trim().is_empty() || self.kafka.nq_topic.trim().is_empty() {
+            anyhow::bail!("kafka.factor_topic and kafka.nq_topic must not be empty");
+        }
+        if self.kafka.factor_topic == self.kafka.nq_topic {
+            anyhow::bail!("kafka.factor_topic and kafka.nq_topic must be different");
+        }
         self.kafka.consumer.validate()?;
+        for required in [&self.kafka.factor_topic, &self.kafka.nq_topic] {
+            if !self
+                .kafka
+                .consumer
+                .topics
+                .iter()
+                .any(|topic| topic == required)
+            {
+                anyhow::bail!("kafka.topics must include required topic '{required}'");
+            }
+        }
         Ok(())
     }
 }
@@ -122,6 +145,8 @@ mod tests {
         assert_eq!(config.percentile.window_size, DEFAULT_WINDOW_SIZE);
         assert_eq!(config.percentile.min_samples, DEFAULT_MIN_SAMPLES);
         assert_eq!(config.kafka.lookback_secs, 2 * 24 * 60 * 60);
+        assert_eq!(config.kafka.factor_topic, "binance-futures");
+        assert_eq!(config.kafka.nq_topic, "binance-spot");
     }
 
     #[test]
@@ -134,13 +159,18 @@ mod tests {
                 [kafka]
                 lookback_secs = 60
                 catchup_timeout_secs = 10
-                topics = ["binance-futures"]
+                factor_topic = "binance-futures"
+                nq_topic = "binance-spot"
+                topics = ["binance-futures", "binance-spot"]
             "#,
         )
         .expect("parse config");
 
         config.validate().expect("validate config");
         assert_eq!(config.kafka.lookback_secs, 60);
-        assert_eq!(config.kafka.consumer.topics, ["binance-futures"]);
+        assert_eq!(
+            config.kafka.consumer.topics,
+            ["binance-futures", "binance-spot"]
+        );
     }
 }

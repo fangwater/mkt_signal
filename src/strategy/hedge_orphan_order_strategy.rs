@@ -264,6 +264,7 @@ impl HedgeOrphanOrderStrategy {
                             price,
                             0,
                             client_order_id,
+                            b"",
                         ),
                         OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
                             &symbol,

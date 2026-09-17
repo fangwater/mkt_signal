@@ -1373,6 +1373,37 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 }
             }
 
+            let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+            let is_cta_open = open_ctx
+                .from_key
+                .windows(b":cta_rule=".len())
+                .any(|window| window == b":cta_rule=");
+            if is_cta_open {
+                let canceled = strategy_mgr
+                    .borrow_mut()
+                    .cancel_opposite_cta_opening_makers(&symbol, side, handle_start_us);
+                if canceled > 0 {
+                    info!(
+                        "ArbOpen: CTA opposite pending direction canceled old makers and dropped current signal symbol={} incoming_side={} canceled={}",
+                        symbol,
+                        side.as_str(),
+                        canceled
+                    );
+                    return;
+                }
+                if strategy_mgr
+                    .borrow()
+                    .has_opposite_cta_position_for_normalized_symbol(&symbol, side)
+                {
+                    debug!(
+                        "ArbOpen: CTA opposite position gate blocked symbol={} side={}",
+                        symbol,
+                        side.as_str()
+                    );
+                    return;
+                }
+            }
+
             let mut pending_limit_prechecked = false;
             match open_ctx.get_order_type() {
                 Some(order_type) => {
@@ -1394,7 +1425,6 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let signal_price = open_ctx.price_value();
             let signal_amount = open_ctx.amount_value();
             let signal_spread_rate = open_ctx.spread_rate;
-            let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             {
                 let mut mgr = strategy_mgr.borrow_mut();
                 let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);

@@ -273,8 +273,9 @@ async fn reload_symbol_list(
 /// 重载 cta 信号配置（`{env}:cta_rules`，单对象；兼容数组）。
 ///
 /// - 执行/网格参数（open_offsets/单笔名义/TP/trailing 等）来自
-///   `cta_strategy_params_{open}_{hedge}` hash，加载时覆盖到规则上；
-///   hash 缺失/字段缺失时走 serde 默认（与 strategy params 的 cta 容错一致）。
+///   `{env}:cta_strategy_params:{open}:{hedge}` hash，加载时覆盖到规则上；
+///   hash 缺失/字段缺失时先走规则对象/serde 默认；九条入选规则随后仍须通过
+///   精确执行参数契约校验，否则保留上一份已加载配置。
 /// - key 缺失 / Redis 失败 / 解析失败：warn 并保留上一份已应用配置；
 /// - key 存在且解析成功：原子替换规则集，并把去重后的 model_output
 ///   service 列表推给 ArbDecision 的订阅 hub（空的 `[]` 会显式清空订阅）。
@@ -285,7 +286,7 @@ async fn reload_cta_rules(
 ) -> Result<()> {
     let env_dir = funding_env_dir_or_panic();
     let redis_key = cta_rules_redis_key(&env_dir);
-    let strategy_key = cta_strategy_params_redis_key(open_venue, hedge_venue);
+    let strategy_key = cta_strategy_params_redis_key(&env_dir, open_venue, hedge_venue);
 
     let mut client = match RedisClient::connect(redis.clone()).await {
         Ok(client) => client,

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 #[derive(Debug, Clone)]
 pub struct ExactRollingWindow {
     capacity: usize,
-    fifo: VecDeque<f64>,
+    fifo: VecDeque<Option<f64>>,
     sorted: Vec<f64>,
 }
 
@@ -22,15 +22,15 @@ impl ExactRollingWindow {
     }
 
     pub fn len(&self) -> usize {
-        self.fifo.len()
+        self.sorted.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.fifo.is_empty()
+        self.sorted.is_empty()
     }
 
     pub fn last(&self) -> Option<f64> {
-        self.fifo.back().copied()
+        self.fifo.back().copied().flatten()
     }
 
     pub fn observe(&mut self, value: f64) -> bool {
@@ -38,15 +38,30 @@ impl ExactRollingWindow {
             return false;
         }
 
+        self.observe_slot(value)
+    }
+
+    /// Advances one fixed-frequency window slot. Non-finite values occupy a
+    /// slot but are excluded from the distribution, matching rolling-window
+    /// semantics over time-indexed series with missing observations.
+    pub fn observe_slot(&mut self, value: f64) -> bool {
+        let value = value.is_finite().then_some(value);
+
         if self.fifo.len() == self.capacity {
             if let Some(expired) = self.fifo.pop_front() {
-                self.remove_sorted(expired);
+                if let Some(expired) = expired {
+                    self.remove_sorted(expired);
+                }
             }
         }
 
         self.fifo.push_back(value);
-        self.insert_sorted(value);
-        true
+        if let Some(value) = value {
+            self.insert_sorted(value);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn reconfigure(&mut self, capacity: usize) {
@@ -67,7 +82,7 @@ impl ExactRollingWindow {
         self.sorted.get(idx).copied()
     }
 
-    pub fn quantile_linear(&self, q: f32) -> Option<f64> {
+    pub fn quantile_linear(&self, q: f64) -> Option<f64> {
         if self.sorted.is_empty() || !q.is_finite() || !(0.0..=1.0).contains(&q) {
             return None;
         }
@@ -75,7 +90,7 @@ impl ExactRollingWindow {
             return self.sorted.first().copied();
         }
 
-        let rank = (q as f64) * ((self.sorted.len() - 1) as f64);
+        let rank = q * ((self.sorted.len() - 1) as f64);
         let lower_idx = rank.floor() as usize;
         let upper_idx = rank.ceil() as usize;
         let frac = rank - lower_idx as f64;
@@ -87,7 +102,7 @@ impl ExactRollingWindow {
         Some(lower + (upper - lower) * frac)
     }
 
-    pub fn quantiles_linear(&self, qs: &[f32]) -> Vec<Option<f64>> {
+    pub fn quantiles_linear(&self, qs: &[f64]) -> Vec<Option<f64>> {
         qs.iter().map(|&q| self.quantile_linear(q)).collect()
     }
 
@@ -126,7 +141,7 @@ impl ExactRollingWindow {
 
     fn rebuild_sorted(&mut self) {
         self.sorted.clear();
-        self.sorted.extend(self.fifo.iter().copied());
+        self.sorted.extend(self.fifo.iter().copied().flatten());
         self.sorted.sort_by(|a, b| a.total_cmp(b));
     }
 
@@ -194,5 +209,27 @@ mod tests {
         assert_eq!(window.len(), 2);
         assert_eq!(window.last(), Some(1.0));
         assert!(window.percentile_rank(-0.0).is_some());
+    }
+
+    #[test]
+    fn non_finite_slot_expires_an_old_valid_observation() {
+        let mut window = ExactRollingWindow::new(2);
+        assert!(window.observe_slot(1.0));
+        assert!(window.observe_slot(2.0));
+        assert!(!window.observe_slot(f64::NAN));
+
+        assert_eq!(window.len(), 1);
+        assert_eq!(window.quantile_linear(0.5), Some(2.0));
+        assert_eq!(window.last(), None);
+    }
+
+    #[test]
+    fn linear_quantile_interpolates_like_the_research_engine() {
+        let mut window = ExactRollingWindow::new(4);
+        assert!(window.observe_slot(0.0));
+        assert!(window.observe_slot(10.0));
+
+        assert_eq!(window.quantile_linear(0.1), Some(1.0));
+        assert_eq!(window.quantile_linear(0.9), Some(9.0));
     }
 }

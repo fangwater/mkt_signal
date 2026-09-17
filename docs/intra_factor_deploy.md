@@ -1,110 +1,233 @@
 # Intra Factor Deploy
 
-## 目的
+最后更新：2026-09-17
 
-本文是 intra 同所期现“纯规则盘”的部署约定。后续每个规则盘都应有明确的
-`rule_id`、交易所、交易对集合、因子规则和风险参数，并能独立发布、启动、停止、
-验收和平仓。
+## 结论
 
-最后更新：2026-09-16
-
-规则来源 notebook（选股/选参 + 规则语义的唯一事实源）：
+本文定义 Binance 同所期现 CTA 规则盘的回测一致性契约、当前实现状态和生产上线
+门槛。规则来源是：
 
 ```text
-/home/u171/research/crypto_research/CTA_research/version005_long_short_rust_two_exchange/select_params/analysis_params_binancesymbol6_icir_vs_baseline489_train2024_2026_two.ipynb
+/home/u171/research/crypto_research/CTA_research/version005_long_short_rust_two_exchange/
+select_params/analysis_params_binancesymbol6_icir_vs_baseline489_train2024_2026_two.ipynb
 ```
 
-对应的回测引擎在同目录 `src/signal.rs` / `src/engine.rs`，其
-`SignalRule` + `engine` 是实盘语义的对照实现：
+信号、过滤和撮合语义以同目录 `src/signal.rs`、`src/filters.rs`、`src/engine.rs`
+及 `factor_backtest_baseline489_train2024_2026.toml` 为准。
 
-- 每个因子独立：`raw value` 对自身 `rolling(2880, min_periods=1440)` 的
-  `quantile(0.9 / 0.1)` 严格 `>` / `<` 得到 ±1/0 方向；`trade_sides` 可限制
-  只开多或只开空。
-- 因子信号是唯一的开仓触发源；`spread_rate=(mid_spot-mid_swap)/mid_spot`
-  只做挂单 gate 和撤单 overlay（默认 0.7/0.3 报单、0.5 撤同向未成交单），
-  价差自身不会触发开仓。
-- 信号触发后只在现货腿挂多档 maker（`quote*(1∓offset)`，TTL 120s）；
-  现货成交后 swap 腿挂 `entry*(1±tp)` 的 maker 止盈单（即对冲单，不过期），
-  止损/trailing/最长持仓在 swap 腿上走 taker 出场；出场成交后留下的
-  spot+perp 对冲对按普通 intra 持仓管理。
-- notebook §9 的 9 路 `nanmean` 组合只是一个诊断实验（结论为换手极高、
-  方向不成立），**不是**实盘语义：实盘按"9 个因子 = 9 条独立 rule"落地，
-  规则之间互不聚合、互不共享状态，组合方式由上层另行决定。
+本次审核后的结论：
 
-## 当前边界
+- 仓库代码已补齐 raw 因子线性分位阈值、右端 bar 时间、1 秒 delay、NQ 过滤、
+  逐 lot maker TP、止损、移动止损、最长持仓和 TP 撤单竞态处理；重启恢复已明确
+  排除并改由人工对齐；同 symbol opening maker 已采用单方向 pending 契约，research
+  尚需按相同契约重跑验收。不得把代码完成度等同于可上线。
+- 九个因子必须是九套独立 CTA 执行环境。一个环境最多加载一条规则；publisher
+  可以共享，交易账户/子组合、IPC、订单账本、Redis 执行参数和持久化不能共享。
+- 仓库当前只登记了 `binance-cta-rx01` 的远程编排。其余八套环境尚未分配
+  RapidX sub-portfolio、端口、CPU 和环境名，不能声称九盘已经生产部署。
+- 本次没有执行任何发布、启动、发单或远端配置写入。生产状态必须重新现场检查，
+  不能沿用本文中的历史快照推断。
+- 信号可以逐 bar 严格对齐；真实交易所的排队、延迟、部分成交、tick/qty 取整和
+  实际费率无法与回测撮合器逐成交完全相同，必须作为执行偏差单独验收。
 
-当前规则盘的部署目标是 `jp-meta-elvpn`。该主机同时承载 Binance Futures 的行情、
-trade-flow/factor publisher 和 intra 执行底座；发布或启动前仍需现场复核主机、环境、
-symbol 范围和持仓状态。
+notebook 第 9 节把九路 ±1 信号做 `nanmean` 的组合是单独的诊断实验，且明确不是
+Rust 逐笔 maker 链。本部署对应第 8 节筛出的九条逐笔规则，不实现第 9 节组合仓位。
 
-当前仓库已经具备以下基础能力：
+## 回测契约
 
-- `fusion_factor_pub` 从 `trade_flow_feature` 维护状态，并支持实时计算
-  `baseline_001` 等 baseline，包括 `baseline_035`。
-- `trade_flow_feature_pub` 以 5 秒基础 bar 聚合，并在 `enable_1m_bar: true` 时额外
-  发布已关闭的 1 分钟 trade-flow bar；`fusion_factor_1m_pub` 已有独立的 1min 输入和
-  输出链路。
-- `fusion_factor_pub` 通过 TLen 服务读取每个 symbol 的 factor plan，计算结果经过
-  z-score 归一化后发布到 `fusion_factor/<venue>`。
-- 现有 intra `trade_signal`、`pre_trade`、`trade_engine`、account monitor、
-  `persist_manager` 和 `viz_server` 可以复用为执行底座。
+### 时间与信号
 
-### 1min pub 现状
-
-截至 2026-09-14，本次更新后在 `jp-meta-elvpn` 的 Binance Futures 运行链路为：
+每个因子、每个 symbol 独立计算，不做九因子投票或 `nanmean`：
 
 ```text
-trade
-  -> trade_flow_feature_pub (5s bar)
-  -> trade_flow_feature_1m (60s bar)
-  -> fusion_factor_1m_pub
-  -> fusion_factor_1m/binance-futures
+bar frequency        = 60s
+row timestamp t      = 已关闭区间 [t-60s, t) 的右端标签
+rolling window       = 2880 个固定频率槽位
+minimum samples      = 1440 个有限 raw 值
+long threshold       = linear_quantile(window including current, 0.9)
+short threshold      = linear_quantile(window including current, 0.1)
+long                 = raw > long_threshold
+short                = raw < short_threshold
+application          = each_bar
+signal delay         = 1s，即最早在 t+1s 决策
+cooldown             = 0
+conflict policy      = flat
 ```
 
-对应配置和实现如下：
+分位必须使用 `f64` 线性插值。不能用 percentile rank 与 `0.9/0.1` 比较；重复值和
+离散因子下两者不等价。非有限值占用时间窗口槽位但不进入有序样本，当前 bar 的
+raw 值和 NQ 值都计入各自当期阈值。
 
-- `trade_flow_feature_pub` 当前配置为 `bar_ms: 5000`、`enable_1m_bar: true`，所以
-  1min bar 已在 pub 内生成，不需要另起一个 1min trade 聚合器。
-- `fusion_factor_1m_pub` 是实际运行的独立进程，订阅
-  `factor_pub/binance-futures/trade_flow_feature_1m`，输出
-  `fusion_factor_1m/binance-futures`。
-- 普通 `fusion_factor_pub` 仍是 5 秒链路，不能把它的输出名称
-  `fusion_factor/binance-futures` 当作 1min 输出。
+过旧、乱序、warming-up、非有限或 factor/NQ 时间戳未对齐的消息不得开仓。
+live 额外使用 `max_signal_age_seconds=120` 作为陈旧消息保护；它不改变正常 bar 的
+回测决策。
 
-本次已将 TLen 的 `factor_plan_1m` 收敛为 notebook 六个 symbol 的完全相同的 9 个因子：
+### NQ 过滤
+
+九条入选规则均启用 `nq_change`。它使用 Binance spot BBO，不使用 futures：
 
 ```text
-baseline_035, TD_PR_011, baseline_053, TP_VPI_006, TD_PR_005,
-factor_116, net_buy_medium, factor_004, baseline_091
+close(t)             = 该 1min bar 内最后一个有效 (bid+ask)/2，不跨 bar ffill
+lookback             = 60 bars，包含当前 close
+BUY_NQ_CHANGE        = (close - rolling_min(close, 60)) / rolling_min
+SELL_NQ_CHANGE       = (close - rolling_max(close, 60)) / rolling_max
+quantile window      = 1440
+minimum periods      = 720
+threshold            = linear quantile 0.95，包含当前值
+long allow           = BUY_NQ_CHANGE >= long_threshold
+short allow          = SELL_NQ_CHANGE <= short_threshold
 ```
 
-当前状态是：
+因子与 NQ 只能在相同 `(symbol, right_edge_ts)` 上合并发布。任一侧缺失时不允许用
+上一根 NQ 或另一时间戳的阈值代替。publisher 对未配对项最多保留 6 小时，过期后
+丢弃并报警，避免单边 topic 故障造成无界内存增长；这远长于 120 秒交易新鲜度窗口，
+不会把旧消息重新变成可交易信号。
 
-- 1min baseline bar 和 `fusion_factor_1m_pub` 正在运行；
-- `BNBUSDT`、`BTCUSDT`、`DOGEUSDT`、`ETHUSDT`、`SOLUSDT`、`XRPUSDT` 均已配置这 9
-  个因子，包含 `BTCUSDT`；
-- `fusion_factor_1m_pub` 已重新加载该 plan，并建立
-  `fusion_factor_1m/binance-futures` 输出服务；rolling history 预热完成后才发布完整结果；
-- 当前 10 个 `cta-*` `model_1m_pub` 已停止，本次更新不依赖旧 ONNX 模型。
+### Spread overlay
 
-### Raw factor model output
+`spread=(spot_mid-swap_mid)/spot_mid` 只控制现货开仓挂单和撤单，不产生方向：
 
-`intra_factor_model_1m_pub` 不消费 z-score 后的 `fusion_factor_1m/{venue}`，
-也不再订阅 IPC 的 `factor_pub/{venue}/trade_flow_feature_1m`。自 commit
-`bd829ab8` 起它直接消费 Kafka `PeriodMessage`（`config/intra_factor_model_1m_pub.toml`
-的 `[kafka]` 段，当前 topic `binance-futures`）：进程内用
-`LocalBaselineAggregator` 自行重建 60s trade-flow bar，启动时回放 retained 历史
-（`lookback_secs=172800`，即 48 小时）预热 rolling window，随后继续消费 live
-Kafka；每次重启用独立 group/client id 且不提交 offset，因此预热结果可复现。
-它对 notebook 的 9 个因子逐 symbol 独立维护 raw-value
-rolling percentile，并每根有效 1min bar 发布 9 条标准 `ModelMsg`：
+```text
+long open            spread < q30
+short open           spread > q70
+long cancel          spread crosses q50
+short cancel         spread crosses q50
+```
 
-- `score` 是 raw factor value；
-- `score_quantile` 是该 raw value 在本因子、本 symbol 48 小时窗口内的 percentile rank；
-- `score_ready` 仅在积累至少 1440 个有效 raw sample 后为 true；
-- 非有限 raw value 不进入 rolling window，并发布 `score_ready=false`。
+Redis mapping 为：
 
-Binance Futures 的 service 名称固定为：
+```text
+forward_open_mm=spread_30    forward_open_mt=bidask_30
+forward_cancel_mm=spread_50  forward_cancel_mt=bidask_50
+backward_open_mm=spread_70   backward_open_mt=askbid_70
+backward_cancel_mm=spread_50 backward_cancel_mt=askbid_50
+```
+
+`rolling_metrics` 必须实际发布所引用的 q30/q50/q70；同步响应有 warning 时不能上线。
+
+### 执行与退出
+
+每次有效信号在 spot 腿同时挂四档 maker：
+
+```text
+offsets              [0.0, 0.0001, 0.0003, 0.0005]
+notional per level   100 USDT
+maker TTL            120s
+max position         10000 USDT
+```
+
+spot 成交后，每个 `open_id` 独立持有 entry、数量、成交时间和退出参数：
+
+- 同一 symbol 的 CTA opening maker 同时只允许一个方向。反向信号先撤旧方向全部
+  opening maker，并丢弃本轮信号；必须等待撤单终态。若撤单前已有成交，反向开仓继续
+  被该真实 lot 阻断，直到它按既有退出流程结束。
+- swap maker TP：long 为 `entry*(1+tp)`，short 为 `entry*(1-tp)`，不过期。
+- 初始 stop 距离：`take_profit/reward_risk_ratio`。
+- 移动止损：`level=floor(max(progress,0)/trigger_step)`；stop 每级移动
+  `move_step`，只能向盈利方向收紧。
+- stop 使用 swap BBO：long 检查 bid，short 检查 ask；不使用 spot BBO。
+- `max_holding_seconds=14400` 从该 spot lot 首次实际成交时间开始。
+- stop/trailing/max-holding 先锁存退出原因。若该 lot 的 maker TP 已 reserved，先撤
+  TP；终态按累计成交扣减，释放余量后再对相同 `open_id` 发 swap taker。
+- CTA 的盈利退出只由 maker TP 负责，不再额外启用通用 intra taker take-profit。
+- spot partial fill 立即进入原 `open_id` 的 lot。若单个 lot 按 futures `step_size` 量化后
+  不满足 `min_qty` 或 `min_notional`，不发送必然被拒的 TP；等待后续同方向 lot 后按
+  FIFO 合并到最小可执行数量。合并单保留每个原始 lot 的 allocation，卖单取各 lot 中
+  最高 TP 价、买单取最低 TP 价，保证没有成分以劣于自身 TP 的价格退出；不足一个 step
+  的尾量继续留在原 lot 等下一次合并。
+
+回测的 maker 新单下一秒生效且要求严格穿价。live 只能保证订单方向、锚点、TTL、
+逐 lot 身份和退出顺序一致；是否成交由交易所订单簿和队列决定。
+
+### 九条入选规则
+
+公共参数均为 `both / each_bar / q90-q10 / delay=1s / cooldown=0 / NQ=on`，以及上面的
+四档、100U、TTL 120、max position 10000、max holding 14400。差异如下：
+
+| rule / factor | replay parameter_id | TP | RR | trailing trigger | trailing move |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `baseline_035` | `1d8936bf9b635502` | 0.005 | 1 | 0.001 | 0.0005 |
+| `TD_PR_011` | `021fedbf5203acfa` | 0.005 | 1 | 0.001 | 0.0005 |
+| `baseline_053` | `5c66278eed10fff3` | 0.010 | 1 | 0.002 | 0.0010 |
+| `TP_VPI_006` | `058616d273700edc` | 0.010 | 2 | 0.002 | 0.0010 |
+| `TD_PR_005` | `152fc40425ac03e5` | 0.010 | 1 | 0.001 | 0.0005 |
+| `factor_116` | `4ca6e8bdc0265276` | 0.010 | 1 | 0.002 | 0.0010 |
+| `net_buy_medium` | `bfc0bc6be19ef7ae` | 0.010 | 1 | 0.002 | 0.0005 |
+| `factor_004` | `46daf86b057e4da3` | 0.010 | 1 | 0.001 | 0.0005 |
+| `baseline_091` | `dd956fe644e25bf4` | 0.010 | 1 | 0.001 | 0.0005 |
+
+这些 ID 来自 `parameter_groups_replay_live46.csv` 的原始 replay 参数。费率复跑会重铸
+新的 `parameter_id`，因此审计时还要通过 `parameter.replay.parent_id` 关联，不能把两种
+ID 混为同一命名空间。Rust loader 对上述九个 model service 的公共参数和逐因子退出
+参数做强校验，防止某个环境因缺失 strategy hash 而静默回落到错误默认值。
+
+## 实现审计
+
+| 能力 | 审核结果 | 实现位置 / 说明 |
+| --- | --- | --- |
+| 九个 raw factor | 已实现 | `INTRA_FACTOR_NAMES` + `BaselineReplayState` |
+| 60s 右端时间 | 已实现 | publisher 将闭合 bar 左端加 60s |
+| q90/q10 数值阈值 | 已实现 | `ExactRollingWindow::quantile_linear(f64)` |
+| 固定时间槽 NaN | 已实现 | `observe_slot` 使缺失值推进窗口但不入分布 |
+| 1s signal delay | 已实现 | CTA 决策等待 `factor_ts+1s` |
+| spot NQ | 已实现 | spot Kafka 增量簿、1min last BBO、60/1440/720/q95 |
+| factor/NQ 原子对齐 | 已实现 | 相同 `(symbol, ts)` 才发布 `ModelMsg` |
+| raw strict vote | 已实现 | raw 与消息内 q90/q10 严格 `>`/`<` |
+| NQ 方向比较 | 已实现 | long `>=`，short `<=` |
+| spread gate/cancel | 已实现 | CTA shell 复用 rolling spread thresholds |
+| spot maker 四档 | 已实现 | offsets、notional、TTL 进入 ArbOpen context |
+| 反向持仓互斥 | 已实现 | CTA lot 尚未退出时拒绝该 symbol 的反方向新开仓 |
+| 双向 pending 同时成交 | 已实现单方向门禁 | 反向信号先撤旧 maker 并丢弃本轮；撤单终态前不反手，已有成交由 position gate 阻断 |
+| per-lot maker TP | 已实现 | 正常量逐 lot；低于 venue 最小量/名义时按严格 TP 价合并，allocation 保留原 open_id |
+| per-lot stop/trailing | 已实现 | CTA 参数从 open `from_key` 固化到 lot |
+| max holding | 已实现 | 按首次 fill timestamp 计算 14400s |
+| TP/stop 竞态 | 已实现 | reserved TP 先撤，释放后 targeted taker |
+| force/lazy taker 隔离 | 已实现 | CTA lot 始终优先走 maker TP，不受通用开关改写 |
+| 九规则状态隔离 | 已实现约束 | 一个 CTA env 允许 0 或 1 条规则，禁止多规则 |
+| 执行参数 Redis 隔离 | 已实现 | `{env}:cta_strategy_params:{open}:{hedge}` |
+| 生产发布 | 未执行 | 本次无远端变更、无启动、无发单 |
+| 固定数据逐 bar parity | 待验收 | 必须在发布前生成 live/research 对账报告 |
+| 重启持仓恢复 | 明确不在范围内 | 重启视为异常，由人工停止信号并对齐账户、挂单和 lot |
+
+过去文档中以下说法已经失效：
+
+- `score_quantile > 0.9` 不是当前开仓判定；`score_quantile` 仅保留观测用途。
+- publisher 不再只读 futures topic；factor 来自 `binance-futures`，NQ 来自
+  `binance-spot`。
+- lookback 不再是 48h，而是 72h，用于覆盖 factor 内部 warm-up、48h 信号窗口和
+  NQ warm-up。
+- CTA 不再依赖 `intra_trailing_stop_overrides`；退出参数来自该 lot 的开仓上下文。
+- TP 不再按组合加权均价，也不再选择“第一条 enabled rule”。
+- 一个 CTA env 不得承载九条 rule；净额账户会破坏独立回测状态。
+
+## 运行架构
+
+```text
+Kafka binance-futures PeriodMessage -----------+
+                                                +-> intra_factor_model_1m_pub
+Kafka binance-spot PeriodMessage -> spot BBO NQ +      -> 9 x model_output
+                                                          |
+                    one selected model_output per env -----+
+                                                          v
+                     trade_signal --mode cta -> ArbOpen / ArbCancel / ArbHedge
+                                                          |
+                                            pre_trade -> trade_engine
+                                                          |
+                                                Binance spot + futures
+```
+
+`intra_factor_model_1m_pub` 是主机共享 publisher，只运行一套。配置：
+
+```text
+config/intra_factor_model_1m_pub.toml
+factor_topic=binance-futures
+nq_topic=binance-spot
+lookback_secs=259200
+window_size=2880
+min_samples=1440
+```
+
+输出 service：
 
 ```text
 model_output/intra-binance-futures-1m-baseline_035
@@ -118,510 +241,191 @@ model_output/intra-binance-futures-1m-factor_004
 model_output/intra-binance-futures-1m-baseline_091
 ```
 
-启动时和每 180 秒重载时，该进程只选择同时满足以下条件的 symbol：
+允许 symbol 必须同时在线于 `amount_thresholds_1m`，且 `factor_plan_1m` 完整包含
+九因子。当前研究 universe 是 `BTCUSDT/BNBUSDT/ETHUSDT/SOLUSDT/DOGEUSDT/XRPUSDT`；
+生产名单必须从目标 env 读回确认。
 
-- `amount_thresholds_1m` 中在线；
-- `factor_plan_1m` 恰好包含上述 9 个因子。
+## 配置契约
 
-这样 service 名称是 factor 的唯一标识，`ModelOutputHub` 可同时订阅 9 个服务而不会将
-同一 symbol 的不同因子覆盖。运行配置在
-`config/intra_factor_model_1m_pub.toml`；其中 `127.0.0.1:6322` 指的是部署到
-`jp-meta-elvpn` 后主机内的 TLen 服务，并非开发机本地服务。9 个因子名硬编码在
-`INTRA_FACTOR_NAMES`（`src/factor_pub/intra_factor_model_1m_pub/app.rs`），
-symbol 缺任一因子即整 symbol 不启用。非有限 raw value 不进入 rolling window 且
-发布 `score_ready=false`；`score` 恒为 raw 因子值，`score_quantile` 为该值在窗口内的
-percentile rank。
+每个环境的当前 Redis key：
 
-2026-09-14 16:38 UTC 的链路检查结果：`trade_flow_feature_pub` 的 1min publisher
-已恢复，最近一个统计周期为 `success=96`、`fail_total=1`（1 个 invalid）；
-`fusion_factor_1m_pub` 收到 224 条原始消息，其中 15 条属于目标 6 个 symbol，
-并完成 `factor_plan=135`、`factor_eval=135`，没有 decode、depth 或 invalid factor
-错误。当前 `factor_ready=63`、`factor_warming_up=72`、`published=0`；这是重启后
-rolling history 尚未预热完成，不能当作已经有完整因子输出。旧的 1min/5s/RL IPC
-static/dynamic cache 已清理并按上游到下游顺序重建；活跃服务文件本身由进程保留。
+| 内容 | key |
+| --- | --- |
+| 信号规则 | `{env}:cta_rules` |
+| 执行参数 | `{env}:cta_strategy_params:{open}:{hedge}` |
+| trade symbols | `{env}:cta_trade_symbols:{exchange}` |
+| dump symbols | `{env}:cta_dump_symbols:{exchange}` |
+| spread mapping/value | `cta_spread_thresholds_config_*` / `cta_spread_thresholds_*` |
+| pre-trade risk | `{env}:{open}:{hedge}:pre_trade_risk_params` |
 
-本 notebook 的规则 rolling 是 `2880` 个 1min bar（48 小时），`min_periods=1440`
-（24 小时），分位数为 0.9/0.1。live `zscore_1m` 同样配置为
-`window_size=2880`、`min_samples=1440`，但 `intra_factor_model_1m_pub` 的 raw
-percentile 不依赖 z-score 值；`baseline_035` 内部每层使用 30 个 1min 样本，首次完整值
-至少需要约 59 个 1min 样本。
+信号对象示例：
 
-因子发布正常不等于规则已经进入可交易执行；后续仍需完成 cta 模式的信号
-状态机与执行链路（见下节）。
-
-需要特别注意：
-
-1. `baseline_035` 在因子计算层已经存在，但现有 intra funding factor chain 只登记
-   `hedge_premium_rate`、`spread_fr` 和历史别名 `premium_rate`。不能只把
-   `baseline_035` 写进 Redis 的 `factor_chain` 就得到可交易信号；Rust 侧还没有从
-   `fusion_factor` 读取该 baseline 并生成 ArbOpen 的入口。
-2. notebook 中的 `baseline_035` 是原始因子滚动分位规则，而 live
-   `fusion_factor_pub` 发布的是归一化后的 FeatureMsg。若要求实盘与 notebook
-   严格一致，必须明确使用 raw factor，或在回测中复现完全相同的 z-score 过程，不能
-   混用两套数值。
-3. 当前 intra 的 symbol list 带环境前缀，但 strategy params、funding chain、spread
-   mapping 和 rolling metrics 的主要 Redis key 按 venue pair 共享。多个规则盘在同一
-   Redis DB 上运行前，必须完成配置作用域隔离；否则一个规则盘的参数更新可能覆盖另
-   一个规则盘。
-
-相关实现：
-
-- [live baseline dispatch](/home/fanghaizhou/mkt_signal/src/factor_pub/fusion_factor_pub/app.rs:2048)
-- [baseline_035 implementation](/home/fanghaizhou/mkt_signal/crates/factor_engine/src/baseline.rs:842)
-- [feature normalization and publication](/home/fanghaizhou/mkt_signal/src/factor_pub/fusion_factor_pub/app.rs:1737)
-- [current intra factor lookup](/home/fanghaizhou/mkt_signal/crates/trade_signal/src/arb_open_filter.rs:15)
-- [current funding factor-chain AND gate](/home/fanghaizhou/mkt_signal/crates/trade_signal/src/arb_decision.rs:5463)
-
-### cta 模式（trade_signal 第四 mode，进行中）
-
-实盘落地方案已定为在 `trade_signal` 内新增 **`cta`** mode（与
-`fr`/`intra`/`cross` 平级，命名全小写），而不是独立的 rule evaluator
-进程。环境目录命名沿用 `<exchange>-(intra|cta)-<tag>` 约定，例如
-`binance-cta-rx01`：CWD basename 解析出 namespace=`cta`、
-key_suffix=`binance`，venue 按 intra 同款规则推断为
-`(binance-margin, binance-futures)`。
-
-**配置面（`scripts/cta_config_server.py`，路由前缀 `/cta`，端口 19174）**：
-
-页面五个板块，全部是扁平表单（无 rules 数组、无 rule_id 概念）：
-
-| 板块 | Redis key | 说明 |
-| --- | --- | --- |
-| CTA 信号 | `{env}:cta_rules` | 单 JSON 对象（见下） |
-| Symbol Lists | `{env}:cta_trade_symbols:{exchange}` / `{env}:cta_dump_symbols:{exchange}` | 单一交易宇宙（无 fwd/bwd 概念）+ dump 列表；CTA 不设借贷白名单 |
-| Strategy Params | `cta_strategy_params_{open}_{hedge}` | hash，10 个网格执行字段（见下） |
-| Spread Thresholds | `cta_spread_thresholds_config_{o}_{h}` + `cta_spread_thresholds_{o}_{h}` | mapping 配置 + 「同步阈值」物化，机制与 fr/intra 相同 |
-| Risk Params | `{env}:{open}:{hedge}:pre_trade_risk_params` | hash，pre_trade 60s 热加载 |
-
-**`{env}:cta_rules` 信号对象**（7 字段，`RawCtaRule`；旧 JSON 数组格式仍兼容解析，
-`rule_id` 可省略缺省 `"default"`）：
-
-```text
-model_service    必填 — 裸名自动补 model_output/ 前缀；默认
-                 intra-binance-futures-1m-baseline_035
-enabled          true — false 时不产生信号（配置保留）
-trade_sides      both | long | short
-application      each_bar | on_change
-long_quantile    0.9  — score_quantile > 此值 → 多方向
-short_quantile   0.1  — score_quantile < 此值 → 空方向（须 < long_quantile）
-cooldown_seconds 0    — 同一 symbol 两次开仓最小间隔
+```json
+{
+  "rule_id": "baseline_035",
+  "model_service": "intra-binance-futures-1m-baseline_035",
+  "enabled": true,
+  "trade_sides": "both",
+  "application": "each_bar",
+  "long_quantile": 0.9,
+  "short_quantile": 0.1,
+  "frequency_seconds": 60,
+  "rolling_window": 2880,
+  "rolling_min_samples": 1440,
+  "signal_delay_seconds": 1,
+  "nq_change_enabled": true,
+  "max_signal_age_seconds": 120,
+  "cooldown_seconds": 0
+}
 ```
 
-注意：rolling 窗口/min_samples **不在**信号配置里——`score_quantile` 由
-`intra_factor_model_1m_pub` 按 notebook 的 2880 窗 / 1440 min_samples 直接发布；
-`frequency_seconds`/`signal_delay_seconds`/`conflict_policy`/`nq_change` 是回测
-引擎概念，生产无消费点，均不暴露。
-
-**`cta_strategy_params_{open}_{hedge}` 执行参数**（10 字段；`CtaExecOverrides`
-加载时覆盖到规则上，优先级：hash > 对象内字段 > serde 默认）：
+执行 hash 字段：
 
 ```text
-order_notional_usdt          100.0  — 网格单档名义
-open_offsets                 [0.0,0.0001,0.0003,0.0005] — 各档相对 touch 价偏移
-open_ttl_seconds             120    — 开仓挂单 TTL
-max_position_notional_usdt   10000  — 单向名义上限，须 ≥ 档数×单档名义
-take_profit                  0.005  — swap 腿 maker 止盈偏移；0 = 不挂止盈
-reward_risk_ratio            1.0    — stop_loss = take_profit / rr
-trailing_stop_enabled        true
-trailing_stop_trigger_step   0.001
-trailing_stop_move_step      0.0005
-max_holding_seconds          14400  — 0 = 不限制
+order_notional_usdt=100
+open_offsets=[0.0,0.0001,0.0003,0.0005]
+open_ttl_seconds=120
+max_position_notional_usdt=10000
+take_profit=<规则表>
+reward_risk_ratio=<规则表>
+trailing_stop_enabled=true
+trailing_stop_trigger_step=<规则表>
+trailing_stop_move_step=<规则表>
+max_holding_seconds=14400
 ```
 
-intra 共享链路的旋钮对 cta 均为死参数、不暴露：`signal_cooldown`（只喂
-FundingArb cooldown sweep）、`open_order_timeout`/`hedge_timeout`（intra/xarb
-open-ctx）、`enable_tlen_cancel`/`tlen_cancel_freq_ms`（tlen 撤单——CtaShell
-对 cancel trigger/candidate 显式 no-op）、`hedge_*` 定价参数（inventory-hedge
-路径，cta 对冲是 entry 锚定 per-lot maker TP）。
+`sync_cta_rules.py` 和 Rust loader 都拒绝一个环境内多于一条规则；写 `[]` 可安全
+停用规则。非法完整快照必须保留上一份已加载配置并报警。
 
-**Spread Thresholds**：mapping 表 8 字段 `forward/backward × open/cancel ×
-mm/mt` → `{factor}_{percentile}`。forward=开多（买现货卖期货），backward=开空。
-「同步阈值」从 `rolling_metrics_thresholds_{open}_{hedge}` 取 per-symbol 分位
-物化到 `cta_spread_thresholds_*`；trade_signal 60s 热加载走与 intra/cross 相同
-的 `reload_spread_thresholds_from_rolling` → `SpreadFactor` 链路。
+旧的全局 `cta_strategy_params_<open>_<hedge>` hash 不再读取，也不能自动复制给九个
+环境。每套环境启用规则前，必须通过 config server 把该规则表对应的执行参数显式写入
+新的 env-scoped key，再用 `print_cta_rules.py --env-name <env>` 读回；缺字段或把一套
+参数批量复用给九条规则都视为迁移失败。
 
-语义与 notebook 的 spread overlay 一致（`spread = (spot_mid−swap_mid)/spot_mid`，
-与 rolling_metrics 同定义）：开多只在 `spread < q30` 挂单、开空只在
-`spread > q70`、越过 `q50` 撤同向未成交。默认 mapping（notebook 口径）：
+`ModelMsg` 与 `ArbHedgeSignalQueryMsg` 使用的是当前唯一 IPC 合约；本次字段扩展要求
+publisher、`trade_signal` 和 `pre_trade` 协调升级，不允许混跑新旧二进制，也不新增
+平行版本协议。
+
+每笔 CTA open 的 `from_key` 固化 rule、方向、factor 时间和值、方向阈值、方向 NQ
+值/阈值及全部退出参数。后续部分成交、maker TP 和保护退出都必须保留该事实链，不能
+在规则热更新后用新参数改写已成交 lot。
+
+`max_position_notional_usdt=10000` 是回测执行参数和网格静态校验。live CTA 的
+pre-trade `max_pos_u` 固定收紧为 `1000U`；该检查只计算已成交仓位，不累计未成交
+maker，因此多档同时成交时允许相对 1000U 有有限超调。这是已接受的 live 风险偏差，
+不改写 research 的 10000U 参数，也不能宣称两者仓位上限完全对齐。
+CTA 环境初始化风险参数必须使用 `scripts/sync_cta_risk_params.py` 或 CTA config server；
+不得运行普通 intra 的 `sync_intra_risk_params.py`，后者保留 10000U 默认。由于
+env-scoped `max_pos_u_overrides` 命中时优先于基础值，每套 CTA 环境的该覆盖表必须为空，
+或所有逐币种值都不超过 `1000U`。
+
+## 环境隔离
+
+九条规则需要九个 RapidX sub-portfolio 或九个事实独立的交易账户/组合。仅拆
+`IPC_NAMESPACE` 而共用同一个净额账户不够：交易所持仓、maker TP、强平数量和费用
+仍会净额化，无法重建九条独立 NAV。
+
+推荐环境名使用稳定的因子缩写，例如：
 
 ```text
-forward_open_mm=spread_30    forward_open_mt=bidask_30
-forward_cancel_mm=spread_50  forward_cancel_mt=bidask_50
-backward_open_mm=spread_70   backward_open_mt=askbid_70
-backward_cancel_mm=spread_50 backward_cancel_mt=askbid_50
+binance-cta-b035
+binance-cta-tdpr011
+binance-cta-b053
+binance-cta-tpvpi006
+binance-cta-tdpr005
+binance-cta-f116
+binance-cta-nbm
+binance-cta-f004
+binance-cta-b091
 ```
 
-q50 不在原始发布集合内——`rolling_metrics_params_binance-margin_binance-futures`
-已给 spread/bidask/askbid 三个因子追加 `50`（纯增量，热加载生效，intra 引用
-的既有分位不受影响）。当前 spread 集合 {5,10,15,20,25,30,50,70,85,90}、
-bidask {5,10,15,20,30,50}、askbid {50,70,80,85,90,95}。
+这些名称是目标规划，不是已存在环境。当前编排只登记 `binance-cta-rx01`。新增环境
+前必须分配并记录：sub-portfolio、config/viz 端口、IPC namespace、CPU、源 IP
+（如有）和持久化目录；部署时同步更新 `scripts/intra_orchestration_lib.sh`、
+`docs/core_allocation.md`，涉及 `local_ips` 时再更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
-`_mm`/`_mt` 必须成对才能 set；mapping 里引用未发布的分位会导致该 symbol 整组
-跳过（sync 响应里 warnings 可见）。裸调 `POST /api/spread-thresholds/sync`
-不带 mapping 时读取已持久化的 config，而不是代码默认值。
+## 上线阻断项
 
-**部署编排（binance-cta-rx01，RapidX/LTP）**：
+以下项目未完成前不得启动规则发单：
+
+重启恢复已被明确排除：重启属于异常操作，必须先停止新信号，再由操作人按账户持仓、
+当前挂单和成交记录手动对齐；本项目不承诺自动恢复进程内逐 lot 状态。
+
+1. **逐 bar parity 报告**：固定一段 Kafka 历史，逐 symbol 比较 research 与 live 的
+   raw、q90、q10、BUY/SELL NQ、q95、allow、direction、decision timestamp。所有有限
+   bar 必须数值一致或给出浮点容差；缺失 bar 的 readiness 必须逐项一致。报告必须包含
+   输入 topic/partition/offset 边界、research commit、live commit、配置摘要、逐字段最大
+   绝对误差、首个差异样本和逐 symbol mismatch 计数，并作为发布制品保留；只比较最终
+   BUY/SELL 方向不足以发现阈值或时间标签偏移。
+2. **单方向 pending 契约回测验收**：live 已选定不承载双向 gross lot。同一 symbol
+   存在旧方向 opening maker 时，反向信号会先撤全部旧 maker、丢弃本轮开仓并等待终态；
+   撤单前的成交会形成真实 lot，继续阻断反向开仓。research 必须加入相同契约后重跑
+   九条参数选择和固定回放，确认撤单等待造成的漏单属于策略定义，而不是 live-only
+   偏差。
+3. **逐 lot 仿真**：覆盖四档同时成交、部分成交、TP 部分成交后 stop、撤单失败、查询
+   timeout、`min_qty`/`step_size`/`min_notional` 不足后的跨 lot 合并、合并单部分成交及
+   4h 超时。必须证明失败释放后每段数量回到原 `open_id`，且不会留下无 spot 身份的裸
+   swap lot。
+4. **九环境资源与账户**：完成八套缺失环境的账号、端口和 CPU 规划，并验证每套 Redis
+   key、IPC、持久化和 client order id 空间独立；逐环境完成旧 strategy hash 到
+   env-scoped key 的显式迁移和读回，不允许运行时回退到旧全局 key。
+5. **生产现场复核**：确认 `arbmm` 与 `origin/arbmm` 同步、工作树可发布、publisher
+   topics 有连续 72h retained 数据、目标 symbol plan 完整、spread q30/q50/q70 已物化；
+   每套 env 的 pre-trade risk 必须读回并确认 `max_pos_u=1000`，并确认
+   `max_pos_u_overrides` 为空或全部不超过 `1000U`；四档未成交 maker 不计入该上限、
+   同时成交可能有限超调属于已接受偏差，不能只依赖规则对象里的 10000U
+   静态回测参数。
+
+## 验收与发布
+
+先做本地静态和目标测试：
 
 ```bash
-# 本机环境（在 jp-meta-elvpn 上执行；只部署不启动）
-scripts/deploy_cta_binance_std.sh rx01          # 或 --env-suffix rx01
-scripts/deploy_cta_binance_std.sh rx01 --exec-backend native   # 原生 Binance PM
-
-# 发布 / 启动 / 停止（远端编排，复用 intra 安全流程）
-scripts/publish-cta.sh --env-name binance-cta-rx01
-scripts/start-cta.sh   --env-name binance-cta-rx01
-scripts/stop-cta.sh    --env-name binance-cta-rx01
-# 以上均支持 --check-only / --all
+cargo fmt --check
+cargo test -p rolling_common exact_rolling_window
+cargo test -p mkt_parsers model_msg
+cargo test -p signal_common hedge_signal
+cargo test -p trade_signal cta_config
+cargo test -p mkt_signal --lib intra_trailing_stop
+cargo check --bin intra_factor_model_1m_pub
+cargo check -p trade_signal --bin trade_signal
+cargo check --bin pre_trade
 ```
 
-- env 注册在 `scripts/intra_orchestration_lib.sh` 的 `cta_configure_env`
-  （host=`jp-meta-elvpn`，backend=`ltp`，config=19174，viz=10186，
-  account_monitor=`rapidx_account_monitor`）。
-- `deploy_cta_binance_std.sh` 默认 ltp 后端，也接受 `--exec-backend native`
-  （原生 Binance PM）；core layout：
-  account_monitor=32 / trade_signal=33 / pre_trade=34 / trade_engine=35 /
-  persist_manager=15（共享）。
-- publish 的 manifest 含 `cta_config_server.py`、`sync_cta_rules.py` /
-  `print_cta_rules.py`、`start-cta.sh`/`stop-cta.sh` 与 cta 部署脚本；
-  staging 目录 `.publish-cta.*`；`--all` 只遍历 `CTA_ORCHESTRATION_ENVS`。
-- config server PM2 名 `cta_config_server_{env}`，公网入口
-  `http://13.115.227.29:4191/cta/<env>/config`（nginx 前缀 `/cta`）。
-
-**借币开空与账户模式**：
-
-CTA 开空 = 卖出借入的现货（borrow-to-short），FR 同款机制，无借贷白名单——
-只受 `cta_trade_symbols` 宇宙约束。按执行后端分两种：
-
-- RapidX/LTP：cash leg 业务类型默认 `MARGIN`（`RAPIDX_BINANCE_CASH_BUSINESS_TYPE`
-  未配置即 MARGIN，可显式覆盖为 `SPOT`）；`BINANCE_MARGIN_*` 卖单成交时由
-  LTP 自动借币（已实盘验证：挂单不产生负债，成交才借；且不受
-  `loan/config` 可借列表/`maxLoan` 约束）。注意此类负债**不**出现在
-  `rapidxLoan/loan/info`，只体现在 `portfolio/assets` 的 `debt`/`borrow`
-  字段——auto-repay 因此以资产快照为负债主来源、loan/info 为补充，
-  每小时 :55 UTC 按 `min(debt, available)`（两位小数向下取整，
-  `clientOrderId=autorepay<ts_ms><coin>`）走 `rapidxLoan/loan/repay`。
-  买回所借币种会自动还债。
-- 原生 Binance PM：`BINANCE_ACCOUNT_MODE=UNIFIED`，现货腿走
-  `/papi/v1/margin/order` + `sideEffectType=MARGIN_BUY`，auto-repay 走
-  `/papi/v1/repayLoan`（`BinanceRepayer`）。`STANDARD` 不支持——pre_trade
-  启动时直接拒绝（`BINANCE_ACCOUNT_MODE=STANDARD` + CTA → bail）。
-  部署用 `deploy_cta_binance_std.sh <tag> --exec-backend native`。
-
-风控：UnimmrOpenLock（只减仓锁，`unimmr_trigger_line`/`unimmr_recover_line`）
-对 CTA 生效（UNIFIED 下）。UnimmrForceClose 为 FR 专用，CTA 不启用、
-无需配置 `unimmr_close_symbols`——CTA 仓位退出见下文「仓位退出机制
-现状」（maker TP 已接，止损/trailing 需配 `intra_trailing_stop_overrides`，
-max_holding 未实现）。risk params 沿用 intra schema，无额外字段。
-
-**新 CTA 环境配置清单**（按顺序；`binance-cta-rx01` 已按此配置）：
-
-1. `deploy_cta_binance_std.sh <tag>` 建 env → `publish-cta.sh` 发二进制和脚本。
-2. Symbol Lists：写 `cta_trade_symbols`（交易宇宙）+ `cta_dump_symbols`
-   （CTA 无借贷白名单；保存会顺带清理旧的 intra bwd 镜像 key）。
-3. CTA 信号：model_service + 分位 + 方向。baseline_035 用 notebook §8
-   选中组：q=0.9/0.1、both、each_bar、cooldown=0。
-4. Strategy Params：写 10 个执行字段。notebook 选中组
-   `parameter_id=1d8936bf9b635502`（live46 中 `valid_auc+test_auc` 最小：
-   0.076+0.124，sharpe 4.26/3.71）：tp=0.005、rr=1.0、trig=0.001、
-   move=0.0005，其余为共有值（offsets 4 档 / 100U / ttl 120 / max_pos 10k /
-   max_holding 14400）。注意该组 `nq_change.enabled=True`——nq 过滤执行侧
-   尚未实现，实盘暂不带。
-5. Spread Thresholds：确认 mapping 分位在 rolling 发布集合内 → 「同步阈值」
-   物化 per-symbol 值；检查 `written`/`warnings`。
-6. Risk Params：参照 binance-intra-arb01 现网值写限速（arb_open 500/10s、
-   1000/min；arb_hedge 300/10s=Binance 硬上限、1000/min；挂单上限
-   5/5/10/10/global 10）与敞口（max_pos_u、symbol 0.05、total 0.02、
-   leverage 5、UniMMR 1.5/1.6）。**rx01 当前 `max_pos_u=500`**——这是
-   pre_trade 的 per-symbol 名义上限，是真正拦截超仓的兜底；strategy hash
-   的 `max_position_notional_usdt` 只做"网格总档额 ≤ 上限"的静态校验，
-   不在运行时计数。单边 50U×4 档=200U/轮，多轮累计由 max_pos_u 截断。
-7. 校验：`print_cta_rules.py` 读回信号+执行 hash；GET
-   `/api/spread-thresholds` 看物化值；交易进程保持停止。
-
-**决策链路（已实现，commit 7ea66195）**：
-
-`drive_cta_decision`：逐 `(rule_id, symbol)` 状态机——
-- `score_quantile` 严格比较出 vote（`>long_q`→多 / `<short_q`→空），
-  `trade_sides` 控方向生效；
-- `each_bar`：按模型消息 `ts_in_ms` 递增去重（每根 bar 只评估一次）；
-  `on_change`：vote 变化沿触发；
-- `cooldown_seconds` 抑制发放频率；dump 名单不开仓；
-- spread overlay：开仓 gate `satisfy_forward/backward_open`（spread<q30
-  开多 />q70 开空），每根新 bar 评估 `satisfy_*_cancel`（过中位线撤同向
-  挂单，strategy_id=0 + Spread reason 广播，pre_trade 按 symbol+side
-  匹配所有 ArbOpenStrategy）；
-- 发放：`open_offsets` 各档从 touch 价（买取 bid、卖取 ask）挂 maker，
-  每档 `order_notional_usdt`，TTL=`open_ttl_seconds`。
-
-**仓位退出机制现状（关键边界，跑实盘前必读）**：
-
-- **maker TP 单（已接）**：现货 fill → pre_trade 发 hedge query →
-  `drive_cta_hedge_query` 回复 swap 腿常驻限价单（`exp_time=0` 不超时
-  撤单），价=加权均价 entry×(1±take_profit)。多 lot 时用聚合
-  `weighted_inventory_price` 锚定（档差 ≤0.05%，误差可忽略）。
-- **止损/trailing（机制已在代码里，未配置）**：`IntraTrailingBook`
-  （`src/strategy/intra_trailing_stop.rs`）是 per-lot 账本，对每个 open
-  fill 按 open order id 建 `TrailingPosition`；`is_intra()` 是同所期现
-  的**结构判断**，CTA 的 binance-margin+binance-futures 自动满足，
-  record_open 已在 fill 路径上生效。语义与引擎一致：`stop =
-  entry×(1+dir×(−tp/rr + level×MOVE_STEP))`，`level=floor(progress/
-  TRIGGER_STEP)`，TRIGGER_STEP=0.001 / MOVE_STEP=0.0005 硬编码（恰好
-  等于选中组参数）。触发 `intra_stop_loss`/`intra_take_profit` 后发
-  **swap 腿 taker 单**锁亏/锁盈。
-  - **启用方式**：写 Redis STRING
-    `{env}:{open}:{hedge}:intra_trailing_stop_overrides` =
-    `{symbol:{"take_profit":0.005,"reward_risk_ratio":1.0}}`
-    （rx01 即 `binance-cta-rx01:binance-margin:binance-futures:...`）。
-    注意这是独立 key，**不是** `cta_strategy_params`——后者里的
-    `trailing_stop_*` 字段目前只被 `CtaRule` 解析、无运行时消费者（死配置）。
-- **TP/止损竞态（未解决，必须先选方向）**：maker TP 挂单与 intra book
-  的 taker 触发是两个独立出口——
-  - maker TP 先成交 → hedge allocation 清掉该 lot → book 不再触发 ✓
-  - 但 `intra_stop_loss`/`intra_take_profit` taker 先触发（lot 被锁亏）→
-    **盘口上那个 TP maker 单不会被撤**（TP 回复未绑 open_id），价格回到
-    TP 位会成交出一条无现货腿的**裸 swap 仓位**。
-  - 选 A：不配 maker TP、hedge query 不回复，退出全交 intra book taker
-    （无竞态，TP 也吃 taker 费）；
-  - 选 B：保留 maker TP + 写 trailing key，但要补代码：TP 回复带
-    open_id 绑定 + stop 触发时撤该 lot 的常驻 TP 单。
-- **max_holding_seconds（4h 强平）：无任何现成机制**。`close_ts` 是
-  "藏仓窗口"（`hedge_timeout_us`，CTA=0→fill 后立即进入 hedge due），
-  不是持仓时限；`due_force_close_open_id` 只认 `force_close_open_ids`
-  注册（UnimmrForceClose 那套，CTA 已禁用）。要做需单独加。
-- `nq_change` filter 未实现（选中组带该过滤，实盘暂不带）。
-
-## 目标架构
-
-推荐将“因子计算”和“规则执行”分离（rule evaluator 已定为 trade_signal
-的 `cta` mode，见上节）：
-
-```text
-market data
-    -> trade_flow_feature_pub
-    -> fusion_factor_pub (5s) / fusion_factor_1m_pub (1min)
-    -> intra_factor_model_1m_pub (9 路 model_output raw 分位)
-    -> trade_signal --mode cta (9 条独立 rule 状态机)
-    -> existing ArbOpen / ArbClose / ArbCancel IPC
-    -> pre_trade
-    -> trade_engine
-    -> spot + futures execution
-```
-
-同一交易所可以共享一个 `fusion_factor_pub`/`intra_factor_model_1m_pub`。
-每个规则盘独立运行一套 `cta` mode 的 `trade_signal` + intra execution stack：
-
-```text
-rule_set=baseline035  -> <exchange>-cta-<tag>   （如 binance-cta-v005）
-rule_set=baseline036  -> <exchange>-cta-<tag>
-rule_set=rule_x       -> <exchange>-cta-<tag>
-```
-
-一个 cta env 内部可以承载多条 rule（同一进程按 `rule_id` 隔离状态）；不同
-env 之间必须使用自己的 `IPC_NAMESPACE`、env 前缀的 symbol lists 与
-`{env}:cta_rules` 规则集、策略参数、日志和持久化目录。不同规则盘
-不能共享同一个 trade_signal 进程的运行时状态。
-
-## 规则契约
-
-每个规则盘上线前必须有一份不可歧义的规则配置，至少包括：
-
-```text
-rule_id
-factor_source       # 例如 fusion_factor/binance-futures
-factor_name         # 例如 baseline_035
-factor_value_mode   # raw 或 zscore，必须与回测一致
-bar_frequency       # 例如 60s
-long_rule           # 例如 value > rolling_quantile(90%)
-short_rule          # 例如 value < rolling_quantile(10%)
-rolling_window
-rolling_min_samples
-signal_delay
-entry_policy        # maker/taker、挂单偏移、超时
-exit_policy         # neutral/反向/止盈止损/最长持仓
-order_amount
-symbols_fwd
-symbols_bwd
-```
-
-规则执行的默认安全语义：
-
-- 因子缺失、warming-up、时间戳过旧或非有限值时，不发开仓信号。
-- 多空同时满足时，默认 flat 并记录冲突原因。
-- 因子回到中性区不自动平仓，除非 `exit_policy` 明确配置为 neutral close。
-- 开仓方向和退出方向分开记录，不能用“重新发反向开仓”隐式代替平仓。
-- 每个信号必须携带 `rule_id`、symbol、factor timestamp、factor value、threshold、
-  direction 和 decision reason，便于回测与实盘逐笔对账。
-
-## 配置作用域
-
-当前 key 形状需要先盘点，再扩展为统一的 deployment-scoped 形状。目标是同一
-Redis 实例可以安全承载多个规则盘；不要通过 `v1`/`v2` 或临时后缀维护两套协议。
-
-至少需要隔离以下内容：
-
-| 配置 | 当前用途 | 多规则盘要求 |
-| --- | --- | --- |
-| symbol lists | fwd/bwd/dump/vol gate | 每个 `env_name` 独立 |
-| factor rule | 因子、阈值、分位数和退出规则 | 每个 `rule_id` 独立 |
-| strategy params | 下单量、超时、对冲和冷却 | 每个 `rule_id` 独立 |
-| rolling params | rolling window、factor quantiles | 明确按规则或共享只读 |
-| spread mapping | maker/taker 开仓和平仓阈值 | 每个规则盘明确归属 |
-| risk overrides | amount、max position、hedge limits | 每个环境和规则盘独立 |
-
-配置加载必须做到“完整快照替换”，缺失或非法快照保留旧配置并告警；不能把上一
-个规则盘残留的 symbol 或阈值拼接到当前规则盘。
-
-## 环境命名与部署
-
-环境名统一使用：
-
-```text
-<exchange>-intra-<tag>        # 现有 intra 盘
-<exchange>-cta-<tag>          # cta 规则盘（namespace=cta）
-```
-
-例如：
-
-```text
-binance-intra-arb01
-binance-cta-v005
-okex-intra-arb01
-bybit-intra-arb01
-```
-
-仓库当前的远程编排入口只登记了固定环境和端口。新增纯规则盘时，必须同步检查
-并更新以下位置后再部署：
-
-- `scripts/intra_orchestration_lib.sh`：目标主机、exchange、端口和 execution backend。
-- 对应的 `deploy_intra_<exchange>.sh`：环境初始化、凭证模式和 core layout。
-- `start-intra.sh` / `stop-intra.sh` / `publish-intra.sh`：supported environment 列表。
-- Nginx 的 config/viz 路由和 `docs` 中的端口记录。
-
-环境目录由 `deploy_setup_env_intra.sh` 创建。它会生成 `env.sh`，包括
-`IPC_NAMESPACE`、open/hedge venue 和执行后端。凭证只能存在环境目录的 `env.sh`，
-不能写进仓库或文档。
-
-## 标准发布流程
-
-以下命令是操作顺序模板。生产操作前必须确认目标环境、交易所、symbol 范围和
-当前是否有持仓；这些命令不替代上线审批。
-
-### 1. 本地构建和静态检查
+生产操作只允许从同步后的 `arbmm` worktree 执行。首次只做观察和 check-only：
 
 ```bash
 git branch --show-current
 git status --short
-cargo fmt --check
-cargo check --bin trade_engine
-cargo check --bin pre_trade
-cargo check --bin trade_signal
-scripts/build-intra-binaries.sh
+scripts/publish-cta.sh --env-name <env> --check-only
+scripts/start-cta.sh --env-name <env> --check-only
 ```
 
-生产发布只允许从同步后的 `arbmm` worktree 进行。
-
-### 2. 创建或更新环境
-
-使用对应交易所的 deploy-only 入口。示例：
+配置验收至少读回：
 
 ```bash
-scripts/deploy_intra_binance_std.sh arb03
+scripts/print_cta_rules.py --env-name <env>
 ```
 
-该步骤只创建/更新 `$HOME/binance-intra-arb03/`，不会启动进程。OKX、Bybit、Gate
-和 Bitget 使用各自的 `deploy_intra_<exchange>.sh` 入口。LTP backend 只能用于脚本
-已支持的 exchange，并且必须在 `env.sh` 中配置完整的 LTP 凭证和 portfolio id。
+启动顺序是 config/viz/persist/trade_engine/account_monitor/pre_trade，基础栈健康后才可
+单独启动 `trade_signal --mode cta`。每次 live-impact 操作前都要明确目标 env、交易所、
+symbol 范围和操作是否会发单。先单环境、单 symbol、小额度验证，确认 maker TP、保护
+撤单和 taker 数量后再扩大。
 
-### 3. 发布二进制和运行脚本
+发现异常时先停止新信号，保留订单更新、持久化和账户监控；随后按目标环境核对并处理
+挂单与敞口。不要把回测 `close_on_end` 当作 live 自动回滚机制。
 
-已有远程环境使用：
+## 可接受执行偏差
 
-```bash
-scripts/publish-intra.sh --env-name <exchange>-intra-<tag>
-```
+以下偏差必须度量，但不是代码可以消除的信号错误：
 
-发布器会先确认目标进程全部停止，再进行 staging、SHA-256 校验和原子替换；不会
-上传或覆盖 `env.sh`、凭证、数据和日志。只更新本地构建产物时可使用
-`--skip-build`，但必须确认 `target/release` 是本次构建结果。
+- 回测 maker 在下一秒激活并按严格穿价成交；live 有网络延迟和真实队列优先级。
+- live 可能部分成交、撤单在途或 cancel/fill 竞态；回测事件顺序是确定的。
+- 回测 maker order 一次性全成；live 同一 `open_id` 的多次部分成交按该订单累计均价
+  管理，属于订单级 lot，不会伪造多个回测中不存在的 order id。
+- live 价格与数量按 venue tick/step 向可下单值量化。
+- 回测使用固定 maker/taker fee；live 使用账户实际费率、返佣和资金费用。
+- 行情 publisher 与交易所撮合时间戳存在传输延迟。
 
-### 4. 启动基础执行栈
-
-```bash
-scripts/start-intra.sh --env-name <exchange>-intra-<tag>
-```
-
-启动顺序为 config server、viz server、persist manager、trade engine、account
-monitor、pre-trade。该入口故意不启动 `trade_signal`，并要求它保持停止状态。
-
-基础栈健康后，再单独启动已验收的规则信号进程：
-
-```bash
-cd "$HOME/<exchange>-intra-<tag>"
-./intra_scripts/start_intra_trade_signal.sh
-```
-
-在纯规则执行器正式接入前，上述 `trade_signal` 只代表现有 intra 信号逻辑，不能
-声称已经执行新的 baseline 规则。
-
-## 因子规则上线前验收
-
-### 回测一致性
-
-- 因子名称、输入字段、时间频率、滚动窗口、最小样本数、分位数和 delay 完全一致。
-- 对齐 raw/z-score 语义、NaN/warming-up、symbol 过滤和冲突处理。
-- 明确中性区的持仓处理，不把 notebook 的简化 PnL 当成 maker/taker 执行结果。
-- 逐 symbol 比较一段固定时间的 factor value、threshold、direction 和 signal timestamp。
-
-### 实时数据链
-
-- 确认 `trade_flow_feature` 持续更新，`fusion_factor_pub` 的 factor plan 包含目标
-  factor，且目标因子不是 warming-up。
-- 确认 `fusion_factor/<venue>` 有新消息，消息的 symbol、timestamp、status 和
-  factor 顺序与规则 evaluator 的映射一致。
-- 确认因子断流、旧消息和非法值只会阻止开仓，不会产生错误方向信号。
-
-### 执行链
-
-- 确认 ArbOpen/ArbClose 进入正确的 `IPC_NAMESPACE`。
-- 确认 `pre_trade` 通过余额、借贷、杠杆、最大敞口和交易所规则检查。
-- 确认现货腿和期货对冲腿的数量、价格精度、订单方向和 client order id 可追踪。
-- 先使用无发单模式或隔离 symbol 做小规模验证，再扩大交易对集合。
-
-## 运行观察与回滚
-
-上线后至少记录以下指标：
-
-```text
-factor messages / stale messages / warming-up messages
-rule evaluations / long / short / neutral / conflict
-signal intercept reason
-open orders / fills / partial fills / hedge latency
-unhedged quantity / cancel retry / query repair
-per-symbol position and realized PnL
-```
-
-发现因子映射、阈值或执行行为异常时，先停止规则信号进程，保留基础风控和订单
-状态处理，再撤单并核对敞口。标准应急顺序见
-[撤单与平敞口命令](/home/fanghaizhou/mkt_signal/docs/close_orders_and_exposure_cheatsheet.md)。
-
-```bash
-scripts/stop-intra.sh --env-name <exchange>-intra-<tag>
-```
-
-`stop-intra.sh` 会停止执行栈、撤销该环境订单并执行状态检查；实际生产使用前仍
-必须人工确认 exchange、环境和 symbol 范围。
-
-## 新增一个纯规则因子的最小变更集
-
-新增规则不能只改一个 Redis JSON。至少需要完成：
-
-1. 在 factor engine / fusion publisher 中实现并测试因子，确认 live 和 replay 一致。
-2. 定义 factor name、输入字段、单位、频率、readiness、staleness 和 raw/z-score 语义。
-3. 在 rule evaluator 中登记因子索引/映射和方向规则。
-4. 增加该规则的配置作用域、symbol list、阈值和策略参数。
-5. 增加固定数据回放、断流、warming-up、多空冲突、反向和重复消息测试。
-6. 发布二进制后执行 check-only、基础栈健康检查、信号 dry-run 和小范围实盘验收。
-
-不要把新的 baseline 追加到现有 funding factor chain，除非该因子确实是由
-`arb_open_filter::lookup_factor_realtime_value` 提供的实时值，并且已经明确采用
-funding filter 的 per-symbol rolling threshold 语义。
+这些应进入 slippage/fill-rate/fee attribution，不得通过改变 raw 阈值、NQ 比较符或
+signal delay 来“补偿”。

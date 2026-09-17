@@ -9,7 +9,7 @@
 
 `{env}:cta_rules` 存放信号配置对象（model_service/分位/方向）；
 执行/网格参数（open_offsets、单笔名义、TP、trailing 等）归
-`cta_strategy_params_{open}_{hedge}` hash（本脚本提供 parse_exec_params
+`{env}:cta_strategy_params:{open}:{hedge}` hash（本脚本提供 parse_exec_params
 供 config server 校验写入）。为兼容旧格式，--file 也接受规则数组。
 
 校验规则与 trade_signal `cta_config.rs` 的 `CtaRule::validate` 保持一致
@@ -40,8 +40,6 @@ MAX_OPEN_OFFSET = 0.01
 RULE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 TRADE_SIDES = {"long", "buy", "short", "sell", "both", "long_short", "long,short", "short,long"}
-APPLICATIONS = {"each_bar", "on_change"}
-
 # 与 RawCtaRule 的 serde 字段一一对应（deny_unknown_fields）。
 ALLOWED_FIELDS = {
     "rule_id",
@@ -49,6 +47,12 @@ ALLOWED_FIELDS = {
     "trade_sides",
     "long_quantile",
     "short_quantile",
+    "frequency_seconds",
+    "rolling_window",
+    "rolling_min_samples",
+    "signal_delay_seconds",
+    "nq_change_enabled",
+    "max_signal_age_seconds",
     "cooldown_seconds",
     "application",
     "order_notional_usdt",
@@ -78,10 +82,16 @@ SIGNAL_FIELD_TYPES: Dict[str, str] = {
     "application": "str",
     "long_quantile": "float",
     "short_quantile": "float",
+    "frequency_seconds": "int",
+    "rolling_window": "int",
+    "rolling_min_samples": "int",
+    "signal_delay_seconds": "int",
+    "nq_change_enabled": "bool",
+    "max_signal_age_seconds": "int",
     "cooldown_seconds": "int",
 }
 
-# 执行/网格字段：存于 cta_strategy_params_* hash（String→String），
+# 执行/网格字段：存于 env-scoped cta_strategy_params hash（String->String），
 # Rust CtaExecOverrides 加载时覆盖到规则上。
 EXEC_FIELD_TYPES: Dict[str, str] = {
     "order_notional_usdt": "float",
@@ -100,7 +110,7 @@ EXEC_FIELD_DEFAULTS: Dict[str, Any] = {
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
     "open_ttl_seconds": 120,
     "max_position_notional_usdt": 10000.0,
-    "take_profit": 0.0,
+    "take_profit": 0.005,
     "reward_risk_ratio": 1.0,
     "trailing_stop_enabled": True,
     "trailing_stop_trigger_step": 0.001,
@@ -119,13 +129,19 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "trade_sides": "both",
     "long_quantile": 0.9,
     "short_quantile": 0.1,
+    "frequency_seconds": 60,
+    "rolling_window": 2880,
+    "rolling_min_samples": 1440,
+    "signal_delay_seconds": 1,
+    "nq_change_enabled": True,
+    "max_signal_age_seconds": 120,
     "cooldown_seconds": 0,
     "application": "each_bar",
     "order_notional_usdt": 100.0,
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
     "open_ttl_seconds": 120,
     "max_position_notional_usdt": 10000.0,
-    "take_profit": 0.0,
+    "take_profit": 0.005,
     "reward_risk_ratio": 1.0,
     "trailing_stop_enabled": True,
     "trailing_stop_trigger_step": 0.001,
@@ -201,9 +217,18 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     trade_sides = raw.get("trade_sides")
     if trade_sides is not None and str(trade_sides).strip().lower() not in TRADE_SIDES:
         _fail(rid, f"trade_sides must be long, short, or both, got '{trade_sides}'", errors)
+    elif trade_sides is not None and str(trade_sides).strip().lower() not in {
+        "both",
+        "long_short",
+        "long,short",
+        "short,long",
+    }:
+        _fail(rid, f"selected backtests require both long and short, got '{trade_sides}'", errors)
 
-    long_q = float(raw.get("long_quantile", 0.9))
-    short_q = float(raw.get("short_quantile", 0.1))
+    long_raw = raw.get("long_quantile", 0.9)
+    short_raw = raw.get("short_quantile", 0.1)
+    long_q = float(long_raw) if _is_num(long_raw) else math.nan
+    short_q = float(short_raw) if _is_num(short_raw) else math.nan
     for name in QUANTILE_FIELDS:
         v = raw.get(name)
         if v is None:
@@ -213,14 +238,37 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     if _is_num(raw.get("long_quantile", long_q)) and _is_num(raw.get("short_quantile", short_q)):
         if not short_q < long_q:
             _fail(rid, f"short_quantile({short_q}) must be < long_quantile({long_q})", errors)
+        elif long_q != 0.9 or short_q != 0.1:
+            _fail(
+                rid,
+                f"selected backtests require long_quantile=0.9 and short_quantile=0.1, got {long_q}/{short_q}",
+                errors,
+            )
+
+    fixed_contract = {
+        "frequency_seconds": 60,
+        "rolling_window": 2880,
+        "rolling_min_samples": 1440,
+        "signal_delay_seconds": 1,
+    }
+    for name, expected in fixed_contract.items():
+        value = raw.get(name, expected)
+        if not _is_int(value) or value != expected:
+            _fail(rid, f"{name} must equal backtest contract value {expected}, got {value}", errors)
+    nq_enabled = raw.get("nq_change_enabled", True)
+    if nq_enabled is not True:
+        _fail(rid, f"nq_change_enabled must be true for the selected backtests, got {nq_enabled}", errors)
+    max_age = raw.get("max_signal_age_seconds", 120)
+    if not _is_int(max_age) or max_age < 60:
+        _fail(rid, f"max_signal_age_seconds must be an int >= 60, got {max_age}", errors)
 
     cooldown = raw.get("cooldown_seconds", 0)
-    if not _is_int(cooldown) or cooldown < 0:
-        _fail(rid, f"cooldown_seconds must be a non-negative int, got {cooldown}", errors)
+    if not _is_int(cooldown) or cooldown != 0:
+        _fail(rid, f"cooldown_seconds must equal backtest contract value 0, got {cooldown}", errors)
 
     app = str(raw.get("application", "each_bar")).strip().lower()
-    if app not in APPLICATIONS:
-        _fail(rid, f"application must be each_bar or on_change, got '{app}'", errors)
+    if app != "each_bar":
+        _fail(rid, f"application must equal backtest contract value each_bar, got '{app}'", errors)
 
     order_notional = raw.get("order_notional_usdt", 100.0)
     if not _is_num(order_notional) or float(order_notional) <= 0.0:
@@ -249,12 +297,14 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
             errors,
         )
 
-    tp = raw.get("take_profit", 0.0)
-    if not _is_num(tp) or float(tp) < 0.0:
-        _fail(rid, f"take_profit must be finite and >= 0 (0 disables the maker tp hedge), got {tp}", errors)
+    tp = raw.get("take_profit", 0.005)
+    if not _is_num(tp) or not 0.0 < float(tp) < 1.0:
+        _fail(rid, f"take_profit must be finite in (0,1), got {tp}", errors)
     rr = raw.get("reward_risk_ratio", 1.0)
     if not _is_num(rr) or float(rr) <= 0.0:
         _fail(rid, f"reward_risk_ratio must be positive finite, got {rr}", errors)
+    elif _is_num(tp) and float(tp) / float(rr) >= 1.0:
+        _fail(rid, f"take_profit/reward_risk_ratio must be < 1, got tp={tp} rr={rr}", errors)
 
     trailing_enabled = raw.get("trailing_stop_enabled", True)
     if not isinstance(trailing_enabled, bool):
@@ -263,6 +313,19 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
         v = raw.get(name, 0.001 if name == "trailing_stop_trigger_step" else 0.0005)
         if trailing_enabled is True and (not _is_num(v) or float(v) <= 0.0):
             _fail(rid, f"{name} must be positive finite when trailing_stop_enabled, got {v}", errors)
+    trigger = raw.get("trailing_stop_trigger_step", 0.001)
+    move = raw.get("trailing_stop_move_step", 0.0005)
+    if (
+        trailing_enabled is True
+        and _is_num(trigger)
+        and _is_num(move)
+        and float(move) >= float(trigger)
+    ):
+        _fail(
+            rid,
+            f"trailing_stop_move_step({move}) must be < trailing_stop_trigger_step({trigger})",
+            errors,
+        )
 
     max_hold = raw.get("max_holding_seconds", 14_400)
     if not _is_int(max_hold) or max_hold < 0:
@@ -282,6 +345,10 @@ def validate_rules(raw: Any) -> List[str]:
         raw = [raw]
     if not isinstance(raw, list):
         return ["cta rules JSON must be an object or an array of rule objects"]
+    if len(raw) > 1:
+        errors.append(
+            f"one CTA environment may contain at most one independent rule, got {len(raw)}"
+        )
     seen = set()
     for index, item in enumerate(raw):
         validate_rule(item, index, errors)
@@ -448,14 +515,24 @@ def parse_exec_params(values: Any) -> Tuple[Dict[str, str], List[str]]:
             f"max_position_notional_usdt({eff['max_position_notional_usdt']}) "
             f"must cover one complete grid ({grid_notional})"
         )
-    if eff["take_profit"] < 0:
-        errors.append(f"take_profit must be >= 0 (0 disables maker tp hedge), got {eff['take_profit']}")
+    if not 0 < eff["take_profit"] < 1:
+        errors.append(f"take_profit must be in (0,1), got {eff['take_profit']}")
     if eff["reward_risk_ratio"] <= 0:
         errors.append(f"reward_risk_ratio must be positive, got {eff['reward_risk_ratio']}")
+    elif eff["take_profit"] / eff["reward_risk_ratio"] >= 1:
+        errors.append(
+            "take_profit/reward_risk_ratio must be < 1, got "
+            f"tp={eff['take_profit']} rr={eff['reward_risk_ratio']}"
+        )
     if eff["trailing_stop_enabled"]:
         for name in ("trailing_stop_trigger_step", "trailing_stop_move_step"):
             if eff[name] <= 0:
                 errors.append(f"{name} must be positive when trailing_stop_enabled, got {eff[name]}")
+        if eff["trailing_stop_move_step"] >= eff["trailing_stop_trigger_step"]:
+            errors.append(
+                "trailing_stop_move_step must be < trailing_stop_trigger_step, got "
+                f"move={eff['trailing_stop_move_step']} trigger={eff['trailing_stop_trigger_step']}"
+            )
     if eff["max_holding_seconds"] < 0:
         errors.append(f"max_holding_seconds cannot be negative (0 disables), got {eff['max_holding_seconds']}")
 

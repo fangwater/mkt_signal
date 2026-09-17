@@ -1,5 +1,5 @@
 # Raw 1-minute notebook factors exposed as one ModelMsg stream per factor.
-# score = raw factor value; score_quantile = rolling percentile rank.
+# score = raw factor value; decision thresholds are exact rolling q90/q10.
 [tlen_server]
 # The deployed JP environment reaches its host-local TLen service through this loopback URL.
 base_url = "http://127.0.0.1:6322"
@@ -10,13 +10,16 @@ symbol_reload_secs = 180
 window_size = 2880
 min_samples = 1440
 
-# The sole input for this 1m publisher. At startup it replays retained
-# PeriodMessage records, publishes the resulting ModelMsg records, then keeps
-# consuming the same Kafka stream. It never subscribes to current IPC trade-flow.
+# The two inputs for this 1m publisher. At startup it replays retained
+# PeriodMessage records, joins futures factors with spot NQ by symbol/bar,
+# publishes ModelMsg records, then keeps consuming both Kafka streams. It never
+# subscribes to current IPC trade-flow.
 [kafka]
-lookback_secs = 172800
+lookback_secs = 259200
 catchup_timeout_secs = 1800
-topics = ["binance-futures"]
+factor_topic = "binance-futures"
+nq_topic = "binance-spot"
+topics = ["binance-futures", "binance-spot"]
 brokers = "156.231.137.189:1501"
 group_id = "intra_factor_model_1m"
 client_id = "intra_factor_model_1m"

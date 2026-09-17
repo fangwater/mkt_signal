@@ -807,6 +807,19 @@ struct CtaRuleSymbolState {
     last_open_emit_us: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CtaDecisionEvidence {
+    factor_ts_ms: i64,
+    score: f64,
+    score_quantile: Option<f64>,
+    long_threshold: f64,
+    short_threshold: f64,
+    filter_long_value: Option<f64>,
+    filter_long_threshold: Option<f64>,
+    filter_short_value: Option<f64>,
+    filter_short_threshold: Option<f64>,
+}
+
 struct CtaShell {
     pub(crate) runtime: ArbShellRuntime,
     /// (rule_id, open_symbol_key) -> 状态。rule 集合热更时保留，
@@ -1826,8 +1839,7 @@ fn drive_cta_decision(
     let mut emitted: Option<SignalType> = None;
     // spread 撤单为 symbol+side 级广播（strategy_id=0）；同次决策内按方向去重。
     let mut cancel_sides: Vec<Side> = Vec::new();
-    // (rule_idx, side, score_qtl)
-    let mut pending_opens: Vec<(usize, Side, f64)> = Vec::new();
+    let mut pending_opens: Vec<(usize, Side, CtaDecisionEvidence)> = Vec::new();
 
     for (rule_idx, rule) in rules.iter().enumerate() {
         if !rule.enabled {
@@ -1845,13 +1857,56 @@ fn drive_cta_decision(
         if !lookup.subscribed || !lookup.score_ready {
             continue;
         }
-        let Some(score_qtl) = lookup.score_quantile.filter(|v| v.is_finite()) else {
+        let Some(score) = lookup.score.filter(|v| v.is_finite()) else {
             continue;
+        };
+        let (Some(long_threshold), Some(short_threshold)) = (
+            lookup.score_long_threshold.filter(|v| v.is_finite()),
+            lookup.score_short_threshold.filter(|v| v.is_finite()),
+        ) else {
+            continue;
+        };
+        if rule.nq_change_enabled && !lookup.filter_ready {
+            continue;
+        }
+        let decision_due_ms = lookup
+            .score_ts_ms
+            .saturating_add(rule.signal_delay_seconds.saturating_mul(1_000));
+        let now_ms = now_us.div_euclid(1_000);
+        if lookup.score_ts_ms <= 0 || now_ms < decision_due_ms {
+            continue;
+        }
+        if now_ms.saturating_sub(lookup.score_ts_ms)
+            > rule.max_signal_age_seconds.saturating_mul(1_000)
+        {
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("cta_stale_factor_bar")
+            });
+            continue;
+        }
+        let evidence = CtaDecisionEvidence {
+            factor_ts_ms: lookup.score_ts_ms,
+            score,
+            score_quantile: lookup.score_quantile.filter(|v| v.is_finite()),
+            long_threshold,
+            short_threshold,
+            filter_long_value: lookup.filter_long_value,
+            filter_long_threshold: lookup.filter_long_threshold,
+            filter_short_value: lookup.filter_short_value,
+            filter_short_threshold: lookup.filter_short_threshold,
         };
 
         let state_key = (rule.rule_id.clone(), open_symbol_key.to_string());
         let state = decision.states.entry(state_key).or_default();
-        let vote = rule.vote(score_qtl);
+        let vote = rule.vote(
+            evidence.score,
+            evidence.long_threshold,
+            evidence.short_threshold,
+            evidence.filter_long_value,
+            evidence.filter_long_threshold,
+            evidence.filter_short_value,
+            evidence.filter_short_threshold,
+        );
         let (new_bar, open_side) =
             cta_rule_eval(rule, state, vote, lookup.score_ts_ms, in_dump, now_us);
 
@@ -1891,7 +1946,7 @@ fn drive_cta_decision(
             });
             continue;
         }
-        pending_opens.push((rule_idx, open_side, score_qtl));
+        pending_opens.push((rule_idx, open_side, evidence));
     }
 
     for side in cancel_sides {
@@ -1905,7 +1960,7 @@ fn drive_cta_decision(
         )?;
         emitted = Some(SignalType::ArbCancel);
     }
-    for (rule_idx, side, score_qtl) in pending_opens {
+    for (rule_idx, side, evidence) in pending_opens {
         let rule = &rules[rule_idx];
         if emit_cta_open_signals(
             decision,
@@ -1915,7 +1970,7 @@ fn drive_cta_decision(
             open_venue,
             hedge_venue,
             side,
-            score_qtl,
+            evidence,
             now_us,
         )? {
             if let Some(state) = decision
@@ -1975,6 +2030,19 @@ fn cta_hedge_tp_price(side: Side, entry_price: f64, take_profit: f64) -> f64 {
     }
 }
 
+fn cta_hedge_order_meets_minimums(qty: f64, price: f64, min_qty: f64, min_notional: f64) -> bool {
+    qty.is_finite()
+        && qty > 0.0
+        && price.is_finite()
+        && price > 0.0
+        && min_qty.is_finite()
+        && min_qty > 0.0
+        && min_notional.is_finite()
+        && min_notional > 0.0
+        && qty + 1e-12 >= min_qty
+        && qty * price + 1e-12 >= min_notional
+}
+
 /// 按 rule.open_offsets 在现货腿发一组网格 maker 挂单。
 /// 档价 = inner * (1 ∓ offset)，inner 为 touch 价（买单取 bid，卖单取 ask）。
 #[allow(clippy::too_many_arguments)]
@@ -1986,7 +2054,7 @@ fn emit_cta_open_signals(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     side: Side,
-    score_qtl: f64,
+    evidence: CtaDecisionEvidence,
     now_us: i64,
 ) -> Result<bool> {
     if !arb_open_legs_tradable(
@@ -2066,7 +2134,7 @@ fn emit_cta_open_signals(
     let from_key = super::common::append_key_value_fields(
         super::common::build_decision_from_key_base(
             now_us,
-            Some(score_qtl),
+            evidence.score_quantile,
             None,
             None,
             None,
@@ -2078,6 +2146,48 @@ fn emit_cta_open_signals(
                 "cta_side",
                 if side == Side::Buy { "long" } else { "short" }.to_string(),
             ),
+            ("cta_factor_ts_ms", evidence.factor_ts_ms.to_string()),
+            ("cta_factor_value", evidence.score.to_string()),
+            (
+                "cta_factor_threshold",
+                if side == Side::Buy {
+                    evidence.long_threshold
+                } else {
+                    evidence.short_threshold
+                }
+                .to_string(),
+            ),
+            (
+                "cta_nq_value",
+                if side == Side::Buy {
+                    evidence.filter_long_value
+                } else {
+                    evidence.filter_short_value
+                }
+                .filter(|value| value.is_finite())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "NA".to_string()),
+            ),
+            (
+                "cta_nq_threshold",
+                if side == Side::Buy {
+                    evidence.filter_long_threshold
+                } else {
+                    evidence.filter_short_threshold
+                }
+                .filter(|value| value.is_finite())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "NA".to_string()),
+            ),
+            ("cta_tp", rule.take_profit.to_string()),
+            ("cta_rr", rule.reward_risk_ratio.to_string()),
+            (
+                "cta_trailing",
+                if rule.trailing_stop_enabled { "1" } else { "0" }.to_string(),
+            ),
+            ("cta_trigger", rule.trailing_stop_trigger_step.to_string()),
+            ("cta_move", rule.trailing_stop_move_step.to_string()),
+            ("cta_max_hold_s", rule.max_holding_seconds.to_string()),
         ],
     );
     let open_order_ttl_us = rule.open_ttl_seconds.saturating_mul(1_000_000);
@@ -2121,7 +2231,7 @@ fn emit_cta_open_signals(
         hedge_symbol,
         side,
         rule.rule_id,
-        score_qtl,
+        evidence.score_quantile.unwrap_or(f64::NAN),
         inner_price,
         rule.open_offsets,
         rule.open_ttl_seconds
@@ -2180,9 +2290,9 @@ fn emit_cta_spread_cancel(
 /// swap 腿、价格锚定 entry*(1±take_profit)、常驻不撤（exp_time=0 → 策略层
 /// 不做超时撤单）。
 ///
-/// 注意：聚合 query 只携带 weighted_inventory_price，多 lot 时用加权均价近似
-/// 锚定（同组网格档差 ≤0.05%，误差可忽略）；精确逐 lot 锚定与
-/// 止损/trailing/max_holding 退出依赖策略层 per-lot 改造（待接）。
+/// 正常 query 绑定一个 opening `open_id`。低于 venue 最小数量/名义时，pre-trade
+/// 可把同方向 dust 与后续 lot 合成可执行数量；`target_open_id` 此时是严格 TP 价格锚点，
+/// 真实逐 lot allocation 仍由 pre-trade 保留。
 fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMsg) {
     let symbol = query.get_symbol().to_uppercase();
     log::info!(
@@ -2208,28 +2318,33 @@ fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMs
         );
         return;
     }
-    let take_profit = ArbDecision::with_state_mut(|arb| {
-        arb.cta_rules
-            .iter()
-            .find(|r| r.enabled)
-            .map(|r| r.take_profit)
-    })
-    .flatten();
-    let Some(take_profit) = take_profit.filter(|v| v.is_finite() && *v > 0.0) else {
+    if query.target_open_id <= 0 {
         log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} due={:.8} reason=no enabled rule with take_profit>0",
+            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} due={:.8} reason=missing target_open_id",
             query.strategy_id,
             symbol,
             query.due_hedge_qty
         );
         return;
-    };
-    let entry_price = query.weighted_inventory_price;
-    if !(entry_price.is_finite() && entry_price > 0.0) {
+    }
+    let take_profit = query.target_take_profit;
+    if !(take_profit.is_finite() && take_profit > 0.0 && take_profit < 1.0) {
         log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} invalid weighted_inventory_price={}",
+            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} open_id={} invalid take_profit={}",
             query.strategy_id,
             symbol,
+            query.target_open_id,
+            take_profit
+        );
+        return;
+    }
+    let entry_price = query.target_entry_price;
+    if !(entry_price.is_finite() && entry_price > 0.0) {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} open_id={} invalid target_entry_price={}",
+            query.strategy_id,
+            symbol,
+            query.target_open_id,
             entry_price
         );
         return;
@@ -2256,8 +2371,20 @@ fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMs
         &runtime.hedge_min_qty_table
     };
     let symbol_key = min_qty_symbol_key(hedge_venue, &symbol);
-    let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
-    let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+    let (Some(price_tick), Some(qty_tick), Some(min_qty), Some(min_notional)) = (
+        table.price_tick(&symbol_key),
+        table.step_size(&symbol_key),
+        table.min_qty(&symbol_key),
+        table.min_notional(&symbol_key),
+    ) else {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge skipped because complete order constraints are unavailable strategy_id={} symbol={} venue={:?}",
+            query.strategy_id,
+            symbol,
+            hedge_venue
+        );
+        return;
+    };
     let Some(price_qv) = QuantizedValue::encode_floor(tp_price, price_tick) else {
         log::warn!(
             "{CTA_SHELL_NAME}: cta hedge tp price qv invalid strategy_id={} symbol={} price={:.8} tick={:.8}",
@@ -2278,6 +2405,25 @@ fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMs
         );
         return;
     };
+    let aligned_price = price_qv.get_val();
+    let aligned_qty = amount_qv.get_val();
+    if price_qv.get_count() <= 0
+        || amount_qv.get_count() <= 0
+        || !cta_hedge_order_meets_minimums(aligned_qty, aligned_price, min_qty, min_notional)
+    {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge quantized order below venue minimum strategy_id={} symbol={} qty={:.8} price={:.8} min_qty={:.8} min_notional={:.8} qty_tick={:.8} price_tick={:.8}",
+            query.strategy_id,
+            symbol,
+            aligned_qty,
+            aligned_price,
+            min_qty,
+            min_notional,
+            qty_tick,
+            price_tick
+        );
+        return;
+    }
 
     let mut ctx = ArbHedgeCtx::new();
     ctx.strategy_id = query.strategy_id;
@@ -2300,8 +2446,8 @@ fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMs
     ctx.request_seq = query.request_seq;
     ctx.set_from_key(
         format!(
-            "{}:cta_tp:tp={:.6}:entry={:.8}",
-            ctx.signal_ts, take_profit, entry_price
+            "{}:cta_tp:open_id={}:tp={:.6}:entry={:.8}",
+            ctx.signal_ts, query.target_open_id, take_profit, entry_price
         )
         .into_bytes(),
     );
@@ -2322,9 +2468,10 @@ fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMs
         return;
     }
     log::info!(
-        "{CTA_SHELL_NAME}: cta TP hedge reply strategy_id={} symbol={} side={:?} qty={:.8} tp_price={:.8} entry={:.8} tp={:.6} request_seq={} net_qty={:.8} due_hedge_qty={:.8}",
+        "{CTA_SHELL_NAME}: cta TP hedge reply strategy_id={} symbol={} open_id={} side={:?} qty={:.8} tp_price={:.8} entry={:.8} tp={:.6} request_seq={} net_qty={:.8} due_hedge_qty={:.8}",
         query.strategy_id,
         symbol,
+        query.target_open_id,
         hedge_side,
         ctx.amount_value(),
         ctx.price_value(),
@@ -7214,6 +7361,15 @@ mod cta_decision_tests {
         // spot 多 → swap 卖单挂在 entry*(1+tp)；spot 空 → swap 买挂在 entry*(1-tp)
         assert!((cta_hedge_tp_price(Side::Sell, 100.0, 0.005) - 100.5).abs() < 1e-12);
         assert!((cta_hedge_tp_price(Side::Buy, 100.0, 0.005) - 99.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hedge_tp_minimums_use_quantized_qty_and_price() {
+        assert!(cta_hedge_order_meets_minimums(0.05, 100.0, 0.001, 5.0));
+        assert!(!cta_hedge_order_meets_minimums(
+            0.0009, 10_000.0, 0.001, 5.0
+        ));
+        assert!(!cta_hedge_order_meets_minimums(0.049, 100.0, 0.001, 5.0));
     }
 
     #[test]

@@ -68,6 +68,33 @@ impl ArbOpenStrategy {
         }
     }
 
+    pub(crate) fn is_cta_open(&self) -> bool {
+        self.open_state
+            .from_key
+            .windows(b":cta_rule=".len())
+            .any(|window| window == b":cta_rule=")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_open_index_for_test(
+        &mut self,
+        symbol: &str,
+        side: order_common::Side,
+        client_order_id: i64,
+        price_qv: signal_common::tick_math::QuantizedValue,
+        cta: bool,
+    ) {
+        self.open_state.open_symbol = symbol.to_string();
+        self.open_state.order.open_side = Some(side);
+        self.open_state.order.open_order_id = client_order_id;
+        self.open_state.price_qv = price_qv;
+        self.open_state.from_key = if cta {
+            b"1:cta_rule=test".to_vec()
+        } else {
+            b"1:normal_open=test".to_vec()
+        };
+    }
+
     pub fn handle_arb_open_view_with_symbol(
         &mut self,
         ctx: ArbOpenCtxView<'_>,
@@ -220,6 +247,7 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     fn hedge_on_incremental_open_fill(&self) -> bool {
         arb_open_partial_hedge_enabled()
+            || self.is_cta_open()
             || self.open_strategy_symbol().is_some_and(|symbol| {
                 crate::pre_trade::params_load::PreTradeParamsLoader::instance()
                     .intra_trailing_stop_for_symbol(symbol)
@@ -405,6 +433,13 @@ mod tests {
             strategy.hedge_on_incremental_open_fill(),
             super::arb_open_partial_hedge_enabled()
         );
+    }
+
+    #[test]
+    fn cta_open_always_tracks_actual_partial_fill_time() {
+        let mut strategy = ArbOpenStrategy::new(1);
+        strategy.open_state.from_key = b"1:cta_rule=baseline_035:cta_tp=0.005".to_vec();
+        assert!(strategy.hedge_on_incremental_open_fill());
     }
 
     #[test]

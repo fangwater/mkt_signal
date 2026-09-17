@@ -181,7 +181,7 @@ target_executables=(
   "$target/trade_engine"
   "$target/persist_manager"
 )
-config_server="$target/scripts/intra_config_server.py"
+config_server="$target/scripts/cta_config_server.py"
 found=0
 
 while read -r pid args; do
@@ -231,6 +231,7 @@ LOCAL_RELATIVE=(
   "scripts/sync_cta_rules.py"
   "scripts/print_cta_rules.py"
   "intra_scripts/sync_intra_risk_params.py"
+  "intra_scripts/sync_cta_risk_params.py"
   "intra_scripts/sync_intra_strategy_params.py"
   "intra_scripts/sync_intra_funding_thresholds.py"
   "intra_scripts/sync_intra_symbol_lists.py"
@@ -271,6 +272,7 @@ UPLOAD_NAMES=(
   "sync_cta_rules.py"
   "print_cta_rules.py"
   "sync_intra_risk_params.py"
+  "sync_cta_risk_params.py"
   "sync_intra_strategy_params.py"
   "sync_intra_funding_thresholds.py"
   "sync_intra_symbol_lists.py"
@@ -438,6 +440,7 @@ publish_file cta_config_server.py scripts/cta_config_server.py
 publish_file sync_cta_rules.py scripts/sync_cta_rules.py
 publish_file print_cta_rules.py scripts/print_cta_rules.py
 publish_file sync_intra_risk_params.py scripts/sync_intra_risk_params.py
+publish_file sync_cta_risk_params.py scripts/sync_cta_risk_params.py
 publish_file sync_intra_strategy_params.py scripts/sync_intra_strategy_params.py
 publish_file sync_intra_funding_thresholds.py scripts/sync_intra_funding_thresholds.py
 publish_file sync_intra_symbol_lists.py scripts/sync_intra_symbol_lists.py

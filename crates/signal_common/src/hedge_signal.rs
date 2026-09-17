@@ -29,6 +29,13 @@ fn write_u64_to_slice(out: &mut [u8], offset: usize, value: u64) -> Option<()> {
     Some(())
 }
 
+fn write_i64_to_slice(out: &mut [u8], offset: usize, value: i64) -> Option<()> {
+    let end = offset.checked_add(8)?;
+    out.get_mut(offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
 fn write_f64_to_slice(out: &mut [u8], offset: usize, value: f64) -> Option<()> {
     let end = offset.checked_add(8)?;
     out.get_mut(offset..end)?
@@ -695,6 +702,13 @@ pub struct ArbHedgeSignalQueryMsg {
 
     /// Pre-trade owned hedge request sequence.
     pub request_seq: u64,
+
+    /// CTA TP price anchor. Normally this is the exact lot binding; for a sub-minimum
+    /// multi-lot batch it identifies the lot that supplies the strictest TP price.
+    /// Zero means an aggregate non-CTA query.
+    pub target_open_id: i64,
+    pub target_entry_price: f64,
+    pub target_take_profit: f64,
 }
 
 impl ArbHedgeSignalQueryMsg {
@@ -721,7 +735,22 @@ impl ArbHedgeSignalQueryMsg {
             symbol_exposure_u,
             weighted_inventory_price,
             request_seq,
+            target_open_id: 0,
+            target_entry_price: 0.0,
+            target_take_profit: 0.0,
         }
+    }
+
+    pub fn with_target_lot(
+        mut self,
+        target_open_id: i64,
+        target_entry_price: f64,
+        target_take_profit: f64,
+    ) -> Self {
+        self.target_open_id = target_open_id;
+        self.target_entry_price = target_entry_price;
+        self.target_take_profit = target_take_profit;
+        self
     }
 
     pub fn get_symbol(&self) -> String {
@@ -736,7 +765,7 @@ impl ArbHedgeSignalQueryMsg {
     }
 
     pub fn encoded_len(&self) -> usize {
-        4 + 1 + bytes_helper::fixed_bytes_len(&self.symbol) + 8 * 6
+        4 + 1 + bytes_helper::fixed_bytes_len(&self.symbol) + 8 * 9
     }
 
     pub fn write_to(&self, buf: &mut BytesMut) {
@@ -748,6 +777,9 @@ impl ArbHedgeSignalQueryMsg {
         buf.put_f64_le(self.symbol_exposure_u);
         buf.put_f64_le(self.weighted_inventory_price);
         buf.put_u64_le(self.request_seq);
+        buf.put_i64_le(self.target_open_id);
+        buf.put_f64_le(self.target_entry_price);
+        buf.put_f64_le(self.target_take_profit);
     }
 
     pub fn write_to_slice(&self, out: &mut [u8]) -> Option<()> {
@@ -767,6 +799,12 @@ impl ArbHedgeSignalQueryMsg {
         write_f64_to_slice(out, offset, self.weighted_inventory_price)?;
         offset += 8;
         write_u64_to_slice(out, offset, self.request_seq)?;
+        offset += 8;
+        write_i64_to_slice(out, offset, self.target_open_id)?;
+        offset += 8;
+        write_f64_to_slice(out, offset, self.target_entry_price)?;
+        offset += 8;
+        write_f64_to_slice(out, offset, self.target_take_profit)?;
         Some(())
     }
 
@@ -776,10 +814,9 @@ impl ArbHedgeSignalQueryMsg {
         }
         let strategy_id = bytes.get_i32_le();
         let symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 8 * 6 {
+        if bytes.remaining() < 8 * 9 {
             return Err(
-                "insufficient bytes for net/due/pending/symbol_exposure_u/weighted_inventory_price/request_seq"
-                    .to_string(),
+                "insufficient bytes for aggregate hedge query and exact CTA lot fields".to_string(),
             );
         }
         let net_qty = bytes.get_f64_le();
@@ -788,6 +825,9 @@ impl ArbHedgeSignalQueryMsg {
         let symbol_exposure_u = bytes.get_f64_le();
         let weighted_inventory_price = bytes.get_f64_le();
         let request_seq = bytes.get_u64_le();
+        let target_open_id = bytes.get_i64_le();
+        let target_entry_price = bytes.get_f64_le();
+        let target_take_profit = bytes.get_f64_le();
         Ok(Self {
             strategy_id,
             symbol,
@@ -797,13 +837,16 @@ impl ArbHedgeSignalQueryMsg {
             symbol_exposure_u,
             weighted_inventory_price,
             request_seq,
+            target_open_id,
+            target_entry_price,
+            target_take_profit,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbHedgeCtx, MmHedgeCtx, MmHedgeSignalQueryMsg};
+    use super::{ArbHedgeCtx, ArbHedgeSignalQueryMsg, MmHedgeCtx, MmHedgeSignalQueryMsg};
     use crate::common::{SignalBytes, TradingLeg};
     use crate::tick_math::QuantizedValue;
     use order_common::Side;
@@ -830,6 +873,26 @@ mod tests {
         assert!((parsed.period_buy_qty - 1.0).abs() < 1e-12);
         assert!((parsed.weighted_inventory_price - 101.5).abs() < 1e-12);
         assert_eq!(parsed.request_seq, 7);
+    }
+
+    #[test]
+    fn arb_hedge_query_roundtrip_preserves_exact_cta_lot() {
+        let msg = ArbHedgeSignalQueryMsg::new(17, "BTCUSDT", 1.5, 0.75, 1.25, 10_000.0, 100.5, 9)
+            .with_target_lot(1234, 100.25, 0.005);
+        let parsed = ArbHedgeSignalQueryMsg::from_bytes(msg.to_bytes()).unwrap();
+        assert_eq!(parsed.strategy_id, 17);
+        assert_eq!(parsed.get_symbol(), "BTCUSDT");
+        assert_eq!(parsed.request_seq, 9);
+        assert_eq!(parsed.target_open_id, 1234);
+        assert_eq!(parsed.target_entry_price, 100.25);
+        assert_eq!(parsed.target_take_profit, 0.005);
+
+        let mut raw = vec![0_u8; msg.encoded_len()];
+        msg.write_to_slice(&mut raw).unwrap();
+        let parsed = ArbHedgeSignalQueryMsg::from_bytes(bytes::Bytes::from(raw)).unwrap();
+        assert_eq!(parsed.target_open_id, 1234);
+        assert_eq!(parsed.target_entry_price, 100.25);
+        assert_eq!(parsed.target_take_profit, 0.005);
     }
 
     #[test]

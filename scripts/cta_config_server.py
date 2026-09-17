@@ -7,7 +7,7 @@
   - CTA 信号           -> {env}:cta_rules                        (单 JSON 对象：model/分位/方向)
   - Symbol Lists       -> {env}:cta_trade_symbols:{exchange}     (单一交易宇宙，无正反概念)
                          {env}:cta_dump_symbols:{exchange}       (平仓/禁用列表)
-  - Strategy Params    -> cta_strategy_params_{open}_{hedge}     (hash：网格执行参数)
+  - Strategy Params    -> {env}:cta_strategy_params:{open}:{hedge} (hash：网格执行参数)
   - Spread Thresholds  -> cta_spread_thresholds_config_{o}_{h}   (JSON mapping：阈值字段→rolling 分位)
                          cta_spread_thresholds_{o}_{h}           (hash：同步物化的 per-symbol 阈值)
   - Risk Params        -> {env}:{open}:{hedge}:pre_trade_risk_params (hash, pre_trade 读取)
@@ -32,10 +32,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+INTRA_SCRIPTS_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "intra_scripts"))
+if os.path.isdir(INTRA_SCRIPTS_DIR):
+    sys.path.insert(0, INTRA_SCRIPTS_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
 import intra_config_server as base  # noqa: E402  (schema 常量与通用 helper 的单一来源)
 import sync_cta_rules  # noqa: E402  (cta 信号/执行字段校验，与 Rust loader 同规则)
+import sync_cta_risk_params as cta_risk_defaults  # noqa: E402
 
 spread_sync = None  # noqa: E402
 try:
@@ -146,7 +150,7 @@ INDEX_HTML_TEMPLATE = (
         </div>
       </div>
       <div class="hint">
-        hash key: <code>cta_strategy_params_{open_venue}_{hedge_venue}</code>，trade_signal 60s 热加载。
+        hash key: <code>{env}:cta_strategy_params:{open_venue}:{hedge_venue}</code>，trade_signal 60s 热加载。
         全部为网格报单执行参数（open_offsets 档位、单笔名义、挂单TTL、持仓上限、TP/trailing、最长持仓）。
       </div>
       <div id="strategy-table" class="kv-table"></div>
@@ -529,8 +533,12 @@ def current_env_name() -> str:
     return env
 
 
-def strategy_params_key(open_venue: str, hedge_venue: str) -> str:
-    return f"cta_strategy_params_{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
+def strategy_params_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    env = env_name.strip().rstrip(":").lower()
+    return (
+        f"{env}:cta_strategy_params:"
+        f"{open_venue.strip().lower()}:{hedge_venue.strip().lower()}"
+    )
 
 
 def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta") -> str:
@@ -627,23 +635,35 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
     "application": "each_bar",
     "long_quantile": 0.9,
     "short_quantile": 0.1,
+    "frequency_seconds": 60,
+    "rolling_window": 2880,
+    "rolling_min_samples": 1440,
+    "signal_delay_seconds": 1,
+    "nq_change_enabled": True,
+    "max_signal_age_seconds": 120,
     "cooldown_seconds": 0,
 }
 _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
     "model_service": "因子信号流 service（model_output/<service>，必填），默认 intra-binance-futures-1m-baseline_035",
     "enabled": "false = 不产生任何信号（配置保留）",
-    "trade_sides": "方向生效：both 多空都做 / long 只多 / short 只空",
-    "application": "each_bar 每根 bar 评估 / on_change 仅方向翻转时",
-    "long_quantile": "score 分位 > 此值做多",
-    "short_quantile": "score 分位 < 此值做空（须 < long_quantile）",
+    "trade_sides": "入选回测固定 both（多空都做）",
+    "application": "入选回测固定 each_bar（每根 bar 评估）",
+    "long_quantile": "raw 因子 q90 契约（固定 0.9，实际比较发布端线性分位阈值）",
+    "short_quantile": "raw 因子 q10 契约（固定 0.1，实际比较发布端线性分位阈值）",
+    "frequency_seconds": "回测 bar 周期（固定 60）",
+    "rolling_window": "raw 因子滚动窗口（固定 2880，当前值计入）",
+    "rolling_min_samples": "raw 因子最小有效样本数（固定 1440）",
+    "signal_delay_seconds": "bar 右端时间后的决策延迟（固定 1 秒）",
+    "nq_change_enabled": "现货 BBO NQ 过滤（选中规则固定开启）",
+    "max_signal_age_seconds": "超过该秒数的因子 bar 不再开仓（至少 60）",
     "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
 }
 _CTA_SIGNAL_ORDER: List[str] = list(_CTA_SIGNAL_DEFAULTS.keys())
 _CTA_SIGNAL_SELECTS: Dict[str, List[str]] = {
-    "trade_sides": ["both", "long", "short"],
-    "application": ["each_bar", "on_change"],
+    "trade_sides": ["both"],
+    "application": ["each_bar"],
 }
-_CTA_SIGNAL_BOOLS: List[str] = ["enabled"]
+_CTA_SIGNAL_BOOLS: List[str] = ["enabled", "nq_change_enabled"]
 
 # strategy_params hash 只承载 cta 执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES
 # 全集）——Rust CtaExecOverrides 加载时覆盖到规则上，与 cta_rules 对象同名字段兼容。
@@ -652,7 +672,7 @@ _CTA_EXEC_COMMENTS: Dict[str, str] = {
     "open_offsets": "网格档位价格偏移，JSON 数组或逗号分隔（0..0.01），档数=个数",
     "open_ttl_seconds": "开仓挂单 TTL（秒）",
     "max_position_notional_usdt": "单向名义上限（USDT），须 ≥ 档数×单档名义",
-    "take_profit": "swap 腿 maker 止盈偏移（价格分数）；0=不挂止盈",
+    "take_profit": "swap 腿逐 lot maker 止盈偏移（价格分数，必须在 0..1）",
     "reward_risk_ratio": "止盈/止损比：stop_loss = take_profit / rr",
     "trailing_stop_enabled": "trailing stop 开关（true/false）",
     "trailing_stop_trigger_step": "trailing 触发步进（价格分数）",
@@ -670,6 +690,12 @@ _CTA_EXEC_COMMENTS: Dict[str, str] = {
 #   enable_tlen_cancel / tlen_cancel_freq_ms —— tlen 衰减撤单；
 #                          CtaShell 对 cancel trigger/candidate 显式 no-op
 _CTA_STRATEGY_KEYS: Tuple[str, ...] = tuple(sync_cta_rules.EXEC_FIELD_TYPES.keys())
+
+# CTA live risk deliberately tightens the 10000U research position contract.
+# Keep this override local so ordinary intra environments retain their defaults.
+_CTA_RISK_DEFAULTS: Dict[str, Any] = dict(cta_risk_defaults.RISK_PARAMS)
+_CTA_RISK_COMMENTS: Dict[str, str] = dict(cta_risk_defaults.PARAM_COMMENTS)
+_CTA_RISK_ORDER: List[str] = list(cta_risk_defaults.PARAM_PRINT_ORDER)
 
 
 def _cta_strategy_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
@@ -705,19 +731,19 @@ def render_index_html(
         "defaults": {
             "signal_params": dict(_CTA_SIGNAL_DEFAULTS),
             "strategy_params": strategy_defaults,
-            "risk_params": dict(base.DEFAULT_RISK_PARAMS),
+            "risk_params": dict(_CTA_RISK_DEFAULTS),
             "spread_mapping": dict(_CTA_SPREAD_DEFAULTS),
         },
         "comments": {
             "signal_params": dict(_CTA_SIGNAL_COMMENTS),
             "strategy_params": strategy_comments,
-            "risk_params": dict(base.RISK_PARAM_COMMENTS),
+            "risk_params": dict(_CTA_RISK_COMMENTS),
             "spread_mapping": dict(_CTA_SPREAD_COMMENTS),
         },
         "order": {
             "signal": _CTA_SIGNAL_ORDER,
             "strategy": strategy_order,
-            "risk": base.RISK_PARAM_ORDER,
+            "risk": _CTA_RISK_ORDER,
             "spread": _CTA_SPREAD_ORDER,
         },
         "selects": {"signal": _CTA_SIGNAL_SELECTS},
@@ -850,7 +876,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = strategy_params_key(open_venue, hedge_venue)
+            key = strategy_params_key(current_env_name(), open_venue, hedge_venue)
             raw_values = base.read_hash(self.server.context.redis_client, key)
             st_defaults, st_comments, st_order = _cta_strategy_schema()
             values, stale_values = base.filter_mapping_by_schema(
@@ -879,9 +905,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             raw_values = base.read_hash(self.server.context.redis_client, key)
             values, stale_values = base.filter_mapping_by_schema(
                 raw_values,
-                base.DEFAULT_RISK_PARAMS,
-                base.RISK_PARAM_COMMENTS,
-                base.RISK_PARAM_ORDER,
+                _CTA_RISK_DEFAULTS,
+                _CTA_RISK_COMMENTS,
+                _CTA_RISK_ORDER,
             )
             if not values and not raw_values:
                 self._send_error(404, f"risk params not found: {key}")
@@ -1017,7 +1043,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             values = payload.get("values") or {}
-            key = strategy_params_key(open_venue, hedge_venue)
+            key = strategy_params_key(current_env_name(), open_venue, hedge_venue)
             st_defaults, st_comments, st_order = _cta_strategy_schema()
             try:
                 mapping = base.sanitize_mapping_by_schema(
@@ -1105,9 +1131,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 mapping = base.sanitize_mapping_by_schema(
                     values,
-                    base.DEFAULT_RISK_PARAMS,
-                    base.RISK_PARAM_COMMENTS,
-                    base.RISK_PARAM_ORDER,
+                    _CTA_RISK_DEFAULTS,
+                    _CTA_RISK_COMMENTS,
+                    _CTA_RISK_ORDER,
                 )
                 mapping = base.normalize_unimmr_control_lines(mapping)
                 mapping = base.normalize_intra_risk_limits(exchange, mapping)

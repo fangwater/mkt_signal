@@ -179,6 +179,7 @@ pub trait OrderTerminalRecorder {
         price: f64,
         close_ts: i64,
         open_client_order_id: i64,
+        open_from_key: &[u8],
     ) -> bool;
 
     fn record_hedge_order_terminal(
@@ -779,6 +780,49 @@ impl StrategyManager {
             .collect()
     }
 
+    /// Returns active CTA opening orders for one symbol and side. CTA direction
+    /// arbitration must ignore unrelated ArbOpen strategies sharing the process.
+    pub fn cta_open_strategy_ids_by_symbol_and_side(&self, symbol: &str, side: Side) -> Vec<i32> {
+        self.arb_open_strategy_ids_by_symbol_and_side(symbol, side)
+            .into_iter()
+            .filter(|strategy_id| {
+                self.strategies
+                    .get(strategy_id)
+                    .and_then(|strategy| strategy.as_any().downcast_ref::<ArbOpenStrategy>())
+                    .is_some_and(ArbOpenStrategy::is_cta_open)
+            })
+            .collect()
+    }
+
+    /// A CTA symbol may have opening makers in only one direction. An opposite
+    /// signal first cancels every maker from the old direction; the new signal
+    /// is dropped until those orders reach terminal state and leave the index.
+    pub fn cancel_opposite_cta_opening_makers(
+        &mut self,
+        symbol: &str,
+        incoming_side: Side,
+        trigger_ts: i64,
+    ) -> usize {
+        let old_side = match incoming_side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+        let strategy_ids = self.cta_open_strategy_ids_by_symbol_and_side(symbol, old_side);
+        let mut canceled = 0usize;
+        for strategy_id in strategy_ids {
+            if self.cancel_arb_open_by_id_with_signal(
+                strategy_id,
+                old_side,
+                "cta_opposite_direction",
+                trigger_ts,
+                "ArbCancel",
+            ) {
+                canceled = canceled.saturating_add(1);
+            }
+        }
+        canceled
+    }
+
     /// 查找所有 ArbOpen 策略 id 及其 open side。
     /// 账户级保证金不足时使用：撤掉当前所有仍在扩张风险的开仓挂单。
     pub fn all_arb_open_strategy_ids_and_sides(&self) -> Vec<(i32, Side)> {
@@ -1070,6 +1114,20 @@ impl StrategyManager {
         None
     }
 
+    pub fn has_opposite_cta_position_for_normalized_symbol(
+        &self,
+        symbol_upper: &str,
+        opening_side: Side,
+    ) -> bool {
+        let Some(id) = self.find_arb_hedge_id_for_normalized_symbol(symbol_upper) else {
+            return false;
+        };
+        self.strategies
+            .get(&id)
+            .and_then(|strategy| strategy.as_any().downcast_ref::<ArbHedgeStrategy>())
+            .is_some_and(|strategy| strategy.has_opposite_cta_position(opening_side))
+    }
+
     /// 确保指定 symbol 存在 Arb 对冲状态策略（symbol 不区分大小写）
     pub fn ensure_arb_hedge_strategy(&mut self, symbol: &str) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
@@ -1185,6 +1243,7 @@ impl StrategyManager {
         price: f64,
         close_ts: i64,
         open_client_order_id: i64,
+        open_from_key: &[u8],
     ) -> bool {
         let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
             return false;
@@ -1203,6 +1262,7 @@ impl StrategyManager {
             price,
             close_ts,
             open_client_order_id,
+            open_from_key,
         )
     }
 
@@ -1406,6 +1466,7 @@ mod tests {
         OrphanSourceKind, QuantizedValueKey, Strategy, StrategyManager, STRATEGY_ID_MASK,
     };
     use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
+    use crate::strategy::arb_open_strategy::ArbOpenStrategy;
     use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecStrategy};
     use crate::strategy::mm_hedge_strategy::MarketMakerHedgeStrategy;
     use order_common::{OrderUpdate, TradeUpdate};
@@ -1667,6 +1728,30 @@ mod tests {
         assert_eq!(
             manager.arb_open_strategy_ids_by_price_qv_and_side("BTCUSDT", qv, Side::Sell),
             vec![12]
+        );
+    }
+
+    #[test]
+    fn cta_open_direction_index_excludes_non_cta_and_other_sides() {
+        let mut manager = StrategyManager::new();
+        let qv = QuantizedValue::from_parts(1, -1, 1_000);
+        for (id, side, cta) in [
+            (41, Side::Sell, true),
+            (42, Side::Sell, false),
+            (43, Side::Buy, true),
+        ] {
+            let mut strategy = ArbOpenStrategy::new(id);
+            strategy.configure_open_index_for_test("btcusdt", side, i64::from(id), qv, cta);
+            manager.insert(Box::new(strategy));
+        }
+
+        assert_eq!(
+            manager.cta_open_strategy_ids_by_symbol_and_side("BTCUSDT", Side::Sell),
+            vec![41]
+        );
+        assert_eq!(
+            manager.cta_open_strategy_ids_by_symbol_and_side("BTC_USDT", Side::Buy),
+            vec![43]
         );
     }
 
