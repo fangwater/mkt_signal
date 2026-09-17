@@ -112,7 +112,6 @@ backward_cancel_mm=spread_50 backward_cancel_mt=askbid_50
 offsets              [0.0, 0.0001, 0.0003, 0.0005]
 notional per level   100 USDT
 maker TTL            120s
-max position         10000 USDT
 ```
 
 spot 成交后，每个 `open_id` 独立持有 entry、数量、成交时间和退出参数：
@@ -141,7 +140,7 @@ spot 成交后，每个 `open_id` 独立持有 entry、数量、成交时间和�
 ### 九条入选规则
 
 公共执行参数均为 `both / each_bar / cooldown=0 / NQ=on`，以及上面的
-四档、100U、TTL 120、max position 10000、max holding 14400。差异如下：
+四档、100U、TTL 120、max holding 14400。差异如下：
 
 | rule / factor | replay parameter_id | TP | RR | trailing trigger | trailing move |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -277,7 +276,6 @@ model_output/intra-binance-futures-1m-baseline_091
 order_notional_usdt=100
 open_offsets=[0.0,0.0001,0.0003,0.0005]
 open_ttl_seconds=120
-max_position_notional_usdt=10000
 take_profit=<规则表>
 reward_risk_ratio=<规则表>
 trailing_stop_enabled=true
@@ -302,10 +300,9 @@ publisher、`trade_signal` 和 `pre_trade` 协调升级，不允许混跑新旧�
 值/阈值及全部退出参数。后续部分成交、maker TP 和保护退出都必须保留该事实链，不能
 在规则热更新后用新参数改写已成交 lot。
 
-`max_position_notional_usdt=10000` 是回测执行参数和网格静态校验。live CTA 的
-pre-trade `max_pos_u` 固定收紧为 `1000U`；该检查只计算已成交仓位，不累计未成交
-maker，因此多档同时成交时允许相对 1000U 有有限超调。这是已接受的 live 风险偏差，
-不改写 research 的 10000U 参数，也不能宣称两者仓位上限完全对齐。
+live CTA 只使用 pre-trade `max_pos_u` 作为仓位名义上限，当前固定为 `1000U`。
+该检查只计算已成交仓位，不累计未成交 maker，因此多档同时成交时允许相对 1000U
+有有限超调。这是已接受的 live 风险偏差。
 CTA 环境初始化风险参数必须使用 `scripts/sync_cta_risk_params.py` 或 CTA config server；
 不得运行普通 intra 的 `sync_intra_risk_params.py`，后者保留 10000U 默认。由于
 env-scoped `max_pos_u_overrides` 命中时优先于基础值，每套 CTA 环境的该覆盖表必须为空，
@@ -365,8 +362,7 @@ binance-cta-b091
    topics 有连续 72h retained 数据、目标 symbol plan 完整、spread q30/q50/q70 已物化；
    每套 env 的 pre-trade risk 必须读回并确认 `max_pos_u=1000`，并确认
    `max_pos_u_overrides` 为空或全部不超过 `1000U`；四档未成交 maker 不计入该上限、
-   同时成交可能有限超调属于已接受偏差，不能只依赖规则对象里的 10000U
-   静态回测参数。
+   同时成交可能有限超调属于已接受偏差。
 
 ## 验收与发布
 

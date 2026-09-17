@@ -657,7 +657,6 @@ _CTA_EXEC_COMMENTS: Dict[str, str] = {
     "order_notional_usdt": "网格单档挂单名义（USDT）",
     "open_offsets": "网格档位价格偏移，JSON 数组或逗号分隔（0..0.01），档数=个数",
     "open_ttl_seconds": "开仓挂单 TTL（秒）",
-    "max_position_notional_usdt": "单向名义上限（USDT），须 ≥ 档数×单档名义",
     "take_profit": "swap 腿逐 lot maker 止盈偏移（价格分数，必须在 0..1）",
     "reward_risk_ratio": "止盈/止损比：stop_loss = take_profit / rr",
     "trailing_stop_enabled": "trailing stop 开关（true/false）",
@@ -677,7 +676,7 @@ _CTA_EXEC_COMMENTS: Dict[str, str] = {
 #                          CtaShell 对 cancel trigger/candidate 显式 no-op
 _CTA_STRATEGY_KEYS: Tuple[str, ...] = tuple(sync_cta_rules.EXEC_FIELD_TYPES.keys())
 
-# CTA live risk deliberately tightens the 10000U research position contract.
+# CTA live risk uses a dedicated 1000U pre-trade limit.
 # Keep this override local so ordinary intra environments retain their defaults.
 _CTA_RISK_DEFAULTS: Dict[str, Any] = dict(cta_risk_defaults.RISK_PARAMS)
 _CTA_RISK_COMMENTS: Dict[str, str] = dict(cta_risk_defaults.PARAM_COMMENTS)

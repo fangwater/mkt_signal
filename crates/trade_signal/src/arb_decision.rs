@@ -7359,17 +7359,4 @@ mod cta_decision_tests {
         ));
         assert!(!cta_hedge_order_meets_minimums(0.049, 100.0, 0.001, 5.0));
     }
-
-    #[test]
-    fn rule_grid_validation_enforces_position_cap() {
-        // 50u × 4 档 = 200 ≤ 500 上限通过；单手×档数超过上限必须拒
-        let ok = CtaRuleSet::parse(
-            r#"[{"rule_id":"r","model_service":"svc","order_notional_usdt":50.0,"open_offsets":[0.0,0.0001,0.0003,0.0005],"max_position_notional_usdt":500.0}]"#,
-        );
-        assert!(ok.is_ok());
-        let bad = CtaRuleSet::parse(
-            r#"[{"rule_id":"r","model_service":"svc","order_notional_usdt":50.0,"open_offsets":[0.0,0.0001,0.0003,0.0005],"max_position_notional_usdt":199.0}]"#,
-        );
-        assert!(bad.is_err());
-    }
 }

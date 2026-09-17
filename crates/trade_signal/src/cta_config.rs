@@ -109,9 +109,6 @@ pub struct CtaRule {
     pub open_offsets: Vec<f64>,
     /// 开仓挂单存活时间（秒）。引擎 `maker_ttl_seconds`。
     pub open_ttl_seconds: i64,
-    /// 单向名义上限（USDT）。引擎 `max_position_notional_usdt`，
-    /// 必须覆盖一整组网格：>= order_notional_usdt * open_offsets.len()。
-    pub max_position_notional_usdt: f64,
     /// swap 腿 maker 止盈偏移（价格分数），必须为正。
     /// 引擎 `take_profit`。
     pub take_profit: f64,
@@ -148,8 +145,6 @@ struct RawCtaRule {
     open_offsets: Option<Vec<f64>>,
     #[serde(default = "default_open_ttl_seconds")]
     open_ttl_seconds: i64,
-    #[serde(default = "default_max_position_notional_usdt")]
-    max_position_notional_usdt: f64,
     #[serde(default = "default_take_profit")]
     take_profit: f64,
     #[serde(default = "default_reward_risk_ratio")]
@@ -174,9 +169,6 @@ fn default_order_notional_usdt() -> f64 {
 }
 fn default_open_ttl_seconds() -> i64 {
     120
-}
-fn default_max_position_notional_usdt() -> f64 {
-    10_000.0
 }
 fn default_take_profit() -> f64 {
     0.005
@@ -208,7 +200,6 @@ fn default_open_offsets() -> Vec<f64> {
 /// （覆盖到 `CtaRule` 执行段；与 RawCtaRule 同名字段一一对应）。
 const CTA_EXEC_FLOAT_FIELDS: &[&str] = &[
     "order_notional_usdt",
-    "max_position_notional_usdt",
     "take_profit",
     "reward_risk_ratio",
     "trailing_stop_trigger_step",
@@ -225,7 +216,6 @@ pub struct CtaExecOverrides {
     order_notional_usdt: Option<f64>,
     open_offsets: Option<Vec<f64>>,
     open_ttl_seconds: Option<i64>,
-    max_position_notional_usdt: Option<f64>,
     take_profit: Option<f64>,
     reward_risk_ratio: Option<f64>,
     trailing_stop_enabled: Option<bool>,
@@ -271,7 +261,6 @@ impl CtaExecOverrides {
                 name if CTA_EXEC_FLOAT_FIELDS.contains(&name) => match value.parse::<f64>() {
                     Ok(v) => match name {
                         "order_notional_usdt" => out.order_notional_usdt = Some(v),
-                        "max_position_notional_usdt" => out.max_position_notional_usdt = Some(v),
                         "take_profit" => out.take_profit = Some(v),
                         "reward_risk_ratio" => out.reward_risk_ratio = Some(v),
                         "trailing_stop_trigger_step" => out.trailing_stop_trigger_step = Some(v),
@@ -396,9 +385,6 @@ impl CtaRule {
             open_ttl_seconds: exec
                 .and_then(|e| e.open_ttl_seconds)
                 .unwrap_or(raw.open_ttl_seconds),
-            max_position_notional_usdt: exec
-                .and_then(|e| e.max_position_notional_usdt)
-                .unwrap_or(raw.max_position_notional_usdt),
             take_profit: exec.and_then(|e| e.take_profit).unwrap_or(raw.take_profit),
             reward_risk_ratio: exec
                 .and_then(|e| e.reward_risk_ratio)
@@ -458,22 +444,6 @@ impl CtaRule {
                 "cta rule '{}' open_ttl_seconds must be positive, got {}",
                 self.rule_id,
                 self.open_ttl_seconds
-            );
-        }
-        // 引擎 ExecutionConfig 校验：max_position 必须覆盖一整组网格。
-        if !self.max_position_notional_usdt.is_finite() || self.max_position_notional_usdt <= 0.0 {
-            bail!(
-                "cta rule '{}' max_position_notional_usdt must be positive finite, got {}",
-                self.rule_id,
-                self.max_position_notional_usdt
-            );
-        }
-        let grid_notional = self.order_notional_usdt * self.open_offsets.len() as f64;
-        if self.max_position_notional_usdt < grid_notional {
-            bail!(
-                "cta rule '{}' max_position_notional_usdt({}) must cover one complete grid ({grid_notional})",
-                self.rule_id,
-                self.max_position_notional_usdt
             );
         }
         if !self.take_profit.is_finite()
@@ -541,7 +511,6 @@ impl CtaRule {
                 || !same_param(self.order_notional_usdt, 100.0)
                 || !offsets_match
                 || self.open_ttl_seconds != 120
-                || !same_param(self.max_position_notional_usdt, 10_000.0)
                 || !same_param(self.take_profit, contract.take_profit)
                 || !same_param(self.reward_risk_ratio, contract.reward_risk_ratio)
                 || !self.trailing_stop_enabled
@@ -727,7 +696,6 @@ mod tests {
         assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
         assert_eq!(rule.open_ttl_seconds, 120);
-        assert_eq!(rule.max_position_notional_usdt, 10_000.0);
         assert_eq!(rule.take_profit, 0.005);
         assert_eq!(rule.reward_risk_ratio, 1.0);
         assert!(rule.trailing_stop_enabled);
@@ -748,7 +716,6 @@ mod tests {
             "order_notional_usdt": 250.0,
             "open_offsets": [0.0, 0.0002],
             "open_ttl_seconds": 60,
-            "max_position_notional_usdt": 5000.0,
             "take_profit": 0.005,
             "reward_risk_ratio": 2.0,
             "trailing_stop_enabled": true,
@@ -762,7 +729,6 @@ mod tests {
         assert!(!rule.allow_long && rule.allow_short);
         assert_eq!(rule.application, CtaApplication::OnChange);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0002]);
-        assert_eq!(rule.max_position_notional_usdt, 5000.0);
         assert_eq!(rule.take_profit, 0.005);
         assert_eq!(rule.reward_risk_ratio, 2.0);
         assert_eq!(rule.trailing_stop_trigger_step, 0.002);
@@ -774,22 +740,13 @@ mod tests {
     #[test]
     fn open_offsets_accepts_decimal_and_scientific_notation() {
         // 运维在 Redis 里写小数（0.0001）或科学计数法（1e-4）都必须解析一致。
-        let raw = r#"[{"rule_id":"r","model_service":"svc","open_offsets":[0.0,0.0001,0.0003,0.0005],"max_position_notional_usdt":10000.0}]"#;
+        let raw =
+            r#"[{"rule_id":"r","model_service":"svc","open_offsets":[0.0,0.0001,0.0003,0.0005]}]"#;
         let dec = CtaRuleSet::parse(raw).unwrap();
-        let raw = r#"[{"rule_id":"r","model_service":"svc","open_offsets":[0.0,1e-4,3e-4,5e-4],"max_position_notional_usdt":10000.0}]"#;
+        let raw = r#"[{"rule_id":"r","model_service":"svc","open_offsets":[0.0,1e-4,3e-4,5e-4]}]"#;
         let sci = CtaRuleSet::parse(raw).unwrap();
         assert_eq!(dec.rules()[0].open_offsets, sci.rules()[0].open_offsets);
         assert_eq!(dec.rules()[0].open_offsets[1], 0.0001);
-    }
-
-    #[test]
-    fn rejects_grid_notional_above_max_position() {
-        // 4 档 × 100u = 400 > 300
-        let raw = r#"[{"rule_id":"r","model_service":"svc","order_notional_usdt":100.0,"open_offsets":[0.0,0.0001,0.0003,0.0005],"max_position_notional_usdt":300.0}]"#;
-        assert!(CtaRuleSet::parse(raw).is_err());
-        // 缩档数后通过
-        let raw = r#"[{"rule_id":"r","model_service":"svc","order_notional_usdt":100.0,"open_offsets":[0.0,0.0001],"max_position_notional_usdt":300.0}]"#;
-        assert!(CtaRuleSet::parse(raw).is_ok());
     }
 
     #[test]
@@ -878,7 +835,6 @@ mod tests {
         params.insert("order_notional_usdt".to_string(), "250".to_string());
         params.insert("open_offsets".to_string(), "[0.0, 0.0002]".to_string());
         params.insert("open_ttl_seconds".to_string(), "60".to_string());
-        params.insert("max_position_notional_usdt".to_string(), "5000".to_string());
         params.insert("take_profit".to_string(), "0.005".to_string());
         params.insert("trailing_stop_enabled".to_string(), "false".to_string());
         let exec = CtaExecOverrides::from_strategy_params(&params, "test");
@@ -887,7 +843,6 @@ mod tests {
         assert_eq!(rule.order_notional_usdt, 250.0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0002]);
         assert_eq!(rule.open_ttl_seconds, 60);
-        assert_eq!(rule.max_position_notional_usdt, 5000.0);
         assert_eq!(rule.take_profit, 0.005);
         assert!(!rule.trailing_stop_enabled);
     }
@@ -914,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_publisher_owned_signal_fields() {
+    fn rejects_removed_fields() {
         for field in [
             r#""long_quantile":0.9"#,
             r#""short_quantile":0.1"#,
@@ -923,6 +878,7 @@ mod tests {
             r#""rolling_min_samples":1440"#,
             r#""signal_delay_seconds":1"#,
             r#""max_signal_age_seconds":120"#,
+            r#""max_position_notional_usdt":10000"#,
         ] {
             let raw = format!(r#"{{"model_service":"svc",{field}}}"#);
             assert!(CtaRuleSet::parse(&raw).is_err(), "field={field}");

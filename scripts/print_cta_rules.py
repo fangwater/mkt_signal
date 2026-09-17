@@ -65,8 +65,7 @@ def print_rule(index: int, rule: dict) -> None:
         "    open grid:                "
         f"offsets={_fmt(rule.get('open_offsets'), '[0.0, 0.0001, 0.0003, 0.0005]')} "
         f"notional={_fmt(rule.get('order_notional_usdt'), 100.0)}u "
-        f"ttl={_fmt(rule.get('open_ttl_seconds'), 120)}s "
-        f"max_pos={_fmt(rule.get('max_position_notional_usdt'), 10000.0)}u"
+        f"ttl={_fmt(rule.get('open_ttl_seconds'), 120)}s"
     )
     tp = rule.get("take_profit", 0.005)
     rr = rule.get("reward_risk_ratio", 1.0)
@@ -136,7 +135,7 @@ def main() -> int:
     strat_key = f"{env_name}:cta_strategy_params:{open_venue}:{hedge_venue}"
     exec_fields = (
         "order_notional_usdt", "open_offsets", "open_ttl_seconds",
-        "max_position_notional_usdt", "take_profit", "reward_risk_ratio",
+        "take_profit", "reward_risk_ratio",
         "trailing_stop_enabled", "trailing_stop_trigger_step",
         "trailing_stop_move_step", "max_holding_seconds",
     )

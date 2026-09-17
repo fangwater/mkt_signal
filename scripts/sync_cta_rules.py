@@ -51,7 +51,6 @@ ALLOWED_FIELDS = {
     "order_notional_usdt",
     "open_offsets",
     "open_ttl_seconds",
-    "max_position_notional_usdt",
     "take_profit",
     "reward_risk_ratio",
     "trailing_stop_enabled",
@@ -78,7 +77,6 @@ EXEC_FIELD_TYPES: Dict[str, str] = {
     "order_notional_usdt": "float",
     "open_offsets": "offsets",
     "open_ttl_seconds": "int",
-    "max_position_notional_usdt": "float",
     "take_profit": "float",
     "reward_risk_ratio": "float",
     "trailing_stop_enabled": "bool",
@@ -90,7 +88,6 @@ EXEC_FIELD_DEFAULTS: Dict[str, Any] = {
     "order_notional_usdt": 100.0,
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
     "open_ttl_seconds": 120,
-    "max_position_notional_usdt": 10000.0,
     "take_profit": 0.005,
     "reward_risk_ratio": 1.0,
     "trailing_stop_enabled": True,
@@ -114,7 +111,6 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "order_notional_usdt": 100.0,
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
     "open_ttl_seconds": 120,
-    "max_position_notional_usdt": 10000.0,
     "take_profit": 0.005,
     "reward_risk_ratio": 1.0,
     "trailing_stop_enabled": True,
@@ -226,17 +222,6 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     ttl = raw.get("open_ttl_seconds", 120)
     if not _is_int(ttl) or ttl <= 0:
         _fail(rid, f"open_ttl_seconds must be positive int, got {ttl}", errors)
-
-    max_pos = raw.get("max_position_notional_usdt", 10_000.0)
-    if not _is_num(max_pos) or float(max_pos) <= 0.0:
-        _fail(rid, f"max_position_notional_usdt must be positive finite, got {max_pos}", errors)
-    grid_notional = float(order_notional) * len(offsets) if _is_num(order_notional) else 0.0
-    if _is_num(max_pos) and offsets and float(max_pos) < grid_notional:
-        _fail(
-            rid,
-            f"max_position_notional_usdt({max_pos}) must cover one complete grid ({grid_notional})",
-            errors,
-        )
 
     tp = raw.get("take_profit", 0.005)
     if not _is_num(tp) or not 0.0 < float(tp) < 1.0:
@@ -446,16 +431,6 @@ def parse_exec_params(values: Any) -> Tuple[Dict[str, str], List[str]]:
             break
     if eff["open_ttl_seconds"] <= 0:
         errors.append(f"open_ttl_seconds must be positive, got {eff['open_ttl_seconds']}")
-    if eff["max_position_notional_usdt"] <= 0:
-        errors.append(
-            f"max_position_notional_usdt must be positive, got {eff['max_position_notional_usdt']}"
-        )
-    grid_notional = eff["order_notional_usdt"] * len(offsets)
-    if 0 < eff["max_position_notional_usdt"] < grid_notional:
-        errors.append(
-            f"max_position_notional_usdt({eff['max_position_notional_usdt']}) "
-            f"must cover one complete grid ({grid_notional})"
-        )
     if not 0 < eff["take_profit"] < 1:
         errors.append(f"take_profit must be in (0,1), got {eff['take_profit']}")
     if eff["reward_risk_ratio"] <= 0:
