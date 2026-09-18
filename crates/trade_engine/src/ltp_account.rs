@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
 };
 use mkt_parsers::msg::basic_account_msg::{BinanceBasicOrderMsg, OkexOrderMsg};
 use order_common::{ExecutionType, OrderStatus, OrderType, Side, TimeInForce};
@@ -309,7 +309,18 @@ pub fn parse_account_push(payload: &str, portfolio_id: &str, exchange: &str) -> 
                 out.push(wrap(
                     BasicAccountEventType::BalanceUpdate,
                     scope,
-                    BasicBalanceMsg::create(ts, coin, balance).to_bytes(),
+                    BasicBalanceMsg::create(ts, coin.clone(), balance).to_bytes(),
+                ));
+                // Assets rows carry borrow (principal) and debt (total liability);
+                // without them the margin leg nets a short to zero.
+                let borrowed = optional_decimal(row, "borrow")
+                    .or_else(|| optional_decimal(row, "debt"))
+                    .unwrap_or(0.0);
+                let interest = optional_decimal(row, "debt").unwrap_or(borrowed) - borrowed;
+                out.push(wrap(
+                    BasicAccountEventType::BorrowInterest,
+                    scope,
+                    BasicBorrowInterestMsg::create(ts, coin, borrowed, interest).to_bytes(),
                 ));
             }
             "Positions" => {
@@ -614,6 +625,36 @@ mod tests {
         let (_, _, data) = split_basic_account_event(&events[0]).unwrap();
         let risk = BasicAccountRiskMsg::from_bytes(data).unwrap();
         assert_eq!(risk.margin_ratio, 0.0);
+    }
+
+    #[test]
+    fn assets_row_forwards_borrow_and_implied_interest() {
+        let body = r#"{"channel":"Assets","data":{"portfolioId":"p1","exchangeType":"BINANCE","coin":"BNB","balance":"0","available":"0","frozen":"0","borrow":"0.5","debt":"0.52","equity":"-0.52","updateAt":"1763977805203"}}"#;
+        let out = parse_account_push(body, "p1", "BINANCE").unwrap();
+        assert_eq!(out.len(), 2);
+        let (kind, _, payload) = split_basic_account_event(&out[0]).unwrap();
+        assert_eq!(kind, BasicAccountEventType::BalanceUpdate);
+        let balance = BasicBalanceMsg::from_bytes(payload).unwrap();
+        assert_eq!(balance.symbol, "BNB");
+        assert_eq!(balance.wallet, 0.0);
+        let (kind, _, payload) = split_basic_account_event(&out[1]).unwrap();
+        assert_eq!(kind, BasicAccountEventType::BorrowInterest);
+        let borrow = BasicBorrowInterestMsg::from_bytes(payload).unwrap();
+        assert_eq!(borrow.symbol, "BNB");
+        assert_eq!(borrow.borrowed, 0.5);
+        assert!((borrow.interest - 0.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn assets_row_without_borrow_fields_clears_liability() {
+        let body = r#"{"channel":"Assets","data":{"portfolioId":"p1","exchangeType":"BINANCE","coin":"BTC","balance":"0.01","available":"0.01","updateAt":"1763977805203"}}"#;
+        let out = parse_account_push(body, "p1", "BINANCE").unwrap();
+        assert_eq!(out.len(), 2);
+        let (kind, _, payload) = split_basic_account_event(&out[1]).unwrap();
+        assert_eq!(kind, BasicAccountEventType::BorrowInterest);
+        let borrow = BasicBorrowInterestMsg::from_bytes(payload).unwrap();
+        assert_eq!(borrow.borrowed, 0.0);
+        assert_eq!(borrow.interest, 0.0);
     }
 
     #[test]

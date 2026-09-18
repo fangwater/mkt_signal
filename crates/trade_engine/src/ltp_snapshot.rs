@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
-    BasicBalanceMsg, BASIC_ACCOUNT_EVENT_HEADER_LEN,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BASIC_ACCOUNT_EVENT_HEADER_LEN,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -38,6 +38,11 @@ pub struct AccountSnapshotState {
 
 impl AccountSnapshotState {
     pub fn observe(&mut self, event: &[u8]) -> Result<()> {
+        if let Some((kind, _, _)) = split_basic_account_event(event) {
+            if kind != BasicAccountEventType::BalanceUpdate {
+                return Ok(());
+            }
+        }
         let (scope, balance) = decode_balance_event(event)?;
         let timestamp = self
             .balances
@@ -48,8 +53,9 @@ impl AccountSnapshotState {
     }
 
     /// Records every supplied Assets event. A complete snapshot additionally
-    /// emits zero balances for identities previously known in this scope but
-    /// absent from that snapshot. Delta updates never clear identities.
+    /// emits zero balances and zero borrow/interest for identities previously
+    /// known in this scope but absent from that snapshot. Delta updates never
+    /// clear identities. Non-balance events pass through unchanged.
     pub fn reconcile_assets_snapshot(
         &mut self,
         scope: BasicAccountScope,
@@ -67,8 +73,18 @@ impl AccountSnapshotState {
             .map(|((_, coin), timestamp)| (coin.clone(), *timestamp))
             .collect();
         let mut present = HashSet::new();
-        let mut updates = Vec::new();
+        let mut balance_events = Vec::new();
+        let mut passthrough = Vec::new();
         for event in events {
+            let (kind, event_scope, _) = split_basic_account_event(event)
+                .ok_or_else(|| anyhow!("malformed BasicAccountEventMsg"))?;
+            if kind != BasicAccountEventType::BalanceUpdate {
+                if event_scope != scope {
+                    return Err(anyhow!("Assets event scope does not match snapshot scope"));
+                }
+                passthrough.push(event.clone());
+                continue;
+            }
             let (event_scope, balance) = decode_balance_event(event)?;
             if event_scope != scope {
                 return Err(anyhow!("Assets event scope does not match snapshot scope"));
@@ -76,10 +92,10 @@ impl AccountSnapshotState {
             if !present.insert(balance.symbol.clone()) {
                 return Err(anyhow!("duplicate asset in snapshot"));
             }
-            updates.push(balance);
+            balance_events.push((event.clone(), balance));
         }
         let mut accepted = Vec::new();
-        for (event, balance) in events.iter().zip(updates) {
+        for (event, balance) in balance_events {
             let key = (scope, balance.symbol);
             if self
                 .balances
@@ -89,8 +105,9 @@ impl AccountSnapshotState {
                 continue;
             }
             self.balances.insert(key, balance.timestamp);
-            accepted.push(event.clone());
+            accepted.push(event);
         }
+        accepted.extend(passthrough);
         if !complete_snapshot {
             return Ok(accepted);
         }
@@ -102,8 +119,19 @@ impl AccountSnapshotState {
             let event =
                 BasicAccountEventMsg::create(BasicAccountEventType::BalanceUpdate, scope, zero)
                     .to_bytes();
-            self.balances.insert((scope, coin), observed_ms);
             accepted.push(event);
+            // An asset absent from a complete snapshot also carries no borrow;
+            // clear any stale liability tracked downstream.
+            let zero_borrow =
+                BasicBorrowInterestMsg::create(observed_ms, coin.clone(), 0.0, 0.0).to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::BorrowInterest,
+                scope,
+                zero_borrow,
+            )
+            .to_bytes();
+            accepted.push(event);
+            self.balances.insert((scope, coin), observed_ms);
         }
         Ok(accepted)
     }
@@ -153,7 +181,7 @@ mod tests {
                 .reconcile_assets_snapshot(scope, true, &[], 40)
                 .unwrap()
                 .len(),
-            1
+            2
         );
     }
     #[test]
@@ -222,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_non_balance_event_is_rejected() {
+    fn malformed_event_is_rejected_and_non_balance_is_ignored() {
         let mut state = AccountSnapshotState::default();
         assert!(state.observe(&[1, 2]).is_err());
         let event = BasicAccountEventMsg::create(
@@ -231,6 +259,43 @@ mod tests {
             Bytes::new(),
         )
         .to_bytes();
-        assert!(state.observe(&event).is_err());
+        assert!(state.observe(&event).is_ok());
+        assert!(state.balances.is_empty());
+    }
+
+    #[test]
+    fn borrow_interest_events_pass_through_reconcile() {
+        let scope = BasicAccountScope::BinanceUnified;
+        let mut state = AccountSnapshotState::default();
+        let borrow = BasicAccountEventMsg::create(
+            BasicAccountEventType::BorrowInterest,
+            scope,
+            BasicBorrowInterestMsg::create(30, "BNB".to_string(), 0.5, 0.01).to_bytes(),
+        )
+        .to_bytes();
+        let accepted = state
+            .reconcile_assets_snapshot(scope, false, &[borrow.clone()], 40)
+            .unwrap();
+        assert_eq!(accepted, vec![borrow]);
+    }
+
+    #[test]
+    fn complete_snapshot_zeroes_balance_and_borrow_for_missing_coin() {
+        let scope = BasicAccountScope::BinanceUnified;
+        let mut state = AccountSnapshotState::default();
+        state.observe(&balance(scope, "BNB", 1.0, 10)).unwrap();
+        let zeroes = state
+            .reconcile_assets_snapshot(scope, true, &[], 20)
+            .unwrap();
+        assert_eq!(zeroes.len(), 2);
+        let (kind, _, payload) = split_basic_account_event(&zeroes[0]).unwrap();
+        assert_eq!(kind, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(BasicBalanceMsg::from_bytes(payload).unwrap().wallet, 0.0);
+        let (kind, _, payload) = split_basic_account_event(&zeroes[1]).unwrap();
+        assert_eq!(kind, BasicAccountEventType::BorrowInterest);
+        let borrow = BasicBorrowInterestMsg::from_bytes(payload).unwrap();
+        assert_eq!(borrow.symbol, "BNB");
+        assert_eq!(borrow.borrowed, 0.0);
+        assert_eq!(borrow.interest, 0.0);
     }
 }
