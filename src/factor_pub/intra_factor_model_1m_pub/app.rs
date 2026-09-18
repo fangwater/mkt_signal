@@ -684,7 +684,10 @@ impl IntraFactorModel1mPubApp {
     }
 
     fn on_trade_flow(&mut self, symbol: String, msg: TradeFlowFeatureMsg, record_percentile: bool) {
-        let ts_in_ms = msg.ts / 1_000;
+        // TradeFlowFeatureMsg.ts is already in milliseconds (the encoder writes
+        // BaselineBar.start_ms directly); do not convert again or the pending
+        // join key diverges from the millisecond NQ keys.
+        let ts_in_ms = msg.ts;
         let observations = match {
             let state = self
                 .states
