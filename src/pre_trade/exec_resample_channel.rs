@@ -76,13 +76,16 @@ impl ExecResampleChannel {
         let mut published = 0usize;
 
         if let Some(publisher) = self.state_pub.as_ref() {
-            let snapshots = mon
-                .strategy_mgr()
-                .borrow()
-                .batch_exec_snapshots(ts_ms * 1_000);
+            let mgr = mon.strategy_mgr();
+            let mgr = mgr.borrow();
+            let snapshots = mgr.batch_exec_snapshots(ts_ms * 1_000);
+            let chase_snapshots = mgr.chase_exec_snapshots(ts_ms * 1_000);
             let position_ready = mon.exec_position_snapshot_ready()
-                && snapshots.iter().all(|snapshot| snapshot.position_allocated);
-            let mut rows = Vec::with_capacity(snapshots.len());
+                && snapshots.iter().all(|snapshot| snapshot.position_allocated)
+                && chase_snapshots
+                    .iter()
+                    .all(|snapshot| snapshot.position_allocated);
+            let mut rows = Vec::with_capacity(snapshots.len() + chase_snapshots.len());
             for snapshot in snapshots {
                 let price = MktChannel::instance()
                     .get_quote(&snapshot.symbol, snapshot.exec_venue)
@@ -113,6 +116,41 @@ impl ExecResampleChannel {
                     active_batches: snapshot.active_batches.min(u32::MAX as usize) as u32,
                     remaining_batches: snapshot.remaining_batches,
                     estimated_completion_ts_ms: snapshot.estimated_completion_ts_ms,
+                    execution_complete: snapshot.execution_complete,
+                    completion_reason: snapshot.completion_reason,
+                    mid_price: price,
+                });
+            }
+            for snapshot in chase_snapshots {
+                let price = MktChannel::instance()
+                    .get_quote(&snapshot.symbol, snapshot.exec_venue)
+                    .map(|quote| (quote.bid + quote.ask) * 0.5)
+                    .unwrap_or(0.0);
+                let target_qty = snapshot.target_qty.unwrap_or(0.0);
+                let delta_qty = target_qty - snapshot.effective_position_qty;
+                rows.push(ExecStrategyStateRow {
+                    algorithm: snapshot.algorithm,
+                    pov: snapshot.pov,
+                    strategy_name: snapshot.strategy_name,
+                    source_updated_at_ms: snapshot.source_updated_at_ms,
+                    symbol: snapshot.symbol,
+                    position_allocated: snapshot.position_allocated,
+                    account_position_qty: snapshot.account_position_qty,
+                    target_qty,
+                    current_qty: snapshot.position_qty,
+                    effective_position_qty: snapshot.effective_position_qty,
+                    delta_qty,
+                    live_order_qty: snapshot.live_order_qty,
+                    pending_qty: snapshot.pending_qty,
+                    account_position_usdt: snapshot.account_position_qty * price,
+                    target_usdt: target_qty * price,
+                    current_usdt: snapshot.position_qty * price,
+                    delta_usdt: delta_qty * price,
+                    live_order_usdt: snapshot.live_order_qty * price,
+                    pending_usdt: snapshot.pending_qty * price,
+                    active_batches: snapshot.live_children.min(u32::MAX as usize) as u32,
+                    remaining_batches: 0,
+                    estimated_completion_ts_ms: 0,
                     execution_complete: snapshot.execution_complete,
                     completion_reason: snapshot.completion_reason,
                     mid_price: price,

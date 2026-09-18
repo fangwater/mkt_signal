@@ -5,6 +5,8 @@ use crate::strategy::arb_close_strategy::ArbCloseStrategy;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecSnapshot, BatchExecStrategy};
+use crate::strategy::chase_exec::{ChaseExecConfig, ChaseExecSnapshot};
+use crate::strategy::chase_exec_strategy::ChaseExecStrategy;
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -119,16 +121,17 @@ struct StrategyKindIndexFlags {
     is_mm_hedge: bool,
     is_arb_hedge: bool,
     batch_exec_strategy_name: Option<String>,
+    chase_exec_strategy_name: Option<String>,
     has_order_terminal_recorder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct BatchExecIndexKey {
+struct ExecStrategyIndexKey {
     strategy_name: String,
     symbol: String,
 }
 
-impl BatchExecIndexKey {
+impl ExecStrategyIndexKey {
     fn new(strategy_name: &str, symbol: &str) -> Self {
         Self {
             strategy_name: strategy_name.to_string(),
@@ -280,7 +283,8 @@ pub struct StrategyManager {
     symbol_index: FastHashMap<String, BTreeSet<i32>>,
     mm_hedge_index: FastHashMap<String, i32>,
     arb_hedge_index: FastHashMap<String, i32>,
-    batch_exec_strategy_index: FastHashMap<BatchExecIndexKey, i32>,
+    batch_exec_strategy_index: FastHashMap<ExecStrategyIndexKey, i32>,
+    chase_exec_strategy_index: FastHashMap<ExecStrategyIndexKey, i32>,
     order_terminal_recorder_index: FastHashMap<String, i32>,
     mm_open_price_index: FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
     mm_open_strategy_index: FastHashMap<i32, OpenPriceMapEntry>,
@@ -306,6 +310,7 @@ impl StrategyManager {
             mm_hedge_index: fast_hash_map(),
             arb_hedge_index: fast_hash_map(),
             batch_exec_strategy_index: fast_hash_map(),
+            chase_exec_strategy_index: fast_hash_map(),
             order_terminal_recorder_index: fast_hash_map(),
             mm_open_price_index: fast_hash_map(),
             mm_open_strategy_index: fast_hash_map(),
@@ -363,6 +368,10 @@ impl StrategyManager {
                 .as_any()
                 .downcast_ref::<BatchExecStrategy>()
                 .map(|strategy| strategy.strategy_name().to_string()),
+            chase_exec_strategy_name: strategy
+                .as_any()
+                .downcast_ref::<ChaseExecStrategy>()
+                .map(|strategy| strategy.strategy_name().to_string()),
             has_order_terminal_recorder: strategy.has_order_terminal_recorder(),
         }
     }
@@ -381,7 +390,11 @@ impl StrategyManager {
         }
         if let Some(strategy_name) = flags.batch_exec_strategy_name {
             self.batch_exec_strategy_index
-                .insert(BatchExecIndexKey::new(&strategy_name, symbol), id);
+                .insert(ExecStrategyIndexKey::new(&strategy_name, symbol), id);
+        }
+        if let Some(strategy_name) = flags.chase_exec_strategy_name {
+            self.chase_exec_strategy_index
+                .insert(ExecStrategyIndexKey::new(&strategy_name, symbol), id);
         }
         if flags.has_order_terminal_recorder {
             self.order_terminal_recorder_index
@@ -402,13 +415,23 @@ impl StrategyManager {
             self.arb_hedge_index.remove(symbol);
         }
         if let Some(strategy_name) = flags.batch_exec_strategy_name {
-            let key = BatchExecIndexKey::new(&strategy_name, symbol);
+            let key = ExecStrategyIndexKey::new(&strategy_name, symbol);
             if self
                 .batch_exec_strategy_index
                 .get(&key)
                 .is_some_and(|value| *value == id)
             {
                 self.batch_exec_strategy_index.remove(&key);
+            }
+        }
+        if let Some(strategy_name) = flags.chase_exec_strategy_name {
+            let key = ExecStrategyIndexKey::new(&strategy_name, symbol);
+            if self
+                .chase_exec_strategy_index
+                .get(&key)
+                .is_some_and(|value| *value == id)
+            {
+                self.chase_exec_strategy_index.remove(&key);
             }
         }
         if flags.has_order_terminal_recorder
@@ -986,7 +1009,7 @@ impl StrategyManager {
         strategy_name: &str,
         symbol_upper: &str,
     ) -> Option<i32> {
-        let key = BatchExecIndexKey::new(strategy_name, symbol_upper);
+        let key = ExecStrategyIndexKey::new(strategy_name, symbol_upper);
         if let Some(id) = self.batch_exec_strategy_index.get(&key) {
             return Some(*id);
         }
@@ -1088,6 +1111,100 @@ impl StrategyManager {
         let mut snapshots = Vec::new();
         for strategy in self.strategies.values() {
             if let Some(exec) = strategy.as_any().downcast_ref::<BatchExecStrategy>() {
+                snapshots.push(exec.snapshot(now_ts));
+            }
+        }
+        snapshots
+    }
+
+    pub fn find_chase_exec_strategy_id(&self, strategy_name: &str, symbol: &str) -> Option<i32> {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        self.find_chase_exec_strategy_id_for_normalized_symbol(strategy_name, &symbol_upper)
+    }
+
+    pub fn find_chase_exec_strategy_id_for_normalized_symbol(
+        &self,
+        strategy_name: &str,
+        symbol_upper: &str,
+    ) -> Option<i32> {
+        let key = ExecStrategyIndexKey::new(strategy_name, symbol_upper);
+        if let Some(id) = self.chase_exec_strategy_index.get(&key) {
+            return Some(*id);
+        }
+        let ids = self.symbol_index.get(symbol_upper)?;
+        for id in ids {
+            if let Some(strategy) = self.strategies.get(id) {
+                if let Some(exec) = strategy.as_any().downcast_ref::<ChaseExecStrategy>() {
+                    if exec.strategy_name() == strategy_name {
+                        return Some(*id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn ensure_chase_exec_strategy(
+        &mut self,
+        strategy_name: &str,
+        symbol: &str,
+        exec_venue: TradingVenue,
+        config: ChaseExecConfig,
+    ) -> i32 {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        self.ensure_chase_exec_strategy_for_normalized_symbol(
+            strategy_name,
+            &symbol_upper,
+            exec_venue,
+            config,
+        )
+    }
+
+    pub fn ensure_chase_exec_strategy_for_normalized_symbol(
+        &mut self,
+        strategy_name: &str,
+        symbol_upper: &str,
+        exec_venue: TradingVenue,
+        config: ChaseExecConfig,
+    ) -> i32 {
+        if let Some(id) =
+            self.find_chase_exec_strategy_id_for_normalized_symbol(strategy_name, symbol_upper)
+        {
+            if let Some(mut strategy) = self.take(id) {
+                if let Some(exec) = strategy.as_any_mut().downcast_mut::<ChaseExecStrategy>() {
+                    if let Err(err) = exec.update_config(config) {
+                        log::warn!(
+                            "ChaseExecStrategy config update rejected strategy_id={} err={}",
+                            id,
+                            err
+                        );
+                    }
+                }
+                self.insert(strategy);
+            }
+            return id;
+        }
+        let symbol_upper = symbol_upper.to_string();
+        let strategy_id = StrategyManager::generate_strategy_id();
+        let strategy = ChaseExecStrategy::new(
+            strategy_id,
+            strategy_name,
+            symbol_upper.clone(),
+            exec_venue,
+            config,
+        );
+        info!(
+            "ChaseExecStrategy init: strategy_name={} symbol={} exec_venue={:?} strategy_id={}",
+            strategy_name, symbol_upper, exec_venue, strategy_id
+        );
+        self.insert(Box::new(strategy));
+        strategy_id
+    }
+
+    pub fn chase_exec_snapshots(&self, now_ts: i64) -> Vec<ChaseExecSnapshot> {
+        let mut snapshots = Vec::new();
+        for strategy in self.strategies.values() {
+            if let Some(exec) = strategy.as_any().downcast_ref::<ChaseExecStrategy>() {
                 snapshots.push(exec.snapshot(now_ts));
             }
         }

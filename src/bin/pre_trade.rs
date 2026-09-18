@@ -11,6 +11,7 @@ use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
+use mkt_signal::pre_trade::chase_exec_config::ChaseExecConfigReloader;
 use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
 use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
@@ -887,7 +888,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 }
                 market_rules.spawn(Duration::from_millis(args.config_reload_ms.max(100)));
                 let mut reloader = BatchExecConfigReloader::connect(
-                    batch_redis,
+                    batch_redis.clone(),
                     open_venue,
                     binance_account_mode,
                 )
@@ -899,6 +900,21 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 );
                 info!(
                     "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations leverage_init_key=batch_exec_state:leverage_initialized default_leverage=5",
+                    args.config_reload_ms.max(100)
+                );
+                let mut chase_reloader = ChaseExecConfigReloader::connect(
+                    batch_redis,
+                    open_venue,
+                    binance_account_mode,
+                )
+                .await?;
+                chase_reloader.reload(&strategy_mgr).await?;
+                chase_reloader.spawn(
+                    strategy_mgr.clone(),
+                    Duration::from_millis(args.config_reload_ms.max(100)),
+                );
+                info!(
+                    "ChaseExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=chase_exec:strategy_names position_ledger_key=chase_exec_state:position_allocations leverage_init_key=chase_exec_state:leverage_initialized default_leverage=5",
                     args.config_reload_ms.max(100)
                 );
             }

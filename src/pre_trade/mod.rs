@@ -13,6 +13,7 @@ pub mod binance_std_cm_margin_guard;
 pub mod binance_std_um_margin_guard;
 pub mod bitget_position_tier_guard;
 mod channel;
+pub mod chase_exec_config;
 pub mod close_inventory;
 pub mod event;
 pub mod exec_resample_channel;
