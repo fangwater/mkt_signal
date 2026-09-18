@@ -357,6 +357,10 @@ struct BatchState {
     expires_at_us: i64,
     from_key: Vec<u8>,
     saw_open_reject: bool,
+    /// Set when a live batch was pulled by a POV stale-data pause rather than
+    /// a genuine maker requote; that cancellation must not burn
+    /// `maker_requotes` (data staleness is not a liquidity outcome).
+    stale_paused: bool,
 }
 
 fn estimate_active_batch_completion_ts_us(
@@ -919,6 +923,16 @@ impl BatchExecStrategy {
         for id in ids {
             // An unsent batch has no cancel acknowledgement to make it ready again.
             if expired || !self.batches[&id].child_order_ids.is_empty() {
+                if !expired
+                    && self
+                        .batches
+                        .get(&id)
+                        .is_some_and(|batch| batch.phase == BatchPhase::Live)
+                {
+                    if let Some(batch) = self.batches.get_mut(&id) {
+                        batch.stale_paused = true;
+                    }
+                }
                 self.begin_cancel_batch(
                     id,
                     if expired {
@@ -1839,6 +1853,7 @@ impl BatchExecStrategy {
                 expires_at_us: 0,
                 from_key: target_from_key,
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
         self.submit_batch(batch_seq, now_ts);
@@ -2407,10 +2422,12 @@ impl BatchExecStrategy {
                     if batch.phase == BatchPhase::CancellingForRequote
                         && !batch.use_taker
                         && !batch.saw_open_reject
+                        && !batch.stale_paused
                     {
                         batch.maker_requotes = batch.maker_requotes.saturating_add(1);
                     }
                     batch.saw_open_reject = false;
+                    batch.stale_paused = false;
                     batch.phase = BatchPhase::ReadyToSubmit;
                     batch.expires_at_us = 0;
                 }
@@ -3216,6 +3233,7 @@ mod tests {
                 expires_at_us: 1_000,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
         strategy.child_orders.insert(
@@ -3277,6 +3295,7 @@ mod tests {
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
         for attempt in 0..10 {
@@ -3342,6 +3361,7 @@ mod tests {
                 expires_at_us: 1_000,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
         strategy.child_orders.insert(
@@ -3364,6 +3384,58 @@ mod tests {
         let batch = strategy.batches.get(&1).unwrap();
         assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
         assert_eq!(batch.maker_requotes, 1);
+    }
+
+    #[test]
+    fn pov_stale_pause_requote_does_not_burn_maker_requotes() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::CancellingForRequote,
+                child_order_ids: BTreeSet::from([client_order_id]),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 0,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+                stale_paused: true,
+            },
+        );
+        strategy.child_orders.insert(
+            client_order_id,
+            ChildOrderMeta {
+                batch_seq: 1,
+                level_index: 0,
+                order_base_qty: 1.0,
+                accounted_fill_base_qty: 0.0,
+                signal_ts: 1,
+                signal_bbo: None,
+                price_offset: 0.0,
+                from_key: b"cta_alpha".to_vec(),
+                cancel_requested: false,
+            },
+        );
+
+        strategy.finish_child_order(client_order_id);
+
+        // A stale-data pause is not a genuine maker attempt: it must not
+        // consume the requote budget that drives maker_then_taker escalation.
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 0);
+        assert!(!batch.stale_paused);
     }
 
     #[test]
@@ -3407,6 +3479,7 @@ mod tests {
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
         assert_eq!(strategy.settled_completion_reason(0.9), None);
@@ -3444,6 +3517,7 @@ mod tests {
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
 
@@ -3530,6 +3604,7 @@ mod tests {
             expires_at_us: now_ts_us + 400_000,
             from_key: Vec::new(),
             saw_open_reject: false,
+            stale_paused: false,
         };
 
         assert_eq!(
@@ -3571,6 +3646,7 @@ mod tests {
                 expires_at_us: 100,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
         for (client_order_id, level_index, order_base_qty, accounted_fill_base_qty) in entries {
@@ -3745,6 +3821,7 @@ mod tests {
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
                 saw_open_reject: false,
+                stale_paused: false,
             },
         );
 

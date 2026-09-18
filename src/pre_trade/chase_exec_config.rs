@@ -1,5 +1,5 @@
 use crate::pre_trade::PersistChannel;
-use crate::strategy::batch_exec_strategy::BatchExecTarget;
+use crate::strategy::batch_exec_strategy::{BatchExecStrategy, BatchExecTarget};
 use crate::strategy::chase_exec::{
     validate_chase_target, ChaseExecConfig, ChaseExecConfigOverride,
     CHASE_EXEC_POSITION_CLOSE_STRATEGY_NAME,
@@ -103,6 +103,12 @@ pub struct ChaseExecConfigReloader {
     pending_ledger_removals: BTreeSet<String>,
     removal_configs: BTreeMap<String, ChaseExecConfig>,
     close_configs: BTreeMap<String, ChaseExecConfig>,
+    /// Symbols where a live BatchExec strategy was seen on this venue. Both
+    /// exec ledgers assume exclusive ownership of the shared account
+    /// position; conflicted symbols are skipped by reconcile/cross so the
+    /// same physical position is never allocated twice. Kept to warn only on
+    /// transitions.
+    conflicted_symbols: BTreeSet<String>,
 }
 
 const STRATEGY_NAMES_KEY: &str = "chase_exec:strategy_names";
@@ -587,6 +593,7 @@ impl ChaseExecConfigReloader {
             pending_ledger_removals: BTreeSet::new(),
             removal_configs: BTreeMap::new(),
             close_configs: BTreeMap::new(),
+            conflicted_symbols: BTreeSet::new(),
         })
     }
 
@@ -1033,6 +1040,30 @@ impl ChaseExecConfigReloader {
         candidates
     }
 
+    /// Symbols with a live BatchExec strategy on this venue. The BatchExec and
+    /// ChaseExec position ledgers each assume exclusive ownership of the
+    /// shared account position, so a symbol present in both families must be
+    /// skipped by reconcile and internal cross to avoid allocating the same
+    /// physical position twice.
+    fn batch_exec_symbols(
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        venue: TradingVenue,
+    ) -> BTreeSet<String> {
+        let manager = strategy_mgr.borrow();
+        manager
+            .iter_ids()
+            .copied()
+            .filter_map(|strategy_id| {
+                manager
+                    .get(strategy_id)?
+                    .as_any()
+                    .downcast_ref::<BatchExecStrategy>()
+                    .filter(|exec| exec.exec_venue() == venue)
+                    .map(|exec| exec.exec_symbol().to_string())
+            })
+            .collect()
+    }
+
     /// Crosses opposite unexecuted target gaps inside each symbol group. Every
     /// leg books a synthetic internal fill at the current mid so the sum of
     /// per-strategy ledger positions stays equal to the shared account
@@ -1051,6 +1082,7 @@ impl ChaseExecConfigReloader {
                 .or_default()
                 .push(candidate);
         }
+        groups.retain(|symbol, _| !self.conflicted_symbols.contains(symbol));
         let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
         let mut applied = 0usize;
         let mut last_publish_ts_us = 0i64;
@@ -1220,6 +1252,16 @@ impl ChaseExecConfigReloader {
         }
 
         let now_ts = get_timestamp_us();
+        let conflicting = Self::batch_exec_symbols(strategy_mgr, self.venue);
+        for symbol in conflicting.difference(&self.conflicted_symbols) {
+            warn!(
+                "ChaseExec position reconcile disabled: symbol={symbol} also has live BatchExec strategies; the two exec ledgers must not both claim the shared account position"
+            );
+        }
+        for symbol in self.conflicted_symbols.difference(&conflicting) {
+            info!("ChaseExec position conflict resolved: symbol={symbol}");
+        }
+        self.conflicted_symbols = conflicting;
         let internal_cross_legs = self.net_opposite_unexecuted_targets(strategy_mgr, now_ts);
         if internal_cross_legs > 0 {
             info!("ChaseExec internal cross applied: legs={internal_cross_legs}");
@@ -1233,6 +1275,7 @@ impl ChaseExecConfigReloader {
                 .or_default()
                 .push(candidate.clone());
         }
+        groups.retain(|symbol, _| !self.conflicted_symbols.contains(symbol));
 
         let mut missing_close_symbols = BTreeSet::new();
         for (symbol, group) in &groups {
@@ -1279,6 +1322,7 @@ impl ChaseExecConfigReloader {
                     .or_default()
                     .push(candidate.clone());
             }
+            groups.retain(|symbol, _| !self.conflicted_symbols.contains(symbol));
         }
 
         let mut plans = Vec::new();
@@ -1766,5 +1810,28 @@ mod tests {
         assert!(validate_strategy_name("strategy_names").is_err());
         assert!(validate_strategy_name("removed_strategy_names").is_err());
         assert!(validate_config_strategy_name(CHASE_EXEC_POSITION_CLOSE_STRATEGY_NAME).is_err());
+    }
+
+    #[test]
+    fn batch_exec_symbols_detects_conflicts_scoped_to_venue() {
+        let manager = Rc::new(RefCell::new(StrategyManager::new()));
+        manager.borrow_mut().insert(Box::new(BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            crate::strategy::batch_exec_strategy::BatchExecConfig::default(),
+        )));
+        manager.borrow_mut().insert(Box::new(BatchExecStrategy::new(
+            2,
+            "cta_beta",
+            "ETHUSDT",
+            TradingVenue::OkexFutures,
+            crate::strategy::batch_exec_strategy::BatchExecConfig::default(),
+        )));
+
+        let symbols =
+            ChaseExecConfigReloader::batch_exec_symbols(&manager, TradingVenue::BinanceFutures);
+        assert_eq!(symbols, BTreeSet::from(["BTCUSDT".to_string()]));
     }
 }

@@ -120,6 +120,13 @@ impl ChaseOrderLimits {
     }
 }
 
+/// Clamp a pending taker obligation to what the uncommitted gap can absorb.
+/// Anything beyond is phantom overhang (the gap is already covered by live
+/// orders) that can never execute without overshooting the target.
+fn clamp_taker_pending_to_gap(taker_pending: f64, uncommitted_base: f64) -> f64 {
+    taker_pending.min(uncommitted_base.max(0.0))
+}
+
 fn align_child_qty_floor(raw_qty: f64, qty_step: f64) -> f64 {
     if !raw_qty.is_finite() || raw_qty <= 0.0 {
         return 0.0;
@@ -758,6 +765,24 @@ impl ChaseExecStrategy {
         }
     }
 
+    /// Re-issue cancels that were requested but never confirmed sent (e.g. a
+    /// publish failure inside `request_cancel`). Without this retry an
+    /// expired maker child or a target-cancelled child could stay live on the
+    /// venue forever, blocking generation activation and taker escalation.
+    fn retry_unsent_cancels(&mut self) {
+        let ids: Vec<i64> = self
+            .children
+            .iter()
+            .filter_map(|(client_order_id, meta)| {
+                (!meta.cancel_requested && (meta.cancel_for_target || meta.maker_expired))
+                    .then_some(*client_order_id)
+            })
+            .collect();
+        for client_order_id in ids {
+            self.request_cancel(client_order_id);
+        }
+    }
+
     /// In-place amend of live maker children when the opposite-side anchor has
     /// moved at least `maker_recenter_trigger_bps` (or the aligned level-0
     /// price changed when the trigger is 0). One modify in flight per child;
@@ -994,8 +1019,11 @@ impl ChaseExecStrategy {
         let remaining_base = (target_qty - position_qty) * side_sign;
         if remaining_base <= QTY_EPS {
             // Gap consumed or overshot: the strategy stops here rather than
-            // trading the overshoot back toward the target.
-            if self.children.is_empty() && self.taker_pending_base_qty <= QTY_EPS {
+            // trading the overshoot back toward the target. Any residual
+            // taker obligation is unexecutable overhang; release it so it
+            // cannot pin `has_execution_in_flight` forever.
+            self.taker_pending_base_qty = 0.0;
+            if self.children.is_empty() {
                 self.completion_reason = Some(ChaseExecCompletionReason::TargetReached);
             }
             return;
@@ -1042,13 +1070,19 @@ impl ChaseExecStrategy {
             }
         };
         if remaining_base * reference_price <= self.config.target_tolerance_usdt {
-            if self.children.is_empty() && self.taker_pending_base_qty <= QTY_EPS {
+            // Within tolerance the target is declared done; abandon any
+            // residual taker obligation so the strategy can complete.
+            self.taker_pending_base_qty = 0.0;
+            if self.children.is_empty() {
                 self.completion_reason = Some(ChaseExecCompletionReason::TargetTolerance);
             }
             return;
         }
         if remaining_base + QTY_EPS < minimum_base_qty {
-            if self.children.is_empty() && self.taker_pending_base_qty <= QTY_EPS {
+            // Below the venue minimum the gap can never execute; release the
+            // obligation back instead of pinning it as taker-pending dust.
+            self.taker_pending_base_qty = 0.0;
+            if self.children.is_empty() {
                 self.completion_reason = Some(ChaseExecCompletionReason::ExchangeMinimum);
             }
             return;
@@ -1060,6 +1094,11 @@ impl ChaseExecStrategy {
 
         let open_unfilled_base = self.open_unfilled_base_qty();
         let uncommitted_base = (remaining_base - open_unfilled_base).max(0.0);
+        // Taker obligations beyond the uncommitted gap are phantom overhang
+        // that can never execute without overshooting the target; clamp them
+        // back into the water level.
+        self.taker_pending_base_qty =
+            clamp_taker_pending_to_gap(self.taker_pending_base_qty, uncommitted_base);
         if uncommitted_base <= QTY_EPS {
             return;
         }
@@ -1101,6 +1140,11 @@ impl ChaseExecStrategy {
                 if sent > QTY_EPS {
                     self.taker_pending_base_qty = (self.taker_pending_base_qty - sent).max(0.0);
                 }
+            } else {
+                // The drainable remainder floors below the venue minimum and
+                // can never execute; release it back to the uncommitted water
+                // level so it cannot pin `has_execution_in_flight` forever.
+                self.taker_pending_base_qty = (self.taker_pending_base_qty - taker_qty).max(0.0);
             }
         }
         if taker_only {
@@ -1940,6 +1984,7 @@ impl Strategy for ChaseExecStrategy {
         self.handle_order_query_watchdogs();
         self.cancel_children_when_target_no_longer_needs_them();
         self.handle_child_timeouts(now_ts);
+        self.retry_unsent_cancels();
         self.process_pending_target();
         self.recenter_children(now_ts);
         self.maybe_release(now_ts);
@@ -2393,5 +2438,53 @@ mod tests {
             .insert(order_id, maker_child_meta(Side::Buy, 1.0, 0.0, 7));
         assert!(strategy.is_strategy_order(order_id));
         assert!(!strategy.is_strategy_order(order_id + 1));
+    }
+
+    #[test]
+    fn retry_unsent_cancels_finishes_children_whose_cancel_never_sent() {
+        let mut strategy = make_strategy();
+        strategy.active_target = Some(active_target(1.0, 0, 7));
+
+        let target_cancelled = strategy.next_order_id();
+        let mut meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
+        meta.cancel_for_target = true;
+        strategy.children.insert(target_cancelled, meta);
+
+        let expired = strategy.next_order_id();
+        let mut meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
+        meta.maker_expired = true;
+        strategy.children.insert(expired, meta);
+
+        // A live child with no cancel intent is not retried.
+        let live = strategy.next_order_id();
+        strategy
+            .children
+            .insert(live, maker_child_meta(Side::Buy, 1.0, 0.0, 7));
+        // A child whose cancel was already confirmed sent is left alone.
+        let acked = strategy.next_order_id();
+        let mut meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
+        meta.cancel_for_target = true;
+        meta.cancel_requested = true;
+        strategy.children.insert(acked, meta);
+
+        // Without an order manager each stuck child resolves through the
+        // missing-order finish path rather than staying live forever.
+        strategy.retry_unsent_cancels();
+
+        assert!(!strategy.children.contains_key(&target_cancelled));
+        assert!(!strategy.children.contains_key(&expired));
+        assert!(strategy.children.contains_key(&live));
+        assert!(strategy.children.contains_key(&acked));
+        // The expired child's remainder still escalates to taker; the
+        // target-cancelled child's remainder drops back to the ledger.
+        assert!((strategy.taker_pending_base_qty - 1.0).abs() < QTY_EPS);
+    }
+
+    #[test]
+    fn taker_pending_clamps_to_uncommitted_gap() {
+        assert_eq!(clamp_taker_pending_to_gap(5.0, 1.0), 1.0);
+        assert_eq!(clamp_taker_pending_to_gap(0.5, 3.0), 0.5);
+        assert_eq!(clamp_taker_pending_to_gap(2.0, -1.0), 0.0);
+        assert_eq!(clamp_taker_pending_to_gap(0.0, 5.0), 0.0);
     }
 }
