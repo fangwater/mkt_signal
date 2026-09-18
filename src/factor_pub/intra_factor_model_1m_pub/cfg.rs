@@ -7,6 +7,9 @@ use period_pbs::kafka::KafkaConsumerConfig;
 
 pub const DEFAULT_WINDOW_SIZE: usize = 2_880;
 pub const DEFAULT_MIN_SAMPLES: usize = 1_440;
+pub const DEFAULT_NORMALIZE_WINDOW_BARS: usize = 1_440;
+pub const DEFAULT_NORMALIZE_MIN_PERIODS: usize = 1_000;
+pub const DEFAULT_NORMALIZE_CLIP_ZSCORE: f64 = 3.0;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct IntraFactorModelPubConfig {
@@ -14,7 +17,33 @@ pub struct IntraFactorModelPubConfig {
     #[serde(default)]
     pub percentile: PercentileConfig,
     #[serde(default)]
+    pub normalize: NormalizeConfig,
+    #[serde(default)]
     pub kafka: KafkaInputConfig,
+}
+
+/// Rolling z-score contract shared with the offline factor pipeline
+/// (`build_data_pipeline` `normalize_factors`): clip at mean ± clip_zscore*std,
+/// then re-standardize over the same trailing window; zero variance maps to 0
+/// and unresolved values carry the previous z-score (causal ffill).
+#[derive(Debug, Clone, Deserialize)]
+pub struct NormalizeConfig {
+    #[serde(default = "default_normalize_window_bars")]
+    pub window_bars: usize,
+    #[serde(default = "default_normalize_min_periods")]
+    pub min_periods: usize,
+    #[serde(default = "default_normalize_clip_zscore")]
+    pub clip_zscore: f64,
+}
+
+impl Default for NormalizeConfig {
+    fn default() -> Self {
+        Self {
+            window_bars: default_normalize_window_bars(),
+            min_periods: default_normalize_min_periods(),
+            clip_zscore: default_normalize_clip_zscore(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +121,21 @@ impl IntraFactorModelPubConfig {
                 self.percentile.window_size
             );
         }
+        if self.normalize.window_bars < 2 {
+            anyhow::bail!("normalize.window_bars must be >= 2");
+        }
+        if self.normalize.min_periods == 0
+            || self.normalize.min_periods > self.normalize.window_bars
+        {
+            anyhow::bail!(
+                "normalize.min_periods ({}) must be in 1..=normalize.window_bars ({})",
+                self.normalize.min_periods,
+                self.normalize.window_bars
+            );
+        }
+        if !(self.normalize.clip_zscore.is_finite() && self.normalize.clip_zscore > 0.0) {
+            anyhow::bail!("normalize.clip_zscore must be a finite positive number");
+        }
         if self.kafka.lookback_secs == 0 {
             anyhow::bail!("kafka.lookback_secs must be > 0");
         }
@@ -128,9 +172,24 @@ fn default_min_samples() -> usize {
     DEFAULT_MIN_SAMPLES
 }
 
+fn default_normalize_window_bars() -> usize {
+    DEFAULT_NORMALIZE_WINDOW_BARS
+}
+
+fn default_normalize_min_periods() -> usize {
+    DEFAULT_NORMALIZE_MIN_PERIODS
+}
+
+fn default_normalize_clip_zscore() -> f64 {
+    DEFAULT_NORMALIZE_CLIP_ZSCORE
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{IntraFactorModelPubConfig, DEFAULT_MIN_SAMPLES, DEFAULT_WINDOW_SIZE};
+    use super::{
+        IntraFactorModelPubConfig, DEFAULT_MIN_SAMPLES, DEFAULT_NORMALIZE_CLIP_ZSCORE,
+        DEFAULT_NORMALIZE_MIN_PERIODS, DEFAULT_NORMALIZE_WINDOW_BARS, DEFAULT_WINDOW_SIZE,
+    };
 
     #[test]
     fn defaults_to_notebook_percentile_window() {
@@ -144,6 +203,9 @@ mod tests {
 
         assert_eq!(config.percentile.window_size, DEFAULT_WINDOW_SIZE);
         assert_eq!(config.percentile.min_samples, DEFAULT_MIN_SAMPLES);
+        assert_eq!(config.normalize.window_bars, DEFAULT_NORMALIZE_WINDOW_BARS);
+        assert_eq!(config.normalize.min_periods, DEFAULT_NORMALIZE_MIN_PERIODS);
+        assert_eq!(config.normalize.clip_zscore, DEFAULT_NORMALIZE_CLIP_ZSCORE);
         assert_eq!(config.kafka.lookback_secs, 2 * 24 * 60 * 60);
         assert_eq!(config.kafka.factor_topic, "binance-futures");
         assert_eq!(config.kafka.nq_topic, "binance-spot");

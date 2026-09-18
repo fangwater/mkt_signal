@@ -27,7 +27,7 @@ use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
     BaselineBar, LocalBaselineAggregator,
 };
 
-use super::cfg::{IntraFactorModelPubConfig, KafkaInputConfig};
+use super::cfg::{IntraFactorModelPubConfig, KafkaInputConfig, NormalizeConfig};
 
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
@@ -62,18 +62,139 @@ struct FactorOutput {
     seq_no: u64,
 }
 
+/// Rolling mean/std over the trailing `capacity` bar slots, matching pandas
+/// `rolling(window).mean()/std()`: non-finite values occupy a slot but are
+/// excluded from the statistics.
+struct RollingMeanStd {
+    capacity: usize,
+    fifo: VecDeque<Option<f64>>,
+    sum: f64,
+    sum_sq: f64,
+    count: usize,
+}
+
+impl RollingMeanStd {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            fifo: VecDeque::with_capacity(capacity.max(1)),
+            sum: 0.0,
+            sum_sq: 0.0,
+            count: 0,
+        }
+    }
+
+    fn push_slot(&mut self, value: f64) {
+        let value = value.is_finite().then_some(value);
+        if self.fifo.len() == self.capacity {
+            if let Some(Some(expired)) = self.fifo.pop_front() {
+                self.sum -= expired;
+                self.sum_sq -= expired * expired;
+                self.count -= 1;
+            }
+        }
+        self.fifo.push_back(value);
+        if let Some(value) = value {
+            self.sum += value;
+            self.sum_sq += value * value;
+            self.count += 1;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn mean(&self) -> Option<f64> {
+        (self.count > 0).then(|| self.sum / self.count as f64)
+    }
+
+    /// Sample standard deviation (ddof=1), matching pandas `.std()`.
+    fn std(&self) -> Option<f64> {
+        if self.count < 2 {
+            return None;
+        }
+        let n = self.count as f64;
+        let variance = (self.sum_sq - self.sum * self.sum / n) / (n - 1.0);
+        Some(variance.max(0.0).sqrt())
+    }
+}
+
+/// Per-factor rolling z-score state mirroring the offline `normalize_factors`
+/// contract (`build_data_pipeline`): clip the raw value at the trailing
+/// mean ± clip_zscore*std, then standardize against the trailing mean/std of
+/// the clipped series. Zero-variance maps to 0 and unresolved values carry
+/// the previous z-score forward (causal ffill).
+struct NormalizeState {
+    raw_window: RollingMeanStd,
+    capped_window: RollingMeanStd,
+    min_periods: usize,
+    clip_zscore: f64,
+    last_z: Option<f64>,
+}
+
+impl NormalizeState {
+    fn new(config: &NormalizeConfig) -> Self {
+        Self {
+            raw_window: RollingMeanStd::new(config.window_bars),
+            capped_window: RollingMeanStd::new(config.window_bars),
+            min_periods: config.min_periods,
+            clip_zscore: config.clip_zscore,
+            last_z: None,
+        }
+    }
+
+    fn observe(&mut self, raw: f64) -> Option<f64> {
+        if !raw.is_finite() {
+            self.raw_window.push_slot(f64::NAN);
+            self.capped_window.push_slot(f64::NAN);
+            return self.last_z;
+        }
+        self.raw_window.push_slot(raw);
+        let capped = if self.raw_window.len() >= self.min_periods {
+            match (self.raw_window.mean(), self.raw_window.std()) {
+                (Some(mean), Some(std)) => {
+                    raw.clamp(mean - self.clip_zscore * std, mean + self.clip_zscore * std)
+                }
+                _ => raw,
+            }
+        } else {
+            raw
+        };
+        self.capped_window.push_slot(capped);
+        let z = if self.capped_window.len() >= self.min_periods {
+            match (self.capped_window.mean(), self.capped_window.std()) {
+                (Some(mean), Some(std)) if std > 0.0 => (capped - mean) / std,
+                (Some(_), Some(_)) => 0.0,
+                _ => return self.last_z,
+            }
+        } else {
+            return self.last_z;
+        };
+        if !z.is_finite() {
+            return self.last_z;
+        }
+        self.last_z = Some(z);
+        Some(z)
+    }
+}
+
 struct SymbolState {
     evaluator: BaselineReplayState,
     windows: Vec<ExactRollingWindow>,
+    normalize: Vec<NormalizeState>,
     last_trade_flow_ts: Option<i64>,
 }
 
 impl SymbolState {
-    fn new(window_size: usize) -> Self {
+    fn new(window_size: usize, normalize: &NormalizeConfig) -> Self {
         Self {
             evaluator: BaselineReplayState::default(),
             windows: (0..INTRA_FACTOR_NAMES.len())
                 .map(|_| ExactRollingWindow::new(window_size))
+                .collect(),
+            normalize: (0..INTRA_FACTOR_NAMES.len())
+                .map(|_| NormalizeState::new(normalize))
                 .collect(),
             last_trade_flow_ts: None,
         }
@@ -84,7 +205,9 @@ impl SymbolState {
         raw_values
             .into_iter()
             .zip(self.windows.iter_mut())
-            .map(|(score, window)| {
+            .zip(self.normalize.iter_mut())
+            .map(|((raw, window), normalize)| {
+                let score = normalize.observe(raw).unwrap_or(f64::NAN);
                 let observed = window.observe_slot(score);
                 let score_quantile = observed.then(|| window.percentile_rank_last()).flatten();
                 let score_long_threshold = window.quantile_linear(FACTOR_LONG_QUANTILE);
@@ -261,16 +384,20 @@ struct IntraFactorModelStats {
     ready: u64,
 }
 
-/// Publishes each notebook factor as a separate raw-value virtual model.
+/// Publishes each notebook factor as a separate z-scored virtual model.
 ///
-/// `ModelMsg.score` is the raw factor value. `score_quantile` is the current
-/// percentile rank of that raw value within its own per-symbol rolling window.
+/// `ModelMsg.score` is the rolling z-score of the raw factor value, matching
+/// the offline `normalize_factors` contract used to build `factor_data_1m`.
+/// `score_quantile` is the current percentile rank of that z-score within its
+/// own per-symbol rolling window, and `score_long/short_threshold` are the
+/// window's q0.9/q0.1 quantiles.
 pub struct IntraFactorModel1mPubApp {
     venue: TradingVenue,
     venue_slug: String,
     tlen_server: TlenServerConfig,
     window_size: usize,
     min_samples: usize,
+    normalize: NormalizeConfig,
     plan: SymbolFactorPlan,
     kafka_consumer: RawKafkaConsumer,
     kafka_poll_timeout_ms: u64,
@@ -406,6 +533,7 @@ impl IntraFactorModel1mPubApp {
             tlen_server: config.tlen_server.clone(),
             window_size: config.percentile.window_size,
             min_samples: config.percentile.min_samples,
+            normalize: config.normalize.clone(),
             plan,
             kafka_consumer,
             kafka_poll_timeout_ms: kafka_config.poll_timeout_ms.max(1),
@@ -561,7 +689,7 @@ impl IntraFactorModel1mPubApp {
             let state = self
                 .states
                 .entry(symbol.clone())
-                .or_insert_with(|| SymbolState::new(self.window_size));
+                .or_insert_with(|| SymbolState::new(self.window_size, &self.normalize));
             state.evaluate(msg, &self.plan, self.min_samples, record_percentile)
         } {
             Ok(Some(observations)) => observations,
@@ -1008,7 +1136,7 @@ fn now_millis() -> i64 {
 mod tests {
     use super::{
         output_service_path, parse_trade_side, plan_has_required_factors, select_enabled_symbols,
-        sort_period_events, timestamp_as_micros, FactorObservation, PeriodEvent, SpotNqState,
+        sort_period_events, timestamp_as_micros, NormalizeConfig, PeriodEvent, SpotNqState,
         SymbolState, INTRA_FACTOR_NAMES,
     };
     use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
@@ -1063,28 +1191,35 @@ mod tests {
 
     #[test]
     fn percentile_readiness_requires_valid_minimum_samples() {
-        let mut state = SymbolState::new(3);
+        let normalize = NormalizeConfig {
+            window_bars: 8,
+            min_periods: 2,
+            clip_zscore: 3.0,
+        };
+        let mut state = SymbolState::new(4, &normalize);
         let first = state.observe(vec![1.0; INTRA_FACTOR_NAMES.len()], 2);
         let second = state.observe(vec![2.0; INTRA_FACTOR_NAMES.len()], 2);
-        let invalid = state.observe(vec![f64::NAN; INTRA_FACTOR_NAMES.len()], 2);
+        let third = state.observe(vec![3.0; INTRA_FACTOR_NAMES.len()], 2);
+        let missing = state.observe(vec![f64::NAN; INTRA_FACTOR_NAMES.len()], 2);
 
-        assert_eq!(
-            first[0],
-            FactorObservation {
-                score: 1.0,
-                score_quantile: Some(0.5),
-                score_long_threshold: Some(1.0),
-                score_short_threshold: Some(1.0),
-                score_ready: false,
-            }
-        );
-        assert_eq!(second[0].score_quantile, Some(0.75));
-        assert!((second[0].score_long_threshold.unwrap() - 1.9).abs() < 1e-6);
-        assert!((second[0].score_short_threshold.unwrap() - 1.1).abs() < 1e-6);
-        assert!(second[0].score_ready);
-        assert!(invalid[0].score.is_nan());
-        assert_eq!(invalid[0].score_quantile, None);
-        assert!(!invalid[0].score_ready);
+        // One bar is not enough to define the capped-series statistics, so the
+        // z-score stays unresolved and the slot is not observed.
+        assert!(first[0].score.is_nan());
+        assert_eq!(first[0].score_quantile, None);
+        assert_eq!(first[0].score_long_threshold, None);
+        assert_eq!(first[0].score_short_threshold, None);
+        assert!(!first[0].score_ready);
+        // Capped window [1.0, 2.0] -> z = (2.0 - 1.5) / std(1.0, 2.0) ≈ 0.7071.
+        assert!((second[0].score - 0.7071).abs() < 1e-3);
+        assert_eq!(second[0].score_quantile, Some(0.5));
+        assert!(!second[0].score_ready);
+        // Capped window [1.0, 2.0, 3.0] -> z = (3.0 - 2.0) / std = 1.0, and the
+        // percentile window now holds two finite values meeting min_samples.
+        assert!((third[0].score - 1.0).abs() < 1e-6);
+        assert!(third[0].score_ready);
+        // A missing bar carries the previous z-score forward (causal ffill).
+        assert!((missing[0].score - 1.0).abs() < 1e-6);
+        assert!(missing[0].score_ready);
     }
 
     #[test]
@@ -1227,7 +1362,7 @@ mod tests {
             &vec![1.0; 112],
         )
         .expect("trade-flow message");
-        let mut state = SymbolState::new(3);
+        let mut state = SymbolState::new(3, &NormalizeConfig::default());
 
         assert!(state
             .evaluate(msg.clone(), &plan, 1, true)
