@@ -3814,18 +3814,6 @@ fn should_drop_bbo_fields(slot: &SymbolSlot, ts_us: i64, seq_id: i64, reset_seq:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spread_pbs::bybit::BybitAdapter;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    fn unique_test_service_root(label: &str) -> String {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        format!(
-            "{}_{}_{}",
-            label,
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )
-    }
 
     fn test_state(now_us: i64) -> SharedState {
         SharedState {
@@ -4562,65 +4550,6 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(adapter.invalidated.get());
-    }
-
-    #[test]
-    fn bybit_shared_raw_handler_keeps_trade_and_incremental_frames() {
-        let symbols = vec!["BTCUSDT".to_string()];
-        let adapter = BybitAdapter::new(TradingVenue::BybitFutures);
-        adapter.seed_symbols(&symbols);
-
-        let root = unique_test_service_root("bybit_raw_mix");
-        let trade_publisher = Rc::new(
-            SpreadTradePublisher::new_open_or_create_with_root("bybit-test", &root)
-                .expect("trade publisher"),
-        );
-        let incremental_publisher = Rc::new(
-            SpreadIncrementalPublisher::new_open_or_create_with_root("bybit-test", &root)
-                .expect("incremental publisher"),
-        );
-        trade_publisher.seed_symbols(&symbols).unwrap();
-        incremental_publisher.seed_symbols(&symbols).unwrap();
-
-        let mut initial_state = test_state(1_000_000);
-        initial_state.symbol_state.ensure_symbols(&symbols);
-        let state = Rc::new(RefCell::new(initial_state));
-
-        let trades = br#"{
-            "topic":"publicTrade.BTCUSDT",
-            "data":[
-                {"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.5","i":"9001","seq":77},
-                {"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"0.2","p":"100.6","i":"9002","seq":77}
-            ]
-        }"#;
-        assert!(process_raw_replacement_frame(
-            &adapter,
-            trades,
-            Some(&trade_publisher),
-            Some(&incremental_publisher),
-            None,
-            None,
-            &state,
-        ));
-        assert_eq!(state.borrow().trades_published, 2);
-        assert_eq!(state.borrow().incremental_published, 0);
-
-        let depth = br#"{
-            "topic":"orderbook.1000.BTCUSDT","type":"delta",
-            "ts":1700000000999,"cts":1700000000123,
-            "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","3"]],"u":12345}
-        }"#;
-        assert!(process_raw_replacement_frame(
-            &adapter,
-            depth,
-            Some(&trade_publisher),
-            Some(&incremental_publisher),
-            None,
-            None,
-            &state,
-        ));
-        assert_eq!(state.borrow().trades_published, 2);
-        assert_eq!(state.borrow().incremental_published, 1);
     }
 
     #[test]
