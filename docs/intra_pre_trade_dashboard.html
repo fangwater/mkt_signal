@@ -473,10 +473,12 @@
         const STALE_MS = 15000;
         const POLL_MS = 2000;
         const MAX_WS_FAILS = 2;
+        const WS_CONNECT_TIMEOUT_MS = 5000;
 
         const state = {
           ws: null,
           reconnectTimer: null,
+          wsConnectTimer: null,
           lastMessageAtMs: null,
           wsUrl: null,
           snapshotUrl: null,
@@ -941,11 +943,27 @@
           try {
             const ws = new WebSocket(state.wsUrl);
             state.ws = ws;
+            if (state.wsConnectTimer) {
+              clearTimeout(state.wsConnectTimer);
+            }
+            state.wsConnectTimer = setTimeout(() => {
+              state.wsConnectTimer = null;
+              const cur = state.ws;
+              if (cur && cur.readyState === WebSocket.CONNECTING) {
+                try {
+                  cur.close();
+                } catch (e) {}
+              }
+            }, WS_CONNECT_TIMEOUT_MS);
             ws.addEventListener("open", () => {
               state.wsConnected = true;
               state.wsFailCount = 0;
               setStatus("ok", "已连接");
               stopPolling();
+              if (state.wsConnectTimer) {
+                clearTimeout(state.wsConnectTimer);
+                state.wsConnectTimer = null;
+              }
               if (state.reconnectTimer) {
                 clearTimeout(state.reconnectTimer);
                 state.reconnectTimer = null;
