@@ -50,7 +50,8 @@ use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_accou
 use trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
 use trade_engine::query_parsers::binance_um_account_snapshot::{
-    parse_binance_um_account_snapshot, parse_binance_um_account_snapshot_std,
+    parse_binance_um_account_risk_std, parse_binance_um_account_snapshot,
+    parse_binance_um_account_snapshot_std,
 };
 use trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use url::form_urlencoded;
@@ -663,7 +664,7 @@ struct BinanceWsApiRateLimit {
 struct BinanceStdUmBalanceRow {
     #[serde(default)]
     asset: String,
-    #[serde(default)]
+    #[serde(default, alias = "walletBalance")]
     balance: String,
     #[serde(default, rename = "crossWalletBalance")]
     cross_wallet_balance: String,
@@ -680,17 +681,52 @@ struct BinanceStdUmBalanceRow {
 }
 
 #[derive(Debug, Deserialize)]
-struct BinanceWsApiBalanceResponse {
+struct BinanceWsApiAccountResponse {
     #[serde(default)]
     id: String,
     #[serde(default)]
     status: u16,
     #[serde(default)]
-    result: Vec<BinanceStdUmBalanceRow>,
+    result: serde_json::Value,
     #[serde(default, rename = "rateLimits")]
     rate_limits: Vec<BinanceWsApiRateLimit>,
     #[serde(default)]
     error: Option<serde_json::Value>,
+}
+
+fn binance_std_um_account_status_from_result(
+    result: &serde_json::Value,
+    wanted_asset: &str,
+    poll_ts_ms: i64,
+) -> Result<(BasicAccountRiskMsg, BinanceStdUmWalletSnapshotMsg)> {
+    let account_json =
+        serde_json::to_string(result).context("serialize Binance WS API account.status result")?;
+    let risk_payload = parse_binance_um_account_risk_std(&account_json)
+        .ok_or_else(|| anyhow::anyhow!("missing or invalid Binance account-level risk totals"))?;
+    let risk = BasicAccountRiskMsg::from_bytes(&risk_payload)
+        .context("decode Binance account-level risk totals")?;
+    let rows = serde_json::from_value::<Vec<BinanceStdUmBalanceRow>>(
+        result
+            .get("assets")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .context("parse Binance WS API account.status assets")?;
+    let wanted_asset = wanted_asset.trim().to_ascii_uppercase();
+    let row = rows
+        .iter()
+        .find(|row| row.asset.trim().eq_ignore_ascii_case(&wanted_asset))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Binance WS API account.status asset {} not found; assets={:?}",
+                wanted_asset,
+                rows.iter()
+                    .map(|row| row.asset.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })?;
+    let wallet = binance_std_um_wallet_msg_from_row(row, poll_ts_ms)?;
+    Ok((risk, wallet))
 }
 
 fn parse_f64_field(value: &str, field: &str) -> Result<f64> {
@@ -881,14 +917,14 @@ where
 {
     let poll_ts_ms = chrono::Utc::now().timestamp_millis();
     let (request_id, payload) = build_binance_ws_api_signed_request(
-        "v2/account.balance",
+        "v2/account.status",
         api_key,
         api_secret,
         recv_window_ms,
     )?;
     ws.send(Message::Text(payload))
         .await
-        .context("send Binance WS API account.balance request")?;
+        .context("send Binance WS API account.status request")?;
 
     let wanted_asset = asset.trim().to_ascii_uppercase();
     let deadline = tokio::time::sleep(Duration::from_secs(10));
@@ -896,57 +932,61 @@ where
     loop {
         tokio::select! {
             _ = &mut deadline => {
-                anyhow::bail!("Binance WS API account.balance timeout request_id={request_id}");
+                anyhow::bail!("Binance WS API account.status timeout request_id={request_id}");
             }
             msg = ws.next() => {
                 let Some(msg) = msg else {
-                    anyhow::bail!("Binance WS API account.balance stream closed");
+                    anyhow::bail!("Binance WS API account.status stream closed");
                 };
-                match msg.context("receive Binance WS API account.balance response")? {
+                match msg.context("receive Binance WS API account.status response")? {
                     Message::Text(text) => {
-                        let response: BinanceWsApiBalanceResponse = serde_json::from_str(&text)
-                            .with_context(|| format!("parse Binance WS API account.balance response: {text}"))?;
+                        let response: BinanceWsApiAccountResponse = serde_json::from_str(&text)
+                            .with_context(|| format!("parse Binance WS API account.status response: {text}"))?;
                         if !response.id.is_empty() && response.id != request_id {
                             debug!(
-                                "binance std UM wallet poller skipped response for request_id={} wanted={}",
+                                "binance std UM account poller skipped response for request_id={} wanted={}",
                                 response.id, request_id
                             );
                             continue;
                         }
                         if response.status != 200 {
                             anyhow::bail!(
-                                "Binance WS API account.balance status={} error={:?}",
+                                "Binance WS API account.status status={} error={:?}",
                                 response.status,
                                 response.error
                             );
                         }
-                        let row = response
-                            .result
-                            .iter()
-                            .find(|row| row.asset.trim().eq_ignore_ascii_case(&wanted_asset))
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "Binance WS API account.balance asset {} not found; assets={:?}",
-                                    wanted_asset,
-                                    response.result.iter().map(|row| row.asset.as_str()).collect::<Vec<_>>()
-                                )
-                            })?;
-                        let snapshot = binance_std_um_wallet_msg_from_row(row, poll_ts_ms)?;
+                        let (risk, snapshot) = binance_std_um_account_status_from_result(
+                            &response.result,
+                            &wanted_asset,
+                            poll_ts_ms,
+                        )?;
+                        let risk_event = BasicAccountEventMsg::create(
+                            BasicAccountEventType::AccountRisk,
+                            BasicAccountScope::BinanceStdUm,
+                            risk.to_bytes(),
+                        );
+                        if !forward_account_event(risk_event.to_bytes()) {
+                            warn!("binance std UM account poller: failed to forward risk event");
+                        }
                         let event = BasicAccountEventMsg::create(
                             BasicAccountEventType::BinanceStdUmWalletSnapshot,
                             BasicAccountScope::BinanceStdUm,
                             snapshot.to_bytes(),
                         );
                         if !forward_account_event(event.to_bytes()) {
-                            warn!("binance std UM wallet poller: failed to forward account event");
+                            warn!("binance std UM account poller: failed to forward wallet event");
                         }
                         info!(
-                            "Binance StdUmWalletSnapshot: asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} cross_equity={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={} weight={}",
+                            "Binance StdUmAccountSnapshot: equity_usd={:.8} initial_margin_usd={:.8} maintenance_margin_usd={:.8} margin_ratio={:.8} asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={} weight={}",
+                            risk.actual_equity_usd,
+                            risk.initial_margin_usd,
+                            risk.maintenance_margin_usd,
+                            risk.margin_ratio,
                             snapshot.asset,
                             snapshot.balance,
                             snapshot.cross_wallet_balance,
                             snapshot.cross_un_pnl,
-                            snapshot.cross_equity(),
                             snapshot.available_balance,
                             snapshot.max_withdraw_amount,
                             snapshot.margin_available != 0,
@@ -962,7 +1002,7 @@ where
                     }
                     Message::Pong(_) => {}
                     Message::Close(frame) => {
-                        anyhow::bail!("Binance WS API account.balance close frame: {:?}", frame);
+                        anyhow::bail!("Binance WS API account.status close frame: {:?}", frame);
                     }
                     Message::Binary(_) | Message::Frame(_) => {}
                 }
@@ -982,9 +1022,9 @@ async fn run_binance_std_um_wallet_poller_session(
 ) -> Result<()> {
     let (mut ws, _) = connect_async(url)
         .await
-        .with_context(|| format!("connect Binance WS API account.balance url={url}"))?;
+        .with_context(|| format!("connect Binance WS API account.status url={url}"))?;
     info!(
-        "binance std UM wallet poller connected: url={} asset={} interval={}s",
+        "binance std UM account poller connected: url={} wallet_asset={} interval={}s",
         url, asset, interval_secs
     );
 
@@ -1031,7 +1071,7 @@ fn spawn_binance_std_um_wallet_poller(
 
     tokio::spawn(async move {
         info!(
-            "binance std UM wallet poller enabled: url={} asset={} interval={}s recv_window_ms={}",
+            "binance std UM account poller enabled: url={} wallet_asset={} interval={}s recv_window_ms={}",
             url, asset, interval_secs, recv_window_ms
         );
         loop {
@@ -1051,7 +1091,7 @@ fn spawn_binance_std_um_wallet_poller(
             {
                 Ok(()) => break,
                 Err(err) => warn!(
-                    "binance std UM wallet poller session failed; reconnecting in 5s: {err:#}"
+                    "binance std UM account poller session failed; reconnecting in 5s: {err:#}"
                 ),
             }
             tokio::select! {
@@ -1063,7 +1103,7 @@ fn spawn_binance_std_um_wallet_poller(
                 _ = tokio::time::sleep(Duration::from_secs(5)) => {}
             }
         }
-        info!("binance std UM wallet poller stopped");
+        info!("binance std UM account poller stopped");
     });
 }
 
@@ -1519,8 +1559,8 @@ fn spawn_std_spot_fix_er_path(source_ip: Option<IpAddr>, mut shutdown_rx: watch:
 #[cfg(test)]
 mod tests {
     use super::{
-        account_monitor_fix_er_enabled, binance_std_cm_wallet_msg_from_row, build_ws_url,
-        BinanceStdUmBalanceRow,
+        account_monitor_fix_er_enabled, binance_std_cm_wallet_msg_from_row,
+        binance_std_um_account_status_from_result, build_ws_url, BinanceStdUmBalanceRow,
     };
 
     #[test]
@@ -1568,6 +1608,49 @@ mod tests {
         assert!((msg.cross_equity() - 1.1).abs() < 1e-12);
         assert!((msg.available_balance - 0.3).abs() < 1e-12);
         assert!(msg.margin_available != 0);
+    }
+
+    #[test]
+    fn std_um_account_status_uses_account_totals_with_mixed_collateral() {
+        let result = serde_json::json!({
+            "multiAssetsMargin": true,
+            "totalMarginBalance": "14750.5",
+            "totalMaintMargin": "500",
+            "totalInitialMargin": "2500",
+            "updateTime": 1700000000007_i64,
+            "assets": [
+                {
+                    "asset": "USDT",
+                    "walletBalance": "5000",
+                    "crossWalletBalance": "4900",
+                    "crossUnPnl": "100",
+                    "availableBalance": "2500",
+                    "maxWithdrawAmount": "2000",
+                    "marginAvailable": true,
+                    "updateTime": 1700000000008_i64
+                },
+                {
+                    "asset": "BFUSD",
+                    "walletBalance": "10000",
+                    "crossWalletBalance": "10000",
+                    "crossUnPnl": "0",
+                    "availableBalance": "9750.5",
+                    "maxWithdrawAmount": "10000",
+                    "marginAvailable": true,
+                    "updateTime": 1700000000009_i64
+                }
+            ],
+            "positions": []
+        });
+
+        let (risk, wallet) =
+            binance_std_um_account_status_from_result(&result, "USDT", 1_700_000_000_010)
+                .expect("mixed collateral account status");
+        assert!((risk.actual_equity_usd - 14_750.5).abs() < 1e-9);
+        assert!((risk.margin_ratio - 29.501).abs() < 1e-9);
+        assert_eq!(wallet.asset, "USDT");
+        assert!((wallet.balance - 5_000.0).abs() < 1e-9);
+        assert!((wallet.cross_equity() - 5_000.0).abs() < 1e-9);
     }
 
     #[test]

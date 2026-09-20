@@ -115,6 +115,15 @@ pub fn parse_binance_um_account_snapshot(json: &str) -> Option<Vec<Bytes>> {
     Some(parse_positions(raw.positions, snapshot_timestamp))
 }
 
+/// Parse only the exchange-valued account risk totals from a Standard USD-M account snapshot.
+///
+/// This is shared by the REST snapshot path and the account monitor's WebSocket API poller so
+/// Multi-Assets Mode collateral (including BFUSD) always uses Binance's USD valuation.
+pub fn parse_binance_um_account_risk_std(json: &str) -> Option<Bytes> {
+    let raw: RawUmAccountResponse = serde_json::from_str(json).ok()?;
+    parse_standard_account_risk(&raw)
+}
+
 /// Parse a Standard USD-M account snapshot, including Binance's account-level USD totals.
 /// In Multi-Assets Mode these totals already include BFUSD and the venue's collateral valuation.
 pub fn parse_binance_um_account_snapshot_std(json: &str) -> Option<Vec<Bytes>> {
@@ -189,6 +198,29 @@ mod tests {
         assert!((risk.maintenance_margin_usd - 2_500.0).abs() < 1e-12);
         assert!((risk.initial_margin_usd - 12_000.0).abs() < 1e-12);
         assert!((risk.margin_ratio - 39.506172).abs() < 1e-6);
+    }
+
+    #[test]
+    fn standard_risk_only_parser_uses_mixed_collateral_account_totals() {
+        let json = r#"{
+            "multiAssetsMargin": true,
+            "totalMarginBalance": "14500.25",
+            "totalMaintMargin": "500",
+            "totalInitialMargin": "2500",
+            "updateTime": 1700000000006,
+            "assets": [
+                {"asset":"USDT","walletBalance":"5000"},
+                {"asset":"BFUSD","walletBalance":"10000","marginAvailable":true}
+            ],
+            "positions": [{"symbol":"BTCUSDT","positionAmt":"1"}]
+        }"#;
+
+        let payload = parse_binance_um_account_risk_std(json).expect("risk totals");
+        let risk = BasicAccountRiskMsg::from_bytes(&payload).expect("risk message");
+        assert_eq!(risk.timestamp, 1_700_000_000_006);
+        assert!((risk.actual_equity_usd - 14_500.25).abs() < 1e-9);
+        assert!((risk.initial_margin_usd - 2_500.0).abs() < 1e-9);
+        assert!((risk.margin_ratio - 29.0005).abs() < 1e-9);
     }
 
     #[test]
