@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 
-pub const COMPACT_ORDER_QUERY_RESP_LEN: usize = 8 + 8 + 1 + 8 + 1 + 8;
+pub const COMPACT_ORDER_QUERY_RESP_LEN: usize = 8 + 8 + 1 + 8 + 1 + 8 + 8;
 pub const ORDER_QUERY_NOT_FOUND_MARKER: &[u8; 1] = b"N";
 
 pub fn is_order_query_not_found_marker(body: &[u8]) -> bool {
@@ -15,7 +15,10 @@ pub struct CompactOrderQueryResp {
     pub status_u8: u8,
     pub update_time_ms: i64,
     pub time_in_force_u8: u8,
+    /// Factual execution price (average/last fill, depending on venue).
     pub response_price: f64,
+    /// Current exchange-side limit price for a live order.
+    pub order_price: f64,
 }
 
 impl CompactOrderQueryResp {
@@ -27,6 +30,7 @@ impl CompactOrderQueryResp {
         buf.put_i64_le(self.update_time_ms);
         buf.put_u8(self.time_in_force_u8);
         buf.put_f64_le(self.response_price);
+        buf.put_f64_le(self.order_price);
         buf.freeze()
     }
 
@@ -44,6 +48,7 @@ impl CompactOrderQueryResp {
         let update_time_ms = i64::from_le_bytes(body[17..25].try_into()?);
         let time_in_force_u8 = body[25];
         let response_price = f64::from_le_bytes(body[26..34].try_into()?);
+        let order_price = f64::from_le_bytes(body[34..42].try_into()?);
         Ok(Self {
             executed_qty,
             order_id,
@@ -51,6 +56,31 @@ impl CompactOrderQueryResp {
             update_time_ms,
             time_in_force_u8,
             response_price,
+            order_price,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_keeps_fill_and_order_prices_separate() {
+        let response = CompactOrderQueryResp {
+            executed_qty: 1.25,
+            order_id: 42,
+            status_u8: 2,
+            update_time_ms: 1_800_000_000_000,
+            time_in_force_u8: 4,
+            response_price: 99.5,
+            order_price: 101.25,
+        };
+        let bytes = response.to_bytes();
+        assert_eq!(bytes.len(), COMPACT_ORDER_QUERY_RESP_LEN);
+        assert_eq!(
+            CompactOrderQueryResp::from_bytes_prefix(&bytes).unwrap(),
+            response
+        );
     }
 }

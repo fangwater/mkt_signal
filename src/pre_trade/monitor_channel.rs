@@ -7149,6 +7149,10 @@ where
     fn client_order_id_str(&self) -> Option<&str> {
         OrderUpdate::client_order_id_str(self.inner)
     }
+
+    fn amendment_succeeded(&self) -> Option<bool> {
+        OrderUpdate::amendment_succeeded(self.inner)
+    }
 }
 
 impl<T> TradeUpdate for NormalizedUpdate<'_, T>
@@ -7708,6 +7712,9 @@ where
 
     let matched = strategy.is_strategy_order(order_id);
     if matched {
+        if normalized_update.amendment_succeeded().is_some() {
+            strategy.apply_order_amendment_result(normalized_update);
+        }
         match normalized_update.execution_type() {
             ExecutionType::New | ExecutionType::Canceled | ExecutionType::Replaced => {
                 strategy.apply_order_update(normalized_update);

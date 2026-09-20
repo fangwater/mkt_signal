@@ -39,7 +39,8 @@ impl TradeTypeMapping {
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => true,
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => true,
 
             // Gate 统一账户 / 合约走 WebSocket
             TradeRequestType::GateUnifiedNewOrder
@@ -104,7 +105,8 @@ impl TradeTypeMapping {
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -173,7 +175,8 @@ impl TradeTypeMapping {
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -242,7 +245,8 @@ impl TradeTypeMapping {
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -311,7 +315,8 @@ impl TradeTypeMapping {
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder
@@ -380,7 +385,8 @@ impl TradeTypeMapping {
             TradeRequestType::OkexNewMarginOrder
             | TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelMarginOrder
-            | TradeRequestType::OkexCancelUMOrder => {
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => {
                 unreachable!("Okex requests run via websocket; REST mapping not used")
             }
             TradeRequestType::GateUnifiedNewOrder

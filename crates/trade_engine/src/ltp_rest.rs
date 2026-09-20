@@ -1290,6 +1290,7 @@ pub fn parse_ltp_order_query_json_for_portfolio(
             .unwrap_or(TimeInForce::GTC)
             .to_u8(),
         response_price: response_price(&data),
+        order_price: parse_f64(&data.limit_price),
     };
     QueryLtpOrderOutcome::Compact {
         status: http_status,
@@ -1613,6 +1614,7 @@ mod tests {
                 assert_eq!(compact.executed_qty, 0.5);
                 assert_eq!(compact.status_u8, OrderExecutionStatus::Filled.to_u8());
                 assert_eq!(compact.response_price, 3200.0);
+                assert_eq!(compact.order_price, 3200.0);
             }
             other => panic!("unexpected parse result: {:?}", other),
         }
@@ -1627,6 +1629,7 @@ mod tests {
                 let compact = CompactOrderQueryResp::from_bytes_prefix(&body).unwrap();
                 assert_eq!(compact.status_u8, OrderExecutionStatus::Rejected.to_u8());
                 assert_eq!(compact.response_price, 0.1);
+                assert_eq!(compact.order_price, 0.1);
             }
             other => panic!("unexpected parse result: {:?}", other),
         }

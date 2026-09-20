@@ -351,7 +351,9 @@ impl OkexAccountEventParser {
                 parse_ord_type(order.get("ordType").and_then(|v| v.as_str()).unwrap_or(""));
             let cancel_source = parse_u8_field(order.get("cancelSource"));
             let amend_source = parse_u8_field(order.get("amendSource"));
-            let price = parse_okex_order_price_by_state(order, order_status);
+            let amend_result = parse_okex_amend_result(order.get("amendResult"));
+            let price = parse_f64_field(order.get("px"));
+            let fill_price = parse_f64_field(order.get("fillPx"));
             let quantity = parse_f64_field(order.get("sz"));
             let cumulative_filled_quantity = parse_f64_field(order.get("accFillSz"));
             let create_time = parse_i64_field(order.get("cTime"));
@@ -386,7 +388,9 @@ impl OkexAccountEventParser {
                 ord_type,
                 cancel_source,
                 amend_source,
+                amend_result,
                 price,
+                fill_price,
                 quantity,
                 cumulative_filled_quantity,
                 create_time,
@@ -623,13 +627,15 @@ fn parse_ord_type(ord_type: &str) -> u8 {
     }
 }
 
-fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f64 {
-    let px = parse_f64_field(order.get("px"));
-    let fill_px = parse_f64_field(order.get("fillPx"));
-    match state_u8 {
-        3 | 4 => fill_px,
-        _ => px,
-    }
+fn parse_okex_amend_result(value: Option<&serde_json::Value>) -> i8 {
+    value
+        .and_then(|value| {
+            value
+                .as_i64()
+                .and_then(|value| i8::try_from(value).ok())
+                .or_else(|| value.as_str()?.trim().parse::<i8>().ok())
+        })
+        .unwrap_or(OkexOrderMsg::AMEND_RESULT_NONE)
 }
 
 #[cfg(test)]
@@ -674,6 +680,33 @@ mod tests {
         }
 
         assert_eq!(event_types, vec![BasicAccountEventType::PositionUpdate]);
+    }
+
+    #[test]
+    fn partial_amend_keeps_order_price_fill_price_and_result_separate() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "orders", "instType": "SWAP"},
+            "data": [{
+                "instId": "BTC-USDT-SWAP", "instType": "SWAP",
+                "ordId": "42", "clOrdId": "1234567890", "tradeId": "7",
+                "state": "partially_filled", "side": "buy", "ordType": "post_only",
+                "cancelSource": "0", "amendSource": "1", "amendResult": "0",
+                "px": "70100", "fillPx": "70000", "sz": "2", "accFillSz": "1",
+                "cTime": "1800000000000", "uTime": "1800000000001",
+                "fillTime": "1800000000001"
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 1);
+        let wrapped = sink.recv().expect("order event");
+        let (_, _, payload) = split_basic_account_event(&wrapped).expect("wrapped event");
+        let order = OkexOrderMsg::from_bytes(payload).expect("order payload");
+        assert_eq!(order.state, 3);
+        assert_eq!(order.amend_result, 0);
+        assert_eq!(order.price, 70_100.0);
+        assert_eq!(order.fill_price, 70_000.0);
     }
 
     #[test]

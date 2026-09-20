@@ -1,3 +1,6 @@
+use crate::pre_trade::exec_algorithm_switch::{
+    active_names_key, load_switches, switch_key, ExecAlgorithmSwitch, ExecFamily, ExecSwitchState,
+};
 use crate::pre_trade::PersistChannel;
 use crate::strategy::batch_exec_strategy::{
     BatchExecConfig, BatchExecConfigOverride, BatchExecStrategy, BatchExecTarget,
@@ -108,6 +111,7 @@ pub struct BatchExecConfigReloader {
     /// same physical position is never allocated twice. Kept to warn only on
     /// transitions.
     conflicted_symbols: BTreeSet<String>,
+    switching_out_symbols: BTreeSet<String>,
 }
 
 const STRATEGY_NAMES_KEY: &str = "batch_exec:strategy_names";
@@ -305,7 +309,7 @@ fn validate_strategy_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_config_strategy_name(name: &str) -> Result<()> {
+pub(crate) fn validate_config_strategy_name(name: &str) -> Result<()> {
     validate_strategy_name(name)?;
     if name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME {
         anyhow::bail!("strategy_name is reserved: {name}");
@@ -596,6 +600,7 @@ impl BatchExecConfigReloader {
             removal_configs: BTreeMap::new(),
             close_configs: BTreeMap::new(),
             conflicted_symbols: BTreeSet::new(),
+            switching_out_symbols: BTreeSet::new(),
         })
     }
 
@@ -645,6 +650,173 @@ impl BatchExecConfigReloader {
         );
         self.position_ledger = Some(ledger);
         Ok(())
+    }
+
+    fn begin_requested_switches(
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        venue: TradingVenue,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+    ) {
+        let requested = switches
+            .iter()
+            .filter(|(_, switch)| {
+                switch.from_family == ExecFamily::BatchExec
+                    && switch.state == ExecSwitchState::Requested
+            })
+            .map(|(name, _)| name.as_str())
+            .collect::<BTreeSet<_>>();
+        if requested.is_empty() {
+            return;
+        }
+        let strategy_ids = {
+            let manager = strategy_mgr.borrow();
+            manager
+                .iter_ids()
+                .copied()
+                .filter(|strategy_id| {
+                    manager.get(*strategy_id).is_some_and(|strategy| {
+                        strategy
+                            .as_any()
+                            .downcast_ref::<BatchExecStrategy>()
+                            .is_some_and(|exec| {
+                                exec.exec_venue() == venue
+                                    && requested.contains(exec.strategy_name())
+                            })
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut manager = strategy_mgr.borrow_mut();
+        for strategy_id in strategy_ids {
+            if let Some(mut strategy) = manager.take(strategy_id) {
+                if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                    exec.begin_position_reallocation();
+                }
+                manager.insert(strategy);
+            }
+        }
+    }
+
+    fn requested_switch_symbols(
+        &self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+    ) -> BTreeSet<String> {
+        let requested = switches
+            .iter()
+            .filter(|(_, switch)| {
+                switch.from_family == ExecFamily::BatchExec
+                    && switch.state == ExecSwitchState::Requested
+            })
+            .map(|(name, _)| name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut symbols = BTreeSet::new();
+        if let Some(ledger) = self.position_ledger.as_ref() {
+            for strategy_name in &requested {
+                if let Some(positions) = ledger.positions.get(*strategy_name) {
+                    symbols.extend(positions.keys().cloned());
+                }
+            }
+        }
+        let manager = strategy_mgr.borrow();
+        for strategy_id in manager.iter_ids().copied() {
+            if let Some(exec) = manager
+                .get(strategy_id)
+                .and_then(|strategy| strategy.as_any().downcast_ref::<BatchExecStrategy>())
+                .filter(|exec| {
+                    exec.exec_venue() == self.venue && requested.contains(exec.strategy_name())
+                })
+            {
+                symbols.insert(exec.exec_symbol().to_string());
+            }
+        }
+        symbols
+    }
+
+    async fn import_ready_switches(
+        &mut self,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+    ) -> Result<BTreeMap<String, BTreeMap<String, f64>>> {
+        let incoming = switches
+            .iter()
+            .filter(|(_, switch)| {
+                switch.to_family == ExecFamily::BatchExec && switch.state == ExecSwitchState::Ready
+            })
+            .map(|(name, switch)| (name.clone(), switch.positions.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if incoming.is_empty() {
+            return Ok(incoming);
+        }
+        let ledger = self
+            .position_ledger
+            .as_mut()
+            .context("BatchExec position ledger was not loaded")?;
+        let mut changed = false;
+        for (strategy_name, positions) in &incoming {
+            for (symbol, qty) in positions {
+                if ledger.get(strategy_name, symbol) != Some(*qty) {
+                    ledger.set(strategy_name, symbol, *qty);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            ledger.updated_at_us = get_timestamp_us();
+            self.client
+                .set_json(POSITION_LEDGER_KEY, ledger)
+                .await
+                .with_context(|| {
+                    format!("import Exec switch into Redis key {POSITION_LEDGER_KEY}")
+                })?;
+        }
+        Ok(incoming)
+    }
+
+    async fn cleanup_activated_switches(
+        &mut self,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+    ) -> Result<usize> {
+        let completed = switches
+            .iter()
+            .filter(|(_, switch)| {
+                switch.from_family == ExecFamily::BatchExec
+                    && switch.state == ExecSwitchState::Activated
+            })
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        let mut cleaned = 0usize;
+        for strategy_name in completed {
+            let mut next_ledger = self
+                .position_ledger
+                .clone()
+                .unwrap_or_else(BatchExecPositionLedger::empty);
+            next_ledger.remove_strategy(&strategy_name);
+            next_ledger.updated_at_us = get_timestamp_us();
+            let mut completed_switch = switches[&strategy_name].clone();
+            completed_switch.state = ExecSwitchState::Completed;
+            completed_switch.updated_at_us = next_ledger.updated_at_us;
+            let writes = vec![
+                (
+                    POSITION_LEDGER_KEY.to_string(),
+                    serde_json::to_string(&next_ledger)?,
+                ),
+                (
+                    switch_key(&strategy_name),
+                    serde_json::to_string(&completed_switch)?,
+                ),
+            ];
+            self.client
+                .atomic_write(&writes, &[Self::redis_key(&strategy_name)])
+                .await
+                .with_context(|| {
+                    format!("finish BatchExec algorithm switch: strategy_name={strategy_name}")
+                })?;
+            self.position_ledger = Some(next_ledger);
+            self.snapshots.remove(&strategy_name);
+            cleaned += 1;
+            info!("BatchExec algorithm switch cleanup complete: strategy_name={strategy_name}");
+        }
+        Ok(cleaned)
     }
 
     async fn initialize_target_leverages(
@@ -1085,7 +1257,10 @@ impl BatchExecConfigReloader {
                 .or_default()
                 .push(candidate);
         }
-        groups.retain(|symbol, _| !self.conflicted_symbols.contains(symbol));
+        groups.retain(|symbol, _| {
+            !self.conflicted_symbols.contains(symbol)
+                && !self.switching_out_symbols.contains(symbol)
+        });
         let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
         let mut applied = 0usize;
         let mut last_publish_ts_us = 0i64;
@@ -1278,7 +1453,10 @@ impl BatchExecConfigReloader {
                 .or_default()
                 .push(candidate.clone());
         }
-        groups.retain(|symbol, _| !self.conflicted_symbols.contains(symbol));
+        groups.retain(|symbol, _| {
+            !self.conflicted_symbols.contains(symbol)
+                && !self.switching_out_symbols.contains(symbol)
+        });
 
         let mut missing_close_symbols = BTreeSet::new();
         for (symbol, group) in &groups {
@@ -1325,7 +1503,10 @@ impl BatchExecConfigReloader {
                     .or_default()
                     .push(candidate.clone());
             }
-            groups.retain(|symbol, _| !self.conflicted_symbols.contains(symbol));
+            groups.retain(|symbol, _| {
+                !self.conflicted_symbols.contains(symbol)
+                    && !self.switching_out_symbols.contains(symbol)
+            });
         }
 
         let mut plans = Vec::new();
@@ -1465,9 +1646,210 @@ impl BatchExecConfigReloader {
         Ok(applied)
     }
 
+    async fn advance_requested_switches(
+        &mut self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+    ) -> Result<usize> {
+        if !crate::pre_trade::monitor_channel::MonitorChannel::instance()
+            .exec_position_snapshot_ready()
+        {
+            return Ok(0);
+        }
+        let requested = switches
+            .iter()
+            .filter(|(_, switch)| {
+                switch.from_family == ExecFamily::BatchExec
+                    && switch.state == ExecSwitchState::Requested
+            })
+            .map(|(name, switch)| (name.clone(), switch.clone()))
+            .collect::<Vec<_>>();
+        let mut advanced = 0usize;
+        for (strategy_name, mut switch) in requested {
+            let mut positions = self
+                .position_ledger
+                .as_ref()
+                .and_then(|ledger| ledger.positions.get(&strategy_name))
+                .cloned()
+                .unwrap_or_default();
+            let strategy_ids = {
+                let manager = strategy_mgr.borrow();
+                manager
+                    .iter_ids()
+                    .copied()
+                    .filter(|strategy_id| {
+                        manager.get(*strategy_id).is_some_and(|strategy| {
+                            strategy
+                                .as_any()
+                                .downcast_ref::<BatchExecStrategy>()
+                                .is_some_and(|exec| {
+                                    exec.exec_venue() == self.venue
+                                        && exec.strategy_name() == strategy_name
+                                })
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut runtime_symbols = BTreeSet::new();
+            let mut settled = !strategy_ids.is_empty()
+                || positions
+                    .values()
+                    .all(|qty| qty.abs() <= POSITION_ALLOCATION_EPS);
+            {
+                let mut manager = strategy_mgr.borrow_mut();
+                for strategy_id in &strategy_ids {
+                    let Some(mut strategy) = manager.take(*strategy_id) else {
+                        settled = false;
+                        continue;
+                    };
+                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                        exec.begin_position_reallocation();
+                        runtime_symbols.insert(exec.exec_symbol().to_string());
+                        match exec.virtual_position_qty() {
+                            Some(qty)
+                                if exec.position_reconciliation_settled(get_timestamp_us()) =>
+                            {
+                                positions.insert(exec.exec_symbol().to_string(), qty);
+                            }
+                            _ => settled = false,
+                        }
+                    }
+                    manager.insert(strategy);
+                }
+            }
+            if positions.iter().any(|(symbol, qty)| {
+                qty.abs() > POSITION_ALLOCATION_EPS && !runtime_symbols.contains(symbol)
+            }) {
+                settled = false;
+            }
+            if settled {
+                let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+                let ledger = self
+                    .position_ledger
+                    .as_ref()
+                    .context("BatchExec position ledger was not loaded")?;
+                for symbol in positions.keys() {
+                    let allocated = ledger
+                        .positions
+                        .values()
+                        .filter_map(|strategy_positions| strategy_positions.get(symbol))
+                        .sum::<f64>();
+                    let account = monitor.get_position_qty(symbol, self.venue);
+                    if (allocated - account).abs() > POSITION_ALLOCATION_EPS {
+                        warn!(
+                            "BatchExec algorithm switch waits for aggregate position reconciliation: strategy_name={} symbol={} allocated_qty={:.8} account_qty={:.8}",
+                            strategy_name, symbol, allocated, account
+                        );
+                        settled = false;
+                    }
+                }
+            }
+            if !settled {
+                continue;
+            }
+
+            switch.state = ExecSwitchState::Ready;
+            switch.updated_at_us = get_timestamp_us().max(switch.requested_at_us);
+            switch.positions = positions;
+            switch.validate(&strategy_name)?;
+            let source_names_key = active_names_key(switch.from_family);
+            let destination_names_key = active_names_key(switch.to_family);
+            self.client
+                .atomic_move_json_index_member(
+                    &source_names_key,
+                    &destination_names_key,
+                    &strategy_name,
+                    &switch_key(&strategy_name),
+                    &serde_json::to_string(&switch)?,
+                )
+                .await
+                .with_context(|| {
+                    format!("publish ready Exec algorithm switch: strategy_name={strategy_name}")
+                })?;
+            {
+                let mut manager = strategy_mgr.borrow_mut();
+                for strategy_id in strategy_ids {
+                    manager.remove(strategy_id);
+                }
+            }
+            self.snapshots.remove(&strategy_name);
+            advanced += 1;
+            info!(
+                "BatchExec algorithm switch ready after cancel reconciliation: strategy_name={} destination={} positions={:?}",
+                strategy_name,
+                switch.to_family.namespace(),
+                switch.positions
+            );
+        }
+        Ok(advanced)
+    }
+
+    async fn activate_ready_switches(
+        &mut self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
+        active_names: &BTreeSet<String>,
+    ) -> Result<usize> {
+        let mut activated = 0usize;
+        for (strategy_name, current) in switches {
+            if current.to_family != ExecFamily::BatchExec
+                || current.state != ExecSwitchState::Ready
+                || !active_names.contains(strategy_name)
+                || !self.snapshots.contains_key(strategy_name)
+            {
+                continue;
+            }
+            let ready = {
+                let manager = strategy_mgr.borrow();
+                current.positions.iter().all(|(symbol, expected)| {
+                    manager.iter_ids().copied().any(|strategy_id| {
+                        manager.get(strategy_id).is_some_and(|strategy| {
+                            strategy
+                                .as_any()
+                                .downcast_ref::<BatchExecStrategy>()
+                                .is_some_and(|exec| {
+                                    exec.exec_venue() == self.venue
+                                        && exec.strategy_name() == strategy_name
+                                        && exec.exec_symbol() == symbol
+                                        && exec.position_allocation_ready()
+                                        && exec.virtual_position_qty().is_some_and(|qty| {
+                                            (qty - expected).abs() <= POSITION_ALLOCATION_EPS
+                                        })
+                                })
+                        })
+                    })
+                })
+            };
+            if !ready {
+                continue;
+            }
+            let mut next = current.clone();
+            next.state = ExecSwitchState::Activated;
+            next.updated_at_us = get_timestamp_us().max(next.requested_at_us);
+            self.client
+                .set_json(&switch_key(strategy_name), &next)
+                .await
+                .with_context(|| {
+                    format!("activate BatchExec algorithm switch: strategy_name={strategy_name}")
+                })?;
+            activated += 1;
+            info!(
+                "BatchExec algorithm switch activated: strategy_name={} source={}",
+                strategy_name,
+                next.from_family.namespace()
+            );
+        }
+        Ok(activated)
+    }
+
     pub async fn reload(&mut self, strategy_mgr: &Rc<RefCell<StrategyManager>>) -> Result<usize> {
         self.load_position_ledger().await?;
         let mut applied = 0usize;
+        let switches = load_switches(&mut self.client).await?;
+        self.switching_out_symbols = self.requested_switch_symbols(strategy_mgr, &switches);
+        Self::begin_requested_switches(strategy_mgr, self.venue, &switches);
+        let incoming_positions = self.import_ready_switches(&switches).await?;
+        applied += self.cleanup_activated_switches(&switches).await?;
         let strategy_names = self
             .client
             .get_json::<Vec<String>>(STRATEGY_NAMES_KEY)
@@ -1527,9 +1909,27 @@ impl BatchExecConfigReloader {
             payload
                 .validate()
                 .with_context(|| format!("invalid BatchExec config key={key}"))?;
-            let normalized_targets = payload
+            let mut normalized_targets = payload
                 .normalized_targets()
                 .with_context(|| format!("invalid BatchExec targets key={key}"))?;
+            if let Some(positions) = self
+                .position_ledger
+                .as_ref()
+                .and_then(|ledger| ledger.positions.get(&strategy_name))
+            {
+                for symbol in positions.keys() {
+                    normalized_targets
+                        .entry(symbol.clone())
+                        .or_insert(BatchExecTarget::ZERO);
+                }
+            }
+            if let Some(positions) = incoming_positions.get(&strategy_name) {
+                for symbol in positions.keys() {
+                    normalized_targets
+                        .entry(symbol.clone())
+                        .or_insert(BatchExecTarget::ZERO);
+                }
+            }
             let normalized_symbol_overrides = payload
                 .normalized_symbol_overrides()
                 .with_context(|| format!("invalid BatchExec symbol overrides key={key}"))?;
@@ -1610,6 +2010,26 @@ impl BatchExecConfigReloader {
                             exec.update_target(target, get_timestamp_us(), key.as_bytes().to_vec());
                             applied += 1;
                         }
+                        let switching_out = switches.get(&strategy_name).is_some_and(|switch| {
+                            switch.from_family == ExecFamily::BatchExec
+                                && switch.state == ExecSwitchState::Requested
+                        });
+                        if switching_out {
+                            if exec.virtual_position_qty().is_none() {
+                                if let Some(position_qty) = self
+                                    .position_ledger
+                                    .as_ref()
+                                    .and_then(|ledger| ledger.get(&strategy_name, &symbol))
+                                {
+                                    exec.apply_position_allocation(
+                                        position_qty,
+                                        get_timestamp_us(),
+                                    )
+                                    .map_err(anyhow::Error::msg)?;
+                                }
+                            }
+                            exec.begin_position_reallocation();
+                        }
                     }
                     strategy_mgr.borrow_mut().insert(strategy);
                 }
@@ -1627,8 +2047,17 @@ impl BatchExecConfigReloader {
             self.snapshots.insert(strategy_name, payload);
         }
 
+        self.switching_out_symbols = self.requested_switch_symbols(strategy_mgr, &switches);
+
+        let mut ledger_exemptions = removal_requests.clone();
+        ledger_exemptions.extend(
+            switches
+                .iter()
+                .filter(|(_, switch)| switch.from_family == ExecFamily::BatchExec)
+                .map(|(name, _)| name.clone()),
+        );
         let unmanaged_ledger_names =
-            self.unmanaged_nonzero_ledger_names(strategy_mgr, &active_names, &removal_requests);
+            self.unmanaged_nonzero_ledger_names(strategy_mgr, &active_names, &ledger_exemptions);
         if !unmanaged_ledger_names.is_empty() {
             anyhow::bail!(
                 "BatchExec position ledger contains non-zero strategies without an explicit removal request: {}; use DELETE /api/strategy?name=<strategy_name>",
@@ -1659,6 +2088,12 @@ impl BatchExecConfigReloader {
         applied += self.ensure_position_close_strategies(strategy_mgr, &persisted_close_symbols);
 
         applied += self.reconcile_position_allocations(strategy_mgr).await?;
+        applied += self
+            .advance_requested_switches(strategy_mgr, &switches)
+            .await?;
+        applied += self
+            .activate_ready_switches(strategy_mgr, &switches, &active_names)
+            .await?;
         Ok(applied)
     }
 

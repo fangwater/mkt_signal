@@ -24,7 +24,9 @@ impl HedgeOrderReconcileState {
     pub fn is_cancel_reconcile_reason(reason: PendingOrderQueryReason) -> bool {
         matches!(
             reason,
-            PendingOrderQueryReason::CancelFailed | PendingOrderQueryReason::CancelRejected
+            PendingOrderQueryReason::CancelWatchdog
+                | PendingOrderQueryReason::CancelFailed
+                | PendingOrderQueryReason::CancelRejected
         )
     }
 
@@ -38,6 +40,22 @@ impl HedgeOrderReconcileState {
                 .get(&client_order_id)
                 .map(|(_, reason)| *reason)
                 .is_some_and(Self::is_cancel_reconcile_reason)
+    }
+
+    fn clear_live_order_query_state(&mut self, client_order_id: i64) {
+        if self.pending_order_queries.get(&client_order_id).copied()
+            == Some(PendingOrderQueryReason::OrderWatchdog)
+        {
+            self.pending_order_queries.remove(&client_order_id);
+        }
+        if self
+            .order_query_watchdogs
+            .get(&client_order_id)
+            .map(|(_, reason)| *reason)
+            == Some(PendingOrderQueryReason::OrderWatchdog)
+        {
+            self.order_query_watchdogs.remove(&client_order_id);
+        }
     }
 }
 
@@ -258,6 +276,34 @@ pub trait HedgeOrderReconcileCommon: Strategy {
         }
     }
 
+    fn order_query_reason(&self, client_order_id: i64) -> Option<PendingOrderQueryReason> {
+        let state = self.hedge_reconcile_state();
+        state
+            .pending_order_queries
+            .get(&client_order_id)
+            .copied()
+            .or_else(|| {
+                state
+                    .order_query_watchdogs
+                    .get(&client_order_id)
+                    .map(|(_, reason)| *reason)
+            })
+    }
+
+    fn clear_pending_order_query(&mut self, client_order_id: i64) {
+        self.hedge_reconcile_state_mut()
+            .pending_order_queries
+            .remove(&client_order_id);
+    }
+
+    fn clear_live_order_query_state(&mut self, client_order_id: i64) {
+        // A live update confirms that the exchange still knows the order. It
+        // does not confirm a pending cancel, so only placement/amend watchdogs
+        // may be retired here.
+        self.hedge_reconcile_state_mut()
+            .clear_live_order_query_state(client_order_id);
+    }
+
     fn handle_order_query_watchdogs(&mut self) {
         if self
             .hedge_reconcile_state()
@@ -452,8 +498,41 @@ mod tests {
         assert!(HedgeOrderReconcileState::is_cancel_reconcile_reason(
             PendingOrderQueryReason::CancelRejected
         ));
+        assert!(HedgeOrderReconcileState::is_cancel_reconcile_reason(
+            PendingOrderQueryReason::CancelWatchdog
+        ));
         assert!(!HedgeOrderReconcileState::is_cancel_reconcile_reason(
             PendingOrderQueryReason::OrderWatchdog
         ));
+    }
+
+    #[test]
+    fn live_update_preserves_cancel_watchdog_but_clears_order_watchdog() {
+        let mut state = HedgeOrderReconcileState::default();
+        state
+            .pending_order_queries
+            .insert(1, PendingOrderQueryReason::CancelWatchdog);
+        state
+            .order_query_watchdogs
+            .insert(1, (10, PendingOrderQueryReason::CancelWatchdog));
+        state.clear_live_order_query_state(1);
+        assert_eq!(
+            state.pending_order_queries.get(&1),
+            Some(&PendingOrderQueryReason::CancelWatchdog)
+        );
+        assert_eq!(
+            state.order_query_watchdogs.get(&1),
+            Some(&(10, PendingOrderQueryReason::CancelWatchdog))
+        );
+
+        state
+            .pending_order_queries
+            .insert(2, PendingOrderQueryReason::OrderWatchdog);
+        state
+            .order_query_watchdogs
+            .insert(2, (20, PendingOrderQueryReason::OrderWatchdog));
+        state.clear_live_order_query_state(2);
+        assert!(!state.pending_order_queries.contains_key(&2));
+        assert!(!state.order_query_watchdogs.contains_key(&2));
     }
 }

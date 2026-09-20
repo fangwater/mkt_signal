@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BatchExec Redis configuration server."""
+"""Exec Redis configuration server."""
 
 from __future__ import annotations
 
@@ -58,12 +58,39 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "limit_price": None,
     },
 }
+EXECUTION_FAMILIES = ("batch_exec", "chase_exec")
+CHASE_ORDER_PARAMETER_FIELDS = (
+    "single_order_usdt",
+    "max_open_usdt",
+    "maker_recenter_trigger_bps",
+    "maker_amend_cooldown_ms",
+    "maker_timeout_ms",
+    "target_tolerance_usdt",
+    "bbo_max_age_ms",
+)
+DEFAULT_CHASE_CONFIG: Dict[str, Any] = {
+    "single_order_usdt": 100.0,
+    "max_open_usdt": 200.0,
+    "maker_recenter_trigger_bps": 3.0,
+    "maker_amend_cooldown_ms": 0,
+    "maker_timeout_ms": 60000,
+    "target_tolerance_usdt": 10.0,
+    "bbo_max_age_ms": 2000,
+    "targets": {},
+}
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
 ORDER_PARAMETER_TOKEN_ENV = "CRYPTO_CTA_MANAGER_WRITE_TOKEN"
 
 
 class ConfigVersionConflict(ValueError):
     """Raised when an editor tries to overwrite a newer Redis value."""
+
+
+def normalize_execution_family(raw: Any) -> str:
+    family = str(raw or "batch_exec").strip()
+    if family not in EXECUTION_FAMILIES:
+        raise ValueError("execution_family must be batch_exec or chase_exec")
+    return family
 
 
 def validate_strategy_name(raw: Any) -> str:
@@ -276,19 +303,115 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     return normalized
 
 
-def normalize_order_parameters(raw: Any) -> Dict[str, Any]:
+def normalize_chase_config(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("config must be an object")
+    allowed = set(CHASE_ORDER_PARAMETER_FIELDS) | {
+        "targets",
+        "symbol_overrides",
+        "updated_at_us",
+    }
+    unknown = sorted(set(raw) - allowed)
+    missing = sorted((set(CHASE_ORDER_PARAMETER_FIELDS) | {"targets"}) - set(raw))
+    if unknown:
+        raise ValueError(f"unknown fields: {', '.join(unknown)}")
+    if missing:
+        raise ValueError(f"missing fields: {', '.join(missing)}")
+
+    tolerance = finite_float(raw["target_tolerance_usdt"], "target_tolerance_usdt")
+    if tolerance < 0:
+        raise ValueError("target_tolerance_usdt must be >= 0")
+    recenter = finite_float(
+        raw["maker_recenter_trigger_bps"], "maker_recenter_trigger_bps"
+    )
+    if recenter < 0:
+        raise ValueError("maker_recenter_trigger_bps must be >= 0")
+    normalized = {
+        "single_order_usdt": finite_float(
+            raw["single_order_usdt"], "single_order_usdt", positive=True
+        ),
+        "max_open_usdt": finite_float(
+            raw["max_open_usdt"], "max_open_usdt", positive=True
+        ),
+        "maker_recenter_trigger_bps": recenter,
+        "maker_amend_cooldown_ms": integer(
+            raw["maker_amend_cooldown_ms"], "maker_amend_cooldown_ms"
+        ),
+        "maker_timeout_ms": integer(
+            raw["maker_timeout_ms"], "maker_timeout_ms", positive=True
+        ),
+        "target_tolerance_usdt": tolerance,
+        "bbo_max_age_ms": integer(
+            raw["bbo_max_age_ms"], "bbo_max_age_ms", positive=True
+        ),
+        "targets": normalize_targets(raw["targets"]),
+    }
+    if "symbol_overrides" in raw:
+        overrides = normalize_chase_symbol_overrides(raw["symbol_overrides"])
+        if overrides:
+            normalized["symbol_overrides"] = overrides
+    updated_at_us = raw.get("updated_at_us")
+    if updated_at_us is not None:
+        if isinstance(updated_at_us, bool) or not isinstance(updated_at_us, int):
+            raise ValueError("updated_at_us must be an integer")
+        if updated_at_us <= 0 or updated_at_us > 9_223_372_036_854_775_807:
+            raise ValueError("updated_at_us must be a positive int64")
+        normalized["updated_at_us"] = updated_at_us
+    return normalized
+
+
+def normalize_chase_symbol_overrides(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        raise ValueError("symbol_overrides must be an object")
+    overrides: Dict[str, Dict[str, Any]] = {}
+    for raw_symbol, raw_override in raw.items():
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in overrides:
+            raise ValueError(f"duplicate symbol override: {symbol}")
+        if not isinstance(raw_override, dict) or not raw_override:
+            raise ValueError(
+                f"symbol_overrides.{symbol} must override at least one parameter"
+            )
+        unknown = sorted(set(raw_override) - set(CHASE_ORDER_PARAMETER_FIELDS))
+        if unknown:
+            raise ValueError(
+                f"unknown symbol_overrides.{symbol} fields: {', '.join(unknown)}"
+            )
+        normalized = normalize_chase_config(
+            {**DEFAULT_CHASE_CONFIG, **raw_override, "targets": {}}
+        )
+        overrides[symbol] = {name: normalized[name] for name in raw_override}
+    return dict(sorted(overrides.items()))
+
+
+def normalize_config(raw: Any, execution_family: str) -> Dict[str, Any]:
+    family = normalize_execution_family(execution_family)
+    if family == "chase_exec":
+        return normalize_chase_config(raw)
+    return normalize_exec_config(raw)
+
+
+def normalize_order_parameters(
+    raw: Any, execution_family: str = "batch_exec"
+) -> Dict[str, Any]:
+    family = normalize_execution_family(execution_family)
     if not isinstance(raw, dict):
         raise ValueError("order_parameters must be an object")
-    allowed = set(ORDER_PARAMETER_FIELDS)
+    fields = (
+        CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
+    )
+    allowed = set(fields)
     unknown = sorted(set(raw) - allowed)
-    missing = sorted(allowed - {"algorithm", "pov"} - set(raw))
+    optional = {"algorithm", "pov"} if family == "batch_exec" else set()
+    missing = sorted(allowed - optional - set(raw))
     if unknown:
         raise ValueError(f"unknown order parameter fields: {', '.join(unknown)}")
     if missing:
         raise ValueError(f"missing order parameter fields: {', '.join(missing)}")
 
-    normalized = normalize_exec_config({**raw, "targets": {}})
-    return {field: normalized[field] for field in ORDER_PARAMETER_FIELDS}
+    defaults = DEFAULT_CHASE_CONFIG if family == "chase_exec" else DEFAULT_CONFIG
+    normalized = normalize_config({**defaults, **raw, "targets": {}}, family)
+    return {field: normalized[field] for field in fields}
 
 
 def normalize_expected_updated_at_us(raw: Any) -> Optional[int]:
@@ -316,14 +439,16 @@ def decode_strategy_names(raw: Any, label: str) -> List[str]:
     return sorted(names)
 
 
-def decode_stored_exec_config(raw: Any) -> Optional[Dict[str, Any]]:
+def decode_stored_exec_config(
+    raw: Any, execution_family: str = "batch_exec"
+) -> Optional[Dict[str, Any]]:
     if raw is None:
         return None
     try:
         decoded = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Redis value is not valid JSON: {exc}") from exc
-    return normalize_exec_config(decoded)
+    return normalize_config(decoded, execution_family)
 
 
 class ExecConfigStore:
@@ -350,31 +475,61 @@ class ExecConfigStore:
         self.removed_index_key = f"{self.prefix}removed_strategy_names"
         self._save_lock = threading.Lock()
 
-    def key(self, strategy_name: str) -> str:
-        return f"{self.prefix}{validate_strategy_name(strategy_name)}"
+    def family_prefix(self, execution_family: str = "batch_exec") -> str:
+        family = normalize_execution_family(execution_family)
+        return f"{self.env_name}:{self.venue}:{family}:"
 
-    def list_strategy_names(self) -> List[str]:
-        return decode_strategy_names(self.client.get(self.index_key), "strategy index")
-
-    def load(self, strategy_name: str) -> Optional[Dict[str, Any]]:
-        return decode_stored_exec_config(self.client.get(self.key(strategy_name)))
-
-    def list_removed_strategy_names(self) -> List[str]:
-        return decode_strategy_names(
-            self.client.get(self.removed_index_key), "removed strategy index"
+    def key(
+        self, strategy_name: str, execution_family: str = "batch_exec"
+    ) -> str:
+        return (
+            f"{self.family_prefix(execution_family)}"
+            f"{validate_strategy_name(strategy_name)}"
         )
 
-    def save(self, strategy_name: str, config: Any) -> Dict[str, Any]:
+    def list_strategy_names(self, execution_family: str = "batch_exec") -> List[str]:
+        index_key = f"{self.family_prefix(execution_family)}strategy_names"
+        return decode_strategy_names(self.client.get(index_key), "strategy index")
+
+    def load(
+        self, strategy_name: str, execution_family: str = "batch_exec"
+    ) -> Optional[Dict[str, Any]]:
+        return decode_stored_exec_config(
+            self.client.get(self.key(strategy_name, execution_family)),
+            execution_family,
+        )
+
+    def list_removed_strategy_names(
+        self, execution_family: str = "batch_exec"
+    ) -> List[str]:
+        removed_key = f"{self.family_prefix(execution_family)}removed_strategy_names"
+        return decode_strategy_names(
+            self.client.get(removed_key), "removed strategy index"
+        )
+
+    def save(
+        self,
+        strategy_name: str,
+        config: Any,
+        execution_family: str = "batch_exec",
+    ) -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
-        normalized = normalize_exec_config(config)
+        family = normalize_execution_family(execution_family)
+        normalized = normalize_config(config, family)
+        prefix = self.family_prefix(family)
+        index_key = f"{prefix}strategy_names"
+        config_key = self.key(name, family)
+        fields = (
+            CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
+        )
         with self._save_lock:
-            if name in self.list_removed_strategy_names():
+            if name in self.list_removed_strategy_names(family):
                 raise ValueError(f"strategy removal already requested: {name}")
-            strategy_names = self.list_strategy_names()
-            current = self.load(name) if name in strategy_names else None
+            strategy_names = self.list_strategy_names(family)
+            current = self.load(name, family) if name in strategy_names else None
             if current is not None:
                 # Existing strategy publishers own targets; the Config page owns order params.
-                for field in ORDER_PARAMETER_FIELDS:
+                for field in fields:
                     normalized[field] = current[field]
             # Receipt time is authoritative even when a publisher repeats an unchanged target map.
             next_version = time.time_ns() // 1_000
@@ -382,13 +537,13 @@ class ExecConfigStore:
                 next_version = max(next_version, current["updated_at_us"] + 1)
             normalized["updated_at_us"] = next_version
             self.client.set(
-                self.key(name),
+                config_key,
                 json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
             )
             if name not in strategy_names:
                 strategy_names.append(name)
                 self.client.set(
-                    self.index_key,
+                    index_key,
                     json.dumps(sorted(strategy_names), ensure_ascii=False, separators=(",", ":")),
                 )
         return normalized
@@ -398,27 +553,34 @@ class ExecConfigStore:
         strategy_name: str,
         order_parameters: Any,
         expected_updated_at_us: Any,
+        execution_family: str = "batch_exec",
     ) -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
-        normalized_parameters = normalize_order_parameters(order_parameters)
+        family = normalize_execution_family(execution_family)
+        normalized_parameters = normalize_order_parameters(order_parameters, family)
         expected_version = normalize_expected_updated_at_us(expected_updated_at_us)
-        config_key = self.key(name)
+        prefix = self.family_prefix(family)
+        index_key = f"{prefix}strategy_names"
+        removed_key = f"{prefix}removed_strategy_names"
+        config_key = self.key(name, family)
         with self._save_lock:
             try:
                 with self.client.pipeline() as pipeline:
                     pipeline.watch(
-                        self.index_key,
-                        self.removed_index_key,
+                        index_key,
+                        removed_key,
                         config_key,
                     )
                     strategy_names = decode_strategy_names(
-                        pipeline.get(self.index_key), "strategy index"
+                        pipeline.get(index_key), "strategy index"
                     )
                     removed_names = decode_strategy_names(
-                        pipeline.get(self.removed_index_key),
+                        pipeline.get(removed_key),
                         "removed strategy index",
                     )
-                    current = decode_stored_exec_config(pipeline.get(config_key))
+                    current = decode_stored_exec_config(
+                        pipeline.get(config_key), family
+                    )
 
                     if name in removed_names:
                         raise ValueError(f"strategy removal already requested: {name}")
@@ -454,21 +616,28 @@ class ExecConfigStore:
                 ) from exc
         return updated
 
-    def remove(self, strategy_name: str) -> bool:
+    def remove(
+        self, strategy_name: str, execution_family: str = "batch_exec"
+    ) -> bool:
         name = validate_strategy_name(strategy_name)
+        family = normalize_execution_family(execution_family)
+        prefix = self.family_prefix(family)
+        index_key = f"{prefix}strategy_names"
+        removed_key = f"{prefix}removed_strategy_names"
+        config_key = self.key(name, family)
         with self._save_lock:
-            strategy_names = self.list_strategy_names()
-            removed_names = self.list_removed_strategy_names()
+            strategy_names = self.list_strategy_names(family)
+            removed_names = self.list_removed_strategy_names(family)
             if (
                 name not in strategy_names
                 and name not in removed_names
-                and self.client.get(self.key(name)) is None
+                and self.client.get(config_key) is None
             ):
                 return False
             if name not in removed_names:
                 removed_names.append(name)
                 self.client.set(
-                    self.removed_index_key,
+                    removed_key,
                     json.dumps(
                         sorted(removed_names),
                         ensure_ascii=False,
@@ -478,7 +647,7 @@ class ExecConfigStore:
             if name in strategy_names:
                 strategy_names.remove(name)
                 self.client.set(
-                    self.index_key,
+                    index_key,
                     json.dumps(strategy_names, ensure_ascii=False, separators=(",", ":")),
                 )
         return True
@@ -737,33 +906,55 @@ def make_handler(
                             "env_name": store.env_name,
                             "venue": store.venue,
                             "key_prefix": store.prefix,
+                            "key_prefixes": {
+                                family: store.family_prefix(family)
+                                for family in EXECUTION_FAMILIES
+                            },
                             "dashboard_url": dashboard_url,
                             "defaults": DEFAULT_CONFIG,
+                            "defaults_by_execution_family": {
+                                "batch_exec": DEFAULT_CONFIG,
+                                "chase_exec": DEFAULT_CHASE_CONFIG,
+                            },
                         },
                     )
                     return
                 if parsed.path == "/api/strategies":
+                    query = parse_qs(parsed.query)
+                    family = normalize_execution_family(
+                        (query.get("execution_family") or ["batch_exec"])[0]
+                    )
                     self.send_json(
                         200,
                         {
                             "ok": True,
-                            "strategies": store.list_strategy_names(),
-                            "removed": store.list_removed_strategy_names(),
+                            "execution_family": family,
+                            "strategies": store.list_strategy_names(family),
+                            "removed": store.list_removed_strategy_names(family),
                         },
                     )
                     return
                 if parsed.path == "/api/strategy":
                     query = parse_qs(parsed.query)
                     name = validate_strategy_name((query.get("name") or [""])[0])
-                    config = store.load(name)
+                    family = normalize_execution_family(
+                        (query.get("execution_family") or ["batch_exec"])[0]
+                    )
+                    config = store.load(name, family)
                     self.send_json(
                         200,
                         {
                             "ok": True,
                             "strategy_name": name,
-                            "key": store.key(name),
+                            "execution_family": family,
+                            "key": store.key(name, family),
                             "exists": config is not None,
-                            "config": config or DEFAULT_CONFIG,
+                            "config": config
+                            or (
+                                DEFAULT_CHASE_CONFIG
+                                if family == "chase_exec"
+                                else DEFAULT_CONFIG
+                            ),
                         },
                     )
                     return
@@ -807,7 +998,8 @@ def make_handler(
                         "expected_updated_at_us",
                         "order_parameters",
                     }
-                    unknown = sorted(set(payload) - required)
+                    allowed = required | {"execution_family"}
+                    unknown = sorted(set(payload) - allowed)
                     missing = sorted(required - set(payload))
                     if unknown:
                         raise ValueError(
@@ -818,17 +1010,27 @@ def make_handler(
                             f"missing request fields: {', '.join(missing)}"
                         )
                     name = validate_strategy_name(payload["strategy_name"])
+                    family = normalize_execution_family(
+                        payload.get("execution_family")
+                    )
                     config = store.save_order_parameters(
                         name,
                         payload["order_parameters"],
                         payload["expected_updated_at_us"],
+                        family,
+                    )
+                    fields = (
+                        CHASE_ORDER_PARAMETER_FIELDS
+                        if family == "chase_exec"
+                        else ORDER_PARAMETER_FIELDS
                     )
                     response = {
                         "ok": True,
                         "strategy_name": name,
-                        "key": store.key(name),
+                        "execution_family": family,
+                        "key": store.key(name, family),
                         "order_parameters": {
-                            field: config[field] for field in ORDER_PARAMETER_FIELDS
+                            field: config[field] for field in fields
                         },
                         "symbol_overrides": config.get("symbol_overrides", {}),
                         "updated_at_us": config["updated_at_us"],
@@ -837,11 +1039,13 @@ def make_handler(
                     self.send_json(200, response)
                     return
                 name = validate_strategy_name(payload.get("strategy_name"))
-                config = store.save(name, payload.get("config"))
+                family = normalize_execution_family(payload.get("execution_family"))
+                config = store.save(name, payload.get("config"), family)
                 response = {
                     "ok": True,
                     "strategy_name": name,
-                    "key": store.key(name),
+                    "execution_family": family,
+                    "key": store.key(name, family),
                     "config": config,
                 }
                 self.log_update_response(200, response)
@@ -869,7 +1073,10 @@ def make_handler(
                     return
                 query = parse_qs(parsed.query)
                 name = validate_strategy_name((query.get("name") or [""])[0])
-                if not store.remove(name):
+                family = normalize_execution_family(
+                    (query.get("execution_family") or ["batch_exec"])[0]
+                )
+                if not store.remove(name, family):
                     response = {"ok": False, "error": "strategy is unknown"}
                     self.log_update_response(404, response)
                     self.send_json(404, response)
@@ -877,6 +1084,7 @@ def make_handler(
                 response = {
                     "ok": True,
                     "strategy_name": name,
+                    "execution_family": family,
                     "state": "removal_requested",
                 }
                 self.log_update_response(202, response)
@@ -904,7 +1112,7 @@ def make_handler(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="BatchExec Redis config server")
+    parser = argparse.ArgumentParser(description="Exec Redis config server")
     parser.add_argument("--bind", default=os.environ.get("BIND", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "18161")))
     parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"))

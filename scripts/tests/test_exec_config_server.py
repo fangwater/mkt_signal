@@ -133,6 +133,105 @@ class ExecConfigServerTests(unittest.TestCase):
         config = {key: value for key, value in MODULE.DEFAULT_CONFIG.items() if key not in {"algorithm", "pov"}}
         self.assertEqual(MODULE.normalize_exec_config(config)["algorithm"], "batch")
 
+    def test_chase_parameters_and_namespace_roundtrip(self):
+        config = MODULE.normalize_chase_config({
+            **MODULE.DEFAULT_CHASE_CONFIG,
+            "max_open_usdt": 450,
+            "maker_recenter_trigger_bps": 0,
+            "targets": {"btcusdt": {"qty": 0.2, "signal": 0}},
+            "symbol_overrides": {
+                "ethusdt": {"maker_amend_cooldown_ms": 25}
+            },
+        })
+        self.assertEqual(config["max_open_usdt"], 450.0)
+        self.assertEqual(config["targets"]["BTCUSDT"]["qty"], 0.2)
+        self.assertEqual(
+            config["symbol_overrides"]["ETHUSDT"]["maker_amend_cooldown_ms"],
+            25,
+        )
+
+        store = fake_store()
+        saved = store.save("trend_a", config, "chase_exec")
+        self.assertEqual(saved["max_open_usdt"], 450.0)
+        self.assertEqual(store.list_strategy_names("chase_exec"), ["trend_a"])
+        self.assertEqual(store.list_strategy_names("batch_exec"), [])
+        self.assertIn(":chase_exec:", store.key("trend_a", "chase_exec"))
+
+    def test_chase_rejects_invalid_values_and_batch_fields(self):
+        for change in (
+            {"max_open_usdt": 0},
+            {"maker_recenter_trigger_bps": -1},
+            {"maker_timeout_ms": 0},
+            {"bbo_max_age_ms": 0},
+            {"maker_price_anchor": "own_best"},
+        ):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                MODULE.normalize_chase_config(
+                    {**MODULE.DEFAULT_CHASE_CONFIG, **change}
+                )
+
+    def test_http_chase_order_parameter_update_uses_chase_namespace(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CHASE_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        current = store.save("trend_a", config, "chase_exec")
+        parameters = {
+            field: current[field] for field in MODULE.CHASE_ORDER_PARAMETER_FIELDS
+        }
+        parameters["max_open_usdt"] = 750
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/order-parameters",
+            data=json.dumps({
+                "strategy_name": "trend_a",
+                "execution_family": "chase_exec",
+                "expected_updated_at_us": current["updated_at_us"],
+                "order_parameters": parameters,
+            }).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {WRITE_TOKEN}",
+            },
+            method="POST",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            with urllib.request.urlopen(request, timeout=2) as response:
+                payload = json.load(response)
+
+        self.assertEqual(payload["execution_family"], "chase_exec")
+        self.assertEqual(payload["order_parameters"]["max_open_usdt"], 750.0)
+        self.assertEqual(
+            store.load("trend_a", "chase_exec")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
+        self.assertEqual(store.list_strategy_names(), [])
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/strategy"
+            "?name=trend_a&execution_family=chase_exec",
+            timeout=2,
+        ) as response:
+            loaded = json.load(response)
+        self.assertTrue(loaded["exists"])
+        self.assertEqual(loaded["execution_family"], "chase_exec")
+        self.assertEqual(loaded["config"]["max_open_usdt"], 750.0)
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/strategies"
+            "?execution_family=chase_exec",
+            timeout=2,
+        ) as response:
+            listed = json.load(response)
+        self.assertEqual(listed["strategies"], ["trend_a"])
+        self.assertEqual(listed["execution_family"], "chase_exec")
+
     def test_old_client_script_is_not_served(self):
         store = fake_store()
         server = ThreadingHTTPServer(

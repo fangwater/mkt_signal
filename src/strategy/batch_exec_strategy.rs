@@ -845,6 +845,8 @@ pub struct BatchExecStrategy {
     exec_venue: TradingVenue,
     config: BatchExecConfig,
     pov_state: PovState,
+    config_transition_in_progress: bool,
+    config_transition_pov_started_at_us: Option<i64>,
     source_updated_at_us: i64,
     virtual_position_qty: Option<f64>,
     position_allocation_ready: bool,
@@ -881,6 +883,8 @@ impl BatchExecStrategy {
             exec_venue,
             config,
             pov_state: PovState::default(),
+            config_transition_in_progress: false,
+            config_transition_pov_started_at_us: None,
             source_updated_at_us: 0,
             virtual_position_qty: None,
             position_allocation_ready: false,
@@ -956,6 +960,7 @@ impl BatchExecStrategy {
 
     pub fn observe_pov_trade(&mut self, timestamp_us: i64, now_us: i64, base_qty: f64, price: f64) {
         if self.config.algorithm != ExecAlgorithm::Pov
+            || self.config_transition_in_progress
             || self.pending_target.is_some()
             || !self.position_allocation_ready()
             || self.active_target.is_none()
@@ -1491,11 +1496,13 @@ impl BatchExecStrategy {
             if let Some(target) = self.active_target.as_mut() {
                 target.effective_single_order_usdt = None;
             }
-            let started_at_us = self.pov_state.started_at_us;
-            self.pov_state.reset(get_timestamp_us());
-            if !algorithm_changed {
-                self.pov_state.started_at_us = started_at_us;
+            if !self.config_transition_in_progress {
+                self.config_transition_pov_started_at_us =
+                    (!algorithm_changed).then_some(self.pov_state.started_at_us);
+            } else if algorithm_changed {
+                self.config_transition_pov_started_at_us = None;
             }
+            self.config_transition_in_progress = true;
             // Existing orders retain their reservations until cancellation is confirmed.
             let ids: Vec<_> = self.batches.keys().copied().collect();
             for id in ids {
@@ -1508,12 +1515,28 @@ impl BatchExecStrategy {
                         .values()
                         .any(|meta| meta.batch_seq == *id)
             });
+            self.finish_config_transition_if_settled(get_timestamp_us());
         }
         self.completion_reason = None;
         if self.active_target.is_some() && self.batches.is_empty() {
             self.next_batch_at_us = get_timestamp_us();
         }
         Ok(())
+    }
+
+    fn finish_config_transition_if_settled(&mut self, now_ts: i64) {
+        if !self.config_transition_in_progress || self.has_execution_in_flight() {
+            return;
+        }
+        let preserved_started_at_us = self.config_transition_pov_started_at_us.take();
+        self.pov_state.reset(now_ts);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            if let Some(started_at_us) = preserved_started_at_us {
+                self.pov_state.started_at_us = started_at_us;
+            }
+        }
+        self.config_transition_in_progress = false;
+        self.next_batch_at_us = now_ts;
     }
 
     pub fn update_target(
@@ -1601,7 +1624,8 @@ impl BatchExecStrategy {
     }
 
     fn maybe_start_or_requote_batch(&mut self, now_ts: i64) {
-        if self.pending_target.is_some()
+        if self.config_transition_in_progress
+            || self.pending_target.is_some()
             || !self.orphaned_child_orders.is_empty()
             || !MonitorChannel::instance().exec_position_snapshot_ready()
             || !self.position_allocation_ready()
@@ -2262,6 +2286,37 @@ impl BatchExecStrategy {
         }
     }
 
+    fn retry_cancel_after_live_update(&mut self, client_order_id: i64) {
+        let should_retry = self
+            .child_orders
+            .get(&client_order_id)
+            .is_some_and(|meta| meta.cancel_requested);
+        if !should_retry {
+            return;
+        }
+        if let Some(meta) = self.child_orders.get_mut(&client_order_id) {
+            meta.cancel_requested = false;
+        }
+        self.request_cancel(client_order_id);
+    }
+
+    fn retry_unsent_cancels(&mut self) {
+        let ids: Vec<i64> = self
+            .child_orders
+            .iter()
+            .filter_map(|(client_order_id, meta)| {
+                let cancelling = self
+                    .batches
+                    .get(&meta.batch_seq)
+                    .is_some_and(|batch| batch.phase != BatchPhase::Live);
+                (cancelling && !meta.cancel_requested).then_some(*client_order_id)
+            })
+            .collect();
+        for client_order_id in ids {
+            self.request_cancel(client_order_id);
+        }
+    }
+
     fn handle_batch_timeouts(&mut self, now_ts: i64) {
         let expired: Vec<u64> = self
             .batches
@@ -2549,7 +2604,8 @@ impl BatchExecStrategy {
         if status.is_finished() {
             self.finish_child_order(client_order_id);
         } else {
-            self.clear_order_query_state(client_order_id);
+            self.clear_live_order_query_state(client_order_id);
+            self.retry_cancel_after_live_update(client_order_id);
         }
         true
     }
@@ -2584,9 +2640,6 @@ impl BatchExecStrategy {
         let changed = manager.apply_remote_update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_fill;
             order.set_exchange_order_id(trade.order_id());
-            if trade.price() > 0.0 {
-                order.price = trade.price();
-            }
             order.status = if status == OrderStatus::Filled {
                 OrderExecutionStatus::Filled
             } else {
@@ -2623,7 +2676,8 @@ impl BatchExecStrategy {
         if status == OrderStatus::Filled {
             self.finish_child_order(client_order_id);
         } else {
-            self.clear_order_query_state(client_order_id);
+            self.clear_live_order_query_state(client_order_id);
+            self.retry_cancel_after_live_update(client_order_id);
         }
         true
     }
@@ -2825,6 +2879,47 @@ impl Strategy for BatchExecStrategy {
         }
     }
 
+    fn apply_live_order_query(
+        &mut self,
+        update: &dyn OrderUpdate,
+        query_advanced_fill: bool,
+    ) -> bool {
+        let client_order_id = update.client_order_id();
+        if !self.child_orders.contains_key(&client_order_id) {
+            return false;
+        }
+        let retry_cancel = self
+            .order_query_reason(client_order_id)
+            .is_some_and(HedgeOrderReconcileState::is_cancel_reconcile_reason);
+        let cancel_already_retried = retry_cancel
+            && query_advanced_fill
+            && self
+                .child_orders
+                .get(&client_order_id)
+                .is_some_and(|meta| meta.cancel_requested);
+        if retry_cancel {
+            if let Some(meta) = self.child_orders.get_mut(&client_order_id) {
+                meta.cancel_requested = false;
+            }
+        }
+        if cancel_already_retried {
+            self.clear_pending_order_query(client_order_id);
+        } else {
+            self.clear_order_query_state(client_order_id);
+        }
+        if !query_advanced_fill {
+            self.apply_order_update(update);
+        }
+        if cancel_already_retried {
+            if let Some(meta) = self.child_orders.get_mut(&client_order_id) {
+                meta.cancel_requested = true;
+            }
+        } else if retry_cancel {
+            self.request_cancel(client_order_id);
+        }
+        true
+    }
+
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         if self.apply_trade_update_inner(trade) {
             PersistChannel::with(|channel| channel.publish_trade_update(trade));
@@ -2844,7 +2939,9 @@ impl Strategy for BatchExecStrategy {
         self.handle_order_query_watchdogs();
         self.cancel_batches_when_target_no_longer_needs_them();
         self.handle_batch_timeouts(now_ts);
+        self.retry_unsent_cancels();
         self.process_pending_target(now_ts);
+        self.finish_config_transition_if_settled(now_ts);
         if self.config.algorithm == ExecAlgorithm::Pov {
             let quote_ts = MktChannel::instance()
                 .get_quote(&self.symbol, self.exec_venue)
@@ -2948,6 +3045,7 @@ mod tests {
         cfg.pov.participation_rate = 0.2;
         strategy.update_config(cfg).unwrap();
         assert_eq!(strategy.pov_state.started_at_us, 123);
+        assert!(strategy.config_transition_in_progress);
         assert_eq!(strategy.batches.len(), 1);
         assert_eq!(strategy.orphaned_child_orders.len(), 1);
         strategy.begin_cancel_batch(1, BatchPhase::CancellingForRequote);
@@ -2956,6 +3054,35 @@ mod tests {
             strategy.pov_state.available(strategy.pov_reserved_qty()),
             0.0
         );
+    }
+
+    #[test]
+    fn batch_to_pov_waits_for_old_orders_before_collecting_volume() {
+        let mut strategy = strategy_with_orphan_batch(&[(12, 0, 1.0, 0.0)]);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(10.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: Some(100.0),
+        });
+        let mut cfg = strategy.config.clone();
+        cfg.algorithm = ExecAlgorithm::Pov;
+
+        strategy.update_config(cfg).unwrap();
+
+        assert!(strategy.config_transition_in_progress);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        strategy.observe_pov_trade(1_000, 1_000, 20.0, 100.0);
+        assert_eq!(strategy.pov_state.market_base_qty, 0.0);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(12, 0.0)));
+        assert!(!strategy.has_execution_in_flight());
+        strategy.finish_config_transition_if_settled(2_000);
+
+        assert!(!strategy.config_transition_in_progress);
+        assert_eq!(strategy.pov_state.started_at_us, 2_000);
+        strategy.observe_pov_trade(2_001, 2_001, 20.0, 100.0);
+        assert_eq!(strategy.pov_state.market_base_qty, 20.0);
     }
 
     #[test]

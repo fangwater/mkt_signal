@@ -136,9 +136,10 @@ pub fn parse_order_push(
             "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
             _ => OrderStatus::New,
         };
-        let exec = match state {
-            OrderStatus::Canceled => ExecutionType::Canceled,
-            OrderStatus::Filled | OrderStatus::PartiallyFilled => ExecutionType::Trade,
+        let exec = match (state, order.action.as_str()) {
+            (OrderStatus::New, "AMEND_COMPLETED") => ExecutionType::Replaced,
+            (OrderStatus::Canceled, _) => ExecutionType::Canceled,
+            (OrderStatus::Filled | OrderStatus::PartiallyFilled, _) => ExecutionType::Trade,
             _ => ExecutionType::New,
         }
         .to_u8();
@@ -156,7 +157,7 @@ pub fn parse_order_push(
         } else {
             return Err(anyhow!("invalid LTP order type"));
         };
-        let msg = BinanceBasicOrderMsg::create(
+        let mut msg = BinanceBasicOrderMsg::create(
             if order.business_type == "PERP" {
                 BinanceBasicOrderMsg::VENUE_UM
             } else {
@@ -186,6 +187,11 @@ pub fn parse_order_push(
             f64::NAN,
             String::new(),
         );
+        msg.amend_result = match order.action.as_str() {
+            "AMEND_COMPLETED" => 0,
+            "AMEND_FAILED" => -1,
+            _ => BinanceBasicOrderMsg::AMEND_RESULT_NONE,
+        };
         return Ok(Some(wrap(
             BasicAccountEventType::OrderUpdate,
             BasicAccountScope::BinanceUnified,
@@ -230,8 +236,14 @@ pub fn parse_order_push(
                 _ => return Err(anyhow!("unsupported RapidX order type")),
             },
             cancel_source: 0,
-            amend_source: 0,
+            amend_source: u8::from(order.action == "AMEND_COMPLETED"),
+            amend_result: match order.action.as_str() {
+                "AMEND_COMPLETED" => 0,
+                "AMEND_FAILED" => -1,
+                _ => OkexOrderMsg::AMEND_RESULT_NONE,
+            },
             price: decimal_text(&order.limit_price)?,
+            fill_price: decimal_text(&order.last_executed_price)?,
             quantity: decimal_text(&order.order_qty)?,
             cumulative_filled_quantity: decimal_text(&order.executed_qty)?,
             create_time: order.create_at_ms,
@@ -473,6 +485,7 @@ fn internal_symbol(sym: &str) -> Result<String> {
 mod tests {
     use super::*;
     use mkt_parsers::msg::basic_account_msg::{split_basic_account_event, BasicPositionMsg};
+    use order_common::OrderUpdate;
 
     fn order_fixture(exchange: &str, state: &str) -> String {
         serde_json::json!({"channel":"Orders", "data":{
@@ -525,6 +538,44 @@ mod tests {
                 .is_none()
         );
         assert!(parse_order_push(&order_fixture("BINANCE", "FILLED"), "999", "BINANCE").is_err());
+    }
+
+    #[test]
+    fn amend_completed_push_becomes_replaced_order_update() {
+        for exchange in ["BINANCE", "OKX"] {
+            let mut row: Value = serde_json::from_str(&order_fixture(exchange, "OPEN")).unwrap();
+            row["data"]["action"] = Value::String("AMEND_COMPLETED".into());
+            row["data"]["limitPrice"] = Value::String("101".into());
+            let bytes = parse_order_push(&row.to_string(), "123", exchange)
+                .unwrap()
+                .unwrap();
+            let (_, _, payload) = split_basic_account_event(&bytes).unwrap();
+            if exchange == "BINANCE" {
+                let order = BinanceBasicOrderMsg::from_bytes(payload).unwrap();
+                assert_eq!(order.execution_type, ExecutionType::Replaced.to_u8());
+                assert_eq!(order.amendment_succeeded(), Some(true));
+            } else {
+                let order = OkexOrderMsg::from_bytes(payload).unwrap();
+                assert_eq!(order.execution_type(), ExecutionType::Replaced);
+            }
+        }
+    }
+
+    #[test]
+    fn binance_partial_fill_amend_keeps_trade_routing_and_amend_result() {
+        let mut row: Value =
+            serde_json::from_str(&order_fixture("BINANCE", "PARTIALLY_FILLED")).unwrap();
+        row["data"]["action"] = Value::String("AMEND_COMPLETED".into());
+        row["data"]["limitPrice"] = Value::String("101".into());
+        let bytes = parse_order_push(&row.to_string(), "123", "BINANCE")
+            .unwrap()
+            .unwrap();
+        let (_, _, payload) = split_basic_account_event(&bytes).unwrap();
+        let order = BinanceBasicOrderMsg::from_bytes(payload).unwrap();
+        assert_eq!(order.execution_type, ExecutionType::Trade.to_u8());
+        assert_eq!(order.amendment_succeeded(), Some(true));
+        assert_eq!(order.price, 101.0);
+        assert_eq!(order.last_executed_price, 100.0);
     }
 
     #[test]

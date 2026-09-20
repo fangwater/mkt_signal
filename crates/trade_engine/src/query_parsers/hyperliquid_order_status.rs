@@ -41,7 +41,7 @@ pub fn parse_hyperliquid_order_status_value(value: &Value) -> Result<Hyperliquid
     }
     let executed_qty = (original_qty - remaining_qty).max(0.0);
     // limitPx is the order's constraint, not a factual execution price.
-    let _limit_price = parse_nonnegative_decimal(order.get("limitPx"), "order.limitPx")?;
+    let limit_price = parse_nonnegative_decimal(order.get("limitPx"), "order.limitPx")?;
     let update_time_ms = parse_i64(result.get("statusTimestamp"), "order.statusTimestamp")?;
     if update_time_ms <= 0 {
         bail!("Hyperliquid orderStatus timestamp must be positive");
@@ -59,6 +59,7 @@ pub fn parse_hyperliquid_order_status_value(value: &Value) -> Result<Hyperliquid
         update_time_ms,
         time_in_force_u8,
         response_price: 0.0,
+        order_price: limit_price,
     }))
 }
 

@@ -29,6 +29,28 @@ impl OrderQueryOrderUpdate {
         cumulative_filled_quantity: f64,
         time_in_force: TimeInForce,
     ) -> Self {
+        Self::new_with_price(
+            order,
+            order_id,
+            event_time_us,
+            status,
+            execution_type,
+            cumulative_filled_quantity,
+            time_in_force,
+            None,
+        )
+    }
+
+    pub fn new_with_price(
+        order: &Order,
+        order_id: i64,
+        event_time_us: i64,
+        status: OrderStatus,
+        execution_type: ExecutionType,
+        cumulative_filled_quantity: f64,
+        time_in_force: TimeInForce,
+        order_price: Option<f64>,
+    ) -> Self {
         Self {
             event_time_us,
             symbol: order.symbol.clone(),
@@ -37,7 +59,9 @@ impl OrderQueryOrderUpdate {
             side: order.side,
             order_type: order.order_type,
             time_in_force,
-            price: order.price,
+            price: order_price
+                .filter(|price| price.is_finite() && *price > 0.0)
+                .unwrap_or(order.price),
             quantity: order.quantity,
             cumulative_filled_quantity,
             status,

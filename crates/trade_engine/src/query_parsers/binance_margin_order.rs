@@ -54,6 +54,7 @@ pub fn parse_binance_margin_order_query_json(json: &str) -> Option<BinanceUmOrde
         update_time_ms: parsed.update_time_ms,
         time_in_force_u8: tif_u8,
         response_price,
+        order_price: limit_price,
     })
 }
 

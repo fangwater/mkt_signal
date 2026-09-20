@@ -1680,7 +1680,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
 
         let status_u8 = parsed.status_u8;
         if status_u8 == OrderExecutionStatus::Create.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
+            let update = OrderQueryOrderUpdate::new_with_price(
                 &order,
                 order_id,
                 event_time_us,
@@ -1688,10 +1688,11 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 ExecutionType::New,
                 executed_qty,
                 tif,
+                Some(parsed.order_price),
             );
             ch.publish_order_update_unmatched(&update);
         } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
+            let update = OrderQueryOrderUpdate::new_with_price(
                 &order,
                 order_id,
                 event_time_us,
@@ -1699,11 +1700,12 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 ExecutionType::Canceled,
                 executed_qty,
                 tif,
+                Some(parsed.order_price),
             );
             ch.publish_order_update_unmatched(&update);
         } else if status_u8 == OrderExecutionStatus::Filled.to_u8() && !hyperliquid_nonfactual_fill
         {
-            let update = OrderQueryOrderUpdate::new(
+            let update = OrderQueryOrderUpdate::new_with_price(
                 &order,
                 order_id,
                 event_time_us,
@@ -1711,10 +1713,11 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 ExecutionType::Trade,
                 executed_qty,
                 tif,
+                Some(parsed.order_price),
             );
             ch.publish_order_update_unmatched(&update);
         } else if status_u8 == OrderExecutionStatus::Rejected.to_u8() {
-            let update = OrderQueryOrderUpdate::new(
+            let update = OrderQueryOrderUpdate::new_with_price(
                 &order,
                 order_id,
                 event_time_us,
@@ -1722,6 +1725,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 ExecutionType::Rejected,
                 executed_qty,
                 tif,
+                Some(parsed.order_price),
             );
             ch.publish_order_update_unmatched(&update);
         }

@@ -54,6 +54,7 @@ pub fn parse_binance_um_order_query_json(json: &str) -> Option<BinanceUmOrderQue
         update_time_ms: parsed.update_time_ms,
         time_in_force_u8: tif_u8,
         response_price,
+        order_price: limit_price,
     })
 }
 
@@ -81,5 +82,6 @@ mod tests {
         assert_eq!(parsed.status_u8, OrderExecutionStatus::Rejected.to_u8());
         assert_eq!(parsed.executed_qty, 104.9);
         assert_eq!(parsed.order_id, 764923910);
+        assert_eq!(parsed.order_price, 0.0631);
     }
 }

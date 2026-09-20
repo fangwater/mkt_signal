@@ -77,6 +77,20 @@ members filled from POV defaults; it does not merge individual nested fields
 with the strategy's POV object. No new Redis keys or internal API versions are
 used. Send complete current order parameters when updating them.
 
+Manager order-strategy templates expose `Batch`, `POV`, and `Chase` as distinct
+choices. A POV template is published through `batch_exec:*` with
+`algorithm: "pov"`; its form stores the complete `pov` object together with the
+shared child-order lifecycle parameters. Existing templates migrate as
+`algorithm: "batch"`.
+
+A published binding can switch between Batch/POV and Chase without first
+flattening its exchange position. Manager writes a shared `exec_switch:*`
+request. Exec freezes and cancels the source algorithm, waits for all order and
+late-fill reconciliation, transfers the binding's per-symbol net position to
+the destination ledger, and activates the destination only after that position
+is applied. Batch-to-POV changes stay inside `batch_exec` and use the normal
+configuration update path.
+
 ## Volume Accounting
 
 `exec-pre-trade` subscribes to `dat_pbs/<venue>/trade`, which is published by
@@ -125,6 +139,9 @@ credit at activation. Process restart also starts with zero volume credit;
 position and orphan recovery continue through the existing Exec mechanisms.
 Changing the algorithm or POV parameters cancels existing batches, discards
 credit, and preserves unresolved orders until terminal evidence arrives.
+The destination algorithm remains blocked while those orders are unresolved;
+POV begins collecting market-volume credit only after the cancellation barrier
+has cleared.
 Changing POV parameters retains the original target start time, so an ordinary
 parameter refresh does not renew its deadline. A new target generation renews
 the duration. Existing fills after a budget reset are debited conservatively.

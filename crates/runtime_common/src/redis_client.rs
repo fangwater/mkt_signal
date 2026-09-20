@@ -156,6 +156,68 @@ impl RedisClient {
         self.set_string(key, &text).await
     }
 
+    /// Atomically write and delete a related set of namespaced keys.
+    pub async fn atomic_write(
+        &mut self,
+        values: &[(String, String)],
+        delete_keys: &[String],
+    ) -> Result<()> {
+        if values.is_empty() && delete_keys.is_empty() {
+            return Ok(());
+        }
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for (key, value) in values {
+            pipe.set(self.key(key), value);
+        }
+        for key in delete_keys {
+            pipe.del(self.key(key));
+        }
+        let _: () = pipe.query_async(&mut self.manager).await?;
+        Ok(())
+    }
+
+    /// Move one member between JSON-array indexes and write its state atomically.
+    pub async fn atomic_move_json_index_member(
+        &mut self,
+        source_key: &str,
+        destination_key: &str,
+        member: &str,
+        state_key: &str,
+        state_value: &str,
+    ) -> Result<()> {
+        const SCRIPT: &str = r#"
+local source = cjson.decode(redis.call('GET', KEYS[1]) or '[]')
+local destination = cjson.decode(redis.call('GET', KEYS[2]) or '[]')
+local next_source = {}
+for _, value in ipairs(source) do
+    if value ~= ARGV[1] then table.insert(next_source, value) end
+end
+local found = false
+for _, value in ipairs(destination) do
+    if value == ARGV[1] then found = true end
+end
+if not found then table.insert(destination, ARGV[1]) end
+table.sort(next_source)
+table.sort(destination)
+local source_json = #next_source == 0 and '[]' or cjson.encode(next_source)
+local destination_json = #destination == 0 and '[]' or cjson.encode(destination)
+redis.call('SET', KEYS[1], source_json)
+redis.call('SET', KEYS[2], destination_json)
+redis.call('SET', KEYS[3], ARGV[2])
+return 1
+"#;
+        let _: i32 = redis::Script::new(SCRIPT)
+            .key(self.key(source_key))
+            .key(self.key(destination_key))
+            .key(self.key(state_key))
+            .arg(member)
+            .arg(state_value)
+            .invoke_async(&mut self.manager)
+            .await?;
+        Ok(())
+    }
+
     /// 获取哈希表的所有字段（值为字符串）
     pub async fn hgetall_map(&mut self, key: &str) -> Result<HashMap<String, String>> {
         let full_key = self.key(key);

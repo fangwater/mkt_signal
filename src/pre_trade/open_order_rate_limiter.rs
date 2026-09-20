@@ -1,9 +1,11 @@
 use log::debug;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 const ORDER_RATE_WINDOW_10S_US: i64 = 10_000_000;
 const ORDER_RATE_WINDOW_1M_US: i64 = 60_000_000;
+const OKEX_MODIFY_WINDOW_US: i64 = 2_000_000;
+const OKEX_MODIFY_LIMIT: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrderRateStats {
@@ -243,6 +245,88 @@ impl OrderRateLimiter {
     }
 }
 
+#[derive(Default)]
+struct OkexModifyWindow {
+    requests: VecDeque<i64>,
+    last_seen_us: i64,
+}
+
+impl OkexModifyWindow {
+    fn prune(&mut self, now_us: i64) -> i64 {
+        let now_us = now_us.max(self.last_seen_us);
+        self.last_seen_us = now_us;
+        while self
+            .requests
+            .front()
+            .is_some_and(|ts| now_us.saturating_sub(*ts) >= OKEX_MODIFY_WINDOW_US)
+        {
+            self.requests.pop_front();
+        }
+        now_us
+    }
+}
+
+thread_local! {
+    static OKEX_MODIFY_RATE_STATE: RefCell<HashMap<String, OkexModifyWindow>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Native OKX applies the amend-order limit per user and instrument. A
+/// pre-trade process owns one user, so the instrument is the local key.
+pub struct OkexModifyRateLimiter;
+
+impl OkexModifyRateLimiter {
+    pub fn check_limit(symbol: &str, now_us: i64) -> Result<usize, String> {
+        OKEX_MODIFY_RATE_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let window = state.entry(symbol.to_string()).or_default();
+            window.prune(now_us);
+            let count = window.requests.len();
+            if count >= OKEX_MODIFY_LIMIT {
+                Err(format!(
+                    "okex modify symbol={} 近2秒请求数={}，达到上限 {}",
+                    symbol, count, OKEX_MODIFY_LIMIT
+                ))
+            } else {
+                Ok(count)
+            }
+        })
+    }
+
+    pub fn record(symbol: &str, now_us: i64) -> usize {
+        OKEX_MODIFY_RATE_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let window = state.entry(symbol.to_string()).or_default();
+            let now_us = window.prune(now_us);
+            window.requests.push_back(now_us);
+            window.requests.len()
+        })
+    }
+
+    pub fn next_available_at_us(symbol: &str, now_us: i64) -> i64 {
+        OKEX_MODIFY_RATE_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let window = state.entry(symbol.to_string()).or_default();
+            let now_us = window.prune(now_us);
+            if window.requests.len() < OKEX_MODIFY_LIMIT {
+                return now_us;
+            }
+            let index = window.requests.len() - OKEX_MODIFY_LIMIT;
+            window
+                .requests
+                .get(index)
+                .copied()
+                .unwrap_or(now_us)
+                .saturating_add(OKEX_MODIFY_WINDOW_US)
+        })
+    }
+
+    #[cfg(test)]
+    fn clear() {
+        OKEX_MODIFY_RATE_STATE.with(|state| state.borrow_mut().clear());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +432,24 @@ mod tests {
             100 + ORDER_RATE_WINDOW_1M_US
         );
         OrderRateLimiter::clear();
+    }
+
+    #[test]
+    fn okex_modify_limit_is_per_symbol_and_expires_after_two_seconds() {
+        OkexModifyRateLimiter::clear();
+        for index in 0..OKEX_MODIFY_LIMIT {
+            assert!(OkexModifyRateLimiter::check_limit("BTCUSDT", 1_000).is_ok());
+            assert_eq!(OkexModifyRateLimiter::record("BTCUSDT", 1_000), index + 1);
+        }
+        assert!(OkexModifyRateLimiter::check_limit("BTCUSDT", 1_500).is_err());
+        assert!(OkexModifyRateLimiter::check_limit("ETHUSDT", 1_500).is_ok());
+        assert_eq!(
+            OkexModifyRateLimiter::next_available_at_us("BTCUSDT", 1_500),
+            1_000 + OKEX_MODIFY_WINDOW_US
+        );
+        assert!(
+            OkexModifyRateLimiter::check_limit("BTCUSDT", 1_000 + OKEX_MODIFY_WINDOW_US).is_ok()
+        );
+        OkexModifyRateLimiter::clear();
     }
 }

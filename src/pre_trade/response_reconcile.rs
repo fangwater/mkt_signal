@@ -183,7 +183,7 @@ pub(crate) fn take_ready_deferred_hyperliquid_terminal(
         order.exchange_order_id.unwrap_or(order.client_order_id)
     };
     let tif = TimeInForce::from_u8(pending.parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
-    Some(OrderQueryOrderUpdate::new(
+    Some(OrderQueryOrderUpdate::new_with_price(
         &order,
         order_id,
         event_time_us,
@@ -191,6 +191,7 @@ pub(crate) fn take_ready_deferred_hyperliquid_terminal(
         execution_type,
         order.cumulative_filled_quantity,
         tif,
+        Some(pending.parsed.order_price),
     ))
 }
 
@@ -369,7 +370,9 @@ pub fn apply_compact_order_query_updates(
     };
     let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
 
-    if parsed.executed_qty > order.cumulative_filled_quantity + options.fill_epsilon {
+    let query_advanced_fill =
+        parsed.executed_qty > order.cumulative_filled_quantity + options.fill_epsilon;
+    if query_advanced_fill {
         let trade_status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
             Some(OrderStatus::Filled)
         } else {
@@ -390,23 +393,28 @@ pub fn apply_compact_order_query_updates(
 
     let status_u8 = parsed.status_u8;
     if status_u8 == OrderExecutionStatus::Create.to_u8() {
-        let already_live = order.status == OrderExecutionStatus::Create
-            && order.exchange_order_id.is_some_and(|id| id == order_id);
-        if !options.skip_live_create_update || !already_live {
-            let update = OrderQueryOrderUpdate::new(
-                order,
-                order_id,
-                event_time_us,
-                OrderStatus::New,
-                ExecutionType::New,
-                parsed.executed_qty,
-                tif,
-            );
-            strategy.apply_order_update(&update);
+        let update = OrderQueryOrderUpdate::new_with_price(
+            order,
+            order_id,
+            event_time_us,
+            OrderStatus::New,
+            ExecutionType::New,
+            parsed.executed_qty,
+            tif,
+            Some(parsed.order_price),
+        );
+        if strategy.apply_live_order_query(&update, query_advanced_fill) {
             applied = true;
+        } else {
+            let already_live = order.status == OrderExecutionStatus::Create
+                && order.exchange_order_id.is_some_and(|id| id == order_id);
+            if !options.skip_live_create_update || !already_live {
+                strategy.apply_order_update(&update);
+                applied = true;
+            }
         }
     } else if status_u8 == OrderExecutionStatus::Cancelled.to_u8() {
-        let update = OrderQueryOrderUpdate::new(
+        let update = OrderQueryOrderUpdate::new_with_price(
             order,
             order_id,
             event_time_us,
@@ -414,12 +422,13 @@ pub fn apply_compact_order_query_updates(
             ExecutionType::Canceled,
             parsed.executed_qty,
             tif,
+            Some(parsed.order_price),
         );
         strategy.apply_order_update(&update);
         applied = true;
     } else if status_u8 == OrderExecutionStatus::Filled.to_u8() && options.emit_filled_order_update
     {
-        let update = OrderQueryOrderUpdate::new(
+        let update = OrderQueryOrderUpdate::new_with_price(
             order,
             order_id,
             event_time_us,
@@ -427,13 +436,14 @@ pub fn apply_compact_order_query_updates(
             ExecutionType::Trade,
             parsed.executed_qty,
             tif,
+            Some(parsed.order_price),
         );
         strategy.apply_order_update(&update);
         applied = true;
     } else if status_u8 == OrderExecutionStatus::Rejected.to_u8()
         && options.emit_rejected_as_expired
     {
-        let update = OrderQueryOrderUpdate::new(
+        let update = OrderQueryOrderUpdate::new_with_price(
             order,
             order_id,
             event_time_us,
@@ -441,6 +451,7 @@ pub fn apply_compact_order_query_updates(
             ExecutionType::Rejected,
             parsed.executed_qty,
             tif,
+            Some(parsed.order_price),
         );
         strategy.apply_order_update(&update);
         applied = true;
@@ -452,15 +463,15 @@ pub fn apply_compact_order_query_updates(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_query_response_as_updates, suppress_hyperliquid_nonfactual_fill,
-        CompactOrderQueryApplyOptions,
+        apply_compact_order_query_updates, apply_query_response_as_updates,
+        suppress_hyperliquid_nonfactual_fill, CompactOrderQueryApplyOptions,
     };
     use crate::strategy::Strategy;
     use bytes::Bytes;
-    use order_common::OrderUpdate;
     use order_common::QueryEngineResponseMessage;
     use order_common::TradeEngineResponse;
     use order_common::TradeUpdate;
+    use order_common::{Order, OrderExecutionStatus, OrderType, OrderUpdate, Side, TradingVenue};
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use trade_engine::query_parsers::compact_order::{
@@ -475,6 +486,8 @@ mod tests {
         trade_updates: usize,
         query_not_found: usize,
         query_not_found_resets: usize,
+        live_queries: usize,
+        live_order_price: f64,
     }
 
     impl RecordingStrategy {
@@ -486,6 +499,8 @@ mod tests {
                 trade_updates: 0,
                 query_not_found: 0,
                 query_not_found_resets: 0,
+                live_queries: 0,
+                live_order_price: 0.0,
             }
         }
     }
@@ -518,6 +533,17 @@ mod tests {
         }
 
         fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+
+        fn apply_live_order_query(
+            &mut self,
+            update: &dyn OrderUpdate,
+            _query_advanced_fill: bool,
+        ) -> bool {
+            assert_eq!(update.client_order_id(), self.client_order_id);
+            self.live_queries += 1;
+            self.live_order_price = update.price();
+            true
+        }
 
         fn record_order_query_not_found(&mut self, client_order_id: i64) {
             assert_eq!(client_order_id, self.client_order_id);
@@ -570,6 +596,48 @@ mod tests {
     }
 
     #[test]
+    fn live_query_is_applied_even_when_duplicate_new_update_is_skipped() {
+        let client_order_id = 1987641311888408577;
+        let mut strategy = RecordingStrategy::new(462783819, client_order_id);
+        let mut order = Order::new(
+            TradingVenue::OkexFutures,
+            client_order_id,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.status = OrderExecutionStatus::Create;
+        order.exchange_order_id = Some(99);
+        let parsed = CompactOrderQueryResp {
+            executed_qty: 0.0,
+            order_id: 99,
+            status_u8: OrderExecutionStatus::Create.to_u8(),
+            update_time_ms: 1_800_000_000_000,
+            time_in_force_u8: 1,
+            response_price: 0.0,
+            order_price: 101.0,
+        };
+        let mut options = CompactOrderQueryApplyOptions::open_reconcile();
+        options.skip_live_create_update = true;
+
+        assert!(apply_compact_order_query_updates(
+            &mut strategy,
+            &order,
+            parsed,
+            options
+        ));
+        assert_eq!(strategy.live_queries, 1);
+        assert_eq!(strategy.live_order_price, 101.0);
+        assert_eq!(strategy.order_updates, 0);
+    }
+
+    #[test]
     fn hyperliquid_order_status_cannot_synthesize_a_fill_from_limit_price() {
         let mut parsed = CompactOrderQueryResp {
             executed_qty: 1.5,
@@ -578,6 +646,7 @@ mod tests {
             update_time_ms: 123,
             time_in_force_u8: 1,
             response_price: 42_000.0,
+            order_price: 42_100.0,
         };
         let mut options = CompactOrderQueryApplyOptions::orphan_reconcile(1e-12);
         let waits_for_fills = suppress_hyperliquid_nonfactual_fill(
@@ -606,6 +675,7 @@ mod tests {
             update_time_ms: 123,
             time_in_force_u8: 1,
             response_price: 42_000.0,
+            order_price: 42_100.0,
         };
         let mut options = CompactOrderQueryApplyOptions::orphan_reconcile(1.0e-12);
         assert_eq!(

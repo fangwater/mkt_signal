@@ -130,5 +130,6 @@ pub fn parse_bitget_order_query_json(json: &str) -> BitgetOrderQueryParseResult 
         update_time_ms: parse_i64_str(&item.updated_time),
         time_in_force_u8: tif_to_u8(&item.time_in_force),
         response_price: response_price(&item),
+        order_price: parse_f64_str(&item.price),
     })
 }

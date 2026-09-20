@@ -124,7 +124,19 @@ impl OrderUpdate for OkexOrderMsg {
     }
 
     fn execution_type(&self) -> ExecutionType {
-        map_execution_type(self.state)
+        if self.state == 2 && self.amend_result == 0 {
+            ExecutionType::Replaced
+        } else {
+            map_execution_type(self.state)
+        }
+    }
+
+    fn amendment_succeeded(&self) -> Option<bool> {
+        match self.amend_result {
+            0 => Some(true),
+            -1 => Some(false),
+            _ => None,
+        }
     }
 
     fn trading_venue(&self) -> TradingVenue {
@@ -158,7 +170,7 @@ impl TradeUpdate for OkexOrderMsg {
     }
 
     fn price(&self) -> f64 {
-        self.price
+        self.fill_price
     }
 
     fn is_maker(&self) -> bool {
@@ -175,5 +187,51 @@ impl TradeUpdate for OkexOrderMsg {
 
     fn order_status(&self) -> Option<OrderStatus> {
         Some(map_order_status(self.state))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mkt_parsers::msg::basic_account_msg::BasicAccountEventType;
+
+    fn order(state: u8, amend_result: i8) -> OkexOrderMsg {
+        OkexOrderMsg {
+            msg_type: BasicAccountEventType::OrderUpdate,
+            inst_id: "BTC-USDT-SWAP".to_string(),
+            inst_type: 2,
+            ord_id: 42,
+            cl_ord_id: 43,
+            trade_id: 44,
+            state,
+            side: 1,
+            ord_type: 2,
+            cancel_source: 0,
+            amend_source: 1,
+            amend_result,
+            price: 70_100.0,
+            fill_price: 70_000.0,
+            quantity: 2.0,
+            cumulative_filled_quantity: 1.0,
+            create_time: 1_800_000_000_000,
+            update_time: 1_800_000_000_001,
+            fill_time: 1_800_000_000_001,
+        }
+    }
+
+    #[test]
+    fn partial_amend_reports_trade_and_exposes_success_separately() {
+        let update = order(3, 0);
+        assert_eq!(OrderUpdate::execution_type(&update), ExecutionType::Trade);
+        assert_eq!(OrderUpdate::amendment_succeeded(&update), Some(true));
+        assert_eq!(OrderUpdate::price(&update), 70_100.0);
+        assert_eq!(TradeUpdate::price(&update), 70_000.0);
+    }
+
+    #[test]
+    fn failed_amend_is_not_treated_as_replaced() {
+        let update = order(2, -1);
+        assert_eq!(OrderUpdate::execution_type(&update), ExecutionType::New);
+        assert_eq!(OrderUpdate::amendment_succeeded(&update), Some(false));
     }
 }

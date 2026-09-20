@@ -23,8 +23,8 @@ use trade_engine::bybit::{
     BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
 };
 use trade_engine::okex::{
-    OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
-    OkexOrderType,
+    OkexCancelOrderParams, OkexCancelOrderRequest, OkexModifyOrderParams, OkexModifyOrderRequest,
+    OkexNewOrderParams, OkexNewOrderRequest, OkexOrderType,
 };
 use trade_engine::trade_request::{
     BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams,
@@ -915,33 +915,53 @@ impl PreTradeOrderRequestExt for Order {
     }
 
     fn get_order_modify_bytes(&self, price_qv: QuantizedValue) -> Result<Bytes, String> {
-        if self.venue != TradingVenue::BinanceFutures || !self.order_type.is_limit() {
+        if !self.order_type.is_limit() {
             return Err(format!(
-                "Binance UM modify requires a BinanceFutures limit order: venue={:?} order_type={:?}",
+                "order modify requires a limit order: venue={:?} order_type={:?}",
                 self.venue, self.order_type
             ));
         }
-        let quantity_qv = ResolvedOrderQuantities::from_order(self)
-            .require_quantity_qv(self, "binance modify")?;
-        let req_type = match self.require_binance_account_mode() {
-            BinanceAccountMode::Standard => {
-                trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
+        match self.venue {
+            TradingVenue::BinanceFutures => {
+                let quantity_qv = ResolvedOrderQuantities::from_order(self)
+                    .require_quantity_qv(self, "binance modify")?;
+                let req_type = match self.require_binance_account_mode() {
+                    BinanceAccountMode::Standard => {
+                        trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
+                    }
+                    BinanceAccountMode::Unified => {
+                        trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
+                    }
+                };
+                BinanceModifyOrderParams::with_price(
+                    &self.symbol,
+                    self.side,
+                    quantity_qv,
+                    price_qv,
+                    self.exchange_order_id.unwrap_or(0),
+                    self.client_order_id,
+                    None,
+                )
+                .request_bytes(req_type, get_timestamp_us(), self.client_order_id)
+                .ok_or_else(|| "failed to build Binance UM modify request".to_string())
             }
-            BinanceAccountMode::Unified => {
-                trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
-            }
-        };
-        BinanceModifyOrderParams::with_price(
-            &self.symbol,
-            self.side,
-            quantity_qv,
-            price_qv,
-            self.exchange_order_id.unwrap_or(0),
-            self.client_order_id,
-            None,
-        )
-        .request_bytes(req_type, get_timestamp_us(), self.client_order_id)
-        .ok_or_else(|| "failed to build Binance UM modify request".to_string())
+            TradingVenue::OkexFutures => OkexModifyOrderRequest::create_um(
+                get_timestamp_us(),
+                self.client_order_id,
+                OkexModifyOrderParams {
+                    ord_id: self.exchange_order_id.unwrap_or(0),
+                    cl_ord_id: self.client_order_id,
+                    new_price_qv: price_qv,
+                    inst_id: okex_inst_id_from_symbol(&self.symbol, self.venue)?,
+                },
+            )
+            .map(|request| request.to_bytes())
+            .ok_or_else(|| "failed to build OKX futures modify request".to_string()),
+            _ => Err(format!(
+                "order modify unsupported for venue {:?}",
+                self.venue
+            )),
+        }
     }
 
     fn get_order_modify_to_best_price_bytes(&self) -> Result<Bytes, String> {
@@ -1647,6 +1667,7 @@ mod tests {
     use serde_json::Value;
     use signal_common::tick_math::QuantizedValue;
     use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
+    use trade_engine::okex::OkexModifyOrderParams;
     use trade_engine::trade_request::{
         BinanceModifyOrderParams, BinancePriceMatch, TradeRequestMsg, TradeRequestType,
     };
@@ -1796,6 +1817,34 @@ mod tests {
 
         assert_eq!(params.price_match, BinancePriceMatch::None);
         assert_eq!(params.price_qv, price_qv);
+    }
+
+    #[test]
+    fn okx_futures_explicit_modify_uses_supplied_price_and_order_ids() {
+        let mut order = Order::new(
+            TradingVenue::OkexFutures,
+            42,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            2.0,
+            65_000.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        order.set_exchange_order_id(9988);
+        let price_qv = QuantizedValue::from_decimal(65_001.5).unwrap();
+        let bytes = order.get_order_modify_bytes(price_qv).unwrap();
+        let request = TradeRequestMsg::parse(&bytes).unwrap();
+        let params = OkexModifyOrderParams::from_bytes(&request.params).unwrap();
+
+        assert_eq!(request.req_type, TradeRequestType::OkexModifyUMOrder);
+        assert_eq!(params.new_price_qv, price_qv);
+        assert_eq!(params.ord_id, 9988);
+        assert_eq!(params.cl_ord_id, 42);
+        assert_eq!(params.inst_id, "BTC-USDT-SWAP");
     }
 
     #[test]

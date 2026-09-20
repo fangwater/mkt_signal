@@ -35,6 +35,7 @@ pub enum TradeRequestType {
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
     OkexCancelUMOrder = 5004,                   // Okex 撤单（合约/UM风格）
+    OkexModifyUMOrder = 5005,                   // Okex 修改合约订单
     GateUnifiedNewOrder = 5201,                 // Gate 统一账户下单请求
     GateUnifiedCancelOrder = 5202,              // Gate 统一账户撤单请求
     GateFuturesNewOrder = 5203,                 // Gate U 本位合约下单请求
@@ -92,6 +93,7 @@ impl TryFrom<u32> for TradeRequestType {
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
             5004 => Ok(TradeRequestType::OkexCancelUMOrder),
+            5005 => Ok(TradeRequestType::OkexModifyUMOrder),
             5201 => Ok(TradeRequestType::GateUnifiedNewOrder),
             5202 => Ok(TradeRequestType::GateUnifiedCancelOrder),
             5203 => Ok(TradeRequestType::GateFuturesNewOrder),

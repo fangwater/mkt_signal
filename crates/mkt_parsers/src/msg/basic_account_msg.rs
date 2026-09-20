@@ -323,7 +323,13 @@ pub struct OkexOrderMsg {
     pub ord_type: u8,
     pub cancel_source: u8,
     pub amend_source: u8,
+    /// OKX amendResult: -1=failed, 0=success, 1=automatic cancel;
+    /// i8::MIN means the field was absent from this order event.
+    pub amend_result: i8,
+    /// Current order limit price.
     pub price: f64,
+    /// Price of the latest execution, if present.
+    pub fill_price: f64,
     pub quantity: f64,
     pub cumulative_filled_quantity: f64,
     pub create_time: i64,
@@ -332,6 +338,8 @@ pub struct OkexOrderMsg {
 }
 
 impl OkexOrderMsg {
+    pub const AMEND_RESULT_NONE: i8 = i8::MIN;
+
     /// 将 instType 文本映射为紧凑编码
     pub fn inst_type_to_u8(inst_type: &str) -> u8 {
         match inst_type {
@@ -442,7 +450,8 @@ impl OkexOrderMsg {
             + 1  // ord_type u8
             + 1  // cancel_source u8
             + 1  // amend_source u8
-            + 8 * 3  // price, quantity, cumulative_filled_quantity
+            + 1  // amend_result i8
+            + 8 * 4  // price, fill_price, quantity, cumulative_filled_quantity
             + 8 * 3; // create_time, update_time, fill_time
 
         let mut buf = BytesMut::with_capacity(total_size);
@@ -469,9 +478,11 @@ impl OkexOrderMsg {
         buf.put_u8(self.cancel_source);
 
         buf.put_u8(self.amend_source);
+        buf.put_i8(self.amend_result);
 
         // 数值字段
         buf.put_f64_le(self.price);
+        buf.put_f64_le(self.fill_price);
         buf.put_f64_le(self.quantity);
         buf.put_f64_le(self.cumulative_filled_quantity);
 
@@ -541,12 +552,17 @@ impl OkexOrderMsg {
             anyhow::bail!("Not enough data for amend_source");
         }
         let amend_source = cursor.get_u8();
+        if cursor.remaining() < 1 {
+            anyhow::bail!("Not enough data for amend_result");
+        }
+        let amend_result = cursor.get_i8();
 
-        if cursor.remaining() < 8 * 3 {
+        if cursor.remaining() < 8 * 4 {
             anyhow::bail!("Not enough data for numeric fields");
         }
 
         let price = cursor.get_f64_le();
+        let fill_price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
         let cumulative_filled_quantity = cursor.get_f64_le();
 
@@ -569,7 +585,9 @@ impl OkexOrderMsg {
             ord_type,
             cancel_source,
             amend_source,
+            amend_result,
             price,
+            fill_price,
             quantity,
             cumulative_filled_quantity,
             create_time,
@@ -609,6 +627,8 @@ pub struct BinanceBasicOrderMsg {
     pub is_maker: u8,
     /// 0=ordinary, 1=liquidation, 2=adl, 3=settlement, 4=delivery
     pub external_order_kind: u8,
+    /// RapidX amendment result: -1=failed, 0=success; i8::MIN=absent.
+    pub amend_result: i8,
     pub price: f64,
     pub quantity: f64,
     pub last_executed_quantity: f64,
@@ -630,6 +650,7 @@ impl BinanceBasicOrderMsg {
     pub const EXTERNAL_ADL: u8 = 2;
     pub const EXTERNAL_SETTLEMENT: u8 = 3;
     pub const EXTERNAL_DELIVERY: u8 = 4;
+    pub const AMEND_RESULT_NONE: i8 = i8::MIN;
 
     pub fn external_order_label(&self) -> Option<&'static str> {
         match self.external_order_kind {
@@ -683,6 +704,7 @@ impl BinanceBasicOrderMsg {
             order_status,
             is_maker: if is_maker { 1 } else { 0 },
             external_order_kind: 0,
+            amend_result: Self::AMEND_RESULT_NONE,
             price,
             quantity,
             last_executed_quantity,
@@ -704,7 +726,7 @@ impl BinanceBasicOrderMsg {
             + 4
             + self.symbol_length as usize
             + 8 * 3
-            + 7
+            + 8
             + 8 * 8
             + 4
             + self.commission_asset_length as usize;
@@ -729,6 +751,7 @@ impl BinanceBasicOrderMsg {
         buf.put_u8(self.order_status);
         buf.put_u8(self.is_maker);
         buf.put_u8(self.external_order_kind);
+        buf.put_i8(self.amend_result);
 
         buf.put_f64_le(self.price);
         buf.put_f64_le(self.quantity);
@@ -747,8 +770,8 @@ impl BinanceBasicOrderMsg {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         // u32 msg_type + u8 venue + i64 + i64 + u32 symbol_len + (symbol bytes) + 3*i64
-        // + 7*u8 + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 7 + 8 * 8 + 4;
+        // + 8 one-byte fields + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 8 + 8 * 8 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("BinanceBasicOrderMsg too short: {}", data.len());
         }
@@ -769,7 +792,7 @@ impl BinanceBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 3 + 7 + 8 * 8 + 4 {
+        if cursor.remaining() < 8 * 3 + 8 + 8 * 8 + 4 {
             anyhow::bail!("BinanceBasicOrderMsg truncated after symbol");
         }
 
@@ -784,6 +807,7 @@ impl BinanceBasicOrderMsg {
         let order_status = cursor.get_u8();
         let is_maker = cursor.get_u8();
         let external_order_kind = cursor.get_u8();
+        let amend_result = cursor.get_i8();
 
         let price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
@@ -821,6 +845,7 @@ impl BinanceBasicOrderMsg {
             order_status,
             is_maker,
             external_order_kind,
+            amend_result,
             price,
             quantity,
             last_executed_quantity,

@@ -1,12 +1,12 @@
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
+use crate::pre_trade::open_order_rate_limiter::{
+    OkexModifyRateLimiter, OrderRateBucket, OrderRateLimiter,
+};
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::strategy::batch_exec_strategy::{
-    validate_target_signal, BatchExecTarget, MakerPriceAnchor,
-};
+use crate::strategy::batch_exec_strategy::{validate_target_signal, BatchExecTarget};
 use crate::strategy::chase_exec::{ChaseExecCompletionReason, ChaseExecConfig, ChaseExecSnapshot};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
@@ -20,7 +20,7 @@ use crate::strategy::uniform_order_helper::{
 };
 use log::{debug, info, warn};
 use order_common::{
-    OrderExecutionStatus, OrderManager, OrderStatus, OrderType, OrderUpdate, Side,
+    ExecutionType, OrderExecutionStatus, OrderManager, OrderStatus, OrderType, OrderUpdate, Side,
     TradeEngineResponse, TradeRequestKind, TradeUpdate, TradingVenue,
 };
 use persist_common::{
@@ -28,6 +28,8 @@ use persist_common::{
 };
 use quote_plan::common::{align_price_ceil, align_price_floor, Quote};
 use quote_plan::order_align::{align_final_order_qty, min_qty_symbol_key};
+use runtime_common::exchange::Exchange as RuntimeExchange;
+use runtime_common::execution_backend::ExecBackend;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
@@ -39,6 +41,7 @@ use trade_signal::MktChannel;
 const QTY_EPS: f64 = 1e-12;
 const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
 const OPEN_REJECT_BACKOFF_US: i64 = 1_000_000;
+const RAPIDX_REPLACE_RATE_LIMIT_PER_MIN: i32 = 300;
 /// Order signal metadata kind. Must not collide with `SignalType as u8`
 /// (egress decodes via `SignalType::from_u32`; invalid values are skipped,
 /// which is the desired "no signal" attribution for exec orders). 0 is
@@ -58,8 +61,11 @@ struct ChaseChildMeta {
     /// Cancelled because the target/generation no longer needs it; the
     /// remainder is released back, never reposted and never escalated.
     cancel_for_target: bool,
-    /// Opposite-side anchor observed when the order was last priced.
+    /// Own-best anchor confirmed for the order's current price.
     anchor_price: f64,
+    /// Own-best anchor and order price waiting for amend confirmation.
+    pending_anchor_price: Option<f64>,
+    pending_amend_price: Option<f64>,
     last_amend_ts_us: i64,
     amend_in_flight: bool,
     reprice_pending: bool,
@@ -179,20 +185,11 @@ fn minimum_executable_base_qty(price: f64, limits: ChaseOrderLimits) -> Result<f
     Ok(align_child_qty_ceil(required_venue_qty, limits.qty_step) * qty_multiplier)
 }
 
-/// Level-0 maker price: own-best or opposite-best minus/plus one tick, aligned
-/// away from the market so the post-only quote never crosses.
-fn level0_maker_price(
-    anchor: MakerPriceAnchor,
-    side: Side,
-    bid: f64,
-    ask: f64,
-    price_tick: f64,
-) -> Result<f64, String> {
-    let start_price = match (side, anchor) {
-        (Side::Sell, MakerPriceAnchor::OwnBest) => ask,
-        (Side::Buy, MakerPriceAnchor::OwnBest) => bid,
-        (Side::Sell, MakerPriceAnchor::OppositeBestPlusOneTick) => bid + price_tick,
-        (Side::Buy, MakerPriceAnchor::OppositeBestPlusOneTick) => ask - price_tick,
+/// Level-0 maker price fixed at the same-side best, aligned away from crossing.
+fn level0_maker_price(side: Side, bid: f64, ask: f64, price_tick: f64) -> Result<f64, String> {
+    let start_price = match side {
+        Side::Sell => ask,
+        Side::Buy => bid,
     };
     let limit_price = match side {
         Side::Sell => align_price_ceil(start_price, price_tick),
@@ -206,15 +203,34 @@ fn level0_maker_price(
     Ok(limit_price)
 }
 
-fn opposite_anchor(side: Side, bid: f64, ask: f64) -> f64 {
+fn own_best_anchor(side: Side, bid: f64, ask: f64) -> f64 {
     match side {
-        Side::Buy => ask,
-        Side::Sell => bid,
+        Side::Buy => bid,
+        Side::Sell => ask,
     }
 }
 
 fn is_exec_rate_limit_error(error: &str) -> bool {
     error.starts_with("exec ") && error.contains("下单数") && error.contains("达到上限")
+}
+
+fn amend_price_matches(actual: f64, expected: f64) -> bool {
+    actual.is_finite()
+        && expected.is_finite()
+        && actual > 0.0
+        && expected > 0.0
+        && (actual - expected).abs() <= expected.abs().max(1.0) * 1e-10
+}
+
+fn effective_modify_rate_limit_per_min(backend: ExecBackend, configured: i32) -> i32 {
+    if backend != ExecBackend::Ltp {
+        return configured;
+    }
+    if configured <= 0 {
+        RAPIDX_REPLACE_RATE_LIMIT_PER_MIN
+    } else {
+        configured.min(RAPIDX_REPLACE_RATE_LIMIT_PER_MIN)
+    }
 }
 
 pub struct ChaseExecStrategy {
@@ -542,17 +558,7 @@ impl ChaseExecStrategy {
         if self.config == config {
             return Ok(());
         }
-        let anchor_changed = self.config.maker_price_anchor != config.maker_price_anchor;
         self.config = config;
-        if anchor_changed {
-            // Live children keep their orders but must reprice under the new
-            // anchor even if the opposite best did not drift.
-            for meta in self.children.values_mut() {
-                if !meta.is_taker && !meta.cancel_requested {
-                    meta.reprice_pending = true;
-                }
-            }
-        }
         self.completion_reason = None;
         Ok(())
     }
@@ -783,7 +789,7 @@ impl ChaseExecStrategy {
         }
     }
 
-    /// In-place amend of live maker children when the opposite-side anchor has
+    /// In-place amend of live maker children when the own-best anchor has
     /// moved at least `maker_recenter_trigger_bps` (or the aligned level-0
     /// price changed when the trigger is 0). One modify in flight per child;
     /// post-only crossing cancels surface as order updates and repost through
@@ -829,7 +835,7 @@ impl ChaseExecStrategy {
                 continue;
             };
             let side = meta.side;
-            let anchor = opposite_anchor(side, quote.bid, quote.ask);
+            let anchor = own_best_anchor(side, quote.bid, quote.ask);
             let trigger_met = if meta.reprice_pending {
                 true
             } else if !anchor.is_finite() || anchor <= 0.0 || meta.anchor_price <= 0.0 {
@@ -853,13 +859,8 @@ impl ChaseExecStrategy {
                     return;
                 }
             };
-            let new_price = match level0_maker_price(
-                self.config.maker_price_anchor,
-                side,
-                quote.bid,
-                quote.ask,
-                limits.price_tick,
-            ) {
+            let new_price = match level0_maker_price(side, quote.bid, quote.ask, limits.price_tick)
+            {
                 Ok(price) => price,
                 Err(err) => {
                     debug!(
@@ -881,6 +882,8 @@ impl ChaseExecStrategy {
                 // amend that would only burn queue priority and rate budget.
                 if let Some(meta) = self.children.get_mut(&client_order_id) {
                     meta.anchor_price = anchor;
+                    meta.pending_anchor_price = None;
+                    meta.pending_amend_price = None;
                     meta.reprice_pending = false;
                 }
                 continue;
@@ -904,9 +907,49 @@ impl ChaseExecStrategy {
             };
             drop(order);
             let params = PreTradeParamsLoader::instance();
+            let modify_exchange = match self.exec_venue {
+                TradingVenue::BinanceFutures => RuntimeExchange::Binance,
+                TradingVenue::OkexFutures => RuntimeExchange::Okex,
+                _ => {
+                    warn!(
+                        "ChaseExecStrategy: strategy_id={} unsupported modify venue {:?}",
+                        self.strategy_id, self.exec_venue
+                    );
+                    return;
+                }
+            };
+            let modify_backend = match ExecBackend::for_exchange(modify_exchange) {
+                Ok(backend) => backend,
+                Err(err) => {
+                    warn!(
+                        "ChaseExecStrategy: strategy_id={} cannot resolve execution backend for modify: {err:#}",
+                        self.strategy_id
+                    );
+                    return;
+                }
+            };
+            let modify_limit_per_min = effective_modify_rate_limit_per_min(
+                modify_backend,
+                params.exec_order_rate_limit_per_min(),
+            );
+            if self.exec_venue == TradingVenue::OkexFutures && modify_backend == ExecBackend::Native
+            {
+                if let Err(err) = OkexModifyRateLimiter::check_limit(&self.symbol, now_ts) {
+                    warn!(
+                        "ChaseExecStrategy: strategy_id={} {}",
+                        self.strategy_id, err
+                    );
+                    if let Some(meta) = self.children.get_mut(&client_order_id) {
+                        meta.reprice_pending = true;
+                    }
+                    self.submit_blocked_until_us =
+                        OkexModifyRateLimiter::next_available_at_us(&self.symbol, now_ts);
+                    return;
+                }
+            }
             if let Err(err) = OrderRateLimiter::check_limit(
                 OrderRateBucket::Exec,
-                params.exec_order_rate_limit_per_min(),
+                modify_limit_per_min,
                 params.exec_order_rate_limit_10s(),
                 now_ts,
             ) {
@@ -922,7 +965,7 @@ impl ChaseExecStrategy {
                 }
                 self.submit_blocked_until_us = OrderRateLimiter::next_available_at_us(
                     OrderRateBucket::Exec,
-                    params.exec_order_rate_limit_per_min(),
+                    modify_limit_per_min,
                     params.exec_order_rate_limit_10s(),
                     now_ts,
                 );
@@ -935,11 +978,17 @@ impl ChaseExecStrategy {
             ) {
                 Ok(()) => {
                     OrderRateLimiter::record(OrderRateBucket::Exec, client_order_id, now_ts);
+                    if self.exec_venue == TradingVenue::OkexFutures
+                        && modify_backend == ExecBackend::Native
+                    {
+                        OkexModifyRateLimiter::record(&self.symbol, now_ts);
+                    }
                     if let Some(meta) = self.children.get_mut(&client_order_id) {
-                        meta.anchor_price = anchor;
                         meta.last_amend_ts_us = now_ts;
                         meta.amend_in_flight = true;
                         meta.reprice_pending = false;
+                        meta.pending_anchor_price = Some(anchor);
+                        meta.pending_amend_price = Some(new_price);
                     }
                     self.schedule_order_query_watchdog(
                         client_order_id,
@@ -1043,13 +1092,7 @@ impl ChaseExecStrategy {
                 return;
             }
         };
-        let maker_price = match level0_maker_price(
-            self.config.maker_price_anchor,
-            side,
-            quote.bid,
-            quote.ask,
-            limits.price_tick,
-        ) {
+        let maker_price = match level0_maker_price(side, quote.bid, quote.ask, limits.price_tick) {
             Ok(price) => price,
             Err(err) => {
                 warn!(
@@ -1194,7 +1237,7 @@ impl ChaseExecStrategy {
             qty_base,
             qty_multiplier,
             maker_price,
-            opposite_anchor(side, quote.bid, quote.ask),
+            own_best_anchor(side, quote.bid, quote.ask),
             generation,
             &from_key,
             &quote,
@@ -1276,6 +1319,8 @@ impl ChaseExecStrategy {
                 maker_expired: false,
                 cancel_for_target: false,
                 anchor_price,
+                pending_anchor_price: None,
+                pending_amend_price: None,
                 // The placement counts as the child's first pricing event so
                 // the amend cooldown also gates the first amend.
                 last_amend_ts_us: now_ts,
@@ -1406,6 +1451,48 @@ impl ChaseExecStrategy {
         }
     }
 
+    fn retry_cancel_after_live_update(&mut self, client_order_id: i64) {
+        let should_retry = self
+            .children
+            .get(&client_order_id)
+            .is_some_and(|meta| meta.cancel_requested);
+        if !should_retry {
+            return;
+        }
+        if let Some(meta) = self.children.get_mut(&client_order_id) {
+            meta.cancel_requested = false;
+        }
+        self.request_cancel(client_order_id);
+    }
+
+    fn confirm_pending_amend(&mut self, client_order_id: i64, actual_price: f64) -> bool {
+        let Some(meta) = self.children.get_mut(&client_order_id) else {
+            return false;
+        };
+        let Some(expected_price) = meta.pending_amend_price else {
+            return false;
+        };
+        if !amend_price_matches(actual_price, expected_price) {
+            return false;
+        }
+        if let Some(anchor) = meta.pending_anchor_price.take() {
+            meta.anchor_price = anchor;
+        }
+        meta.pending_amend_price = None;
+        meta.amend_in_flight = false;
+        meta.reprice_pending = false;
+        true
+    }
+
+    fn reject_pending_amend(&mut self, client_order_id: i64) {
+        if let Some(meta) = self.children.get_mut(&client_order_id) {
+            meta.pending_anchor_price = None;
+            meta.pending_amend_price = None;
+            meta.amend_in_flight = false;
+            meta.reprice_pending = true;
+        }
+    }
+
     fn account_fill_progress(
         &mut self,
         client_order_id: i64,
@@ -1520,8 +1607,18 @@ impl ChaseExecStrategy {
             .protected_cumulative_fill(update.cumulative_filled_quantity())
             .effective_cum;
         let status = update.status();
+        let pending_amend_price = self
+            .children
+            .get(&client_order_id)
+            .and_then(|meta| meta.pending_amend_price);
+        let confirms_pending_amend = pending_amend_price
+            .is_some_and(|expected| amend_price_matches(update.price(), expected));
         let changed = manager.apply_remote_update(client_order_id, |order| {
             order.apply_replacement_fields(update);
+            if confirms_pending_amend {
+                order.price = update.price();
+                order.price_qv = None;
+            }
             order.set_exchange_order_id(update.order_id());
             order.cumulative_filled_quantity = effective_fill;
             match status {
@@ -1554,10 +1651,14 @@ impl ChaseExecStrategy {
         }
         let fill_price = update.price().max(current.price);
         self.account_fill_progress(client_order_id, previous_fill, effective_fill, fill_price);
-        if let Some(meta) = self.children.get_mut(&client_order_id) {
-            // Any fresh order state resolves an in-flight amend, either as the
-            // applied amend itself or as the post-only terminal cancel.
-            meta.amend_in_flight = false;
+        let amend_confirmed = snapshot
+            .as_ref()
+            .is_some_and(|(order, _)| self.confirm_pending_amend(client_order_id, order.price));
+        if !amend_confirmed
+            && update.execution_type() == ExecutionType::Replaced
+            && pending_amend_price.is_some()
+        {
+            self.reject_pending_amend(client_order_id);
         }
         if let Some((order, ctx)) = snapshot.as_ref() {
             if status == OrderStatus::New {
@@ -1592,7 +1693,14 @@ impl ChaseExecStrategy {
         if status.is_finished() {
             self.finish_child_order(client_order_id);
         } else {
-            self.clear_order_query_state(client_order_id);
+            if !self
+                .children
+                .get(&client_order_id)
+                .is_some_and(|meta| meta.amend_in_flight)
+            {
+                self.clear_live_order_query_state(client_order_id);
+            }
+            self.retry_cancel_after_live_update(client_order_id);
         }
         true
     }
@@ -1627,9 +1735,6 @@ impl ChaseExecStrategy {
         let changed = manager.apply_remote_update(client_order_id, |order| {
             order.cumulative_filled_quantity = cumulative_fill;
             order.set_exchange_order_id(trade.order_id());
-            if trade.price() > 0.0 {
-                order.price = trade.price();
-            }
             order.status = if status == OrderStatus::Filled {
                 OrderExecutionStatus::Filled
             } else {
@@ -1666,19 +1771,23 @@ impl ChaseExecStrategy {
         if status == OrderStatus::Filled {
             self.finish_child_order(client_order_id);
         } else {
-            self.clear_order_query_state(client_order_id);
+            if !self
+                .children
+                .get(&client_order_id)
+                .is_some_and(|meta| meta.amend_in_flight)
+            {
+                self.clear_live_order_query_state(client_order_id);
+            }
+            self.retry_cancel_after_live_update(client_order_id);
         }
         true
     }
 
-    /// Successful amend acknowledgement: the order keeps its client_order_id;
-    /// refresh the local price so uniform records and later amends see it.
+    /// Binance native responses can confirm the applied price immediately.
+    /// OKX and RapidX acknowledgements are acceptance-only, so their zero-price
+    /// responses leave the amend watchdog armed until an order update confirms it.
     fn apply_modify_response(&mut self, response: &dyn TradeEngineResponse) {
         let client_order_id = response.client_order_id();
-        if let Some(meta) = self.children.get_mut(&client_order_id) {
-            meta.amend_in_flight = false;
-            meta.reprice_pending = false;
-        }
         if let Some(price) = response.response_price().filter(|price| *price > 0.0) {
             let _ = MonitorChannel::instance()
                 .order_manager()
@@ -1689,8 +1798,10 @@ impl ChaseExecStrategy {
                         order.set_exchange_order_id(order_id);
                     }
                 });
+            if self.confirm_pending_amend(client_order_id, price) {
+                self.clear_live_order_query_state(client_order_id);
+            }
         }
-        self.clear_order_query_state(client_order_id);
     }
 
     pub fn snapshot(&self, _now_ts: i64) -> ChaseExecSnapshot {
@@ -1830,13 +1941,9 @@ impl HedgeOrderReconcileCommon for ChaseExecStrategy {
                 code_desc,
                 self.hedge_order_trace_snapshot(client_order_id)
             );
-            if let Some(meta) = self.children.get_mut(&client_order_id) {
-                meta.amend_in_flight = false;
-                // Keep the live order and retry the amend; if the exchange in
-                // fact removed it (post-only crossing/unknown order), the
-                // order update finishes the child and reposts via `unallocated`.
-                meta.reprice_pending = true;
-            }
+            // Keep the live order and retry the amend; if the exchange in fact
+            // removed it, the terminal order update finishes the child.
+            self.reject_pending_amend(client_order_id);
             return;
         }
         warn!(
@@ -1958,6 +2065,108 @@ impl Strategy for ChaseExecStrategy {
         }
     }
 
+    fn apply_order_amendment_result(&mut self, update: &dyn OrderUpdate) {
+        let client_order_id = update.client_order_id();
+        let amend_in_flight = self
+            .children
+            .get(&client_order_id)
+            .is_some_and(|meta| meta.amend_in_flight);
+        if !amend_in_flight {
+            return;
+        }
+        match update.amendment_succeeded() {
+            Some(true) if update.price().is_finite() && update.price() > 0.0 => {
+                let price = update.price();
+                let _ = MonitorChannel::instance()
+                    .order_manager()
+                    .borrow_mut()
+                    .update(client_order_id, |order| {
+                        order.price = price;
+                        order.price_qv = None;
+                    });
+                if self.confirm_pending_amend(client_order_id, price) {
+                    self.clear_order_query_state(client_order_id);
+                }
+            }
+            Some(false) => {
+                self.reject_pending_amend(client_order_id);
+                self.clear_order_query_state(client_order_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_live_order_query(
+        &mut self,
+        update: &dyn OrderUpdate,
+        query_advanced_fill: bool,
+    ) -> bool {
+        let client_order_id = update.client_order_id();
+        if !self.children.contains_key(&client_order_id) {
+            return false;
+        }
+        let retry_cancel = self
+            .order_query_reason(client_order_id)
+            .is_some_and(HedgeOrderReconcileState::is_cancel_reconcile_reason);
+        let amend_in_flight = self
+            .children
+            .get(&client_order_id)
+            .is_some_and(|meta| meta.amend_in_flight);
+        let cancel_already_retried = retry_cancel
+            && query_advanced_fill
+            && self
+                .children
+                .get(&client_order_id)
+                .is_some_and(|meta| meta.cancel_requested);
+        if retry_cancel {
+            if let Some(meta) = self.children.get_mut(&client_order_id) {
+                meta.cancel_requested = false;
+            }
+        }
+        if cancel_already_retried {
+            self.clear_pending_order_query(client_order_id);
+        } else {
+            self.clear_order_query_state(client_order_id);
+        }
+        if !query_advanced_fill {
+            self.apply_order_update(update);
+        }
+        let order_price = update.price();
+        if order_price.is_finite() && order_price > 0.0 {
+            let _ = MonitorChannel::instance()
+                .order_manager()
+                .borrow_mut()
+                .update(client_order_id, |order| {
+                    order.price = order_price;
+                    order.price_qv = None;
+                });
+        }
+        if amend_in_flight
+            && self
+                .children
+                .get(&client_order_id)
+                .is_some_and(|meta| meta.amend_in_flight)
+        {
+            if !(order_price.is_finite()
+                && order_price > 0.0
+                && self.confirm_pending_amend(client_order_id, order_price))
+            {
+                self.reject_pending_amend(client_order_id);
+            }
+        }
+        if !cancel_already_retried {
+            self.clear_order_query_state(client_order_id);
+        }
+        if cancel_already_retried {
+            if let Some(meta) = self.children.get_mut(&client_order_id) {
+                meta.cancel_requested = true;
+            }
+        } else if retry_cancel {
+            self.request_cancel(client_order_id);
+        }
+        true
+    }
+
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate) {
         if self.apply_trade_update_inner(trade) {
             PersistChannel::with(|channel| channel.publish_trade_update(trade));
@@ -2034,6 +2243,8 @@ mod tests {
             maker_expired: false,
             cancel_for_target: false,
             anchor_price: 50_000.0,
+            pending_anchor_price: None,
+            pending_amend_price: None,
             last_amend_ts_us: 0,
             amend_in_flight: false,
             reprice_pending: false,
@@ -2054,6 +2265,40 @@ mod tests {
             from_key: b"chase_alpha".to_vec(),
             release_side,
         }
+    }
+
+    #[test]
+    fn maker_price_and_trigger_anchor_are_fixed_to_own_best() {
+        assert_eq!(
+            level0_maker_price(Side::Buy, 100.01, 100.03, 0.01),
+            Ok(100.01)
+        );
+        assert_eq!(
+            level0_maker_price(Side::Sell, 100.01, 100.03, 0.01),
+            Ok(100.03)
+        );
+        assert_eq!(own_best_anchor(Side::Buy, 100.01, 100.03), 100.01);
+        assert_eq!(own_best_anchor(Side::Sell, 100.01, 100.03), 100.03);
+    }
+
+    #[test]
+    fn rapidx_modify_rate_is_capped_by_replace_order_contract() {
+        assert_eq!(
+            effective_modify_rate_limit_per_min(ExecBackend::Ltp, 0),
+            300
+        );
+        assert_eq!(
+            effective_modify_rate_limit_per_min(ExecBackend::Ltp, 400),
+            300
+        );
+        assert_eq!(
+            effective_modify_rate_limit_per_min(ExecBackend::Ltp, 200),
+            200
+        );
+        assert_eq!(
+            effective_modify_rate_limit_per_min(ExecBackend::Native, 400),
+            400
+        );
     }
 
     #[test]
@@ -2250,12 +2495,13 @@ mod tests {
     }
 
     #[test]
-    fn modify_success_clears_amend_in_flight() {
+    fn acceptance_only_modify_ack_keeps_amend_in_flight() {
         let mut strategy = make_strategy();
         let order_id = strategy.next_order_id();
         let mut meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
         meta.amend_in_flight = true;
-        meta.reprice_pending = true;
+        meta.pending_anchor_price = Some(50_100.0);
+        meta.pending_amend_price = Some(50_100.0);
         strategy.children.insert(order_id, meta);
 
         let response = TradeEngineResponseMessage::new(
@@ -2268,8 +2514,26 @@ mod tests {
         strategy.apply_trade_engine_response(&response);
 
         let meta = strategy.children.get(&order_id).unwrap();
-        assert!(!meta.amend_in_flight);
+        assert!(meta.amend_in_flight);
         assert!(!meta.reprice_pending);
+    }
+
+    #[test]
+    fn matching_order_price_confirms_pending_amend() {
+        let mut strategy = make_strategy();
+        let order_id = strategy.next_order_id();
+        let mut meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
+        meta.amend_in_flight = true;
+        meta.pending_anchor_price = Some(50_100.0);
+        meta.pending_amend_price = Some(50_100.0);
+        strategy.children.insert(order_id, meta);
+
+        assert!(strategy.confirm_pending_amend(order_id, 50_100.0));
+        let meta = strategy.children.get(&order_id).unwrap();
+        assert!(!meta.amend_in_flight);
+        assert_eq!(meta.anchor_price, 50_100.0);
+        assert!(meta.pending_anchor_price.is_none());
+        assert!(meta.pending_amend_price.is_none());
     }
 
     #[test]
@@ -2292,26 +2556,6 @@ mod tests {
         let meta = strategy.children.get(&order_id).unwrap();
         assert!(!meta.amend_in_flight);
         assert!(meta.reprice_pending);
-    }
-
-    #[test]
-    fn config_anchor_change_marks_live_maker_children_for_reprice() {
-        let mut strategy = make_strategy();
-        let maker_id = strategy.next_order_id();
-        strategy
-            .children
-            .insert(maker_id, maker_child_meta(Side::Buy, 1.0, 0.0, 7));
-        let taker_id = strategy.next_order_id();
-        let mut taker_meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
-        taker_meta.is_taker = true;
-        strategy.children.insert(taker_id, taker_meta);
-
-        let mut new_config = config();
-        new_config.maker_price_anchor = MakerPriceAnchor::OwnBest;
-        strategy.update_config(new_config).unwrap();
-
-        assert!(strategy.children.get(&maker_id).unwrap().reprice_pending);
-        assert!(!strategy.children.get(&taker_id).unwrap().reprice_pending);
     }
 
     #[test]

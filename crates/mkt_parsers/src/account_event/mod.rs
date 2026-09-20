@@ -149,6 +149,8 @@ pub fn binance_order_dedup_key(
             msg.trade_id as u64,
             msg.trade_time as u64,
             msg.cumulative_filled_quantity.to_bits(),
+            msg.amend_result as i64 as u64,
+            msg.price.to_bits(),
         ]),
     )
 }
@@ -164,6 +166,8 @@ pub fn okex_order_dedup_key(account_scope: BasicAccountScope, msg: &OkexOrderMsg
             msg.update_time as u64,
             msg.state as u64,
             msg.cumulative_filled_quantity.to_bits(),
+            msg.amend_result as i64 as u64,
+            msg.price.to_bits(),
         ]),
     )
 }

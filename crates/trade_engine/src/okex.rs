@@ -318,6 +318,99 @@ pub struct OkexCancelOrderRequest {
     pub params: Bytes,
 }
 
+/// Compact OKX price-only amend parameters:
+/// ord_id | cl_ord_id | price_tick_i64 | price_tick_exp | price_count
+/// | inst_len | inst_bytes
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OkexModifyOrderParams {
+    pub ord_id: i64,
+    pub cl_ord_id: i64,
+    pub new_price_qv: QuantizedValue,
+    pub inst_id: String,
+}
+
+impl OkexModifyOrderParams {
+    const MIN_BIN_LEN: usize = 8 + 8 + 8 + 4 + 8 + 1;
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        if self.ord_id <= 0 && self.cl_ord_id <= 0 {
+            return None;
+        }
+        let price = self.new_price_qv.get_val();
+        if !price.is_finite() || price <= 0.0 || self.inst_id.len() > u8::MAX as usize {
+            return None;
+        }
+        let (price_tick_i64, price_tick_exp) = self.new_price_qv.get_tick_parts();
+        let mut buf = BytesMut::with_capacity(Self::MIN_BIN_LEN + self.inst_id.len());
+        buf.put_i64_le(self.ord_id);
+        buf.put_i64_le(self.cl_ord_id);
+        buf.put_i64_le(price_tick_i64);
+        buf.put_i32_le(price_tick_exp);
+        buf.put_i64_le(self.new_price_qv.get_count());
+        buf.put_u8(self.inst_id.len() as u8);
+        buf.put_slice(self.inst_id.as_bytes());
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        if raw.len() < Self::MIN_BIN_LEN {
+            return None;
+        }
+        let ord_id = i64::from_le_bytes(raw[0..8].try_into().ok()?);
+        let cl_ord_id = i64::from_le_bytes(raw[8..16].try_into().ok()?);
+        let price_tick_i64 = i64::from_le_bytes(raw[16..24].try_into().ok()?);
+        let price_tick_exp = i32::from_le_bytes(raw[24..28].try_into().ok()?);
+        let price_count = i64::from_le_bytes(raw[28..36].try_into().ok()?);
+        let inst_len = raw[36] as usize;
+        if raw.len() != Self::MIN_BIN_LEN + inst_len {
+            return None;
+        }
+        let params = Self {
+            ord_id,
+            cl_ord_id,
+            new_price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
+            inst_id: std::str::from_utf8(&raw[37..]).ok()?.to_string(),
+        };
+        params.to_bytes().map(|_| params)
+    }
+}
+
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct OkexModifyOrderRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl OkexModifyOrderRequest {
+    pub fn create_um(
+        create_time: i64,
+        client_order_id: i64,
+        params: OkexModifyOrderParams,
+    ) -> Option<Self> {
+        let params = params.to_bytes()?;
+        Some(Self {
+            header: TradeRequestHeader {
+                msg_type: TradeRequestType::OkexModifyUMOrder as u32,
+                params_length: params.len() as u32,
+                create_time,
+                client_order_id,
+            },
+            params,
+        })
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf = BytesMut::with_capacity(24 + self.params.len());
+        buf.put_u32_le(self.header.msg_type);
+        buf.put_u32_le(self.header.params_length);
+        buf.put_i64_le(self.header.create_time);
+        buf.put_i64_le(self.header.client_order_id);
+        buf.put_slice(&self.params);
+        buf.freeze()
+    }
+}
+
 impl OkexNewOrderRequest {
     fn create_with_type(
         req_type: TradeRequestType,
@@ -633,6 +726,34 @@ pub fn build_cancel_ws_json_from_parts(
     Some(out)
 }
 
+pub fn build_modify_ws_json_from_parts(
+    req_type: TradeRequestType,
+    params: &[u8],
+    inst_id_code: i64,
+    transport_id: i64,
+) -> Option<String> {
+    if req_type != TradeRequestType::OkexModifyUMOrder {
+        return None;
+    }
+    let params = OkexModifyOrderParams::from_bytes(params)?;
+    let mut out = okex_payload_prefix("amend-order", transport_id, 144);
+    push_i64_field(&mut out, "instIdCode", inst_id_code, true);
+    if params.ord_id > 0 {
+        push_i64_string_field(&mut out, "ordId", params.ord_id, false);
+    }
+    if params.cl_ord_id > 0 {
+        push_i64_string_field(&mut out, "clOrdId", params.cl_ord_id, false);
+    }
+    push_json_field(
+        &mut out,
+        "newPx",
+        &params.new_price_qv.decimal_string(),
+        false,
+    );
+    out.push_str("}]}");
+    Some(out)
+}
+
 #[derive(Debug, Clone)]
 pub struct OkexWsOrderRespItem {
     pub cl_ord_id: i64,
@@ -667,7 +788,10 @@ impl OkexWsOrderResponse {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        if !op.eq_ignore_ascii_case("order") && !op.eq_ignore_ascii_case("cancel-order") {
+        if !op.eq_ignore_ascii_case("order")
+            && !op.eq_ignore_ascii_case("cancel-order")
+            && !op.eq_ignore_ascii_case("amend-order")
+        {
             return None;
         }
 
@@ -721,18 +845,15 @@ impl OkexWsOrderResponse {
         })
     }
 
-    /// 优先从 data.clOrdId 获取 client_order_id，否则回退到顶层 id
+    /// The top-level id is a transport correlation ID, never a client order ID.
     pub fn client_order_id(&self) -> Option<i64> {
-        self.data
-            .as_ref()
-            .and_then(|d| {
-                if d.cl_ord_id != 0 {
-                    Some(d.cl_ord_id)
-                } else {
-                    None
-                }
-            })
-            .or(if self.id != 0 { Some(self.id) } else { None })
+        self.data.as_ref().and_then(|d| {
+            if d.cl_ord_id != 0 {
+                Some(d.cl_ord_id)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn order_id(&self) -> i64 {
@@ -956,5 +1077,34 @@ mod tests {
         assert!(arg.get("instId").is_none());
         assert_eq!(arg["ordId"], json!("88"));
         assert_eq!(arg["clOrdId"], json!("42"));
+    }
+
+    #[test]
+    fn okex_modify_order_ws_payload_uses_price_and_ids() {
+        let params = OkexModifyOrderParams {
+            ord_id: 88,
+            cl_ord_id: 42,
+            new_price_qv: QuantizedValue::from_decimal(123.45).unwrap(),
+            inst_id: "BTC-USDT-SWAP".to_string(),
+        };
+        let req = OkexModifyOrderRequest::create_um(1, 42, params).unwrap();
+        let payload: Value = serde_json::from_str(
+            &build_modify_ws_json_from_parts(
+                TradeRequestType::OkexModifyUMOrder,
+                &req.params,
+                654321,
+                100,
+            )
+            .unwrap(),
+        )
+        .expect("json payload");
+        let arg = payload["args"].as_array().unwrap().first().unwrap();
+
+        assert_eq!(payload["op"], json!("amend-order"));
+        assert_eq!(payload["id"], json!("100"));
+        assert_eq!(arg["instIdCode"], json!(654321));
+        assert_eq!(arg["ordId"], json!("88"));
+        assert_eq!(arg["clOrdId"], json!("42"));
+        assert_eq!(arg["newPx"], json!("123.45"));
     }
 }

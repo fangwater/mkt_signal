@@ -1,6 +1,4 @@
-use crate::strategy::batch_exec_strategy::{
-    validate_target_signal, BatchExecTarget, MakerPriceAnchor,
-};
+use crate::strategy::batch_exec_strategy::{validate_target_signal, BatchExecTarget};
 use order_common::TradingVenue;
 use serde::{Deserialize, Serialize};
 
@@ -10,9 +8,9 @@ const fn default_bbo_max_age_ms() -> u32 {
     2_000
 }
 
-/// ChaseExec configuration: a single level-0 post-only quote that follows the
-/// opposite-side anchor via in-place amend, with fill-driven (water-level)
-/// release instead of batch scheduling.
+/// ChaseExec configuration: a single own-best post-only quote that follows the
+/// same-side BBO via in-place amend, with fill-driven (water-level) release
+/// instead of batch scheduling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChaseExecConfig {
@@ -20,8 +18,7 @@ pub struct ChaseExecConfig {
     pub single_order_usdt: f64,
     /// Maximum unfilled maker exposure (usdt) open at any time.
     pub max_open_usdt: f64,
-    pub maker_price_anchor: MakerPriceAnchor,
-    /// Anchor movement (bps of opposite best) required before a live child is
+    /// Anchor movement (bps of own best) required before a live child is
     /// amended. 0 amends whenever the aligned price actually changes.
     pub maker_recenter_trigger_bps: f64,
     /// Per-child minimum delay between amend requests.
@@ -39,7 +36,6 @@ impl Default for ChaseExecConfig {
         Self {
             single_order_usdt: 100.0,
             max_open_usdt: 200.0,
-            maker_price_anchor: MakerPriceAnchor::OppositeBestPlusOneTick,
             maker_recenter_trigger_bps: 3.0,
             maker_amend_cooldown_ms: 0,
             maker_timeout_ms: 60_000,
@@ -81,8 +77,6 @@ pub struct ChaseExecConfigOverride {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_open_usdt: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub maker_price_anchor: Option<MakerPriceAnchor>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub maker_recenter_trigger_bps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maker_amend_cooldown_ms: Option<u32>,
@@ -98,7 +92,6 @@ impl ChaseExecConfigOverride {
     pub fn is_empty(&self) -> bool {
         self.single_order_usdt.is_none()
             && self.max_open_usdt.is_none()
-            && self.maker_price_anchor.is_none()
             && self.maker_recenter_trigger_bps.is_none()
             && self.maker_amend_cooldown_ms.is_none()
             && self.maker_timeout_ms.is_none()
@@ -110,9 +103,6 @@ impl ChaseExecConfigOverride {
         ChaseExecConfig {
             single_order_usdt: self.single_order_usdt.unwrap_or(defaults.single_order_usdt),
             max_open_usdt: self.max_open_usdt.unwrap_or(defaults.max_open_usdt),
-            maker_price_anchor: self
-                .maker_price_anchor
-                .unwrap_or(defaults.maker_price_anchor),
             maker_recenter_trigger_bps: self
                 .maker_recenter_trigger_bps
                 .unwrap_or(defaults.maker_recenter_trigger_bps),

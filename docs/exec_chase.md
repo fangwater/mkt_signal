@@ -2,7 +2,7 @@
 
 `chase_exec` is a standalone live execution strategy that runs alongside
 `batch_exec` inside `exec-pre-trade`. Each release places one level-0
-post-only order that follows an opposite-side price anchor through in-place
+post-only order that follows the same-side best price through in-place
 amendments, and exposure is released by fill water level rather than a batch
 timer. It reuses the existing account risk checks, Manager tradability cache,
 exec order rate limiter, order queries, orphan reconciliation, uniform
@@ -13,11 +13,24 @@ persistence, and position-ledger infrastructure.
 Strategy values live in Redis under `chase_exec:<strategy_name>`; the
 namespace is fully independent from `batch_exec:*`.
 
+The Exec Config API selects this namespace with
+`execution_family: "chase_exec"` in POST bodies or the matching query
+parameter for GET/DELETE. Requests without that field continue to address
+`batch_exec`.
+
+Chase is available only for `binance-futures` and `okex-futures`. Both native
+exchange backends and the RapidX/LTP backend use in-place amend. Binance
+COIN-M is deliberately rejected because this execution path has no supported
+modify contract for it.
+
+Before reloading an existing strategy, remove the legacy
+`maker_price_anchor` field from its Redis JSON. Chase now fixes this behavior
+internally, and strict config parsing rejects the removed field.
+
 ```json
 {
   "single_order_usdt": 100.0,
   "max_open_usdt": 200.0,
-  "maker_price_anchor": "opposite_best_plus_one_tick",
   "maker_recenter_trigger_bps": 3.0,
   "maker_amend_cooldown_ms": 0,
   "maker_timeout_ms": 60000,
@@ -32,12 +45,23 @@ namespace is fully independent from `batch_exec:*`.
 | --- | --- |
 | `single_order_usdt` | Maximum notional released per child order. |
 | `max_open_usdt` | Maximum unfilled maker exposure open at any time. |
-| `maker_price_anchor` | `own_best` or `opposite_best_plus_one_tick`; the level-0 post-only price each maker child chases. |
-| `maker_recenter_trigger_bps` | Anchor movement (bps of the previous anchor) required before a live child is amended. `0` amends whenever the aligned level-0 price actually changes. |
+| `maker_recenter_trigger_bps` | Own-best movement (bps of the previous anchor) required before a live child is amended. `0` amends whenever the aligned own-best price actually changes. |
 | `maker_amend_cooldown_ms` | Per-child minimum delay between amend requests. |
 | `maker_timeout_ms` | Per-child maker lifetime; on expiry the confirmed-unfilled remainder escalates to taker. |
 | `target_tolerance_usdt` | Stop once the remaining gap is within this notional tolerance. |
 | `bbo_max_age_ms` | Maximum BBO age for releases and recentering; stale quotes pause activity. |
+
+Manager stores Chase as its own order-strategy template type and publishes the
+strict Chase payload above directly into `chase_exec:*`. Symbol-level template
+overrides must stay in the same execution family. A live binding may move
+between Batch/POV and Chase through `exec_switch:*`: the source strategy first
+freezes its target, cancels all working children, waits for cancellation and
+late-fill reconciliation, and publishes its exact per-symbol net allocation.
+The destination imports that allocation before it becomes executable. Once the
+destination confirms the allocation, the source ledger entry and old config are
+removed. This changes ledger ownership without flattening the exchange
+position. Other strategies may not keep the same account-symbol in the opposite
+family because the two family ledgers still require exclusive symbol ownership.
 
 Targets share the `batch_exec` schema: a bare base quantity or
 `{"qty": .., "signal": ..}` with `signal` in `[-2, -1, 0, 1, 2]`.
@@ -52,11 +76,15 @@ one field and are validated against the defaults.
   Maker clips release at most one per clock pass while unfilled maker
   exposure stays below `max_open_usdt`; fills are what re-open the release
   budget. Taker obligations drain before any maker release.
-- Each maker child is a level-0 post-only order priced from the configured
-  anchor. When the opposite-side anchor moves by at least
+- Each maker child is a level-0 post-only order fixed to the same-side best.
+  When that own-best anchor moves by at least
   `maker_recenter_trigger_bps`, the child is amended in place
-  (`order.modify`) with one amend in flight per child. Amends consume the
-  same exec order rate limit as new orders.
+  (Binance `order.modify`, OKX `amend-order`, RapidX `replace_order`) with one
+  amend in flight per child. Amends consume the same exec order rate limit as
+  new orders. RapidX modify checks are capped at the venue contract of 300
+  requests per minute even when the general Exec rate limit is disabled or
+  configured higher. Native OKX amend requests also enforce the venue's
+  per-instrument limit of 60 requests per 2 seconds.
 - Post-only rejections repost at the fresh BBO without backoff; deterministic
   open rejections apply backoff through `submit_blocked_until_us`. GTX
   cross-cancels and unexpected exchange cancels return the remainder to the
@@ -81,7 +109,8 @@ one field and are validated against the defaults.
 Redis keys: `chase_exec:strategy_names`,
 `chase_exec:removed_strategy_names`,
 `chase_exec_state:position_allocations`,
-`chase_exec_state:leverage_initialized`. The reloader shares
+`chase_exec_state:leverage_initialized`, plus the shared switch state
+`exec_switch:strategy_names` / `exec_switch:<strategy_name>`. The reloader shares
 `batch_exec_pubs/reload_notify` with the batch reloader; iceoryx2 gives each
 subscriber its own copy, so the two reloaders do not consume each other's
 notifications.

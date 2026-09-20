@@ -76,6 +76,14 @@ impl OrderUpdate for BinanceBasicOrderMsg {
         map_execution_type(self.execution_type)
     }
 
+    fn amendment_succeeded(&self) -> Option<bool> {
+        match self.amend_result {
+            0 => Some(true),
+            -1 => Some(false),
+            _ => None,
+        }
+    }
+
     fn trading_venue(&self) -> TradingVenue {
         map_trading_venue(self.venue)
     }

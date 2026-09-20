@@ -16,6 +16,7 @@ mod channel;
 pub mod chase_exec_config;
 pub mod close_inventory;
 pub mod event;
+pub mod exec_algorithm_switch;
 pub mod exec_resample_channel;
 pub mod exec_volume_channel;
 pub mod fr_position_concentration_guard;

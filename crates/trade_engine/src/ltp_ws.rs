@@ -1,7 +1,9 @@
-use crate::okex::{OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest};
+use crate::okex::{
+    OkexCancelOrderRequest, OkexModifyOrderParams, OkexNewOrderParams, OkexNewOrderRequest,
+};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestHeader, TradeRequestMsg,
-    TradeRequestType,
+    BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams, TradeRequestHeader,
+    TradeRequestMsg, TradeRequestType,
 };
 use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
@@ -130,8 +132,34 @@ impl LtpWsResponse {
     pub fn is_trade_ack(&self) -> bool {
         matches!(
             self.event.as_deref(),
-            Some("place_order") | Some("cancel_order")
-        )
+            Some("place_order") | Some("cancel_order") | Some("replace_order")
+        ) || (self.event.as_deref() == Some("error") && self.id.is_some())
+    }
+
+    pub fn action_matches_request(&self, req_type: TradeRequestType) -> bool {
+        match self.event.as_deref() {
+            Some("place_order") => req_type.is_new_order(),
+            Some("cancel_order") => matches!(
+                req_type,
+                TradeRequestType::BinanceCancelUMOrder
+                    | TradeRequestType::BinanceCancelMarginOrder
+                    | TradeRequestType::BinanceLtpCancelSpotOrder
+                    | TradeRequestType::BinanceWsCancelUMOrder
+                    | TradeRequestType::BinanceWsCancelMarginOrder
+                    | TradeRequestType::OkexCancelMarginOrder
+                    | TradeRequestType::OkexCancelUMOrder
+            ),
+            Some("replace_order") => matches!(
+                req_type,
+                TradeRequestType::BinanceModifyUMOrder
+                    | TradeRequestType::BinanceWsModifyUMOrder
+                    | TradeRequestType::OkexModifyUMOrder
+            ),
+            // RapidX reports rejected trade actions as `event: "error"`; the
+            // echoed request id is the only action correlation in that shape.
+            Some("error") => self.id.is_some(),
+            _ => false,
+        }
     }
 
     pub fn requires_order_query(&self) -> bool {
@@ -143,13 +171,23 @@ impl LtpWsResponse {
         self.has_code
             && match self.event.as_deref() {
                 Some("login") => self.code == 0,
-                Some("place_order") | Some("cancel_order") => self.code == 200000,
+                Some("place_order") | Some("cancel_order") | Some("replace_order") => {
+                    self.code == 200000
+                }
                 _ => false,
             }
     }
 
     pub fn is_order_push(&self) -> bool {
         self.channel.as_deref() == Some("Orders") && self.data.is_object()
+    }
+
+    pub fn order_action(&self) -> Option<&str> {
+        self.data.get("action").and_then(Value::as_str)
+    }
+
+    pub fn is_amend_failed(&self) -> bool {
+        self.is_order_push() && self.order_action() == Some("AMEND_FAILED")
     }
 
     pub fn order_id_i64(&self) -> i64 {
@@ -202,6 +240,8 @@ impl LtpWsResponse {
     pub fn error_code_for_trade_response(&self) -> i32 {
         if self.is_success() {
             0
+        } else if self.is_amend_failed() && self.code == 0 {
+            -1
         } else {
             self.code
         }
@@ -218,6 +258,7 @@ pub enum LtpUserData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LtpOrderPush {
+    pub action: String,
     pub portfolio_id: String,
     pub order_id: String,
     pub client_order_id: String,
@@ -280,6 +321,11 @@ pub fn parse_ltp_user_data(payload: &str) -> Result<Option<LtpUserData>> {
 
     match channel {
         "Orders" => Ok(Some(LtpUserData::Order(LtpOrderPush {
+            action: data
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             portfolio_id: required_protocol_string(data, "portfolioId")?,
             order_id: required_protocol_string(data, "orderId")?,
             client_order_id: required_protocol_string(data, "clientOrderId")?,
@@ -387,11 +433,14 @@ pub fn build_order_payload(
         | TradeRequestType::BinanceCancelMarginOrder
         | TradeRequestType::BinanceLtpCancelSpotOrder
         | TradeRequestType::BinanceWsCancelUMOrder
-        | TradeRequestType::BinanceWsCancelMarginOrder => Exchange::Binance,
+        | TradeRequestType::BinanceWsCancelMarginOrder
+        | TradeRequestType::BinanceModifyUMOrder
+        | TradeRequestType::BinanceWsModifyUMOrder => Exchange::Binance,
         TradeRequestType::OkexNewUMOrder
         | TradeRequestType::OkexNewMarginOrder
         | TradeRequestType::OkexCancelUMOrder
-        | TradeRequestType::OkexCancelMarginOrder => Exchange::Okex,
+        | TradeRequestType::OkexCancelMarginOrder
+        | TradeRequestType::OkexModifyUMOrder => Exchange::Okex,
         _ => return Err(anyhow!("unsupported RapidX request type")),
     };
     if logical_exchange != expected_exchange {
@@ -427,6 +476,22 @@ pub fn build_order_payload(
                 build_ltp_cancel_args_from_binance(msg.client_order_id, params),
             )
         }
+        TradeRequestType::BinanceModifyUMOrder | TradeRequestType::BinanceWsModifyUMOrder => {
+            let params = BinanceModifyOrderParams::from_bytes(&msg.params)
+                .ok_or_else(|| anyhow!("decode binance modify order params failed"))?;
+            if params.order_id <= 0 {
+                return Err(anyhow!(
+                    "RapidX replace_order requires an exchange order ID"
+                ));
+            }
+            (
+                "replace_order",
+                json!({
+                    "orderId": params.order_id.to_string(),
+                    "replacePrice": params.price_qv.decimal_string(),
+                }),
+            )
+        }
         TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
             let params = OkexNewOrderRequest {
                 header: header_for_msg(msg),
@@ -447,6 +512,22 @@ pub fn build_order_payload(
             .params_struct()
             .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?;
             ("cancel_order", build_ltp_cancel_args_from_okex(msg, params))
+        }
+        TradeRequestType::OkexModifyUMOrder => {
+            let params = OkexModifyOrderParams::from_bytes(&msg.params)
+                .ok_or_else(|| anyhow!("decode okex modify order params failed"))?;
+            if params.ord_id <= 0 {
+                return Err(anyhow!(
+                    "RapidX replace_order requires an exchange order ID"
+                ));
+            }
+            (
+                "replace_order",
+                json!({
+                    "orderId": params.ord_id.to_string(),
+                    "replacePrice": params.new_price_qv.decimal_string(),
+                }),
+            )
         }
         _ => {
             return Err(anyhow!(
@@ -704,7 +785,8 @@ pub fn ltp_status_for_response(resp: &LtpWsResponse) -> u16 {
         .and_then(|v| v.as_str())
         .map(|s| matches!(s.to_ascii_uppercase().as_str(), "FAIL" | "REJECT"))
         .unwrap_or(false);
-    if order_state_failed || (!resp.is_order_push() && !resp.is_success()) {
+    if order_state_failed || resp.is_amend_failed() || (!resp.is_order_push() && !resp.is_success())
+    {
         400
     } else {
         206
@@ -886,6 +968,79 @@ mod tests {
         let missing_code =
             LtpWsResponse::from_json_str(r#"{"event":"place_order","data":{}}"#).unwrap();
         assert!(!missing_code.is_success());
+    }
+
+    #[test]
+    fn builds_binance_and_okx_replace_order_payloads() {
+        let binance = BinanceModifyOrderParams::with_price(
+            "BTCUSDT",
+            order_common::Side::Buy,
+            QuantizedValue::from_decimal(0.01).unwrap(),
+            QuantizedValue::from_decimal(60_001.0).unwrap(),
+            77,
+            123,
+            None,
+        );
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceWsModifyUMOrder,
+            1,
+            123,
+            &binance.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(&build_order_payload(Exchange::Binance, &msg, 9).unwrap())
+                .unwrap();
+        assert_eq!(value["action"], "replace_order");
+        assert_eq!(value["args"]["orderId"], "77");
+        assert_eq!(value["args"]["replacePrice"], "60001");
+
+        let okx = OkexModifyOrderParams {
+            ord_id: 88,
+            cl_ord_id: 124,
+            new_price_qv: QuantizedValue::from_decimal(2_345.5).unwrap(),
+            inst_id: "BTC-USDT-SWAP".to_string(),
+        };
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::OkexModifyUMOrder,
+            1,
+            124,
+            &okx.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(&build_order_payload(Exchange::Okex, &msg, 10).unwrap()).unwrap();
+        assert_eq!(value["action"], "replace_order");
+        assert_eq!(value["args"]["orderId"], "88");
+        assert_eq!(value["args"]["replacePrice"], "2345.5");
+    }
+
+    #[test]
+    fn recognizes_replace_ack_and_async_failure() {
+        let ack = LtpWsResponse::from_json_str(
+            r#"{"id":"9","event":"replace_order","code":200000,"data":{"orderId":"77","orderState":"OPEN"}}"#,
+        )
+        .unwrap();
+        assert!(ack.is_trade_ack());
+        assert!(ack.is_success());
+        assert!(ack.action_matches_request(TradeRequestType::BinanceWsModifyUMOrder));
+
+        let rejected = LtpWsResponse::from_json_str(
+            r#"{"id":"9","event":"error","code":"60009","msg":"ReplaceOrder failed."}"#,
+        )
+        .unwrap();
+        assert!(rejected.is_trade_ack());
+        assert!(!rejected.is_success());
+        assert!(rejected.action_matches_request(TradeRequestType::OkexModifyUMOrder));
+        assert_eq!(ltp_status_for_response(&rejected), 400);
+
+        let failed = LtpWsResponse::from_json_str(
+            r#"{"channel":"Orders","data":{"action":"AMEND_FAILED","orderState":"OPEN"}}"#,
+        )
+        .unwrap();
+        assert!(failed.is_amend_failed());
+        assert_eq!(ltp_status_for_response(&failed), 400);
+        assert_ne!(failed.error_code_for_trade_response(), 0);
     }
 
     #[test]

@@ -11,7 +11,9 @@ use crate::gate_ws;
 use crate::hyperliquid_ws::{self, HyperliquidTradingClient};
 use crate::ltp_ws::{self, LtpCredentials};
 use crate::okex;
-use crate::okex::{OkexCancelOrderParams, OkexNewOrderParams, OkexWsOrderResponse};
+use crate::okex::{
+    OkexCancelOrderParams, OkexModifyOrderParams, OkexNewOrderParams, OkexWsOrderResponse,
+};
 use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
@@ -2229,6 +2231,12 @@ impl TradeWsClient {
                     transport_id,
                 )
             }
+            TradeRequestType::OkexModifyUMOrder => okex::build_modify_ws_json_from_parts(
+                msg.req_type,
+                &msg.params,
+                inst_id_code,
+                transport_id,
+            ),
             _ => None,
         };
 
@@ -2257,6 +2265,9 @@ impl TradeWsClient {
                     .map(|params| params.inst_id)
                     .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?
             }
+            TradeRequestType::OkexModifyUMOrder => OkexModifyOrderParams::from_bytes(&msg.params)
+                .map(|params| params.inst_id)
+                .ok_or_else(|| anyhow!("decode okex modify order params failed"))?,
             _ => {
                 return Err(anyhow!(
                     "unsupported okex trade request for instIdCode resolution: {:?}",
@@ -2273,7 +2284,9 @@ impl TradeWsClient {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexCancelMarginOrder => {
                 Ok("MARGIN")
             }
-            TradeRequestType::OkexNewUMOrder | TradeRequestType::OkexCancelUMOrder => Ok("SWAP"),
+            TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelUMOrder
+            | TradeRequestType::OkexModifyUMOrder => Ok("SWAP"),
             _ => Err(anyhow!(
                 "unsupported okex request type for instIdCode resolution: {:?}",
                 req_type
@@ -3508,7 +3521,7 @@ impl TradeWsClient {
                 || resp
                     .client_order_id_i64()
                     .is_some_and(|id| id != client_order_id)
-                || (resp.event.as_deref() == Some("place_order")) != meta.req_type.is_new_order()
+                || !resp.action_matches_request(meta.req_type)
             {
                 self.publish_ltp_ambiguous(&meta, "malformed or mismatched action acknowledgement");
                 return true;
@@ -3535,7 +3548,10 @@ impl TradeWsClient {
             if self.ltp_portfolio_id.as_deref() != Some(order.portfolio_id.as_str()) {
                 return true;
             }
-            let req_type = match (
+            if order.action == "AMEND_PENDING" {
+                return true;
+            }
+            let lifecycle_req_type = match (
                 self.logical_exchange,
                 order.exchange_type.as_str(),
                 order.business_type.as_str(),
@@ -3546,6 +3562,15 @@ impl TradeWsClient {
                 (Exchange::Okex, "OKX", "PERP") => TradeRequestType::OkexNewUMOrder,
                 (Exchange::Okex, "OKX", "SPOT" | "MARGIN") => TradeRequestType::OkexNewMarginOrder,
                 _ => return true,
+            };
+            let req_type = if matches!(order.action.as_str(), "AMEND_COMPLETED" | "AMEND_FAILED") {
+                match lifecycle_req_type {
+                    TradeRequestType::BinanceNewUMOrder => TradeRequestType::BinanceModifyUMOrder,
+                    TradeRequestType::OkexNewUMOrder => TradeRequestType::OkexModifyUMOrder,
+                    _ => return true,
+                }
+            } else {
+                lifecycle_req_type
             };
             let Ok(client_order_id) = order.client_order_id.parse::<i64>() else {
                 return true;
