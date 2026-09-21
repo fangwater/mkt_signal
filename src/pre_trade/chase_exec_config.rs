@@ -2172,7 +2172,7 @@ mod tests {
                 "max_open_usdt": 200.0,
                 "maker_recenter_trigger_bps": 3.0,
                 "maker_amend_cooldown_ms": 0,
-                "maker_timeout_ms": 60000,
+                "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
                 "targets": {"BTCUSDT": 0.02}
             }"#,
@@ -2191,7 +2191,7 @@ mod tests {
                 "single_order_usdt": 100.0,
                 "max_open_usdt": 200.0,
                 "maker_recenter_trigger_bps": 0.0,
-                "maker_timeout_ms": 60000,
+                "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
                 "targets": {"BTCUSDT": {"qty": -0.5, "signal": 1}, "ETHUSDT": {"qty": 0.3}}
             }"#,
@@ -2210,7 +2210,7 @@ mod tests {
                 "single_order_usdt": 100.0,
                 "max_open_usdt": 200.0,
                 "maker_recenter_trigger_bps": 0.0,
-                "maker_timeout_ms": 60000,
+                "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
                 "targets": {"BTCUSDT": {"qty": 0.5, "signal": 7}}
             }"#,
@@ -2226,7 +2226,7 @@ mod tests {
                 "max_open_usdt": 200.0,
                 "maker_price_anchor": "own_best",
                 "maker_recenter_trigger_bps": 0.0,
-                "maker_timeout_ms": 60000,
+                "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
                 "targets": {"BTCUSDT": 0.5}
             }"#,
@@ -2241,7 +2241,7 @@ mod tests {
                 "single_order_usdt": 100.0,
                 "max_open_usdt": 200.0,
                 "maker_recenter_trigger_bps": 3.0,
-                "maker_timeout_ms": 60000,
+                "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
                 "targets": {"BTCUSDT": 0.02, "ETHUSDT": 0.4},
                 "symbol_overrides": {"ETHUSDT": {"single_order_usdt": 250.0}}

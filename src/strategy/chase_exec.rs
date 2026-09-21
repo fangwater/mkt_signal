@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 
 pub const CHASE_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE";
 
-const fn default_bbo_max_age_ms() -> u32 {
-    2_000
-}
-
 /// ChaseExec configuration: a single own-best post-only quote that follows the
 /// same-side BBO via in-place amend, with fill-driven (water-level) release
 /// instead of batch scheduling.
@@ -24,11 +20,10 @@ pub struct ChaseExecConfig {
     /// Per-child minimum delay between amend requests.
     #[serde(default)]
     pub maker_amend_cooldown_ms: u32,
-    /// Maker child lifetime; on expiry the remainder escalates to taker.
-    pub maker_timeout_ms: u32,
+    /// Maker child lifetime in seconds; on expiry the remainder escalates to
+    /// taker.
+    pub maker_timeout_sec: u32,
     pub target_tolerance_usdt: f64,
-    #[serde(default = "default_bbo_max_age_ms")]
-    pub bbo_max_age_ms: u32,
 }
 
 impl Default for ChaseExecConfig {
@@ -36,11 +31,10 @@ impl Default for ChaseExecConfig {
         Self {
             single_order_usdt: 100.0,
             max_open_usdt: 200.0,
-            maker_recenter_trigger_bps: 3.0,
+            maker_recenter_trigger_bps: 5.0,
             maker_amend_cooldown_ms: 0,
-            maker_timeout_ms: 60_000,
+            maker_timeout_sec: 120,
             target_tolerance_usdt: 10.0,
-            bbo_max_age_ms: default_bbo_max_age_ms(),
         }
     }
 }
@@ -56,14 +50,11 @@ impl ChaseExecConfig {
         if !self.maker_recenter_trigger_bps.is_finite() || self.maker_recenter_trigger_bps < 0.0 {
             return Err("maker_recenter_trigger_bps must be finite and non-negative".to_string());
         }
-        if self.maker_timeout_ms == 0 {
-            return Err("maker_timeout_ms must be positive".to_string());
+        if self.maker_timeout_sec == 0 {
+            return Err("maker_timeout_sec must be positive".to_string());
         }
         if !self.target_tolerance_usdt.is_finite() || self.target_tolerance_usdt < 0.0 {
             return Err("target_tolerance_usdt must be finite and non-negative".to_string());
-        }
-        if self.bbo_max_age_ms == 0 {
-            return Err("bbo_max_age_ms must be positive".to_string());
         }
         Ok(())
     }
@@ -81,11 +72,9 @@ pub struct ChaseExecConfigOverride {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maker_amend_cooldown_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub maker_timeout_ms: Option<u32>,
+    pub maker_timeout_sec: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_tolerance_usdt: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bbo_max_age_ms: Option<u32>,
 }
 
 impl ChaseExecConfigOverride {
@@ -94,9 +83,8 @@ impl ChaseExecConfigOverride {
             && self.max_open_usdt.is_none()
             && self.maker_recenter_trigger_bps.is_none()
             && self.maker_amend_cooldown_ms.is_none()
-            && self.maker_timeout_ms.is_none()
+            && self.maker_timeout_sec.is_none()
             && self.target_tolerance_usdt.is_none()
-            && self.bbo_max_age_ms.is_none()
     }
 
     pub fn apply_to(&self, defaults: &ChaseExecConfig) -> ChaseExecConfig {
@@ -109,11 +97,10 @@ impl ChaseExecConfigOverride {
             maker_amend_cooldown_ms: self
                 .maker_amend_cooldown_ms
                 .unwrap_or(defaults.maker_amend_cooldown_ms),
-            maker_timeout_ms: self.maker_timeout_ms.unwrap_or(defaults.maker_timeout_ms),
+            maker_timeout_sec: self.maker_timeout_sec.unwrap_or(defaults.maker_timeout_sec),
             target_tolerance_usdt: self
                 .target_tolerance_usdt
                 .unwrap_or(defaults.target_tolerance_usdt),
-            bbo_max_age_ms: self.bbo_max_age_ms.unwrap_or(defaults.bbo_max_age_ms),
         }
     }
 
@@ -201,13 +188,10 @@ mod tests {
         cfg.maker_recenter_trigger_bps = -0.5;
         assert!(cfg.validate().is_err());
         let mut cfg = ChaseExecConfig::default();
-        cfg.maker_timeout_ms = 0;
+        cfg.maker_timeout_sec = 0;
         assert!(cfg.validate().is_err());
         let mut cfg = ChaseExecConfig::default();
         cfg.target_tolerance_usdt = -1.0;
-        assert!(cfg.validate().is_err());
-        let mut cfg = ChaseExecConfig::default();
-        cfg.bbo_max_age_ms = 0;
         assert!(cfg.validate().is_err());
     }
 

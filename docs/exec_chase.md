@@ -24,18 +24,19 @@ COIN-M is deliberately rejected because this execution path has no supported
 modify contract for it.
 
 Before reloading an existing strategy, remove the legacy
-`maker_price_anchor` field from its Redis JSON. Chase now fixes this behavior
-internally, and strict config parsing rejects the removed field.
+`maker_price_anchor`, `maker_timeout_ms`, and `bbo_max_age_ms` fields from its
+Redis JSON. Chase now fixes the anchor behavior internally, expresses the
+maker lifetime in seconds, and does not gate on quote age; strict config
+parsing rejects the removed fields.
 
 ```json
 {
   "single_order_usdt": 100.0,
   "max_open_usdt": 200.0,
-  "maker_recenter_trigger_bps": 3.0,
+  "maker_recenter_trigger_bps": 5.0,
   "maker_amend_cooldown_ms": 0,
-  "maker_timeout_ms": 60000,
+  "maker_timeout_sec": 120,
   "target_tolerance_usdt": 10.0,
-  "bbo_max_age_ms": 2000,
   "targets": {"BTCUSDT": {"qty": 0.1, "signal": 0}},
   "symbol_overrides": {"ETHUSDT": {"single_order_usdt": 250.0}}
 }
@@ -47,9 +48,8 @@ internally, and strict config parsing rejects the removed field.
 | `max_open_usdt` | Maximum unfilled maker exposure open at any time. |
 | `maker_recenter_trigger_bps` | Own-best movement (bps of the previous anchor) required before a live child is amended. `0` amends whenever the aligned own-best price actually changes. |
 | `maker_amend_cooldown_ms` | Per-child minimum delay between amend requests. |
-| `maker_timeout_ms` | Per-child maker lifetime; on expiry the confirmed-unfilled remainder escalates to taker. |
+| `maker_timeout_sec` | Per-child maker lifetime in seconds; on expiry the confirmed-unfilled remainder escalates to taker. |
 | `target_tolerance_usdt` | Stop once the remaining gap is within this notional tolerance. |
-| `bbo_max_age_ms` | Maximum BBO age for releases and recentering; stale quotes pause activity. |
 
 Manager stores Chase as its own order-strategy template type and publishes the
 strict Chase payload above directly into `chase_exec:*`. Symbol-level template
@@ -89,7 +89,7 @@ one field and are validated against the defaults.
   open rejections apply backoff through `submit_blocked_until_us`. GTX
   cross-cancels and unexpected exchange cancels return the remainder to the
   uncommitted water level and repost as maker on the next pass.
-- On `maker_timeout_ms` expiry the child is cancelled and its confirmed
+- On `maker_timeout_sec` expiry the child is cancelled and its confirmed
   unfilled remainder becomes a taker obligation that drains as market orders.
 - Target cancels, stale-generation remainders, and cancels issued because the
   target no longer needs the committed side are dropped back to the position

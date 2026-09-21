@@ -691,13 +691,6 @@ impl ChaseExecStrategy {
             .then(|| table.is_tradable_symbol(&self.symbol))
     }
 
-    fn quote_is_fresh(&self, quote: &Quote, now_ts: i64) -> bool {
-        quote.ts > 0
-            && quote.ts <= now_ts
-            && now_ts.saturating_sub(quote.ts)
-                <= i64::from(self.config.bbo_max_age_ms).saturating_mul(1_000)
-    }
-
     fn cancel_all_children_for_target(&mut self) {
         let ids: Vec<i64> = self.children.keys().copied().collect();
         for client_order_id in ids {
@@ -812,9 +805,6 @@ impl ChaseExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if !self.quote_is_fresh(&quote, now_ts) {
-            return;
-        }
         let mut ids: Vec<i64> = self
             .children
             .iter()
@@ -1059,9 +1049,6 @@ impl ChaseExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if !self.quote_is_fresh(&quote, now_ts) {
-            return;
-        }
 
         let position_qty = self.virtual_position_qty.unwrap_or(0.0);
         let side_sign = signed_qty_from_side(release_side, 1.0);
@@ -1329,7 +1316,7 @@ impl ChaseExecStrategy {
                 expires_at_us: if is_taker {
                     0
                 } else {
-                    now_ts.saturating_add(i64::from(self.config.maker_timeout_ms) * 1_000)
+                    now_ts.saturating_add(i64::from(self.config.maker_timeout_sec) * 1_000_000)
                 },
                 cancel_requested: false,
                 signal_ts: now_ts,

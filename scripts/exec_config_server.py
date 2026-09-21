@@ -64,18 +64,16 @@ CHASE_ORDER_PARAMETER_FIELDS = (
     "max_open_usdt",
     "maker_recenter_trigger_bps",
     "maker_amend_cooldown_ms",
-    "maker_timeout_ms",
+    "maker_timeout_sec",
     "target_tolerance_usdt",
-    "bbo_max_age_ms",
 )
 DEFAULT_CHASE_CONFIG: Dict[str, Any] = {
     "single_order_usdt": 100.0,
     "max_open_usdt": 200.0,
-    "maker_recenter_trigger_bps": 3.0,
+    "maker_recenter_trigger_bps": 5.0,
     "maker_amend_cooldown_ms": 0,
-    "maker_timeout_ms": 60000,
+    "maker_timeout_sec": 120,
     "target_tolerance_usdt": 10.0,
-    "bbo_max_age_ms": 2000,
     "targets": {},
 }
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
@@ -337,13 +335,10 @@ def normalize_chase_config(raw: Any) -> Dict[str, Any]:
         "maker_amend_cooldown_ms": integer(
             raw["maker_amend_cooldown_ms"], "maker_amend_cooldown_ms"
         ),
-        "maker_timeout_ms": integer(
-            raw["maker_timeout_ms"], "maker_timeout_ms", positive=True
+        "maker_timeout_sec": integer(
+            raw["maker_timeout_sec"], "maker_timeout_sec", positive=True
         ),
         "target_tolerance_usdt": tolerance,
-        "bbo_max_age_ms": integer(
-            raw["bbo_max_age_ms"], "bbo_max_age_ms", positive=True
-        ),
         "targets": normalize_targets(raw["targets"]),
     }
     if "symbol_overrides" in raw:

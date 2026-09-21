@@ -161,8 +161,9 @@ class ExecConfigServerTests(unittest.TestCase):
         for change in (
             {"max_open_usdt": 0},
             {"maker_recenter_trigger_bps": -1},
-            {"maker_timeout_ms": 0},
-            {"bbo_max_age_ms": 0},
+            {"maker_timeout_sec": 0},
+            {"bbo_max_age_ms": 2000},
+            {"maker_timeout_ms": 60000},
             {"maker_price_anchor": "own_best"},
         ):
             with self.subTest(change=change), self.assertRaises(ValueError):
