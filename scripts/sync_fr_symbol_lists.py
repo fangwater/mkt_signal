@@ -10,6 +10,10 @@
   - {env_name}:fr_fwd_trade_symbols:{key_suffix}     - 正套建仓列表
   - {env_name}:fr_bwd_trade_symbols:{key_suffix}     - 反套建仓列表
 
+注意：脚本内置列表为空的 key 不会写入（保留 Redis 线上现有值；key 缺失
+对消费端等价空列表）。dump/unimmr_close 属运行时管理列表，请通过
+fr_config_server 的 /api/symbol-lists 维护（含清空）。
+
 其中 key_suffix 为 "<open_venue>_<hedge_venue>"（例如 gate-margin_gate-futures）。
 env_name 为部署目录名，例如 `binance_fr_trade01`。
 
@@ -135,6 +139,10 @@ BWD_SYMBOLS: List[str] = BWD_SYMBOLS_8H + BWD_SYMBOLS_4H
 
 # 合并所有交易对（用于平仓列表）
 SYMBOL_ALLOWLIST: List[str] = list(set(FWD_SYMBOLS + BWD_SYMBOLS))
+
+# 运行时管理列表：默认为空表示"不触碰线上值"，而非"清空"。
+# 如需清空请通过 fr_config_server /api/symbol-lists 显式保存 []。
+DUMP_SYMBOLS: List[str] = []
 UNIMMR_CLOSE_SYMBOLS: List[str] = []
 
 # Gate 专用交易对列表（USDT，下划线格式）
@@ -233,6 +241,31 @@ def resolve_symbol_lists(exchange: str) -> tuple[List[str], List[str], str]:
     return FWD_SYMBOLS, BWD_SYMBOLS, ex or "default"
 
 
+def write_or_keep_symbol_list(
+    rds, key: str, symbols: List[str], label: str
+) -> int:
+    """内置列表非空才写入；为空时跳过，保留 Redis 线上现有值。
+
+    dump/unimmr_close 等运行时管理列表由 config server 维护，脚本内置
+    为空时无条件写 [] 会把线上配置清掉（key 缺失对消费端等价空列表）。
+    返回写入的条目数（跳过时为 0）。
+    """
+    if not symbols:
+        existing = rds.get(key)
+        print(
+            f"⏭️  内置{label}为空，跳过写入 '{key}'"
+            + (
+                "（保留线上现有值；如需清空请走 config server 显式保存 []）"
+                if existing
+                else "（key 不存在，等价空列表）"
+            )
+        )
+        return 0
+    rds.set(key, json.dumps(symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(symbols)} 个交易对到 '{key}'（{label}）")
+    return len(symbols)
+
+
 def sync_symbol_lists(
     rds,
     env_name: str,
@@ -240,30 +273,40 @@ def sync_symbol_lists(
     fwd_symbols: List[str],
     bwd_symbols: List[str],
 ) -> int:
-    """同步交易对列表到 Redis"""
-    # 1. 平仓列表（默认空）
-    dump_key = symbol_list_key(env_name, "dump_symbols", key_suffix)
-    empty_list: List[str] = []
-    rds.set(dump_key, json.dumps(empty_list, ensure_ascii=False))
-    print(f"✅ 已写入 {len(empty_list)} 个交易对到 '{dump_key}'（平仓列表）")
+    """同步交易对列表到 Redis（内置列表为空的 key 跳过，保留线上值）"""
+    total = 0
 
-    # 2. UniMMR 算法平仓候选列表（默认空，运行时走 fallback）
-    unimmr_close_key = symbol_list_key(env_name, "unimmr_close_symbols", key_suffix)
-    rds.set(unimmr_close_key, json.dumps(UNIMMR_CLOSE_SYMBOLS, ensure_ascii=False))
-    print(
-        f"✅ 已写入 {len(UNIMMR_CLOSE_SYMBOLS)} 个交易对到 '{unimmr_close_key}'（UniMMR 平仓候选）"
+    # 1. 平仓列表（运行时管理，内置为空则跳过）
+    total += write_or_keep_symbol_list(
+        rds,
+        symbol_list_key(env_name, "dump_symbols", key_suffix),
+        DUMP_SYMBOLS,
+        "平仓列表",
+    )
+
+    # 2. UniMMR 算法平仓候选列表（运行时管理，内置为空则跳过）
+    total += write_or_keep_symbol_list(
+        rds,
+        symbol_list_key(env_name, "unimmr_close_symbols", key_suffix),
+        UNIMMR_CLOSE_SYMBOLS,
+        "UniMMR 平仓候选",
     )
 
     # 3. 正套建仓列表
-    fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)
-    rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
-    total = len(UNIMMR_CLOSE_SYMBOLS) + len(fwd_symbols)
+    total += write_or_keep_symbol_list(
+        rds,
+        symbol_list_key(env_name, "fwd_trade_symbols", key_suffix),
+        fwd_symbols,
+        "正套",
+    )
+
     # 4. 反套建仓列表
-    bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)
-    rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
-    total += len(bwd_symbols)
+    total += write_or_keep_symbol_list(
+        rds,
+        symbol_list_key(env_name, "bwd_trade_symbols", key_suffix),
+        bwd_symbols,
+        "反套",
+    )
 
     return total
 

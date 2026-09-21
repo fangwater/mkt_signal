@@ -14,6 +14,10 @@ env-name/CWD 的 -intra-/-cta- 段推断，默认 intra）：
 cta 额外镜像：{env}:intra_bwd_trade_symbols:{exchange}（pre_trade 借贷白名单
 固定读该 key，跨模式共享约定）。
 
+注意：脚本内置列表为空的 key 不会写入（保留 Redis 线上现有值；key 缺失
+对消费端等价空列表）。dump/vol_gate 属运行时管理列表，请通过
+intra_config_server 的 /api/symbol-lists 维护（含清空）。
+
 推断规则：--exchange / --open-venue / --env-name / CWD（<exchange>-(intra|cta)-<tag>）
 """
 
@@ -96,6 +100,8 @@ def parse_args() -> argparse.Namespace:
 
 # ========== 交易对白名单配置 ==========
 
+# 运行时管理列表：默认为空表示"不触碰线上值"，而非"清空"。
+# 如需清空请通过 intra_config_server /api/symbol-lists 显式保存 []。
 DUMP_SYMBOLS: List[str] = []
 UNIMMR_CLOSE_SYMBOLS: List[str] = []
 VOL_GATE_SYMBOLS: List[str] = []
@@ -259,6 +265,29 @@ def validate_symbol_partition(exchange: Optional[str] = None) -> bool:
     return True
 
 
+def write_or_keep_symbol_list(rds, key: str, symbols: List[str], label: str) -> int:
+    """内置列表非空才写入；为空时跳过，保留 Redis 线上现有值。
+
+    dump/vol_gate 等运行时管理列表由 config server 维护，脚本内置为空时
+    无条件写 [] 会把线上配置清掉（key 缺失对消费端等价空列表）。
+    返回写入的条目数（跳过时为 0）。
+    """
+    if not symbols:
+        existing = rds.get(key)
+        print(
+            f"⏭️  内置{label}为空，跳过写入 '{key}'"
+            + (
+                "（保留线上现有值；如需清空请走 config server 显式保存 []）"
+                if existing
+                else "（key 不存在，等价空列表）"
+            )
+        )
+        return 0
+    rds.set(key, json.dumps(symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(symbols)} 个交易对到 '{key}'（{label}）")
+    return len(symbols)
+
+
 def sync_symbol_lists(
     rds,
     exchange: str,
@@ -267,10 +296,10 @@ def sync_symbol_lists(
     hedge_venue: str,
     namespace: str = "intra",
 ) -> int:
+    """同步交易对列表到 Redis（内置列表为空的 key 跳过，保留线上值）"""
     dump_symbols = symbols_for_exchange(DUMP_SYMBOLS, exchange)
     dump_key = symbol_list_key(env_name, "dump_symbols", exchange, namespace)
-    rds.set(dump_key, json.dumps(dump_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(dump_symbols)} 个交易对到 '{dump_key}'（平仓列表）")
+    total = write_or_keep_symbol_list(rds, dump_key, dump_symbols, "平仓列表")
 
     if namespace == "cta":
         # cta 无正反/vol gate 概念：fwd∪bwd 合成单一交易宇宙
@@ -279,42 +308,34 @@ def sync_symbol_lists(
             | set(symbols_for_exchange(BWD_SYMBOLS, exchange))
         )
         trade_key = symbol_list_key(env_name, "trade_symbols", exchange, "cta")
-        rds.set(trade_key, json.dumps(trade_symbols, ensure_ascii=False))
-        print(f"✅ 已写入 {len(trade_symbols)} 个交易对到 '{trade_key}'（交易宇宙）")
+        total += write_or_keep_symbol_list(rds, trade_key, trade_symbols, "交易宇宙")
 
         # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{exchange}
         borrow_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, "intra")
-        rds.set(borrow_key, json.dumps(trade_symbols, ensure_ascii=False))
-        print(f"✅ 已镜像 {len(trade_symbols)} 个交易对到 '{borrow_key}'（pre_trade 借贷白名单）")
+        if trade_symbols:
+            rds.set(borrow_key, json.dumps(trade_symbols, ensure_ascii=False))
+            print(f"✅ 已镜像 {len(trade_symbols)} 个交易对到 '{borrow_key}'（pre_trade 借贷白名单）")
 
         # loader 不再读 cta fwd/bwd/vol_gate；清掉历史误写 key
         for stale in ("fwd_trade_symbols", "bwd_trade_symbols", "vol_gate_symbols"):
             rds.delete(symbol_list_key(env_name, stale, exchange, "cta"))
-        return len(dump_symbols) + len(trade_symbols)
+        return total
 
     fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace)
     bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace)
     vol_key = symbol_list_key(env_name, "vol_gate_symbols", exchange, namespace)
 
-    fwd_symbols = symbols_for_exchange(FWD_SYMBOLS, exchange)
-    bwd_symbols = symbols_for_exchange(BWD_SYMBOLS, exchange)
-    vol_gate_symbols = symbols_for_exchange(VOL_GATE_SYMBOLS, exchange)
-
-    rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
-
-    rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
-
-    rds.set(vol_key, json.dumps(vol_gate_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(vol_gate_symbols)} 个交易对到 '{vol_key}'（Vol Gate）")
-
-    return (
-        len(dump_symbols)
-        + len(fwd_symbols)
-        + len(bwd_symbols)
-        + len(vol_gate_symbols)
+    total += write_or_keep_symbol_list(
+        rds, fwd_key, symbols_for_exchange(FWD_SYMBOLS, exchange), "正套"
     )
+    total += write_or_keep_symbol_list(
+        rds, bwd_key, symbols_for_exchange(BWD_SYMBOLS, exchange), "反套"
+    )
+    total += write_or_keep_symbol_list(
+        rds, vol_key, symbols_for_exchange(VOL_GATE_SYMBOLS, exchange), "Vol Gate"
+    )
+
+    return total
 
 
 def main() -> int:

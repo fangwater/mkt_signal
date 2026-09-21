@@ -978,22 +978,43 @@ class RequestHandler(BaseHTTPRequestHandler):
                         f"cta env 不支持 {rejected}；使用 trade_symbols（单一交易宇宙）",
                     )
                     return
-            trade_symbols = base.normalize_symbol_list_for_intra(
-                payload.get("trade_symbols") or []
-            )
-            dump_symbols = base.normalize_symbol_list_for_intra(
-                payload.get("dump_symbols") or []
-            )
+            # 字段缺省（未传或 null）跳过对应 Redis key，避免空 body / 部分字段
+            # 请求把线上已有列表清成 []；显式传 [] 仍是合法的清空操作。
+            field_names = ("trade_symbols", "dump_symbols")
+            provided = [
+                (name, payload[name])
+                for name in field_names
+                if payload.get(name) is not None
+            ]
+            if not provided:
+                self._send_error(
+                    400,
+                    "symbol-lists 未携带任何列表字段（trade_symbols/dump_symbols），未写入任何 key",
+                )
+                return
+            invalid_fields = [
+                name
+                for name, value in provided
+                if not isinstance(value, (list, str))
+            ]
+            if invalid_fields:
+                self._send_error(
+                    400,
+                    "字段必须是字符串或数组: {}".format(", ".join(invalid_fields)),
+                )
+                return
+            normalized_lists = {
+                name: base.normalize_symbol_list_for_intra(value)
+                for name, value in provided
+            }
+            skipped_fields = [name for name in field_names if name not in normalized_lists]
             rds = self.server.context.redis_client
             try:
-                rds.set(
-                    symbol_list_key(env_name, "trade_symbols", key_suffix),
-                    json.dumps(trade_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    symbol_list_key(env_name, "dump_symbols", key_suffix),
-                    json.dumps(dump_symbols, ensure_ascii=False),
-                )
+                for name, symbols in normalized_lists.items():
+                    rds.set(
+                        symbol_list_key(env_name, name, key_suffix),
+                        json.dumps(symbols, ensure_ascii=False),
+                    )
                 # 清掉历史误写的 cta fwd/bwd/vol_gate key（loader 已不读）；
                 # CTA 无借贷白名单，旧的 intra bwd 镜像 key 一并删除（env 命名空间内安全）。
                 for stale in ("fwd_trade_symbols", "bwd_trade_symbols", "vol_gate_symbols"):
@@ -1005,20 +1026,23 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(500, f"redis write failed: {exc}")
                 return
             print(
-                "[symbol-lists][cta] env={} key_suffix={} trade={} dump={}".format(
-                    env_name, key_suffix, len(trade_symbols), len(dump_symbols)
+                "[symbol-lists][cta] env={} key_suffix={} written={} skipped={}".format(
+                    env_name,
+                    key_suffix,
+                    {name: len(symbols) for name, symbols in normalized_lists.items()},
+                    ",".join(skipped_fields) or "-",
                 )
             )
             sys.stdout.flush()
-            self._send_json(
-                200,
-                {
-                    "env_name": env_name,
-                    "key_suffix": key_suffix,
-                    "trade_count": len(trade_symbols),
-                    "dump_count": len(dump_symbols),
-                },
-            )
+            response: Dict[str, Any] = {
+                "env_name": env_name,
+                "key_suffix": key_suffix,
+                "skipped_fields": skipped_fields,
+            }
+            for name in field_names:
+                if name in normalized_lists:
+                    response[f"{name.split('_')[0]}_count"] = len(normalized_lists[name])
+            self._send_json(200, response)
             return
 
         if parsed.path == "/api/strategy-params":

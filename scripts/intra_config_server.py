@@ -2726,71 +2726,84 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            raw_dump = payload.get("dump_symbols") or []
-            raw_fwd = payload.get("fwd_trade_symbols") or []
-            raw_bwd = payload.get("bwd_trade_symbols") or []
-            raw_vol_gate = payload.get("vol_gate_symbols") or []
-            dump_symbols = normalize_symbol_list_for_intra(raw_dump)
-            fwd_symbols = normalize_symbol_list_for_intra(raw_fwd)
-            bwd_symbols = normalize_symbol_list_for_intra(raw_bwd)
-            vol_gate_symbols = normalize_symbol_list_for_intra(raw_vol_gate)
-            raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
-            raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
-            raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
-            raw_vol_gate_len, raw_vol_gate_sample = summarize_symbol_payload(raw_vol_gate)
+            # 字段缺省（未传或 null）跳过对应 Redis key，避免空 body / 部分字段
+            # 请求把线上已有列表清成 []；显式传 [] 仍是合法的清空操作。
+            field_specs = (
+                ("dump_symbols", "dump"),
+                ("fwd_trade_symbols", "fwd"),
+                ("bwd_trade_symbols", "bwd"),
+                ("vol_gate_symbols", "vol_gate"),
+            )
+            provided = [
+                (name, payload[name])
+                for name, _ in field_specs
+                if payload.get(name) is not None
+            ]
+            if not provided:
+                self._send_error(
+                    400,
+                    "symbol-lists 未携带任何列表字段（{}），未写入任何 key".format(
+                        "/".join(name for name, _ in field_specs)
+                    ),
+                )
+                return
+            invalid_fields = [
+                name
+                for name, value in provided
+                if not isinstance(value, (list, str))
+            ]
+            if invalid_fields:
+                self._send_error(
+                    400,
+                    "字段必须是字符串或数组: {}".format(", ".join(invalid_fields)),
+                )
+                return
+            normalized_lists: Dict[str, List[str]] = {
+                name: normalize_symbol_list_for_intra(value)
+                for name, value in provided
+            }
+            skipped_fields = [name for name, _ in field_specs if name not in normalized_lists]
             print(
-                "[symbol-lists] exchange={} open={} hedge={} key_suffix={}".format(
-                    exchange, open_v, hedge_v, key_suffix
+                "[symbol-lists] exchange={} open={} hedge={} key_suffix={} skipped={}".format(
+                    exchange, open_v, hedge_v, key_suffix, ",".join(skipped_fields) or "-"
                 )
             )
-            print(
-                "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
+            for name, label in field_specs:
+                if name not in normalized_lists:
+                    continue
+                raw_len, raw_sample = summarize_symbol_payload(payload[name])
+                symbols = normalized_lists[name]
+                print(
+                    "[symbol-lists] {} raw={} norm={} sample_raw={} sample_norm={}".format(
+                        label, raw_len, len(symbols), raw_sample, symbols[:5]
+                    )
                 )
-            )
-            print(
-                "[symbol-lists] fwd  raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_fwd_len, len(fwd_symbols), raw_fwd_sample, fwd_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] bwd  raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_bwd_len, len(bwd_symbols), raw_bwd_sample, bwd_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] vol_gate raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_vol_gate_len,
-                    len(vol_gate_symbols),
-                    raw_vol_gate_sample,
-                    vol_gate_symbols[:5],
-                )
-            )
             sys.stdout.flush()
 
             rds = self.server.context.redis_client
             try:
                 env_name = current_env_name()
                 ns = current_namespace()
-                rds.set(intra_symbol_list_key(env_name, "dump_symbols", key_suffix, ns), json.dumps(dump_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix, ns), json.dumps(fwd_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix, ns), json.dumps(bwd_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix, ns), json.dumps(vol_gate_symbols, ensure_ascii=False))
+                for name, _ in field_specs:
+                    if name not in normalized_lists:
+                        continue
+                    rds.set(
+                        intra_symbol_list_key(env_name, name, key_suffix, ns),
+                        json.dumps(normalized_lists[name], ensure_ascii=False),
+                    )
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
 
-            self._send_json(
-                200,
-                {
-                    "exchange": exchange,
-                    "key_suffix": key_suffix,
-                    "dump_count": len(dump_symbols),
-                    "fwd_count": len(fwd_symbols),
-                    "bwd_count": len(bwd_symbols),
-                    "vol_gate_count": len(vol_gate_symbols),
-                },
-            )
+            response: Dict[str, Any] = {
+                "exchange": exchange,
+                "key_suffix": key_suffix,
+                "skipped_fields": skipped_fields,
+            }
+            for name, label in field_specs:
+                if name in normalized_lists:
+                    response[f"{label}_count"] = len(normalized_lists[name])
+            self._send_json(200, response)
             return
 
         if parsed.path == "/api/risk-params":

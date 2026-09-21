@@ -2436,6 +2436,12 @@ def build_handler(config: AppConfig):
                 venue = default_venue_for_exchange(exchange)
 
                 if parsed.path == "/api/symbol-list":
+                    if payload.get("symbols") is None:
+                        # 缺省字段不写入：避免空 body / 缺字段请求把线上
+                        # mm_trade_symbols 清成 []；显式 [] 仍是合法清空。
+                        raise ValueError(
+                            "missing required field 'symbols'（缺省不写入，保持线上原值）"
+                        )
                     result = store.write_symbols(venue, payload.get("symbols"))
                     self._send_json(200, {"ok": True, "exchange": exchange, "venue": venue, **result})
                     return

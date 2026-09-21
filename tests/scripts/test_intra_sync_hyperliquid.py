@@ -29,6 +29,13 @@ class FakeRedis:
     def set(self, key: str, value: str) -> None:
         self.values[key] = value
 
+    def get(self, key: str):
+        return self.values.get(key)
+
+    def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.values.pop(key, None)
+
 
 class IntraSyncHyperliquidTests(unittest.TestCase):
     @classmethod
