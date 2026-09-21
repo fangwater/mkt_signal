@@ -15,6 +15,8 @@ pub mod bitget_position_tier_guard;
 mod channel;
 pub mod chase_exec_config;
 pub mod close_inventory;
+pub mod cta_special_factor_channel;
+pub mod cta_special_status;
 pub mod event;
 pub mod exec_algorithm_switch;
 pub mod exec_resample_channel;

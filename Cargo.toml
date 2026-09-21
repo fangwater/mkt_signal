@@ -258,6 +258,14 @@ name = "intra_factor_model_1m_pub"
 path = "src/bin/intra_factor_model_1m_pub.rs"
 
 [[bin]]
+name = "cta_special_signal"
+path = "src/bin/cta_special_signal.rs"
+
+[[bin]]
+name = "cta_special_factor_model_1m_pub"
+path = "src/bin/cta_special_factor_model_1m_pub.rs"
+
+[[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
 

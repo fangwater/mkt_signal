@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "rule_name": "tp_vpi_018",
+  "symbols": ["BTCUSDT"],
+  "entry": {
+    "nq_change_enabled": true
+  },
+  "execution": {
+    "order_notional_usdt": 100.0,
+    "factor_exit_quantile_long": 0.3,
+    "factor_exit_quantile_short": 0.7,
+    "trailing_stop_trigger_step": 0.02,
+    "trailing_stop_move_step": 0.01
+  }
+}

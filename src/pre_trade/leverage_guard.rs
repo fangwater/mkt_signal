@@ -845,11 +845,11 @@ fn online_symbol_keys(config: &GuardStartupConfig) -> Vec<String> {
         .into_iter()
         .map(|name| format!("{}:fr_{}:{}", config.env_name, name, venue_suffix))
         .collect(),
-        ArbMode::IntraArb | ArbMode::Cta => {
-            let list_ns = if config.arb_mode == ArbMode::Cta {
-                "cta"
-            } else {
-                "intra"
+        ArbMode::IntraArb | ArbMode::Cta | ArbMode::CtaSpecial => {
+            let list_ns = match config.arb_mode {
+                ArbMode::Cta => "cta",
+                ArbMode::CtaSpecial => "cta_special",
+                _ => "intra",
             };
             let exchange_suffix = config.open_venue.trade_engine_exchange();
             vec![

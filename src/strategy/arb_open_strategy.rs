@@ -75,6 +75,13 @@ impl ArbOpenStrategy {
             .any(|window| window == b":cta_rule=")
     }
 
+    pub(crate) fn is_cta_special_open(&self) -> bool {
+        self.open_state
+            .from_key
+            .windows(b"cta_special=1".len())
+            .any(|window| window == b"cta_special=1")
+    }
+
     #[cfg(test)]
     pub(crate) fn configure_open_index_for_test(
         &mut self,

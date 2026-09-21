@@ -6,6 +6,7 @@ pub mod account;
 pub mod bridge;
 pub mod common;
 pub mod connection;
+pub mod cta_special;
 pub mod depth_pub;
 pub mod factor_pub;
 pub mod fr_signal_dashboard;

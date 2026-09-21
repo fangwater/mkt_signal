@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTA Special Monitor</title>
+  <style>
+    :root { color-scheme:light; --ink:#151b23; --muted:#667085; --line:#d6dce4; --bg:#f2f4f7; --panel:#fff; --green:#087451; --red:#b42318; --amber:#9a5b00; --blue:#175cd3; }
+    * { box-sizing:border-box; letter-spacing:0; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:18px; padding:10px 24px; background:#151b23; color:white; border-bottom:3px solid #e6a700; }
+    h1 { margin:0; font-size:18px; font-weight:650; }
+    .connection { display:flex; align-items:center; gap:8px; color:#d0d5dd; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#98a2b3; } .dot.ok{background:#3ccb91}.dot.bad{background:#f97066}.dot.warn{background:#fdb022}
+    main { width:min(1380px,calc(100% - 32px)); margin:18px auto 40px; }
+    .metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }
+    .metric { min-width:0; background:var(--panel); border:1px solid var(--line); border-top:3px solid #758195; border-radius:4px; padding:10px 12px; }
+    .metric.enabled { border-top-color:var(--green); } .metric.disabled { border-top-color:var(--red); }
+    .metric label { display:block; color:var(--muted); font-size:11px; font-weight:650; text-transform:uppercase; }
+    .metric strong { display:block; overflow:hidden; margin-top:4px; font-size:16px; text-overflow:ellipsis; white-space:nowrap; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:18px 0 8px; }
+    h2 { margin:0; font-size:15px; }
+    .legend { display:flex; gap:12px; color:var(--muted); font-size:12px; }
+    .table-wrap { overflow:auto; background:white; border:1px solid var(--line); border-radius:4px; }
+    table { width:100%; min-width:1120px; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+    th { position:sticky; top:0; padding:8px 9px; background:#e9edf2; color:#475467; border-bottom:1px solid #b8c1cc; text-align:right; font-size:11px; text-transform:uppercase; }
+    th:first-child,td:first-child,th:nth-child(2),td:nth-child(2) { text-align:left; }
+    td { padding:9px; border-bottom:1px solid #e5e9ef; text-align:right; white-space:nowrap; }
+    tr:last-child td { border-bottom:0; }
+    .decision { display:inline-flex; min-width:54px; justify-content:center; border-radius:3px; padding:2px 7px; font-weight:700; text-transform:uppercase; }
+    .decision.long { background:#dcfae6; color:#067647; } .decision.short { background:#fee4e2; color:#b42318; } .decision.flat { background:#edf0f4; color:#475467; }
+    .not-ready { color:var(--amber); } .ready { color:var(--green); }
+    .errors { display:none; margin-top:12px; padding:10px 12px; border-left:3px solid var(--red); background:#fff1f0; color:var(--red); }
+    .empty { padding:34px; color:var(--muted); text-align:center; }
+    @media (max-width:900px) { header{padding:10px 14px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics .metric:last-child{grid-column:1/-1}main{width:calc(100% - 20px);margin-top:10px}.toolbar{align-items:flex-end}.legend{flex-direction:column;gap:1px} }
+  </style>
+</head>
+<body>
+  <header><h1>CTA Special Monitor</h1><div class="connection"><span id="health-dot" class="dot"></span><span id="health">connecting</span></div></header>
+  <main>
+    <div class="metrics">
+      <div id="enabled-card" class="metric"><label>Trading</label><strong id="enabled">-</strong></div>
+      <div class="metric"><label>Factor</label><strong id="factor">-</strong></div>
+      <div class="metric"><label>Venue</label><strong id="venue">-</strong></div>
+      <div class="metric"><label>Signal age</label><strong id="age">-</strong></div>
+      <div class="metric"><label>Pending entries</label><strong id="pending">-</strong></div>
+    </div>
+    <div class="toolbar"><h2>Latest Closed Bars</h2><div class="legend"><span>Entry: exact z-score q90/q10</span><span>Normalization: 1440 / 1000 / clip 3.0</span></div></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Symbol</th><th>Decision</th><th>Account qty</th><th>Tracked qty</th><th>Lots</th><th>Z-score</th><th>Percentile</th><th>q10</th><th>q90</th><th>Long NQ</th><th>Long NQ q50</th><th>Short NQ</th><th>Short NQ q50</th><th>Ready</th><th>Bar time</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="15" class="empty">Waiting for signal status</td></tr></tbody>
+      </table>
+    </div>
+    <div id="errors" class="errors"></div>
+  </main>
+  <script>
+    const el=id=>document.getElementById(id);
+    const fmt=(value,digits=5)=>Number.isFinite(value)?Number(value).toFixed(digits):'-';
+    const time=ms=>ms>0?new Date(ms).toLocaleString(undefined,{hour12:false}):'-';
+    function render(snapshot) {
+      const config=snapshot.config||{}; const status=snapshot.status||{}; const execution=snapshot.execution||{}; const age=snapshot.status_age_ms;
+      const stale=!snapshot.healthy&&!snapshot.errors.length; el('health-dot').className=`dot ${snapshot.errors.length?'bad':stale?'warn':'ok'}`;
+      el('health').textContent=snapshot.errors.length?'unavailable':stale?'stale':'live';
+      const enabled=Boolean(config.enabled); el('enabled').textContent=enabled?'ENABLED':'DISABLED'; el('enabled-card').className=`metric ${enabled?'enabled':'disabled'}`;
+      el('factor').textContent=config.rule_name||status.rule_name||'-'; el('venue').textContent=config.venue||status.venue||'-';
+      el('age').textContent=age===null?'-':age<1000?`${age} ms`:`${(age/1000).toFixed(1)} s`; el('pending').textContent=status.scheduled_entries??'-';
+      const symbols=status.symbols||{}; const executionBySymbol=Object.fromEntries((execution.symbols||[]).map(row=>[row.symbol,row])); const body=el('rows'); const names=Object.keys(symbols).sort();
+      if(!names.length) { body.innerHTML='<tr><td colspan="15" class="empty">Waiting for signal status</td></tr>'; }
+      else { body.innerHTML=names.map(symbol=>{const row=symbols[symbol]||{}; const exec=executionBySymbol[symbol]||{}; const decision=['long','short'].includes(row.decision)?row.decision:'flat'; const ready=row.score_ready&&row.filter_ready;
+        return `<tr><td>${escapeText(symbol)}</td><td><span class="decision ${decision}">${decision}</span></td><td>${fmt(exec.account_signed_qty,6)}</td><td>${fmt(exec.tracked_signed_qty,6)}</td><td>${Number.isInteger(exec.lot_count)?exec.lot_count:'-'}</td><td>${fmt(row.score)}</td><td>${fmt(row.quantile,4)}</td><td>${fmt(row.short_threshold)}</td><td>${fmt(row.long_threshold)}</td><td>${fmt(row.nq_long_value,6)}</td><td>${fmt(row.nq_long_threshold,6)}</td><td>${fmt(row.nq_short_value,6)}</td><td>${fmt(row.nq_short_threshold,6)}</td><td class="${ready?'ready':'not-ready'}">${ready?'ready':'warming'}</td><td>${time(row.model_ts_ms)}</td></tr>`;}).join(''); }
+      const errors=el('errors'); errors.textContent=(snapshot.errors||[]).join(' | '); errors.style.display=snapshot.errors.length?'block':'none';
+    }
+    function escapeText(value){const node=document.createElement('span');node.textContent=String(value);return node.innerHTML;}
+    async function refresh(){try{const response=await fetch('/api/snapshot',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);render(await response.json());}catch(error){el('health-dot').className='dot bad';el('health').textContent='offline';const errors=el('errors');errors.textContent=error.message;errors.style.display='block';}}
+    refresh(); setInterval(refresh,2000);
+  </script>
+</body>
+</html>

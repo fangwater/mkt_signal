@@ -6516,6 +6516,7 @@ impl ArbDecision {
             ArbMode::FundingArb => ArbBackend::Funding,
             ArbMode::IntraArb | ArbMode::CrossArb => ArbBackend::Spread,
             ArbMode::Cta => ArbBackend::Cta,
+            ArbMode::CtaSpecial => ArbBackend::Cta,
         }
     }
 

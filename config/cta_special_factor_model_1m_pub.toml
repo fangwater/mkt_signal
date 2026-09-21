@@ -1,0 +1,28 @@
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
+
+# Keep this identical to the V005/rx01 offline normalize_factors contract.
+[normalize]
+window_bars = 1440
+min_periods = 1000
+clip_zscore = 3.0
+
+[kafka]
+lookback_secs = 259200
+catchup_timeout_secs = 1800
+topic = "binance-futures"
+topics = ["binance-futures"]
+brokers = "156.231.137.189:1501"
+group_id = "cta_special_factor_model_1m"
+client_id = "cta_special_factor_model_1m"
+offset_reset = "earliest"
+payload_compression = "zlib"
+poll_timeout_ms = 1000
+enable_auto_commit = false
+enable_partition_eof = false
+security_protocol = "none"
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]

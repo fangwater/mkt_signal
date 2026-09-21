@@ -7,6 +7,7 @@ use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecSnapshot, BatchExecStrategy};
 use crate::strategy::chase_exec::{ChaseExecConfig, ChaseExecSnapshot};
 use crate::strategy::chase_exec_strategy::ChaseExecStrategy;
+use crate::strategy::cta_special_strategy::{CtaSpecialSnapshot, CtaSpecialStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -120,6 +121,7 @@ pub struct OpenPriceMapEntry {
 struct StrategyKindIndexFlags {
     is_mm_hedge: bool,
     is_arb_hedge: bool,
+    is_cta_special: bool,
     batch_exec_strategy_name: Option<String>,
     chase_exec_strategy_name: Option<String>,
     has_order_terminal_recorder: bool,
@@ -291,6 +293,7 @@ pub struct StrategyManager {
     symbol_index: FastHashMap<String, BTreeSet<i32>>,
     mm_hedge_index: FastHashMap<String, i32>,
     arb_hedge_index: FastHashMap<String, i32>,
+    cta_special_index: FastHashMap<String, i32>,
     batch_exec_strategy_index: FastHashMap<ExecStrategyIndexKey, i32>,
     chase_exec_strategy_index: FastHashMap<ExecStrategyIndexKey, i32>,
     order_terminal_recorder_index: FastHashMap<String, i32>,
@@ -317,6 +320,7 @@ impl StrategyManager {
             symbol_index: fast_hash_map(),
             mm_hedge_index: fast_hash_map(),
             arb_hedge_index: fast_hash_map(),
+            cta_special_index: fast_hash_map(),
             batch_exec_strategy_index: fast_hash_map(),
             chase_exec_strategy_index: fast_hash_map(),
             order_terminal_recorder_index: fast_hash_map(),
@@ -372,6 +376,7 @@ impl StrategyManager {
         StrategyKindIndexFlags {
             is_mm_hedge: strategy.as_any().is::<MarketMakerHedgeStrategy>(),
             is_arb_hedge: strategy.as_any().is::<ArbHedgeStrategy>(),
+            is_cta_special: strategy.as_any().is::<CtaSpecialStrategy>(),
             batch_exec_strategy_name: strategy
                 .as_any()
                 .downcast_ref::<BatchExecStrategy>()
@@ -395,6 +400,9 @@ impl StrategyManager {
         }
         if flags.is_arb_hedge {
             self.arb_hedge_index.insert(symbol.to_string(), id);
+        }
+        if flags.is_cta_special {
+            self.cta_special_index.insert(symbol.to_string(), id);
         }
         if let Some(strategy_name) = flags.batch_exec_strategy_name {
             self.batch_exec_strategy_index
@@ -421,6 +429,14 @@ impl StrategyManager {
         }
         if flags.is_arb_hedge && self.arb_hedge_index.get(symbol).is_some_and(|v| *v == id) {
             self.arb_hedge_index.remove(symbol);
+        }
+        if flags.is_cta_special
+            && self
+                .cta_special_index
+                .get(symbol)
+                .is_some_and(|value| *value == id)
+        {
+            self.cta_special_index.remove(symbol);
         }
         if let Some(strategy_name) = flags.batch_exec_strategy_name {
             let key = ExecStrategyIndexKey::new(&strategy_name, symbol);
@@ -823,6 +839,45 @@ impl StrategyManager {
                     .is_some_and(ArbOpenStrategy::is_cta_open)
             })
             .collect()
+    }
+
+    pub fn cta_special_open_strategy_ids_by_symbol_and_side(
+        &self,
+        symbol: &str,
+        side: Side,
+    ) -> Vec<i32> {
+        self.arb_open_strategy_ids_by_symbol_and_side(symbol, side)
+            .into_iter()
+            .filter(|strategy_id| {
+                self.strategies
+                    .get(strategy_id)
+                    .and_then(|strategy| strategy.as_any().downcast_ref::<ArbOpenStrategy>())
+                    .is_some_and(ArbOpenStrategy::is_cta_special_open)
+            })
+            .collect()
+    }
+
+    pub fn cancel_cta_special_opening_makers(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        trigger_ts: i64,
+        reason: &'static str,
+    ) -> usize {
+        let strategy_ids = self.cta_special_open_strategy_ids_by_symbol_and_side(symbol, side);
+        let mut canceled = 0usize;
+        for strategy_id in strategy_ids {
+            if self.cancel_arb_open_by_id_with_signal(
+                strategy_id,
+                side,
+                reason,
+                trigger_ts,
+                "CtaSpecialFactorExit",
+            ) {
+                canceled = canceled.saturating_add(1);
+            }
+        }
+        canceled
     }
 
     /// A CTA symbol may have opening makers in only one direction. An opposite
@@ -1237,6 +1292,56 @@ impl StrategyManager {
             }
         }
         None
+    }
+
+    pub fn find_cta_special_id_for_normalized_symbol(&self, symbol_upper: &str) -> Option<i32> {
+        self.cta_special_index.get(symbol_upper).copied()
+    }
+
+    pub fn ensure_cta_special_strategy_for_normalized_symbol(
+        &mut self,
+        symbol_upper: &str,
+        venue: TradingVenue,
+    ) -> i32 {
+        if let Some(id) = self.find_cta_special_id_for_normalized_symbol(symbol_upper) {
+            return id;
+        }
+        let strategy_id = StrategyManager::generate_strategy_id();
+        self.insert(Box::new(CtaSpecialStrategy::new(
+            strategy_id,
+            symbol_upper.to_string(),
+            venue,
+        )));
+        strategy_id
+    }
+
+    pub fn has_opposite_cta_special_position_for_normalized_symbol(
+        &self,
+        symbol_upper: &str,
+        opening_side: Side,
+    ) -> bool {
+        let factual = MonitorChannel::instance()
+            .get_position_qty(symbol_upper, MonitorChannel::instance().open_venue());
+        let factual_opposite = match opening_side {
+            Side::Buy => factual < -1e-12,
+            Side::Sell => factual > 1e-12,
+        };
+        if factual_opposite {
+            return true;
+        }
+        self.find_cta_special_id_for_normalized_symbol(symbol_upper)
+            .and_then(|id| self.strategies.get(&id))
+            .and_then(|strategy| strategy.as_any().downcast_ref::<CtaSpecialStrategy>())
+            .is_some_and(|strategy| strategy.has_opposite_position(opening_side))
+    }
+
+    pub fn cta_special_snapshots(&self) -> Vec<CtaSpecialSnapshot> {
+        self.cta_special_index
+            .values()
+            .filter_map(|id| self.strategies.get(id))
+            .filter_map(|strategy| strategy.as_any().downcast_ref::<CtaSpecialStrategy>())
+            .map(CtaSpecialStrategy::snapshot)
+            .collect()
     }
 
     pub fn has_opposite_cta_position_for_normalized_symbol(

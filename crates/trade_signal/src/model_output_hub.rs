@@ -15,6 +15,7 @@ use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
+const MODEL_OUTPUT_DEFAULT_MAX_SUBSCRIBERS: usize = 10;
 const MODEL_OUTPUT_POLL_MAX_PER_CHANNEL: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 
@@ -90,6 +91,7 @@ struct ModelOutputSubscriberEntry {
 
 pub struct ModelOutputHub {
     hedge_venue: TradingVenue,
+    max_subscribers: usize,
     subscribers: Vec<ModelOutputSubscriberEntry>,
     services: Vec<String>,
     latest_scores: HashMap<(String, String), ModelOutputSnapshot>,
@@ -102,8 +104,13 @@ pub struct ModelOutputHub {
 
 impl ModelOutputHub {
     pub fn new(hedge_venue: TradingVenue) -> Self {
+        Self::new_with_max_subscribers(hedge_venue, MODEL_OUTPUT_DEFAULT_MAX_SUBSCRIBERS)
+    }
+
+    pub fn new_with_max_subscribers(hedge_venue: TradingVenue, max_subscribers: usize) -> Self {
         Self {
             hedge_venue,
+            max_subscribers: max_subscribers.max(1),
             subscribers: Vec::new(),
             services: Vec::new(),
             latest_scores: HashMap::new(),
@@ -124,7 +131,7 @@ impl ModelOutputHub {
         let mut subscribers: Vec<ModelOutputSubscriberEntry> = Vec::new();
         let mut active_services = Vec::new();
         for service_name in &normalized {
-            match Self::create_subscriber(node, service_name) {
+            match Self::create_subscriber(node, service_name, self.max_subscribers) {
                 Ok(subscriber) => {
                     active_services.push(service_name.clone());
                     subscribers.push(ModelOutputSubscriberEntry {
@@ -439,12 +446,13 @@ impl ModelOutputHub {
     fn create_subscriber(
         node: &Node<ipc::Service>,
         service_name: &str,
+        max_subscribers: usize,
     ) -> Result<Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>> {
         let service = node
             .service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(max_subscribers)
             .history_size(MODEL_OUTPUT_HISTORY_SIZE)
             .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE)
             .open_or_create()

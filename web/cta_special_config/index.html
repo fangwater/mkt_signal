@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTA Special Config</title>
+  <style>
+    :root { color-scheme: light; --ink:#17202a; --muted:#667085; --line:#d7dde5; --bg:#f4f6f8; --panel:#fff; --accent:#126b52; --danger:#b42318; --warn:#a15c00; }
+    * { box-sizing:border-box; letter-spacing:0; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { position:sticky; top:0; z-index:3; min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:20px; padding:10px 24px; background:#17202a; color:#fff; border-bottom:3px solid #2d9b75; }
+    header h1 { margin:0; font-size:18px; font-weight:650; }
+    .header-meta { display:flex; align-items:center; gap:12px; color:#c8d0da; font-size:12px; }
+    .state { display:inline-flex; align-items:center; gap:7px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#98a2b3; }
+    .dot.ok { background:#42c692; } .dot.bad { background:#f97066; }
+    main { width:min(1120px,calc(100% - 32px)); margin:20px auto 48px; }
+    .bar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 14px; background:var(--panel); border:1px solid var(--line); border-radius:5px; }
+    .toggle { display:inline-flex; align-items:center; gap:9px; font-weight:650; }
+    .toggle input { width:38px; height:20px; accent-color:var(--accent); }
+    .actions { display:flex; gap:8px; }
+    button { border:1px solid transparent; border-radius:4px; padding:8px 13px; background:var(--accent); color:white; font:inherit; font-weight:650; cursor:pointer; }
+    button.secondary { background:#fff; color:var(--ink); border-color:#b8c1cc; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    section { margin-top:16px; padding:0 0 18px; border-bottom:1px solid var(--line); }
+    section h2 { margin:0 0 12px; font-size:15px; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px 16px; }
+    .span-2 { grid-column:span 2; } .span-3 { grid-column:1/-1; }
+    label.field { display:flex; min-width:0; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; font-weight:600; }
+    input,select,textarea { width:100%; min-width:0; border:1px solid #b8c1cc; border-radius:4px; background:white; color:var(--ink); padding:8px 9px; font:14px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    input:focus,select:focus,textarea:focus { outline:2px solid #8bd6bc; outline-offset:1px; border-color:var(--accent); }
+    input[readonly] { background:#eef1f4; color:#59636f; }
+    textarea { min-height:104px; resize:vertical; }
+    .switch-row { min-height:38px; display:flex; align-items:center; gap:8px; color:var(--ink); font-size:14px; }
+    .switch-row input { width:18px; height:18px; accent-color:var(--accent); }
+    #message { min-height:21px; margin-top:12px; font-size:13px; }
+    #message.ok { color:var(--accent); } #message.bad { color:var(--danger); } #message.warn { color:var(--warn); }
+    @media (max-width:760px) { header { align-items:flex-start; padding:11px 16px; } .header-meta { flex-direction:column; align-items:flex-end; gap:2px; } main { width:min(100% - 20px,1120px); margin-top:10px; } .grid { grid-template-columns:1fr; } .span-2,.span-3 { grid-column:auto; } .bar { align-items:flex-start; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CTA Special Config</h1>
+    <div class="header-meta"><span id="revision">revision -</span><span class="state"><span id="health-dot" class="dot"></span><span id="health">loading</span></span></div>
+  </header>
+  <main>
+    <div class="bar">
+      <label class="toggle"><input id="enabled" type="checkbox">Trading enabled</label>
+      <div class="actions"><button id="reload" class="secondary" type="button">Reload</button><button id="save" type="button">Save config</button></div>
+    </div>
+
+    <form id="config-form">
+      <section>
+        <h2>Strategy</h2>
+        <div class="grid">
+          <label class="field">Factor<select id="rule-name" disabled><option value="tp_vpi_018">TP_VPI_018</option><option value="baseline_104">baseline_104</option></select></label>
+          <label class="field"><span>NQ gate</span><span class="switch-row"><input id="nq-enabled" type="checkbox">Enabled</span></label>
+          <label class="field span-3">Symbols<textarea id="symbols" spellcheck="false"></textarea></label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Orders And Exit</h2>
+        <div class="grid">
+          <label class="field">Notional per level (USDT)<input id="notional" type="number" min="0" step="any"></label>
+          <label class="field">Long exit quantile<input id="exit-long" type="number" min="0" max="0.899999" step="0.01"></label>
+          <label class="field">Short exit quantile<input id="exit-short" type="number" min="0.100001" max="1" step="0.01"></label>
+          <label class="field">Trailing trigger<input id="trigger" type="number" min="0" step="0.001"></label>
+          <label class="field">Trailing move<input id="move" type="number" min="0" step="0.001"></label>
+        </div>
+      </section>
+    </form>
+    <div id="message"></div>
+  </main>
+  <script>
+    let revision = '';
+    const byId = id => document.getElementById(id);
+    const number = id => Number(byId(id).value);
+    const setMessage = (text, kind = '') => { const el=byId('message'); el.textContent=text; el.className=kind; };
+    function populate(config, nextRevision) {
+      revision=nextRevision; byId('revision').textContent=`revision ${revision.slice(0,12)}`;
+      byId('enabled').checked=config.enabled; byId('rule-name').value=config.rule_name;
+      byId('symbols').value=config.symbols.join('\n'); byId('nq-enabled').checked=config.entry.nq_change_enabled;
+      byId('notional').value=config.execution.order_notional_usdt; byId('exit-long').value=config.execution.factor_exit_quantile_long;
+      byId('exit-short').value=config.execution.factor_exit_quantile_short;
+      byId('trigger').value=config.execution.trailing_stop_trigger_step; byId('move').value=config.execution.trailing_stop_move_step;
+      byId('health-dot').className='dot ok'; byId('health').textContent='loaded';
+    }
+    function collect() {
+      const rule=byId('rule-name').value;
+      return {
+        enabled:byId('enabled').checked, rule_name:rule,
+        symbols:byId('symbols').value.split(/[\s,]+/).map(v=>v.trim().toUpperCase()).filter(Boolean),
+        entry:{nq_change_enabled:byId('nq-enabled').checked},
+        execution:{order_notional_usdt:number('notional'),
+          factor_exit_quantile_long:number('exit-long'),factor_exit_quantile_short:number('exit-short'),
+          trailing_stop_trigger_step:number('trigger'),trailing_stop_move_step:number('move')}
+      };
+    }
+    async function load() {
+      byId('reload').disabled=true; setMessage('Loading...');
+      try { const response=await fetch('/api/config',{cache:'no-store'}); const body=await response.json(); if(!response.ok) throw new Error(body.error||`HTTP ${response.status}`); populate(body.config,body.revision); setMessage('Configuration loaded.','ok'); }
+      catch(error) { byId('health-dot').className='dot bad'; byId('health').textContent='error'; setMessage(error.message,'bad'); }
+      finally { byId('reload').disabled=false; }
+    }
+    async function save() {
+      byId('save').disabled=true; setMessage('Saving...');
+      try { const response=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),expected_revision:revision})}); const body=await response.json(); if(!response.ok) throw new Error(body.error||`HTTP ${response.status}`); populate(body.config,body.revision); setMessage('Saved.','ok'); }
+      catch(error) { setMessage(error.message,responseKind(error.message),'bad'); }
+      finally { byId('save').disabled=false; }
+    }
+    function responseKind(text) { return text.includes('reload') ? 'warn' : 'bad'; }
+    byId('reload').addEventListener('click',load); byId('save').addEventListener('click',save); load();
+  </script>
+</body>
+</html>

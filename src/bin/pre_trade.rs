@@ -12,6 +12,7 @@ use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use mkt_signal::pre_trade::chase_exec_config::ChaseExecConfigReloader;
+use mkt_signal::pre_trade::cta_special_factor_channel::CtaSpecialFactorChannel;
 use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
 use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
@@ -84,6 +85,10 @@ struct Args {
     /// 绑定到指定 CPU 核（可选）；未提供则尝试 PRE_TRADE_CORE 环境变量
     #[arg(long)]
     core: Option<usize>,
+
+    /// CTA special strategy/model configuration. Ignored outside cta_special mode.
+    #[arg(long, default_value = "config/cta_special.json")]
+    cta_special_config: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -246,6 +251,12 @@ fn normalized_dir_parts(dir_name: &str) -> Vec<String> {
 fn infer_venues_from_dir_name(dir_name: &str) -> Option<(TradingVenue, TradingVenue)> {
     let parts = normalized_dir_parts(dir_name);
 
+    // cta-special: <exchange>-cta-special-<tag> is futures-only and single venue.
+    if parts.len() >= 3 && parts[1] == "cta" && parts[2] == "special" {
+        let venue = futures_venue(normalize_exchange(&parts[0]))?;
+        return Some((venue, venue));
+    }
+
     // intra: <exchange>-intra-<trade|test|...> → margin × futures (same exchange)
     // cta:   <exchange>-cta-<tag> 同样走同所 margin × futures（规则信号驱动）
     if parts.len() >= 2 && matches!(parts[1].as_str(), "intra" | "cta") {
@@ -277,6 +288,9 @@ fn infer_venues_from_cwd() -> Option<(TradingVenue, TradingVenue)> {
 
 fn infer_arb_mode_from_dir_name(dir_name: &str) -> Option<ArbMode> {
     let parts = normalized_dir_parts(dir_name);
+    if parts.len() >= 3 && parts[1] == "cta" && parts[2] == "special" {
+        return Some(ArbMode::CtaSpecial);
+    }
     if parts.len() >= 2 && parts[1] == "intra" {
         return Some(ArbMode::IntraArb);
     }
@@ -597,6 +611,17 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
+    if arb_mode == ArbMode::CtaSpecial {
+        anyhow::ensure!(
+            open_venue == TradingVenue::BinanceFutures
+                && hedge_venue == TradingVenue::BinanceFutures,
+            "cta_special supports Binance futures as the only open/hedge venue"
+        );
+        anyhow::ensure!(
+            rapidx_binance,
+            "cta_special requires binance=ltp execution backend"
+        );
+    }
     if exec_pre_trade && !rapidx_exchanges.is_empty() {
         anyhow::ensure!(
             matches!(
@@ -849,6 +874,21 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 return Err(err);
             }
             info!("MonitorChannel initialized successfully");
+            if arb_mode == ArbMode::CtaSpecial {
+                let status_path = std::env::var("CTA_SPECIAL_EXECUTION_STATUS_PATH")
+                    .unwrap_or_else(|_| "run/cta_special_execution_status.json".to_string());
+                tokio::task::spawn_local(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(1));
+                    loop {
+                        interval.tick().await;
+                        if let Err(err) = mkt_signal::pre_trade::cta_special_status::write_cta_special_execution_status(
+                            std::path::Path::new(&status_path),
+                        ) {
+                            warn!("write CTA special execution status failed: {err:#}");
+                        }
+                    }
+                });
+            }
             if exec_pre_trade {
                 trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, open_venue)?;
                 mkt_signal::pre_trade::exec_volume_channel::start(open_venue);
@@ -856,7 +896,10 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
                     open_venue.data_pub_slug()
                 );
-            } else if matches!(arb_mode, ArbMode::IntraArb | ArbMode::Cta) || matches!(
+            } else if matches!(
+                arb_mode,
+                ArbMode::IntraArb | ArbMode::Cta | ArbMode::CtaSpecial
+            ) || matches!(
                 open_venue,
                 TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
             ) || matches!(
@@ -870,6 +913,25 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     hedge_venue.data_pub_slug()
                 );
             }
+            let cta_special_factor_channel = if arb_mode == ArbMode::CtaSpecial {
+                let channel = CtaSpecialFactorChannel::new(&args.cta_special_config)
+                    .with_context(|| {
+                        format!(
+                            "initialize CTA special pre-trade factor channel from {}",
+                            args.cta_special_config.display()
+                        )
+                    })?;
+                anyhow::ensure!(
+                    channel.venue() == open_venue && channel.venue() == hedge_venue,
+                    "CTA special config venue {:?} does not match pre-trade venues {:?}/{:?}",
+                    channel.venue(),
+                    open_venue,
+                    hedge_venue
+                );
+                Some(channel)
+            } else {
+                None
+            };
             UnimmrOpenLock::initialize(dir_prefix.clone(), arb_mode, binance_account_mode)?;
             UnimmrForceClose::initialize(arb_mode, binance_account_mode);
 
@@ -1247,6 +1309,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             let mut pre_trade = PreTrade::new()
                 .with_param_refresh(param_refresh)
                 .with_snapshot_query(snapshot_query);
+            if let Some(channel) = cta_special_factor_channel {
+                pre_trade = pre_trade.with_cta_special_factor(channel);
+            }
             if let Some(channel) = order_queue_position {
                 pre_trade = pre_trade.with_order_queue_position(channel);
             }
@@ -1291,6 +1356,14 @@ mod tests {
         assert_eq!(
             infer_arb_mode_from_dir_name("binance-intra-arb03"),
             Some(ArbMode::IntraArb)
+        );
+        assert_eq!(
+            infer_arb_mode_from_dir_name("binance-cta-special-rx02"),
+            Some(ArbMode::CtaSpecial)
+        );
+        assert_eq!(
+            infer_venues_from_dir_name("binance-cta-special-rx02"),
+            Some((TradingVenue::BinanceFutures, TradingVenue::BinanceFutures))
         );
     }
 

@@ -55,7 +55,7 @@ impl UnimmrOpenLock {
     ) -> Result<()> {
         let enabled = matches!(
             arb_mode,
-            ArbMode::FundingArb | ArbMode::IntraArb | ArbMode::Cta
+            ArbMode::FundingArb | ArbMode::IntraArb | ArbMode::Cta | ArbMode::CtaSpecial
         ) && !matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
         let notification = enabled
             .then(LocalNotificationClient::from_env)

@@ -1374,10 +1374,22 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             }
 
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+            let is_cta_special_open = open_ctx
+                .from_key
+                .windows(b"cta_special=1".len())
+                .any(|window| window == b"cta_special=1");
             let is_cta_open = open_ctx
                 .from_key
                 .windows(b":cta_rule=".len())
                 .any(|window| window == b":cta_rule=");
+            let special_mode = MonitorChannel::instance().arb_mode() == ArbMode::CtaSpecial;
+            if special_mode != is_cta_special_open {
+                warn!(
+                    "ArbOpen rejected by CTA special mode boundary symbol={} special_mode={} special_signal={}",
+                    symbol, special_mode, is_cta_special_open
+                );
+                return;
+            }
             if is_cta_open {
                 let canceled = strategy_mgr
                     .borrow_mut()
@@ -1391,10 +1403,16 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                     );
                     return;
                 }
-                if strategy_mgr
-                    .borrow()
-                    .has_opposite_cta_position_for_normalized_symbol(&symbol, side)
-                {
+                let opposite_position = if is_cta_special_open {
+                    strategy_mgr
+                        .borrow()
+                        .has_opposite_cta_special_position_for_normalized_symbol(&symbol, side)
+                } else {
+                    strategy_mgr
+                        .borrow()
+                        .has_opposite_cta_position_for_normalized_symbol(&symbol, side)
+                };
+                if opposite_position {
                     debug!(
                         "ArbOpen: CTA opposite position gate blocked symbol={} side={}",
                         symbol,
@@ -1427,7 +1445,12 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let signal_spread_rate = open_ctx.spread_rate;
             {
                 let mut mgr = strategy_mgr.borrow_mut();
-                let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
+                if is_cta_special_open {
+                    let _ = mgr
+                        .ensure_cta_special_strategy_for_normalized_symbol(&symbol, opening_venue);
+                } else {
+                    let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
+                }
             }
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = ArbOpenStrategy::new(strategy_id);
