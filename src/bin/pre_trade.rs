@@ -361,19 +361,30 @@ fn exec_redis_prefix(source: Option<&str>, venue: TradingVenue) -> String {
     }
 }
 
-async fn cancel_all_exec_orders_on_startup(
+fn startup_cancel_gate_name(exec_pre_trade: bool, arb_mode: ArbMode) -> Option<&'static str> {
+    if exec_pre_trade {
+        Some("exec-pre-trade")
+    } else if arb_mode == ArbMode::CtaSpecial {
+        Some("cta-special-pre-trade")
+    } else {
+        None
+    }
+}
+
+async fn cancel_all_orders_on_startup(
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
+    gate_name: &str,
 ) -> Result<()> {
     let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
-        .context("invalid Exec startup exchange")?;
+        .context("invalid startup cancellation exchange")?;
     if runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?
         == runtime_common::execution_backend::ExecBackend::Ltp
     {
         let wire_exchange = match venue {
             TradingVenue::BinanceFutures => "BINANCE",
             TradingVenue::OkexFutures => "OKX",
-            _ => anyhow::bail!("RapidX Exec startup supports linear perpetual venues only"),
+            _ => anyhow::bail!("RapidX startup cancellation supports linear perpetual venues only"),
         };
         let timeout = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
             .ok()
@@ -381,7 +392,12 @@ async fn cancel_all_exec_orders_on_startup(
             .unwrap_or(120)
             .max(1);
         let client = trade_engine::ltp_rest::LtpRestClient::from_env()?;
-        warn!("exec-pre-trade startup gate: cancelling RapidX {} PERP orders in portfolio {} and verifying empty", wire_exchange, client.portfolio_id());
+        warn!(
+            "{} startup gate: cancelling RapidX {} PERP orders in portfolio {} and verifying empty",
+            gate_name,
+            wire_exchange,
+            client.portfolio_id()
+        );
         return client
             .cancel_exec_orders_on_startup(wire_exchange, Duration::from_secs(timeout))
             .await;
@@ -436,7 +452,7 @@ async fn cancel_all_exec_orders_on_startup(
             ],
         ),
         _ => anyhow::bail!(
-            "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures: venue={venue:?}"
+            "startup cancellation only supports binance-futures, binance-coin-futures and okex-futures: venue={venue:?}"
         ),
     };
     let script = exec_cancel_script(script_name)?;
@@ -447,7 +463,8 @@ async fn cancel_all_exec_orders_on_startup(
         .max(1);
 
     warn!(
-        "exec-pre-trade startup gate: cancelling all {:?} open orders with {}",
+        "{} startup gate: cancelling all {:?} open orders with {}",
+        gate_name,
         venue,
         script.display()
     );
@@ -476,8 +493,8 @@ async fn cancel_all_exec_orders_on_startup(
         );
     }
     info!(
-        "exec-pre-trade startup gate passed: all {:?} open orders cancelled",
-        venue
+        "{} startup gate passed: all {:?} open orders cancelled",
+        gate_name, venue
     );
     Ok(())
 }
@@ -720,8 +737,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             mode.as_str()
         );
     }
-    if exec_pre_trade {
-        cancel_all_exec_orders_on_startup(open_venue, binance_account_mode).await?;
+    let startup_cancel_gate = startup_cancel_gate_name(exec_pre_trade, arb_mode);
+    if let Some(gate_name) = startup_cancel_gate {
+        cancel_all_orders_on_startup(open_venue, binance_account_mode, gate_name).await?;
     }
     let local = tokio::task::LocalSet::new();
     local
@@ -1365,6 +1383,19 @@ mod tests {
             infer_venues_from_dir_name("binance-cta-special-rx02"),
             Some((TradingVenue::BinanceFutures, TradingVenue::BinanceFutures))
         );
+    }
+
+    #[test]
+    fn startup_cancel_gate_applies_to_exec_and_cta_special_only() {
+        assert_eq!(
+            startup_cancel_gate_name(true, ArbMode::FundingArb),
+            Some("exec-pre-trade")
+        );
+        assert_eq!(
+            startup_cancel_gate_name(false, ArbMode::CtaSpecial),
+            Some("cta-special-pre-trade")
+        );
+        assert_eq!(startup_cancel_gate_name(false, ArbMode::Cta), None);
     }
 
     #[test]

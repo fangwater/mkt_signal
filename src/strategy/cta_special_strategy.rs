@@ -191,7 +191,7 @@ impl CtaSpecialStrategy {
         self.lots.iter().map(CtaSpecialLot::signed_qty).sum()
     }
 
-    fn sync_to_account_position(&mut self, now_ts: i64, actual: f64, recovery_price: f64) {
+    fn sync_to_account_position(&mut self, now_ts: i64, actual: f64, recovery_mark_price: f64) {
         if !actual.is_finite() {
             return;
         }
@@ -224,31 +224,33 @@ impl CtaSpecialStrategy {
             }
             self.lots.retain(|lot| lot.qty > QTY_EPS);
         } else if actual_abs > tracked_abs + QTY_EPS {
-            let Some(mut config) = self.latest_config.clone() else {
+            let Some(config) = self.latest_config.clone() else {
                 return;
             };
-            if !(recovery_price.is_finite() && recovery_price > 0.0) {
+            if !(recovery_mark_price.is_finite() && recovery_mark_price > 0.0) {
                 return;
             }
-            // Position snapshots do not expose the original fill price. Keep
-            // factor exit active, but never derive trailing from a made-up cost.
-            config.trailing_stop_enabled = false;
             let side = if actual > 0.0 { Side::Buy } else { Side::Sell };
             let qty = actual_abs - tracked_abs;
             self.lots.push(CtaSpecialLot {
                 side,
                 qty,
-                entry_price: recovery_price,
+                entry_price: recovery_mark_price,
                 earliest_exit_ts: now_ts.saturating_add(MIN_EXIT_DELAY_US),
                 trailing_level: 0,
                 exit_requested_ts: 0,
                 config,
             });
             warn!(
-                "CtaSpecial recovered untracked position as synthetic lot symbol={} side={} qty={:.8}; trailing disabled because entry price is unknown",
+                "CtaSpecial recovered untracked position as synthetic lot symbol={} side={} qty={:.8} entry_mark={:.8} total_position={:.8} trailing_enabled={}",
                 self.symbol,
                 side.as_str(),
-                qty
+                qty,
+                recovery_mark_price,
+                actual,
+                self.lots
+                    .last()
+                    .is_some_and(|lot| lot.config.trailing_stop_enabled)
             );
         }
     }
@@ -433,6 +435,12 @@ impl Strategy for CtaSpecialStrategy {
         } else {
             get_timestamp_us()
         };
+        let position = MonitorChannel::instance().get_position_qty(&self.symbol, self.venue);
+        let recovery_mark_price = MonitorChannel::instance()
+            .mark_price_for_symbol(&self.symbol)
+            .unwrap_or(0.0);
+        self.sync_to_account_position(now_ts, position, recovery_mark_price);
+
         let Some(quote) = trade_signal::MktChannel::instance().get_quote(&self.symbol, self.venue)
         else {
             return;
@@ -440,9 +448,6 @@ impl Strategy for CtaSpecialStrategy {
         if quote.ts <= 0 || now_ts.saturating_sub(quote.ts) > MAX_BBO_AGE_US {
             return;
         }
-        let position = MonitorChannel::instance().get_position_qty(&self.symbol, self.venue);
-        let recovery_price = 0.5 * (quote.bid + quote.ask);
-        self.sync_to_account_position(now_ts, position, recovery_price);
         self.cancel_decayed_opening_makers(now_ts);
         if let Some((side, qty, reason)) = self.exit_plan(now_ts, quote.bid, quote.ask) {
             self.submit_close(now_ts, side, qty, reason);
@@ -606,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn recovered_position_disables_trailing_without_known_entry() {
+    fn recovered_position_uses_mark_price_and_keeps_trailing() {
         let mut strategy =
             CtaSpecialStrategy::new(1, "BTCUSDT".to_string(), TradingVenue::BinanceFutures);
         strategy.latest_config = Some(config());
@@ -614,9 +619,48 @@ mod tests {
         strategy.sync_to_account_position(POSITION_SYNC_GRACE_US, 1.0, 100.0);
 
         assert_eq!(strategy.lots.len(), 1);
-        assert!(!strategy.lots[0].config.trailing_stop_enabled);
+        assert_eq!(strategy.lots[0].side, Side::Buy);
+        assert!((strategy.lots[0].qty - 1.0).abs() < QTY_EPS);
+        assert!((strategy.lots[0].entry_price - 100.0).abs() < QTY_EPS);
+        assert!(strategy.lots[0].config.trailing_stop_enabled);
         assert!(strategy.lots[0].factor_exit(Some(0.29)));
-        assert!(!strategy.lots[0].trailing_exit(102.0));
+        assert!(!strategy.lots[0].trailing_exit(101.1));
+        assert!(strategy.lots[0].trailing_exit(100.4));
+    }
+
+    #[test]
+    fn direction_mismatch_recovers_total_position_as_one_mark_price_lot() {
+        let mut strategy =
+            CtaSpecialStrategy::new(1, "BTCUSDT".to_string(), TradingVenue::BinanceFutures);
+        strategy.latest_config = Some(config());
+        strategy.lots.push(CtaSpecialLot {
+            side: Side::Buy,
+            qty: 0.5,
+            entry_price: 101.0,
+            earliest_exit_ts: 0,
+            trailing_level: 0,
+            exit_requested_ts: 0,
+            config: config(),
+        });
+
+        strategy.sync_to_account_position(POSITION_SYNC_GRACE_US, -2.0, 98.0);
+
+        assert_eq!(strategy.lots.len(), 1);
+        assert_eq!(strategy.lots[0].side, Side::Sell);
+        assert!((strategy.lots[0].qty - 2.0).abs() < QTY_EPS);
+        assert!((strategy.lots[0].entry_price - 98.0).abs() < QTY_EPS);
+        assert!((strategy.tracked_signed_qty() + 2.0).abs() < QTY_EPS);
+    }
+
+    #[test]
+    fn recovered_position_waits_for_a_valid_mark_price() {
+        let mut strategy =
+            CtaSpecialStrategy::new(1, "BTCUSDT".to_string(), TradingVenue::BinanceFutures);
+        strategy.latest_config = Some(config());
+
+        strategy.sync_to_account_position(POSITION_SYNC_GRACE_US, 1.0, 0.0);
+
+        assert!(strategy.lots.is_empty());
     }
 
     #[test]

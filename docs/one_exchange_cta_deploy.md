@@ -216,8 +216,13 @@ overlay、旧 `cta_config_server.py` 和旧 viz 页面都不参与这条链路�
 - 反向信号先撤对向未成交 maker；存在真实反向仓位时禁止新开仓。
 - 因子退出与 trailing 退出统一走 `ArbCloseStrategy`，数量不超过真实
   仓位，向下按步长对齐，订单固定 `reduce_only=true`。
-- pre-trade 重启后若发现无法从本进程成交账本还原的已有仓位，会生成
-  仅支持因子退出的恢复 lot；由于真实入场价未知，不对该 lot 启用 trailing。
+- CTA pre-trade 每次启动都复用 Exec 的启动撤单门禁：先撤销当前 RapidX
+  portfolio 下全部 Binance PERP 挂单并确认 open orders 为空；撤单失败或
+  超时则拒绝启动，不进入策略处理。
+- pre-trade 重启后若本地 lot 账本为空但账户已有净仓位，会以当前 mark
+  price 作为总体入场价，将全部净仓合并成一个恢复 lot；该 lot 同时支持
+  因子退出和 trailing。mark price 尚不可用时不创建恢复 lot，也不使用
+  BBO mid 代替。
 - 默认 `enabled=false`；总控启动/停止脚本默认 dry-run，必须显式传
   `--execute`。启动前先校验 futures/futures、`binance=ltp`、
   `LTP_PORTFOLIO_ID` 和完整策略 JSON，失败时不会启动任何进程。
