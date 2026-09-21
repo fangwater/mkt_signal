@@ -77,6 +77,12 @@ ARGS=(
 if [[ -n "${DELIST_FORCE_LLM_IDS:-}" ]]; then
   ARGS+=(--force-llm-ids "${DELIST_FORCE_LLM_IDS}")
 fi
+if [[ -n "${DELIST_NAV_USERNAME:-}" ]]; then
+  ARGS+=(--nav-username "${DELIST_NAV_USERNAME}")
+fi
+if [[ -n "${DELIST_NAV_PASSWORD:-}" ]]; then
+  ARGS+=(--nav-password "${DELIST_NAV_PASSWORD}")
+fi
 if [[ -n "${DELIST_REDIS_URL:-}" ]]; then
   ARGS+=(--redis "${DELIST_REDIS_URL}")
 fi

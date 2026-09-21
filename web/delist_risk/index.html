@@ -93,6 +93,9 @@
       .account-table tbody tr:last-child td { border-bottom: 0; }
       .account-name { color: var(--ink); font-size: 13px; font-weight: 600; }
       .account-slug { display: block; margin-top: 2px; color: var(--quiet); font-size: 10px; }
+      .account-links { display: inline-flex; gap: 8px; margin-top: 4px; }
+      .account-links a { color: var(--muted); font-size: 11px; text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+      .account-links a:hover { color: var(--ink); border-color: var(--ink); }
       .account-venues { color: var(--quiet); font-size: 11px; }
       .account-value { color: var(--ink); font-variant-numeric: tabular-nums; }
       .account-value--risk { color: var(--danger); font-weight: 650; }
@@ -160,7 +163,7 @@
     </header>
     <main class="page">
       <section class="overview" aria-labelledby="page-title">
-        <div><h1 id="page-title">下架风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p></div>
+        <div><h1 id="page-title">下架风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p><p class="as-of" id="llm-check"></p></div>
         <div class="filters" id="filters" aria-label="策略类型筛选"></div>
       </section>
       <section class="metrics" id="metrics" aria-label="风险摘要"></section>
@@ -318,7 +321,12 @@
         const unimmrN = account.kind === 'funding_rate' && account.unimmr_close_n != null ? account.unimmr_close_n : null;
         const unimmrCell = unimmrN != null ? `<div class="account-venues">UniMMR <span class="${unimmrN ? '' : 'account-value--risk'}">${unimmrN}</span> 候选</div>` : '';
         const unimmrChip = account.unimmr_empty ? ' <span class="chip chip--risk">UniMMR为空</span>' : '';
-        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td></tr>`;
+        const links = [
+          account.viz_url ? `<a href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener">看板</a>` : '',
+          account.config_url ? `<a href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener">配置</a>` : '',
+        ].filter(Boolean).join('');
+        const linksHtml = links ? `<span class="account-links">${links}</span>` : '';
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code>${linksHtml}</td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
@@ -346,11 +354,20 @@
         root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
         root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
       }
+      function renderLlmCheck() {
+        const el = document.getElementById('llm-check');
+        const llm = payload && payload.llm;
+        if (!llm) { el.textContent = ''; return; }
+        const when = formatTime(llm.last_attempt_ms).replace('更新于 ', '');
+        const status = llm.ok ? '' : ' · <span style="color:var(--danger)">检查失败</span>';
+        el.innerHTML = `LLM 最后检查 ${escapeHtml(when)} · ${escapeHtml(llm.exchange)}/${escapeHtml(llm.announcement_id)}${status}`;
+      }
       function render() {
         if (!payload) return;
         renderFilters();
         renderMetrics(payload.summary);
         document.getElementById('as-of').textContent = formatTime(payload.as_of_ms);
+        renderLlmCheck();
         renderList((payload.accounts || []).filter((account) => filter === 'all' || account.kind === filter));
       }
       async function load() {

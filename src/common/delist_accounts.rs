@@ -34,6 +34,8 @@ pub struct AccountSpec {
     pub kind: String,
     pub host: String,
     pub site: RedisSite,
+    /// NAV-provided per-env console/config URL (`/…/config`, absolute for SG).
+    pub config_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +49,8 @@ struct NavStrategy {
     host: String,
     strategy_kind: String,
     exchange: String,
+    #[serde(default)]
+    config_url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +94,53 @@ pub struct AccountRiskView {
     /// 已确认 `fr_unimmr_close_symbols` 为空（key 缺失或列表无币对）。
     #[serde(default)]
     pub unimmr_empty: bool,
+    /// Entry point to the env's viz dashboard (`/{ns}/<env>/` on that host's :4191).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viz_url: Option<String>,
+    /// Entry point to the env's config/console endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_url: Option<String>,
+}
+
+/// Public front base for SG-hosted envs; JP envs stay origin-relative.
+const SG_LINK_BASE: &str = "http://47.131.162.78:4191";
+
+fn link_base(site: RedisSite) -> &'static str {
+    match site {
+        RedisSite::Sg => SG_LINK_BASE,
+        _ => "",
+    }
+}
+
+fn kind_ns(kind: &str) -> Option<&'static str> {
+    match kind {
+        "funding_rate" => Some("fr"),
+        "intra_exchange" => Some("intra"),
+        "market_making" => Some("mm"),
+        "cross_exchange" => Some("cross"),
+        _ => None,
+    }
+}
+
+/// Entry points for one account env. The NAV `config_url` is authoritative
+/// (handles SG absolute URLs and nonstandard consoles like the CTA manager);
+/// when it is missing the standard `/{ns}/<env>` layout is derived.
+pub fn env_urls(spec: &AccountSpec) -> (Option<String>, Option<String>) {
+    let base = link_base(spec.site);
+    let mut config = (!spec.config_url.is_empty()).then(|| spec.config_url.clone());
+    let mut viz = config
+        .as_deref()
+        .and_then(|c| c.strip_suffix("/config"))
+        .map(|c| format!("{c}/"));
+    if config.is_none() {
+        if spec.kind == "cta" {
+            config = Some(format!("{base}/manager/account/?source={}", spec.slug));
+        } else if let Some(ns) = kind_ns(&spec.kind) {
+            config = Some(format!("{base}/{ns}/{}/config", spec.slug));
+            viz = Some(format!("{base}/{ns}/{}/", spec.slug));
+        }
+    }
+    (viz, config)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,14 +151,63 @@ pub struct AccountRiskResponse {
     pub redis: BTreeMap<String, bool>,
     pub summary: BTreeMap<String, usize>,
     pub accounts: Vec<AccountRiskView>,
+    /// Most recent LLM extraction attempt (`last_attempt_ms` is the check time).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm: Option<crate::common::delist_store::LlmRunStatus>,
 }
 
-pub async fn fetch_nav_accounts(client: &Client, url: &str) -> Result<Vec<AccountSpec>> {
-    let strategies: Vec<NavStrategy> = client
-        .get(url)
+/// Marker returned inside the error chain when NAV rejects the session.
+pub const NAV_UNAUTHORIZED: &str = "NAV strategies unauthorized";
+
+/// Logs in to the NAV API and returns the `nav_session` token.
+/// `login_url` is the `/api/auth/login` endpoint (e.g. via `/nav-api/`).
+pub async fn nav_login(
+    client: &Client,
+    login_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<String> {
+    let response = client
+        .post(login_url)
+        .json(&serde_json::json!({"username": username, "password": password}))
         .send()
         .await
-        .with_context(|| format!("fetch NAV strategies {url}"))?
+        .with_context(|| format!("fetch NAV login {login_url}"))?
+        .error_for_status()
+        .with_context(|| format!("NAV login rejected {login_url}"))?;
+    for value in response.headers().get_all(reqwest::header::SET_COOKIE) {
+        let value = value.to_str().context("decode NAV login cookie")?;
+        let Some((name, token)) = value
+            .split(';')
+            .next()
+            .and_then(|pair| pair.split_once('='))
+        else {
+            continue;
+        };
+        if name.trim() == "nav_session" && !token.trim().is_empty() {
+            return Ok(token.trim().to_string());
+        }
+    }
+    anyhow::bail!("NAV login response missing nav_session cookie")
+}
+
+pub async fn fetch_nav_accounts(
+    client: &Client,
+    url: &str,
+    session: Option<&str>,
+) -> Result<Vec<AccountSpec>> {
+    let mut request = client.get(url);
+    if let Some(token) = session {
+        request = request.header(reqwest::header::COOKIE, format!("nav_session={token}"));
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("fetch NAV strategies {url}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        anyhow::bail!(NAV_UNAUTHORIZED);
+    }
+    let strategies: Vec<NavStrategy> = response
         .error_for_status()
         .with_context(|| format!("NAV strategies returned an error {url}"))?
         .json()
@@ -150,6 +250,7 @@ pub async fn fetch_nav_accounts(client: &Client, url: &str) -> Result<Vec<Accoun
             kind,
             host,
             site,
+            config_url: strategy.config_url,
         });
     }
     Ok(accounts)
@@ -391,6 +492,7 @@ pub fn build_account_views(
         } else {
             "ok"
         };
+        let (viz_url, config_url) = env_urls(spec);
         out.push(AccountRiskView {
             slug: spec.slug.to_string(),
             alias: spec.alias.to_string(),
@@ -407,6 +509,8 @@ pub fn build_account_views(
             symbols: universe.into_iter().collect(),
             unimmr_close_n: None,
             unimmr_empty: false,
+            viz_url,
+            config_url,
         });
     }
     out
@@ -675,9 +779,13 @@ mod tests {
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let accounts = fetch_nav_accounts(&Client::new(), &format!("http://{address}/strategies"))
-            .await
-            .unwrap();
+        let accounts = fetch_nav_accounts(
+            &Client::new(),
+            &format!("http://{address}/strategies"),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(accounts.len(), 2);
         assert_eq!(accounts[0].slug, "bitget_fr_arb01");
@@ -694,9 +802,13 @@ mod tests {
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let error = fetch_nav_accounts(&Client::new(), &format!("http://{address}/strategies"))
-            .await
-            .unwrap_err();
+        let error = fetch_nav_accounts(
+            &Client::new(),
+            &format!("http://{address}/strategies"),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(error.to_string().contains("catalog is empty"));
     }
 }

@@ -238,6 +238,7 @@ mod tests {
             kind: "intra_exchange".to_string(),
             host: "local".to_string(),
             site: RedisSite::Jp,
+            config_url: String::new(),
         }
     }
 

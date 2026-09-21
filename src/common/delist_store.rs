@@ -235,6 +235,14 @@ impl StatusBook {
         self.llm
             .get(&(exchange.to_string(), announcement_id.to_string()))
     }
+
+    /// Most recent LLM extraction attempt across all announcements.
+    pub fn llm_latest(&self) -> Option<LlmRunStatus> {
+        self.llm
+            .values()
+            .max_by_key(|row| row.last_attempt_ms)
+            .cloned()
+    }
 }
 
 pub struct DelistStore {

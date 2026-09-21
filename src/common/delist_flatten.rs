@@ -308,6 +308,7 @@ mod tests {
             kind: "funding_rate".to_string(),
             host: "local".to_string(),
             site: RedisSite::Jp,
+            config_url: String::new(),
         };
         let output = FlattenExecutor::new(root.clone(), Duration::from_secs(5))
             .run(&candidate, &account)

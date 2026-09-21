@@ -37,8 +37,8 @@ use mkt_signal::common::bitget_announcement::{
 };
 use mkt_signal::common::delist_accounts::{
     build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_fr_symbol_list,
-    load_universes, summarize, AccountRiskResponse, AccountRiskView, AccountSpec,
-    FrSymbolListState,
+    load_universes, nav_login, summarize, AccountRiskResponse, AccountRiskView, AccountSpec,
+    FrSymbolListState, NAV_UNAUTHORIZED,
 };
 use mkt_signal::common::delist_dump::{
     apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
@@ -172,6 +172,14 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:4191/nav-api/strategies")]
     nav_strategies_url: String,
 
+    /// NAV API service account; when set the server logs in and retries on 401.
+    #[arg(long)]
+    nav_username: Option<String>,
+
+    /// NAV API service account password.
+    #[arg(long)]
+    nav_password: Option<String>,
+
     /// NAV strategy catalog refresh interval.
     #[arg(long, default_value_t = 60)]
     nav_strategy_interval_secs: u64,
@@ -231,6 +239,10 @@ struct AppState {
     snapshot_base_url: String,
     snapshot_client: Client,
     nav_strategies_url: String,
+    nav_login_url: String,
+    nav_username: Option<String>,
+    nav_password: Option<String>,
+    nav_session: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -376,6 +388,15 @@ async fn main() -> Result<()> {
         snapshot_base_url: args.snapshot_base_url.clone(),
         snapshot_client: public_http_client()?,
         nav_strategies_url: args.nav_strategies_url.clone(),
+        nav_login_url: format!(
+            "{}auth/login",
+            args.nav_strategies_url
+                .trim_end_matches('/')
+                .trim_end_matches("strategies")
+        ),
+        nav_username: args.nav_username.clone().filter(|u| !u.is_empty()),
+        nav_password: args.nav_password.clone().filter(|p| !p.is_empty()),
+        nav_session: Arc::new(RwLock::new(None)),
     };
 
     let refresh = state.clone();
@@ -554,6 +575,7 @@ async fn query_accounts(
         redis,
         summary: summarize(&accounts),
         accounts,
+        llm: state.status.read().await.llm_latest(),
     })
 }
 
@@ -970,7 +992,30 @@ struct RefreshArgs {
 
 async fn refresh_nav_account_catalog(state: &AppState, client: &Client) -> bool {
     let was_ready = nav_accounts_ready(state).await;
-    match fetch_nav_accounts(client, &state.nav_strategies_url).await {
+    let session = state.nav_session.read().await.clone();
+    let mut result =
+        fetch_nav_accounts(client, &state.nav_strategies_url, session.as_deref()).await;
+    let unauthorized = result
+        .as_ref()
+        .err()
+        .is_some_and(|err| format!("{err:#}").contains(NAV_UNAUTHORIZED));
+    if unauthorized {
+        *state.nav_session.write().await = None;
+        if let (Some(user), Some(pass)) = (&state.nav_username, &state.nav_password) {
+            match nav_login(client, &state.nav_login_url, user, pass).await {
+                Ok(token) => {
+                    info!("NAV login refreshed session");
+                    *state.nav_session.write().await = Some(token.clone());
+                    result =
+                        fetch_nav_accounts(client, &state.nav_strategies_url, Some(&token)).await;
+                }
+                Err(err) => {
+                    warn!("NAV login failed: {err:#}");
+                }
+            }
+        }
+    }
+    match result {
         Ok(accounts) => {
             let count = accounts.len();
             let changed = state.accounts.read().await.as_slice() != accounts.as_slice();
