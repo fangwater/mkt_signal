@@ -1,7 +1,11 @@
 use anyhow::Result;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
+use iceoryx2::service::builder::publish_subscribe::{
+    PublishSubscribeOpenError, PublishSubscribeOpenOrCreateError,
+};
 use iceoryx2::service::ipc;
+use iceoryx2::service::port_factory::publish_subscribe::PortFactory;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use std::cell::RefCell;
 
@@ -18,6 +22,11 @@ pub const INCREMENTAL_PAYLOAD_BYTES: usize = 2048;
 const SYMBOL_PREFIX_BYTES: usize = 128;
 const HISTORY_SIZE: usize = 100;
 const SUBSCRIBER_MAX_BUFFER: usize = 8192;
+/// Caps requested when a spread_pbs service is (re)created. Service capacity is
+/// fixed at creation time, so raising these values only takes effect after the
+/// service is recreated.
+const PUBSUB_MAX_NODES: usize = 64;
+const PUBSUB_MAX_SUBSCRIBERS: usize = 64;
 
 pub const DEFAULT_SPREAD_SERVICE_ROOT: &str = "spread_pbs";
 pub const TEST_SPREAD_SERVICE_ROOT: &str = "spread_pbs_test";
@@ -76,6 +85,56 @@ fn clean_service_root(root: String) -> Result<String> {
         root
     );
     Ok(root)
+}
+
+/// Opens or creates a spread_pbs pub/sub service. Newly created services get
+/// `PUBSUB_MAX_NODES`/`PUBSUB_MAX_SUBSCRIBERS`; when an older service with
+/// smaller baked-in caps already exists, falls back to the legacy caps so new
+/// binaries keep running against it. Recreate the service to raise its caps.
+fn open_or_create_pubsub<Payload>(
+    node: &iceoryx2::node::Node<ipc::Service>,
+    service_name: &str,
+    history_size: usize,
+    legacy_max_subscribers: usize,
+) -> Result<PortFactory<ipc::Service, Payload, ()>>
+where
+    Payload: std::fmt::Debug + ZeroCopySend,
+{
+    let name = ServiceName::new(service_name)?;
+    let builder = || {
+        node.service_builder(&name)
+            .publish_subscribe::<Payload>()
+            .max_publishers(1)
+            .history_size(history_size)
+            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
+    };
+    match builder()
+        .max_subscribers(PUBSUB_MAX_SUBSCRIBERS)
+        .max_nodes(PUBSUB_MAX_NODES)
+        .open_or_create()
+    {
+        Ok(service) => Ok(service),
+        Err(err) => {
+            let smaller_existing_caps = matches!(
+                err,
+                PublishSubscribeOpenOrCreateError::PublishSubscribeOpenError(
+                    PublishSubscribeOpenError::DoesNotSupportRequestedAmountOfNodes
+                        | PublishSubscribeOpenError::DoesNotSupportRequestedAmountOfSubscribers
+                )
+            );
+            if !smaller_existing_caps {
+                return Err(err.into());
+            }
+            log::warn!(
+                "service {} exists with smaller caps; opening with legacy max_subscribers={} (recreate service to raise caps)",
+                service_name,
+                legacy_max_subscribers
+            );
+            Ok(builder()
+                .max_subscribers(legacy_max_subscribers)
+                .open_or_create()?)
+        }
+    }
 }
 
 fn service_name(root: &str, venue_slug: &str, channel: &str) -> Result<String> {
@@ -1049,14 +1108,12 @@ impl SpreadPublisher {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; SPREAD_PAYLOAD_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(64)
-            .history_size(HISTORY_SIZE)
-            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
-            .open_or_create()?;
+        let service = open_or_create_pubsub::<[u8; SPREAD_PAYLOAD_BYTES]>(
+            &node,
+            &service_name,
+            HISTORY_SIZE,
+            64,
+        )?;
 
         let publisher = service.publisher_builder().create()?;
 
@@ -1205,14 +1262,12 @@ impl SpreadTradePublisher {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; TRADE_PAYLOAD_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(64)
-            .history_size(HISTORY_SIZE)
-            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
-            .open_or_create()?;
+        let service = open_or_create_pubsub::<[u8; TRADE_PAYLOAD_BYTES]>(
+            &node,
+            &service_name,
+            HISTORY_SIZE,
+            64,
+        )?;
 
         let publisher = service.publisher_builder().create()?;
 
@@ -1322,14 +1377,12 @@ impl SpreadIncrementalPublisher {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; INCREMENTAL_PAYLOAD_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(10)
-            .history_size(100)
-            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
-            .open_or_create()?;
+        let service = open_or_create_pubsub::<[u8; INCREMENTAL_PAYLOAD_BYTES]>(
+            &node,
+            &service_name,
+            HISTORY_SIZE,
+            10,
+        )?;
 
         let publisher = service.publisher_builder().create()?;
 
@@ -1630,14 +1683,8 @@ impl SpreadDerivativesPublisher {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(64)
-            .history_size(50)
-            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
-            .open_or_create()?;
+        let service =
+            open_or_create_pubsub::<[u8; DERIVATIVES_PAYLOAD_BYTES]>(&node, &service_name, 50, 64)?;
 
         let publisher = service.publisher_builder().create()?;
 
