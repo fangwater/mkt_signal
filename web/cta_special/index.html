@@ -92,15 +92,6 @@
         <div class="metric-card"><h3>Max Leverage</h3><div id="acct-max-leverage" class="value">-</div></div>
       </div>
       <div class="chips" id="account-chips"></div>
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr><th>asset</th><th>net_qty</th><th>net_usdt</th></tr>
-          </thead>
-          <tbody id="exposure-body"></tbody>
-        </table>
-      </div>
-      <div id="exposure-empty" class="empty">暂无敞口</div>
     </section>
 
     <section class="section">
@@ -226,12 +217,6 @@
         el('account-chips').innerHTML = '';
         el('account-meta').textContent = '等待账户数据';
       }
-      const exposureRows = Array.isArray(execution.exposures) ? execution.exposures : [];
-      el('exposure-body').innerHTML = exposureRows.map(row => {
-        const side = positionSide(row.net_usdt);
-        return `<tr class="position-row ${side}"><td class="mono">${row.asset}</td><td class="position-value ${side}">${fmt(row.net_qty, 6)}</td><td class="position-value ${side}">${fmtUsd(row.net_usdt)}</td></tr>`;
-      }).join('');
-      el('exposure-empty').style.display = exposureRows.length ? 'none' : 'block';
 
       const signalBody = el('signal-body');
       signalBody.innerHTML = visible.map(row => {
