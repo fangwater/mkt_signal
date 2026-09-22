@@ -396,10 +396,9 @@ impl CtaSpecialStrategy {
         ctx.set_hedging_symbol(&self.symbol);
         ctx.set_side(close_side);
         ctx.set_order_type(OrderType::Market);
-        if !ctx.set_price_with_tick_floor(price, price_tick)
-            || !ctx.set_amount_with_tick_floor(qty, qty_tick)
-            || ctx.amount_value() <= QTY_EPS
-        {
+        let _ = ctx.set_price_with_tick_floor(price, price_tick);
+        let _ = ctx.set_amount_with_tick_floor(qty, qty_tick);
+        if ctx.price_count() <= 0 || ctx.amount_count() <= 0 || ctx.amount_value() <= QTY_EPS {
             return;
         }
         ctx.create_ts = now_ts;

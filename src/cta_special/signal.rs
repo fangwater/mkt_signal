@@ -489,9 +489,10 @@ fn publish_entry_grid(
         ctx.set_hedging_symbol(&scheduled.symbol);
         ctx.set_side(scheduled.side);
         ctx.set_order_type(OrderType::Limit);
+        let _ = ctx.set_price_with_tick_floor(level.aligned_price, price_tick);
+        let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, qty_tick);
         anyhow::ensure!(
-            ctx.set_price_with_tick_floor(level.aligned_price, price_tick)
-                && ctx.set_amount_with_tick_floor(level.aligned_qty, qty_tick),
+            ctx.price_count() > 0 && ctx.amount_count() > 0,
             "failed to quantize level {}",
             level.side_level_index
         );
@@ -543,6 +544,16 @@ fn publish_entry_grid(
 mod tests {
     use super::*;
     use crate::cta_special::config::{EntryConfig, ExecutionConfig};
+
+    #[test]
+    fn valid_ticks_produce_positive_context_counts() {
+        let mut ctx = ArbOpenCtx::new();
+        let _ = ctx.set_price_with_tick_floor(100.25, 0.01);
+        let _ = ctx.set_amount_with_tick_floor(0.123, 0.001);
+
+        assert!(ctx.price_count() > 0);
+        assert!(ctx.amount_count() > 0);
+    }
 
     fn config(nq: bool) -> CtaSpecialConfig {
         CtaSpecialConfig {

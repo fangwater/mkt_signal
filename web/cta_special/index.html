@@ -68,7 +68,6 @@
       <div class="card-grid">
         <div class="metric-card"><h3>Trading</h3><div id="enabled" class="value">-</div></div>
         <div class="metric-card"><h3>Factor</h3><div id="factor" class="value">-</div></div>
-        <div class="metric-card"><h3>Venue</h3><div id="venue" class="value">binance-futures</div></div>
         <div class="metric-card"><h3>Symbols</h3><div id="symbol-count" class="value">-</div></div>
         <div class="metric-card"><h3>Ready</h3><div id="ready-count" class="value">-</div></div>
         <div class="metric-card"><h3>Long / Short / Flat</h3><div id="decisions" class="value">-</div></div>
@@ -100,7 +99,7 @@
       <div class="table-wrapper">
         <table>
           <thead>
-            <tr><th>symbol</th><th>venue</th><th>account_qty</th><th>tracked_qty</th><th>lots</th><th>latest_quantile</th><th>model_time</th></tr>
+            <tr><th>symbol</th><th>account_qty</th><th>tracked_qty</th><th>lots</th><th>latest_quantile</th><th>model_time</th></tr>
           </thead>
           <tbody id="position-body"></tbody>
         </table>
@@ -138,7 +137,6 @@
       el('enabled').textContent = enabled ? 'ENABLED' : 'DISABLED';
       el('enabled').className = 'value ' + (enabled ? 'good' : 'bad');
       el('factor').textContent = (config.rule_name || status.rule_name || '-').toUpperCase();
-      el('venue').textContent = status.venue || 'binance-futures';
       el('nq').textContent = config.entry ? (config.entry.nq_change_enabled ? 'ON' : 'OFF') : '-';
       el('nq').className = 'value ' + (config.entry && config.entry.nq_change_enabled ? 'good' : 'warn');
       el('pending').textContent = status.scheduled_entries ?? '-';
@@ -187,7 +185,7 @@
       el('signal-empty').textContent = names.length ? '过滤后没有标的' : '配置里还没有标的';
 
       const positions = executionRows.filter(row => matches(row.symbol) && (!el('hide-flat').checked || Math.abs(Number(row.account_signed_qty) || 0) > 0 || Math.abs(Number(row.tracked_signed_qty) || 0) > 0));
-      el('position-body').innerHTML = positions.map(row => `<tr><td class="mono">${row.symbol}</td><td>${row.venue || '-'}</td><td>${fmt(row.account_signed_qty, 6)}</td><td>${fmt(row.tracked_signed_qty, 6)}</td><td>${Number.isInteger(row.lot_count) ? row.lot_count : '-'}</td><td>${fmt(row.latest_quantile, 4)}</td><td>${timeText(row.latest_model_ts_ms)}</td></tr>`).join('');
+      el('position-body').innerHTML = positions.map(row => `<tr><td class="mono">${row.symbol}</td><td>${fmt(row.account_signed_qty, 6)}</td><td>${fmt(row.tracked_signed_qty, 6)}</td><td>${Number.isInteger(row.lot_count) ? row.lot_count : '-'}</td><td>${fmt(row.latest_quantile, 4)}</td><td>${timeText(row.latest_model_ts_ms)}</td></tr>`).join('');
       el('position-empty').style.display = positions.length ? 'none' : 'block';
       el('position-meta').textContent = executionRows.length ? `${executionRows.length} symbols` : '';
     }
