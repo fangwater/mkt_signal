@@ -4,6 +4,7 @@ use account_common::{init_binance_account_mode, BinanceAccountMode};
 use account_monitor_common::hyperliquid_account::discover_account_mode;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
+use hmac::{Hmac, Mac};
 use log::{error, info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer, RapidXRepayer};
@@ -46,7 +47,9 @@ use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use runtime_common::redis_client::RedisSettings;
+use sha2::Sha256;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -99,6 +102,7 @@ enum ExecVenue {
 }
 
 const FR_STARTUP_STABILITY_DELAY: Duration = Duration::from_secs(3);
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone)]
 struct FrStartupContext {
@@ -369,6 +373,78 @@ fn startup_cancel_gate_name(exec_pre_trade: bool, arb_mode: ArbMode) -> Option<&
     } else {
         None
     }
+}
+
+fn parse_binance_multi_assets_mode(body: &str) -> Result<bool> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).context("Binance accountConfig response is not JSON")?;
+    let mode = value
+        .get("multiAssetsMargin")
+        .context("Binance accountConfig response is missing multiAssetsMargin")?;
+    mode.as_bool()
+        .or_else(|| match mode.as_str() {
+            Some(value) if value.eq_ignore_ascii_case("true") => Some(true),
+            Some(value) if value.eq_ignore_ascii_case("false") => Some(false),
+            _ => None,
+        })
+        .context("Binance accountConfig response has invalid multiAssetsMargin")
+}
+
+async fn require_binance_multi_assets_mode_on_exec_startup(local_ip: IpAddr) -> Result<()> {
+    let api_key = std::env::var("BINANCE_API_KEY")
+        .context("BINANCE_API_KEY is required for the Exec account-mode startup gate")?;
+    let api_secret = std::env::var("BINANCE_API_SECRET")
+        .context("BINANCE_API_SECRET is required for the Exec account-mode startup gate")?;
+    let base_url = std::env::var("BINANCE_FAPI_URL")
+        .unwrap_or_else(|_| "https://fapi.binance.com".to_string());
+    let mut params = BTreeMap::new();
+    params.insert("recvWindow", "5000".to_string());
+    params.insert(
+        "timestamp",
+        chrono::Utc::now().timestamp_millis().to_string(),
+    );
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.extend_pairs(params);
+    let query = serializer.finish();
+    let mut mac = HmacSha256::new_from_slice(api_secret.as_bytes())
+        .context("invalid Binance API secret for account-mode startup gate")?;
+    mac.update(query.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+    let url = format!(
+        "{}/fapi/v1/accountConfig?{}&signature={}",
+        base_url.trim_end_matches('/'),
+        query,
+        signature
+    );
+    let client = reqwest::Client::builder()
+        .local_address(local_ip)
+        .timeout(Duration::from_secs(10))
+        .no_proxy()
+        .build()
+        .context("build Binance account-mode startup client")?;
+    let response = client
+        .get(url)
+        .header("X-MBX-APIKEY", api_key.trim())
+        .send()
+        .await
+        .context("query Binance accountConfig for Exec startup")?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!(
+            "Binance account-mode startup query failed status={} body={}",
+            status.as_u16(),
+            body.chars().take(300).collect::<String>()
+        );
+    }
+    if !parse_binance_multi_assets_mode(&body)? {
+        bail!("Binance USD-M Multi-Assets Mode is disabled; refusing to start exec-pre-trade");
+    }
+    info!(
+        "exec-pre-trade account-mode startup gate passed: Binance USD-M Multi-Assets Mode enabled via local_ip={}",
+        local_ip
+    );
+    Ok(())
 }
 
 async fn cancel_all_orders_on_startup(
@@ -730,6 +806,22 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
+    }
+    if exec_pre_trade && open_venue == TradingVenue::BinanceFutures && !rapidx_binance {
+        anyhow::ensure!(
+            binance_account_mode == Some(BinanceAccountMode::Standard),
+            "Binance USD-M Exec requires BINANCE_ACCOUNT_MODE=STANDARD with Multi-Assets Mode enabled"
+        );
+        let (raw_ip, source) = load_primary_local_ip_from_trade_engine_sync()
+            .context("load Binance REST local IP for the Exec account-mode startup gate")?;
+        let local_ip = raw_ip
+            .parse::<IpAddr>()
+            .with_context(|| format!("invalid Binance REST local IP {raw_ip} from {source}"))?;
+        info!(
+            "exec-pre-trade account-mode startup gate using Binance REST local_ip={} ({})",
+            local_ip, source
+        );
+        require_binance_multi_assets_mode_on_exec_startup(local_ip).await?;
     }
     if let Some(mode) = hyperliquid_account_mode {
         info!(
@@ -1396,6 +1488,13 @@ mod tests {
             Some("cta-special-pre-trade")
         );
         assert_eq!(startup_cancel_gate_name(false, ArbMode::Cta), None);
+    }
+
+    #[test]
+    fn parses_binance_multi_assets_mode_for_exec_startup_gate() {
+        assert!(parse_binance_multi_assets_mode(r#"{"multiAssetsMargin":true}"#).unwrap());
+        assert!(!parse_binance_multi_assets_mode(r#"{"multiAssetsMargin":false}"#).unwrap());
+        assert!(parse_binance_multi_assets_mode(r#"{}"#).is_err());
     }
 
     #[test]

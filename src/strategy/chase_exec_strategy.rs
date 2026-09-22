@@ -9,7 +9,7 @@ use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::strategy::batch_exec_strategy::{validate_target_signal, BatchExecTarget};
 use crate::strategy::chase_exec::{ChaseExecCompletionReason, ChaseExecConfig, ChaseExecSnapshot};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
-use crate::strategy::hedge_strategy_common::signed_qty_from_side;
+use crate::strategy::hedge_strategy_common::{mark_price_lookup_symbol, signed_qty_from_side};
 use crate::strategy::manager::{
     ExecOrphanTerminal, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
 };
@@ -87,6 +87,8 @@ struct ActiveTarget {
     /// the overshoot back (parity with BatchExec: residual is left to the
     /// position-allocation layer, not re-traded).
     release_side: Side,
+    /// Batch notional frozen from the target generation's initial gap.
+    effective_batch_usdt: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +133,18 @@ impl ChaseOrderLimits {
 /// orders) that can never execute without overshooting the target.
 fn clamp_taker_pending_to_gap(taker_pending: f64, uncommitted_base: f64) -> f64 {
     taker_pending.min(uncommitted_base.max(0.0))
+}
+
+fn maker_release_usdt(
+    effective_batch_usdt: f64,
+    max_open_batches: u32,
+    open_unfilled_usdt: f64,
+    maker_capacity_usdt: f64,
+) -> f64 {
+    let water_level = effective_batch_usdt * f64::from(max_open_batches);
+    effective_batch_usdt
+        .min((water_level - open_unfilled_usdt).max(0.0))
+        .min(maker_capacity_usdt.max(0.0))
 }
 
 fn align_child_qty_floor(raw_qty: f64, qty_step: f64) -> f64 {
@@ -212,6 +226,10 @@ fn own_best_anchor(side: Side, bid: f64, ask: f64) -> f64 {
 
 fn is_exec_rate_limit_error(error: &str) -> bool {
     error.starts_with("exec ") && error.contains("下单数") && error.contains("达到上限")
+}
+
+fn is_chase_strategy_rate_limit_error(error: &str) -> bool {
+    error.starts_with("chase strategy=") && error.contains("下单数") && error.contains("达到上限")
 }
 
 fn amend_price_matches(actual: f64, expected: f64) -> bool {
@@ -539,6 +557,52 @@ impl ChaseExecStrategy {
             .sum()
     }
 
+    fn mark_price(&self) -> Option<f64> {
+        let monitor = MonitorChannel::instance();
+        let exchange = monitor.try_mark_price_exchange()?;
+        let price_symbol = mark_price_lookup_symbol(&self.symbol, exchange);
+        monitor
+            .try_price_table()?
+            .borrow()
+            .mark_price(&price_symbol)
+            .filter(|price| price.is_finite() && *price > 0.0)
+    }
+
+    fn effective_batch_usdt(&mut self, generation: i64, remaining_base: f64) -> Option<f64> {
+        if let Some(value) = self
+            .active_target
+            .as_ref()
+            .filter(|target| target.generation_time == generation)
+            .and_then(|target| target.effective_batch_usdt)
+        {
+            return Some(value);
+        }
+        let mark_price = self.mark_price()?;
+        let delta_usdt = remaining_base * mark_price;
+        let value = self.config.effective_batch_usdt(delta_usdt);
+        if let Some(target) = self
+            .active_target
+            .as_mut()
+            .filter(|target| target.generation_time == generation)
+        {
+            target.effective_batch_usdt = Some(value);
+        }
+        info!(
+            "ChaseExecStrategy: strategy_id={} strategy_name={} symbol={} target generation={} mark_price={:.8} delta_usdt={:.4} batch_floor_usdt={:.4} effective_batch_usdt={:.4} max_batch={} max_open_batches={}",
+            self.strategy_id,
+            self.strategy_name,
+            self.symbol,
+            generation,
+            mark_price,
+            delta_usdt,
+            self.config.batch_floor_usdt,
+            value,
+            self.config.max_batch,
+            self.config.max_open_batches,
+        );
+        Some(value)
+    }
+
     fn latest_generation_time(&self) -> i64 {
         self.pending_target
             .as_ref()
@@ -561,6 +625,26 @@ impl ChaseExecStrategy {
         self.config = config;
         self.completion_reason = None;
         Ok(())
+    }
+
+    fn order_rate_retry_at_us(
+        &self,
+        account_limit_per_min: i32,
+        account_limit_10s: i32,
+        now_us: i64,
+    ) -> i64 {
+        OrderRateLimiter::next_available_at_us(
+            OrderRateBucket::Exec,
+            account_limit_per_min,
+            account_limit_10s,
+            now_us,
+        )
+        .max(OrderRateLimiter::strategy_next_available_at_us(
+            &self.strategy_name,
+            self.config.strategy_order_rate_limit_per_min,
+            self.config.strategy_order_rate_limit_10s,
+            now_us,
+        ))
     }
 
     pub fn update_target(
@@ -646,6 +730,7 @@ impl ChaseExecStrategy {
             generation_time: pending.generation_time,
             from_key: pending.from_key,
             release_side,
+            effective_batch_usdt: None,
         });
         self.completion_reason = None;
     }
@@ -933,7 +1018,13 @@ impl ChaseExecStrategy {
                         meta.reprice_pending = true;
                     }
                     self.submit_blocked_until_us =
-                        OkexModifyRateLimiter::next_available_at_us(&self.symbol, now_ts);
+                        OkexModifyRateLimiter::next_available_at_us(&self.symbol, now_ts).max(
+                            self.order_rate_retry_at_us(
+                                modify_limit_per_min,
+                                params.exec_order_rate_limit_10s(),
+                                now_ts,
+                            ),
+                        );
                     return;
                 }
             }
@@ -953,8 +1044,27 @@ impl ChaseExecStrategy {
                 if let Some(meta) = self.children.get_mut(&client_order_id) {
                     meta.reprice_pending = true;
                 }
-                self.submit_blocked_until_us = OrderRateLimiter::next_available_at_us(
-                    OrderRateBucket::Exec,
+                self.submit_blocked_until_us = self.order_rate_retry_at_us(
+                    modify_limit_per_min,
+                    params.exec_order_rate_limit_10s(),
+                    now_ts,
+                );
+                return;
+            }
+            if let Err(err) = OrderRateLimiter::check_strategy_limit(
+                &self.strategy_name,
+                self.config.strategy_order_rate_limit_per_min,
+                self.config.strategy_order_rate_limit_10s,
+                now_ts,
+            ) {
+                warn!(
+                    "ChaseExecStrategy: strategy_id={} symbol={} {}",
+                    self.strategy_id, self.symbol, err
+                );
+                if let Some(meta) = self.children.get_mut(&client_order_id) {
+                    meta.reprice_pending = true;
+                }
+                self.submit_blocked_until_us = self.order_rate_retry_at_us(
                     modify_limit_per_min,
                     params.exec_order_rate_limit_10s(),
                     now_ts,
@@ -968,6 +1078,7 @@ impl ChaseExecStrategy {
             ) {
                 Ok(()) => {
                     OrderRateLimiter::record(OrderRateBucket::Exec, client_order_id, now_ts);
+                    OrderRateLimiter::record_strategy(&self.strategy_name, client_order_id, now_ts);
                     if self.exec_venue == TradingVenue::OkexFutures
                         && modify_backend == ExecBackend::Native
                     {
@@ -999,8 +1110,7 @@ impl ChaseExecStrategy {
     }
 
     /// Fill-water-level release. Taker-committed remainder drains first; maker
-    /// clips are then released while `open_unfilled < max_open_usdt`, so fresh
-    /// exposure only follows fills (or newly released capacity), never a timer.
+    /// batches then refill the configured number of open batch-equivalents.
     fn maybe_release(&mut self, now_ts: i64) {
         if self.pending_target.is_some()
             || !self.orphaned_children.is_empty()
@@ -1181,26 +1291,32 @@ impl ChaseExecStrategy {
             return;
         }
 
-        // 2) Maker top-up: release at most one clip per pass while unfilled
-        //    maker exposure is below `max_open_usdt`. Fills reduce the open
-        //    water level, which is what re-opens release budget. Remainders
-        //    already committed to taker keep their capacity reserved so the
-        //    maker clip cannot consume the capacity the taker drain needs.
+        // 2) Maker top-up: release at most one batch per pass. Fills reduce the
+        //    open water level and reopen capacity up to max_open_batches.
+        //    Taker-committed remainders retain priority over maker capacity.
         let open_unfilled_base = self.open_unfilled_base_qty();
         let maker_capacity_base =
             (remaining_base - open_unfilled_base - self.taker_pending_base_qty).max(0.0);
         if maker_capacity_base <= QTY_EPS {
             return;
         }
-        let budget_usdt = self.config.max_open_usdt - open_unfilled_base * reference_price;
-        if budget_usdt <= 0.0 {
+        let Some(effective_batch_usdt) = self.effective_batch_usdt(generation, remaining_base)
+        else {
+            debug!(
+                "ChaseExecStrategy: strategy_id={} symbol={} waiting for mark price before sizing target generation={}",
+                self.strategy_id, self.symbol, generation
+            );
+            return;
+        };
+        let release_usdt = maker_release_usdt(
+            effective_batch_usdt,
+            self.config.max_open_batches,
+            open_unfilled_base * reference_price,
+            maker_capacity_base * reference_price,
+        );
+        if release_usdt <= 0.0 {
             return;
         }
-        let release_usdt = self
-            .config
-            .single_order_usdt
-            .min(budget_usdt)
-            .min(maker_capacity_base * reference_price);
         let qty_multiplier = match limits.qty_multiplier_at(maker_price) {
             Ok(multiplier) => multiplier,
             Err(err) => {
@@ -1339,12 +1455,11 @@ impl ChaseExecStrategy {
                     .order_manager()
                     .borrow_mut()
                     .remove(client_order_id);
-                if is_exec_rate_limit_error(&err) {
+                if is_exec_rate_limit_error(&err) || is_chase_strategy_rate_limit_error(&err) {
                     let params = PreTradeParamsLoader::instance();
                     self.submit_blocked_until_us =
                         self.submit_blocked_until_us
-                            .max(OrderRateLimiter::next_available_at_us(
-                                OrderRateBucket::Exec,
+                            .max(self.order_rate_retry_at_us(
                                 params.exec_order_rate_limit_per_min(),
                                 params.exec_order_rate_limit_10s(),
                                 now_ts,
@@ -1388,6 +1503,18 @@ impl ChaseExecStrategy {
             );
             return Err(err);
         }
+        if let Err(err) = OrderRateLimiter::check_strategy_limit(
+            &self.strategy_name,
+            self.config.strategy_order_rate_limit_per_min,
+            self.config.strategy_order_rate_limit_10s,
+            now_ts,
+        ) {
+            warn!(
+                "ChaseExecStrategy: strategy_id={} symbol={} {}",
+                self.strategy_id, self.symbol, err
+            );
+            return Err(err);
+        }
         TradeEngHub::publish_order_request_for(
             client_order_id,
             order.venue.trade_engine_exchange(),
@@ -1395,6 +1522,7 @@ impl ChaseExecStrategy {
         )
         .map_err(|err| err.to_string())?;
         OrderRateLimiter::record(OrderRateBucket::Exec, client_order_id, now_ts);
+        OrderRateLimiter::record_strategy(&self.strategy_name, client_order_id, now_ts);
         Ok(())
     }
 
@@ -2251,6 +2379,7 @@ mod tests {
             generation_time: generation,
             from_key: b"chase_alpha".to_vec(),
             release_side,
+            effective_batch_usdt: None,
         }
     }
 
@@ -2717,5 +2846,14 @@ mod tests {
         assert_eq!(clamp_taker_pending_to_gap(0.5, 3.0), 0.5);
         assert_eq!(clamp_taker_pending_to_gap(2.0, -1.0), 0.0);
         assert_eq!(clamp_taker_pending_to_gap(0.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn maker_release_uses_batch_equivalent_water_level() {
+        assert_eq!(maker_release_usdt(2_500.0, 2, 0.0, 10_000.0), 2_500.0);
+        assert_eq!(maker_release_usdt(2_500.0, 2, 2_500.0, 7_500.0), 2_500.0);
+        assert_eq!(maker_release_usdt(2_500.0, 2, 5_000.0, 5_000.0), 0.0);
+        assert_eq!(maker_release_usdt(2_500.0, 2, 4_500.0, 5_500.0), 500.0);
+        assert_eq!(maker_release_usdt(100.0, 2, 0.0, 80.0), 80.0);
     }
 }

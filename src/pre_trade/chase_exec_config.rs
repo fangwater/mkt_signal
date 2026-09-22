@@ -2168,8 +2168,9 @@ mod tests {
     fn redis_value_contains_config_and_targets() {
         let value: ChaseExecRedisValue = serde_json::from_str(
             r#"{
-                "single_order_usdt": 100.0,
-                "max_open_usdt": 200.0,
+                "batch_floor_usdt": 100.0,
+                "max_batch": 4,
+                "max_open_batches": 2,
                 "maker_recenter_trigger_bps": 3.0,
                 "maker_amend_cooldown_ms": 0,
                 "maker_timeout_sec": 120,
@@ -2178,8 +2179,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(value.config.single_order_usdt, 100.0);
-        assert_eq!(value.config.max_open_usdt, 200.0);
+        assert_eq!(value.config.batch_floor_usdt, 100.0);
+        assert_eq!(value.config.max_batch, 4);
+        assert_eq!(value.config.max_open_batches, 2);
+        assert_eq!(value.config.maker_amend_cooldown_ms, 0);
         assert_eq!(value.targets["BTCUSDT"].qty, 0.02);
         value.validate().unwrap();
     }
@@ -2188,8 +2191,9 @@ mod tests {
     fn redis_value_accepts_target_objects_and_omitted_signal() {
         let value: ChaseExecRedisValue = serde_json::from_str(
             r#"{
-                "single_order_usdt": 100.0,
-                "max_open_usdt": 200.0,
+                "batch_floor_usdt": 100.0,
+                "max_batch": 4,
+                "max_open_batches": 2,
                 "maker_recenter_trigger_bps": 0.0,
                 "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
@@ -2197,6 +2201,7 @@ mod tests {
             }"#,
         )
         .unwrap();
+        assert_eq!(value.config.maker_amend_cooldown_ms, 1_000);
         assert_eq!(value.targets["BTCUSDT"].qty, -0.5);
         assert_eq!(value.targets["BTCUSDT"].signal, 1);
         assert_eq!(value.targets["ETHUSDT"].signal, 0);
@@ -2207,8 +2212,9 @@ mod tests {
     fn redis_value_rejects_unknown_target_signal() {
         let value: Result<ChaseExecRedisValue, _> = serde_json::from_str(
             r#"{
-                "single_order_usdt": 100.0,
-                "max_open_usdt": 200.0,
+                "batch_floor_usdt": 100.0,
+                "max_batch": 4,
+                "max_open_batches": 2,
                 "maker_recenter_trigger_bps": 0.0,
                 "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
@@ -2222,9 +2228,25 @@ mod tests {
     fn redis_value_rejects_removed_anchor_parameter() {
         let value: Result<ChaseExecRedisValue, _> = serde_json::from_str(
             r#"{
+                "batch_floor_usdt": 100.0,
+                "max_batch": 4,
+                "max_open_batches": 2,
+                "maker_price_anchor": "own_best",
+                "maker_recenter_trigger_bps": 0.0,
+                "maker_timeout_sec": 120,
+                "target_tolerance_usdt": 10.0,
+                "targets": {"BTCUSDT": 0.5}
+            }"#,
+        );
+        assert!(value.is_err());
+    }
+
+    #[test]
+    fn redis_value_rejects_removed_fixed_usdt_water_level() {
+        let value: Result<ChaseExecRedisValue, _> = serde_json::from_str(
+            r#"{
                 "single_order_usdt": 100.0,
                 "max_open_usdt": 200.0,
-                "maker_price_anchor": "own_best",
                 "maker_recenter_trigger_bps": 0.0,
                 "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
@@ -2238,21 +2260,22 @@ mod tests {
     fn redis_value_accepts_symbol_overrides() {
         let value: ChaseExecRedisValue = serde_json::from_str(
             r#"{
-                "single_order_usdt": 100.0,
-                "max_open_usdt": 200.0,
+                "batch_floor_usdt": 100.0,
+                "max_batch": 4,
+                "max_open_batches": 2,
                 "maker_recenter_trigger_bps": 3.0,
                 "maker_timeout_sec": 120,
                 "target_tolerance_usdt": 10.0,
                 "targets": {"BTCUSDT": 0.02, "ETHUSDT": 0.4},
-                "symbol_overrides": {"ETHUSDT": {"single_order_usdt": 250.0}}
+                "symbol_overrides": {"ETHUSDT": {"batch_floor_usdt": 250.0}}
             }"#,
         )
         .unwrap();
         value.validate().unwrap();
         let overrides = value.normalized_symbol_overrides().unwrap();
         let applied = overrides["ETHUSDT"].apply_to(&value.config);
-        assert_eq!(applied.single_order_usdt, 250.0);
-        assert_eq!(applied.max_open_usdt, 200.0);
+        assert_eq!(applied.batch_floor_usdt, 250.0);
+        assert_eq!(applied.max_open_batches, 2);
     }
 
     #[test]

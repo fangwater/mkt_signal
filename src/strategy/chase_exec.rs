@@ -4,21 +4,34 @@ use serde::{Deserialize, Serialize};
 
 pub const CHASE_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE";
 
-/// ChaseExec configuration: a single own-best post-only quote that follows the
-/// same-side BBO via in-place amend, with fill-driven (water-level) release
-/// instead of batch scheduling.
+const fn default_maker_amend_cooldown_ms() -> u32 {
+    1_000
+}
+
+/// ChaseExec configuration: own-best post-only batches that follow the
+/// same-side BBO via in-place amend, with fill-driven (water-level) release.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChaseExecConfig {
-    /// Maximum notional released per child order.
-    pub single_order_usdt: f64,
-    /// Maximum unfilled maker exposure (usdt) open at any time.
-    pub max_open_usdt: f64,
+    /// Strategy-wide order action limit across all symbols; 0 disables the
+    /// 60-second window. New orders and amendments both consume it.
+    #[serde(default)]
+    pub strategy_order_rate_limit_per_min: u32,
+    /// Strategy-wide order action limit across all symbols; 0 disables the
+    /// 10-second window. New orders and amendments both consume it.
+    #[serde(default)]
+    pub strategy_order_rate_limit_10s: u32,
+    /// Lower bound used when sizing a target generation's Chase batch.
+    pub batch_floor_usdt: f64,
+    /// Maximum number of batches used to size one target generation.
+    pub max_batch: u32,
+    /// Maximum number of batch-equivalents left unfilled at once.
+    pub max_open_batches: u32,
     /// Anchor movement (bps of own best) required before a live child is
     /// amended. 0 amends whenever the aligned price actually changes.
     pub maker_recenter_trigger_bps: f64,
     /// Per-child minimum delay between amend requests.
-    #[serde(default)]
+    #[serde(default = "default_maker_amend_cooldown_ms")]
     pub maker_amend_cooldown_ms: u32,
     /// Maker child lifetime in seconds; on expiry the remainder escalates to
     /// taker.
@@ -29,10 +42,13 @@ pub struct ChaseExecConfig {
 impl Default for ChaseExecConfig {
     fn default() -> Self {
         Self {
-            single_order_usdt: 100.0,
-            max_open_usdt: 200.0,
+            strategy_order_rate_limit_per_min: 0,
+            strategy_order_rate_limit_10s: 0,
+            batch_floor_usdt: 100.0,
+            max_batch: 4,
+            max_open_batches: 2,
             maker_recenter_trigger_bps: 5.0,
-            maker_amend_cooldown_ms: 0,
+            maker_amend_cooldown_ms: default_maker_amend_cooldown_ms(),
             maker_timeout_sec: 120,
             target_tolerance_usdt: 10.0,
         }
@@ -41,11 +57,14 @@ impl Default for ChaseExecConfig {
 
 impl ChaseExecConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.single_order_usdt.is_finite() || self.single_order_usdt <= 0.0 {
-            return Err("single_order_usdt must be positive".to_string());
+        if !self.batch_floor_usdt.is_finite() || self.batch_floor_usdt <= 0.0 {
+            return Err("batch_floor_usdt must be positive".to_string());
         }
-        if !self.max_open_usdt.is_finite() || self.max_open_usdt <= 0.0 {
-            return Err("max_open_usdt must be positive".to_string());
+        if self.max_batch == 0 {
+            return Err("max_batch must be positive".to_string());
+        }
+        if self.max_open_batches == 0 || self.max_open_batches > self.max_batch {
+            return Err("max_open_batches must be in the range 1..=max_batch".to_string());
         }
         if !self.maker_recenter_trigger_bps.is_finite() || self.maker_recenter_trigger_bps < 0.0 {
             return Err("maker_recenter_trigger_bps must be finite and non-negative".to_string());
@@ -58,15 +77,26 @@ impl ChaseExecConfig {
         }
         Ok(())
     }
+
+    pub fn effective_batch_usdt(&self, delta_usdt: f64) -> f64 {
+        self.batch_floor_usdt
+            .max(delta_usdt.abs() / f64::from(self.max_batch))
+    }
+
+    pub fn open_water_level_usdt(&self, effective_batch_usdt: f64) -> f64 {
+        effective_batch_usdt * f64::from(self.max_open_batches)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChaseExecConfigOverride {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub single_order_usdt: Option<f64>,
+    pub batch_floor_usdt: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_open_usdt: Option<f64>,
+    pub max_batch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_open_batches: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maker_recenter_trigger_bps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,8 +109,9 @@ pub struct ChaseExecConfigOverride {
 
 impl ChaseExecConfigOverride {
     pub fn is_empty(&self) -> bool {
-        self.single_order_usdt.is_none()
-            && self.max_open_usdt.is_none()
+        self.batch_floor_usdt.is_none()
+            && self.max_batch.is_none()
+            && self.max_open_batches.is_none()
             && self.maker_recenter_trigger_bps.is_none()
             && self.maker_amend_cooldown_ms.is_none()
             && self.maker_timeout_sec.is_none()
@@ -89,8 +120,11 @@ impl ChaseExecConfigOverride {
 
     pub fn apply_to(&self, defaults: &ChaseExecConfig) -> ChaseExecConfig {
         ChaseExecConfig {
-            single_order_usdt: self.single_order_usdt.unwrap_or(defaults.single_order_usdt),
-            max_open_usdt: self.max_open_usdt.unwrap_or(defaults.max_open_usdt),
+            strategy_order_rate_limit_per_min: defaults.strategy_order_rate_limit_per_min,
+            strategy_order_rate_limit_10s: defaults.strategy_order_rate_limit_10s,
+            batch_floor_usdt: self.batch_floor_usdt.unwrap_or(defaults.batch_floor_usdt),
+            max_batch: self.max_batch.unwrap_or(defaults.max_batch),
+            max_open_batches: self.max_open_batches.unwrap_or(defaults.max_open_batches),
             maker_recenter_trigger_bps: self
                 .maker_recenter_trigger_bps
                 .unwrap_or(defaults.maker_recenter_trigger_bps),
@@ -173,16 +207,26 @@ mod tests {
 
     #[test]
     fn default_config_validates() {
-        ChaseExecConfig::default().validate().unwrap();
+        let config = ChaseExecConfig::default();
+        config.validate().unwrap();
+        assert_eq!(config.maker_amend_cooldown_ms, 1_000);
+        assert_eq!(config.strategy_order_rate_limit_per_min, 0);
+        assert_eq!(config.strategy_order_rate_limit_10s, 0);
     }
 
     #[test]
     fn config_rejects_bad_values() {
         let mut cfg = ChaseExecConfig::default();
-        cfg.single_order_usdt = 0.0;
+        cfg.batch_floor_usdt = 0.0;
         assert!(cfg.validate().is_err());
         let mut cfg = ChaseExecConfig::default();
-        cfg.max_open_usdt = -1.0;
+        cfg.max_batch = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = ChaseExecConfig::default();
+        cfg.max_open_batches = 0;
+        assert!(cfg.validate().is_err());
+        let mut cfg = ChaseExecConfig::default();
+        cfg.max_open_batches = cfg.max_batch + 1;
         assert!(cfg.validate().is_err());
         let mut cfg = ChaseExecConfig::default();
         cfg.maker_recenter_trigger_bps = -0.5;
@@ -199,17 +243,52 @@ mod tests {
     fn override_applies_and_validates() {
         let defaults = ChaseExecConfig::default();
         let override_cfg: ChaseExecConfigOverride = serde_json::from_str(
-            r#"{"single_order_usdt": 250.0, "maker_recenter_trigger_bps": 1.5}"#,
+            r#"{"batch_floor_usdt": 250.0, "max_open_batches": 1, "maker_recenter_trigger_bps": 1.5}"#,
         )
         .unwrap();
         assert!(!override_cfg.is_empty());
         let applied = override_cfg.apply_to(&defaults);
-        assert_eq!(applied.single_order_usdt, 250.0);
+        assert_eq!(applied.batch_floor_usdt, 250.0);
+        assert_eq!(applied.max_open_batches, 1);
         assert_eq!(applied.maker_recenter_trigger_bps, 1.5);
-        assert_eq!(applied.max_open_usdt, defaults.max_open_usdt);
+        assert_eq!(applied.max_batch, defaults.max_batch);
+        assert_eq!(
+            applied.strategy_order_rate_limit_per_min,
+            defaults.strategy_order_rate_limit_per_min
+        );
         override_cfg.validate(&defaults).unwrap();
         assert!(ChaseExecConfigOverride::default()
             .validate(&defaults)
             .is_err());
+        assert!(serde_json::from_str::<ChaseExecConfigOverride>(
+            r#"{"strategy_order_rate_limit_10s": 10}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn omitted_strategy_rate_limits_default_to_disabled() {
+        let config: ChaseExecConfig = serde_json::from_str(
+            r#"{
+                "batch_floor_usdt": 100.0,
+                "max_batch": 4,
+                "max_open_batches": 2,
+                "maker_recenter_trigger_bps": 5.0,
+                "maker_amend_cooldown_ms": 1000,
+                "maker_timeout_sec": 120,
+                "target_tolerance_usdt": 10.0
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.strategy_order_rate_limit_per_min, 0);
+        assert_eq!(config.strategy_order_rate_limit_10s, 0);
+    }
+
+    #[test]
+    fn target_generation_sizes_batches_and_open_water_level() {
+        let cfg = ChaseExecConfig::default();
+        assert_eq!(cfg.effective_batch_usdt(10_000.0), 2_500.0);
+        assert_eq!(cfg.open_water_level_usdt(2_500.0), 5_000.0);
+        assert_eq!(cfg.effective_batch_usdt(80.0), 100.0);
     }
 }

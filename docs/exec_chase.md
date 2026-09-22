@@ -1,7 +1,7 @@
 # Exec Chase
 
-`chase_exec` is a standalone live execution strategy that runs alongside
-`batch_exec` inside `exec-pre-trade`. Each release places one level-0
+`chase_exec` is a standalone live execution strategy with its own configuration
+and state. Each release places one level-0
 post-only order that follows the same-side best price through in-place
 amendments, and exposure is released by fill water level rather than a batch
 timer. It reuses the existing account risk checks, Manager tradability cache,
@@ -23,33 +23,47 @@ exchange backends and the RapidX/LTP backend use in-place amend. Binance
 COIN-M is deliberately rejected because this execution path has no supported
 modify contract for it.
 
-Before reloading an existing strategy, remove the legacy
-`maker_price_anchor`, `maker_timeout_ms`, and `bbo_max_age_ms` fields from its
-Redis JSON. Chase now fixes the anchor behavior internally, expresses the
-maker lifetime in seconds, and does not gate on quote age; strict config
-parsing rejects the removed fields.
+For native Binance USD-M execution, both CTA Manager and `exec-pre-trade`
+require the exchange account to use Standard API mode with Multi-Assets Mode
+enabled. Manager checks the live `/fapi/v1/accountConfig` response before any
+non-zero target publish. `exec-pre-trade` repeats the same fail-closed check on
+startup through the primary order local IP, so a direct process start cannot
+execute previously stored targets while the account is in Single-Asset Mode.
+Zero-target Manager publishes remain allowed so stopping a strategy is never
+blocked by the account-mode gate.
+
+Republish existing strategies from Manager before reloading Exec. The strict
+parser rejects the removed `single_order_usdt`, `max_open_usdt`,
+`maker_price_anchor`, `maker_timeout_ms`, and `bbo_max_age_ms` fields; there is
+no dual-format compatibility path.
 
 ```json
 {
-  "single_order_usdt": 100.0,
-  "max_open_usdt": 200.0,
+  "batch_floor_usdt": 100.0,
+  "max_batch": 4,
+  "max_open_batches": 2,
   "maker_recenter_trigger_bps": 5.0,
-  "maker_amend_cooldown_ms": 0,
+  "maker_amend_cooldown_ms": 1000,
   "maker_timeout_sec": 120,
   "target_tolerance_usdt": 10.0,
+  "strategy_order_rate_limit_per_min": 0,
+  "strategy_order_rate_limit_10s": 0,
   "targets": {"BTCUSDT": {"qty": 0.1, "signal": 0}},
-  "symbol_overrides": {"ETHUSDT": {"single_order_usdt": 250.0}}
+  "symbol_overrides": {"ETHUSDT": {"batch_floor_usdt": 250.0}}
 }
 ```
 
 | Parameter | Meaning |
 | --- | --- |
-| `single_order_usdt` | Maximum notional released per child order. |
-| `max_open_usdt` | Maximum unfilled maker exposure open at any time. |
+| `batch_floor_usdt` | Lower bound used to size one target generation's Chase batches. The final residual can be smaller. |
+| `max_batch` | Maximum batch count used to size one target generation. |
+| `max_open_batches` | Maximum unfilled maker water level, expressed in batch-equivalents; must be in `1..=max_batch`. |
 | `maker_recenter_trigger_bps` | Own-best movement (bps of the previous anchor) required before a live child is amended. `0` amends whenever the aligned own-best price actually changes. |
-| `maker_amend_cooldown_ms` | Per-child minimum delay between amend requests. |
+| `maker_amend_cooldown_ms` | Per-child minimum delay between amend requests. Defaults to 1000 ms; `0` disables this additional cooldown. |
 | `maker_timeout_sec` | Per-child maker lifetime in seconds; on expiry the confirmed-unfilled remainder escalates to taker. |
 | `target_tolerance_usdt` | Stop once the remaining gap is within this notional tolerance. |
+| `strategy_order_rate_limit_per_min` | Strategy-wide 60-second cap for new orders plus amendments across all symbols. `0` disables this window. |
+| `strategy_order_rate_limit_10s` | Strategy-wide 10-second cap for new orders plus amendments across all symbols. `0` disables this window. |
 
 Manager stores Chase as its own order-strategy template type and publishes the
 strict Chase payload above directly into `chase_exec:*`. Symbol-level template
@@ -68,20 +82,34 @@ Targets share the `batch_exec` schema: a bare base quantity or
 `signal.abs() == 1` selects one-shot taker execution of the remaining gap.
 A target of `0` flattens the allocated position, which is how the internal
 `SYSTEM_POSITION_CLOSE` strategy works. Symbol overrides replace at least
-one field and are validated against the defaults.
+one symbol-level field and are validated against the defaults. The two
+strategy-wide rate limits cannot be placed in `symbol_overrides`.
 
 ## Execution Semantics
 
+- When a target generation first has a mark price, Chase freezes
+  `effective_batch_usdt = max(batch_floor_usdt, initial_delta_usdt / max_batch)`.
+  Its maker water level is
+  `effective_batch_usdt * max_open_batches`; later gap shrinkage does not resize
+  the frozen batch.
 - `remaining = target - position`, `uncommitted = remaining - open_unfilled`.
-  Maker clips release at most one per clock pass while unfilled maker
-  exposure stays below `max_open_usdt`; fills are what re-open the release
-  budget. Taker obligations drain before any maker release.
+  Chase releases at most one child per clock pass and each child is capped by
+  `effective_batch_usdt`, available water-level capacity, and the uncommitted
+  remainder. Fills reopen exactly their released capacity. The quantity cap is
+  expressed in batch-equivalents, so partial-fill top-ups can make the live
+  child count exceed `max_open_batches`. Taker obligations drain before any
+  maker release.
 - Each maker child is a level-0 post-only order fixed to the same-side best.
   When that own-best anchor moves by at least
   `maker_recenter_trigger_bps`, the child is amended in place
   (Binance `order.modify`, OKX `amend-order`, RapidX `replace_order`) with one
-  amend in flight per child. Amends consume the same exec order rate limit as
-  new orders. RapidX modify checks are capped at the venue contract of 300
+  amend in flight per child. Amends consume both the account Exec rate limit
+  and the Chase strategy rate limit, just like new orders; cancels consume
+  neither. The limits are cumulative: an action is allowed only when every
+  enabled window has capacity. The strategy windows aggregate all symbols by
+  the actual runtime `strategy_name`, while different strategy names remain
+  independent. Hot configuration updates do not reset their rolling history.
+  RapidX modify checks are capped at the venue contract of 300
   requests per minute even when the general Exec rate limit is disabled or
   configured higher. Native OKX amend requests also enforce the venue's
   per-instrument limit of 60 requests per 2 seconds.

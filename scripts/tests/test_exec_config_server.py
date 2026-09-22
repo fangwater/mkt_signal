@@ -136,14 +136,21 @@ class ExecConfigServerTests(unittest.TestCase):
     def test_chase_parameters_and_namespace_roundtrip(self):
         config = MODULE.normalize_chase_config({
             **MODULE.DEFAULT_CHASE_CONFIG,
-            "max_open_usdt": 450,
+            "max_batch": 8,
+            "max_open_batches": 3,
             "maker_recenter_trigger_bps": 0,
+            "strategy_order_rate_limit_per_min": 60,
+            "strategy_order_rate_limit_10s": 15,
             "targets": {"btcusdt": {"qty": 0.2, "signal": 0}},
             "symbol_overrides": {
                 "ethusdt": {"maker_amend_cooldown_ms": 25}
             },
         })
-        self.assertEqual(config["max_open_usdt"], 450.0)
+        self.assertEqual(config["max_batch"], 8)
+        self.assertEqual(config["max_open_batches"], 3)
+        self.assertEqual(config["maker_amend_cooldown_ms"], 1000)
+        self.assertEqual(config["strategy_order_rate_limit_per_min"], 60)
+        self.assertEqual(config["strategy_order_rate_limit_10s"], 15)
         self.assertEqual(config["targets"]["BTCUSDT"]["qty"], 0.2)
         self.assertEqual(
             config["symbol_overrides"]["ETHUSDT"]["maker_amend_cooldown_ms"],
@@ -152,16 +159,21 @@ class ExecConfigServerTests(unittest.TestCase):
 
         store = fake_store()
         saved = store.save("trend_a", config, "chase_exec")
-        self.assertEqual(saved["max_open_usdt"], 450.0)
+        self.assertEqual(saved["max_open_batches"], 3)
         self.assertEqual(store.list_strategy_names("chase_exec"), ["trend_a"])
         self.assertEqual(store.list_strategy_names("batch_exec"), [])
         self.assertIn(":chase_exec:", store.key("trend_a", "chase_exec"))
 
     def test_chase_rejects_invalid_values_and_batch_fields(self):
         for change in (
-            {"max_open_usdt": 0},
+            {"batch_floor_usdt": 0},
+            {"max_batch": 0},
+            {"max_open_batches": 0},
+            {"max_open_batches": 5},
             {"maker_recenter_trigger_bps": -1},
             {"maker_timeout_sec": 0},
+            {"strategy_order_rate_limit_per_min": -1},
+            {"strategy_order_rate_limit_10s": -1},
             {"bbo_max_age_ms": 2000},
             {"maker_timeout_ms": 60000},
             {"maker_price_anchor": "own_best"},
@@ -171,6 +183,14 @@ class ExecConfigServerTests(unittest.TestCase):
                     {**MODULE.DEFAULT_CHASE_CONFIG, **change}
                 )
 
+        with self.assertRaisesRegex(ValueError, "unknown symbol_overrides"):
+            MODULE.normalize_chase_config({
+                **MODULE.DEFAULT_CHASE_CONFIG,
+                "symbol_overrides": {
+                    "BTCUSDT": {"strategy_order_rate_limit_10s": 10}
+                },
+            })
+
     def test_http_chase_order_parameter_update_uses_chase_namespace(self):
         store = fake_store()
         config = dict(MODULE.DEFAULT_CHASE_CONFIG)
@@ -179,7 +199,7 @@ class ExecConfigServerTests(unittest.TestCase):
         parameters = {
             field: current[field] for field in MODULE.CHASE_ORDER_PARAMETER_FIELDS
         }
-        parameters["max_open_usdt"] = 750
+        parameters["max_open_batches"] = 1
         server = ThreadingHTTPServer(
             ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
         )
@@ -207,7 +227,7 @@ class ExecConfigServerTests(unittest.TestCase):
                 payload = json.load(response)
 
         self.assertEqual(payload["execution_family"], "chase_exec")
-        self.assertEqual(payload["order_parameters"]["max_open_usdt"], 750.0)
+        self.assertEqual(payload["order_parameters"]["max_open_batches"], 1)
         self.assertEqual(
             store.load("trend_a", "chase_exec")["targets"],
             {"BTCUSDT": {"qty": 0.2, "signal": 0}},
@@ -222,7 +242,7 @@ class ExecConfigServerTests(unittest.TestCase):
             loaded = json.load(response)
         self.assertTrue(loaded["exists"])
         self.assertEqual(loaded["execution_family"], "chase_exec")
-        self.assertEqual(loaded["config"]["max_open_usdt"], 750.0)
+        self.assertEqual(loaded["config"]["max_open_batches"], 1)
 
         with urllib.request.urlopen(
             f"http://127.0.0.1:{server.server_port}/api/strategies"

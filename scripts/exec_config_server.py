@@ -59,21 +59,29 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
 }
 EXECUTION_FAMILIES = ("batch_exec", "chase_exec")
-CHASE_ORDER_PARAMETER_FIELDS = (
-    "single_order_usdt",
-    "max_open_usdt",
+CHASE_SYMBOL_OVERRIDE_FIELDS = (
+    "batch_floor_usdt",
+    "max_batch",
+    "max_open_batches",
     "maker_recenter_trigger_bps",
     "maker_amend_cooldown_ms",
     "maker_timeout_sec",
     "target_tolerance_usdt",
 )
+CHASE_ORDER_PARAMETER_FIELDS = CHASE_SYMBOL_OVERRIDE_FIELDS + (
+    "strategy_order_rate_limit_per_min",
+    "strategy_order_rate_limit_10s",
+)
 DEFAULT_CHASE_CONFIG: Dict[str, Any] = {
-    "single_order_usdt": 100.0,
-    "max_open_usdt": 200.0,
+    "batch_floor_usdt": 100.0,
+    "max_batch": 4,
+    "max_open_batches": 2,
     "maker_recenter_trigger_bps": 5.0,
-    "maker_amend_cooldown_ms": 0,
+    "maker_amend_cooldown_ms": 1000,
     "maker_timeout_sec": 120,
     "target_tolerance_usdt": 10.0,
+    "strategy_order_rate_limit_per_min": 0,
+    "strategy_order_rate_limit_10s": 0,
     "targets": {},
 }
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
@@ -304,6 +312,9 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
 def normalize_chase_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config must be an object")
+    raw = {**raw}
+    raw.setdefault("strategy_order_rate_limit_per_min", 0)
+    raw.setdefault("strategy_order_rate_limit_10s", 0)
     allowed = set(CHASE_ORDER_PARAMETER_FIELDS) | {
         "targets",
         "symbol_overrides",
@@ -325,11 +336,12 @@ def normalize_chase_config(raw: Any) -> Dict[str, Any]:
     if recenter < 0:
         raise ValueError("maker_recenter_trigger_bps must be >= 0")
     normalized = {
-        "single_order_usdt": finite_float(
-            raw["single_order_usdt"], "single_order_usdt", positive=True
+        "batch_floor_usdt": finite_float(
+            raw["batch_floor_usdt"], "batch_floor_usdt", positive=True
         ),
-        "max_open_usdt": finite_float(
-            raw["max_open_usdt"], "max_open_usdt", positive=True
+        "max_batch": integer(raw["max_batch"], "max_batch", positive=True),
+        "max_open_batches": integer(
+            raw["max_open_batches"], "max_open_batches", positive=True
         ),
         "maker_recenter_trigger_bps": recenter,
         "maker_amend_cooldown_ms": integer(
@@ -339,8 +351,17 @@ def normalize_chase_config(raw: Any) -> Dict[str, Any]:
             raw["maker_timeout_sec"], "maker_timeout_sec", positive=True
         ),
         "target_tolerance_usdt": tolerance,
+        "strategy_order_rate_limit_per_min": integer(
+            raw["strategy_order_rate_limit_per_min"],
+            "strategy_order_rate_limit_per_min",
+        ),
+        "strategy_order_rate_limit_10s": integer(
+            raw["strategy_order_rate_limit_10s"], "strategy_order_rate_limit_10s"
+        ),
         "targets": normalize_targets(raw["targets"]),
     }
+    if normalized["max_open_batches"] > normalized["max_batch"]:
+        raise ValueError("max_open_batches must be <= max_batch")
     if "symbol_overrides" in raw:
         overrides = normalize_chase_symbol_overrides(raw["symbol_overrides"])
         if overrides:
@@ -367,7 +388,7 @@ def normalize_chase_symbol_overrides(raw: Any) -> Dict[str, Dict[str, Any]]:
             raise ValueError(
                 f"symbol_overrides.{symbol} must override at least one parameter"
             )
-        unknown = sorted(set(raw_override) - set(CHASE_ORDER_PARAMETER_FIELDS))
+        unknown = sorted(set(raw_override) - set(CHASE_SYMBOL_OVERRIDE_FIELDS))
         if unknown:
             raise ValueError(
                 f"unknown symbol_overrides.{symbol} fields: {', '.join(unknown)}"
