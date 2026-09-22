@@ -17,5 +17,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "CTA_SPECIAL_SIGNAL_CORE")?;
-    CtaSpecialSignalApp::new(&args.config).await?.run().await
+    tokio::task::LocalSet::new()
+        .run_until(async move { CtaSpecialSignalApp::new(&args.config).await?.run().await })
+        .await
 }

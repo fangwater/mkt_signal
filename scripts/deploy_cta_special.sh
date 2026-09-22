@@ -11,10 +11,14 @@ Usage:
   scripts/deploy_cta_special.sh --env-name binance-cta-special-<tag>
                                 --factor <tp_vpi_018|baseline_104>
                                 --config-port <port> --dashboard-port <port>
-                                [--namespace <name>] [--skip-build]
+                                [--namespace <name>]
+                                [--trade-engine-config <path>]
+                                [--skip-build]
 
 Deploys a local, disabled-by-default, LTP-only futures CTA environment.
-It never starts or stops processes and never overwrites an existing env.sh.
+It never starts or stops processes and never overwrites an existing env.sh or
+trade_engine.toml. A missing trade_engine.toml is initialized from the supplied
+path, defaulting to $HOME/binance-cta-rx01/trade_engine.toml.
 EOF
 }
 
@@ -23,6 +27,7 @@ FACTOR=""
 CONFIG_PORT=""
 DASHBOARD_PORT=""
 NAMESPACE=""
+TRADE_ENGINE_CONFIG_SOURCE=""
 SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --config-port) CONFIG_PORT="${2:-}"; shift 2 ;;
     --dashboard-port) DASHBOARD_PORT="${2:-}"; shift 2 ;;
     --namespace) NAMESPACE="${2:-}"; shift 2 ;;
+    --trade-engine-config) TRADE_ENGINE_CONFIG_SOURCE="${2:-}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[ERROR] unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -52,6 +58,7 @@ for value in "$CONFIG_PORT" "$DASHBOARD_PORT"; do
 done
 [[ "$CONFIG_PORT" != "$DASHBOARD_PORT" ]] || { echo "[ERROR] ports must differ" >&2; exit 1; }
 NAMESPACE="${NAMESPACE:-${ENV_NAME//-/_}}"
+TRADE_ENGINE_CONFIG_SOURCE="${TRADE_ENGINE_CONFIG_SOURCE:-${HOME}/binance-cta-rx01/trade_engine.toml}"
 
 cd "$ROOT_DIR"
 [[ "$(git branch --show-current)" == "arbmm" ]] || {
@@ -80,6 +87,15 @@ if [[ ! -f "${TARGET_DIR}/env.sh" ]]; then
 fi
 mkdir -p "$TARGET_DIR/config" "$TARGET_DIR/scripts" "$TARGET_DIR/intra_scripts" \
   "$TARGET_DIR/web/cta_special" "$TARGET_DIR/web/cta_special_config" "$TARGET_DIR/run"
+
+if [[ ! -f "$TARGET_DIR/trade_engine.toml" ]]; then
+  [[ -f "$TRADE_ENGINE_CONFIG_SOURCE" ]] || {
+    echo "[ERROR] missing trade engine config source: $TRADE_ENGINE_CONFIG_SOURCE" >&2
+    exit 1
+  }
+  install -m 644 "$TRADE_ENGINE_CONFIG_SOURCE" "$TARGET_DIR/trade_engine.toml"
+  echo "[INFO] initialized $TARGET_DIR/trade_engine.toml from $TRADE_ENGINE_CONFIG_SOURCE"
+fi
 
 intra_upsert_env_exports_block \
   "$TARGET_DIR/env.sh" \
