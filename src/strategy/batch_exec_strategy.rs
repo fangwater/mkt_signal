@@ -1180,6 +1180,11 @@ impl BatchExecStrategy {
         *virtual_position += signed_base_qty;
         let virtual_position_qty = *virtual_position;
         self.last_position_fill_at_us = now_ts;
+        // A terminal state can park scheduling at i64::MAX. The cross changes
+        // the remaining gap, so wake the strategy to recompute that state.
+        if self.next_batch_at_us == i64::MAX {
+            self.next_batch_at_us = now_ts;
+        }
         self.completion_reason = None;
         let side = if signed_base_qty > 0.0 {
             Side::Buy
@@ -4342,6 +4347,41 @@ mod tests {
         assert_eq!(strategy.virtual_position_qty, Some(0.75));
         assert_eq!(record.side, Side::Sell.to_u8());
         assert_eq!(record.amount_update, 0.25);
+    }
+
+    #[test]
+    fn internal_cross_fill_wakes_exchange_minimum_recheck() {
+        let mut strategy = BatchExecStrategy::new(
+            7,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.virtual_position_qty = Some(0.6);
+        strategy.position_allocation_ready = true;
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.completion_reason = Some(BatchExecCompletionReason::ExchangeMinimum);
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+
+        strategy
+            .apply_internal_cross_fill(0.1, &quote, 1_000)
+            .unwrap();
+
+        assert_eq!(strategy.next_batch_at_us, 1_000);
+        assert_eq!(strategy.completion_reason, None);
     }
 
     #[test]
