@@ -13,6 +13,8 @@ Usage:
                                 --config-port <port> --dashboard-port <port>
                                 [--namespace <name>]
                                 [--trade-engine-config <path>]
+                                [--spread-service-root <root>]
+                                [--bbo-core <core>]
                                 [--skip-build]
 
 Deploys a local, disabled-by-default, LTP-only futures CTA environment.
@@ -28,6 +30,8 @@ CONFIG_PORT=""
 DASHBOARD_PORT=""
 NAMESPACE=""
 TRADE_ENGINE_CONFIG_SOURCE=""
+SPREAD_SERVICE_ROOT="spread_pbs"
+BBO_CORE=""
 SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +41,8 @@ while [[ $# -gt 0 ]]; do
     --dashboard-port) DASHBOARD_PORT="${2:-}"; shift 2 ;;
     --namespace) NAMESPACE="${2:-}"; shift 2 ;;
     --trade-engine-config) TRADE_ENGINE_CONFIG_SOURCE="${2:-}"; shift 2 ;;
+    --spread-service-root) SPREAD_SERVICE_ROOT="${2:-}"; shift 2 ;;
+    --bbo-core) BBO_CORE="${2:-}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[ERROR] unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -57,6 +63,17 @@ for value in "$CONFIG_PORT" "$DASHBOARD_PORT"; do
   }
 done
 [[ "$CONFIG_PORT" != "$DASHBOARD_PORT" ]] || { echo "[ERROR] ports must differ" >&2; exit 1; }
+[[ "$SPREAD_SERVICE_ROOT" =~ ^[A-Za-z0-9_-]+$ ]] || {
+  echo "[ERROR] --spread-service-root must be one path component" >&2; exit 1;
+}
+if [[ "$SPREAD_SERVICE_ROOT" != "spread_pbs" ]]; then
+  [[ "$BBO_CORE" =~ ^[0-9]+$ ]] || {
+    echo "[ERROR] --bbo-core is required for an isolated spread service" >&2; exit 1;
+  }
+elif [[ -n "$BBO_CORE" ]]; then
+  echo "[ERROR] --bbo-core is only valid with an isolated --spread-service-root" >&2
+  exit 1
+fi
 NAMESPACE="${NAMESPACE:-${ENV_NAME//-/_}}"
 TRADE_ENGINE_CONFIG_SOURCE="${TRADE_ENGINE_CONFIG_SOURCE:-${HOME}/binance-cta-rx01/trade_engine.toml}"
 
@@ -105,13 +122,16 @@ intra_upsert_env_exports_block \
   "HEDGE_VENUE='binance-futures'" \
   "TRADE_ENGINE_EXEC_BACKEND_MAP='binance=ltp'" \
   "CTA_SPECIAL_CONFIG_PORT='${CONFIG_PORT}'" \
-  "CTA_SPECIAL_DASHBOARD_PORT='${DASHBOARD_PORT}'"
+  "CTA_SPECIAL_DASHBOARD_PORT='${DASHBOARD_PORT}'" \
+  "MKT_SPREAD_SERVICE_ROOT='${SPREAD_SERVICE_ROOT}'" \
+  "CTA_SPECIAL_BBO_CORE='${BBO_CORE}'"
 
 TARGET_BUILD_DIR="$(intra_effective_cargo_target_dir "$ROOT_DIR" "")"
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   cargo build --release \
     --bin cta_special_signal \
     --bin cta_special_factor_model_1m_pub \
+    --bin spread_pbs \
     --bin pre_trade \
     --bin trade_engine \
     --bin rapidx_account_monitor
@@ -121,6 +141,7 @@ fi
 declare -A BIN_SOURCES=(
   [cta_special_signal]="$(intra_bin_path_release "$TARGET_BUILD_DIR" cta_special_signal)"
   [cta_special_factor_model_1m_pub]="$(intra_bin_path_release "$TARGET_BUILD_DIR" cta_special_factor_model_1m_pub)"
+  [cta_special_bbo_pub]="$(intra_bin_path_release "$TARGET_BUILD_DIR" spread_pbs)"
   [pre_trade]="$(intra_bin_path_release "$TARGET_BUILD_DIR" pre_trade)"
   [trade_engine]="$(intra_bin_path_release "$TARGET_BUILD_DIR" trade_engine)"
   [account_monitor_binance]="$(intra_bin_path_release "$TARGET_BUILD_DIR" rapidx_account_monitor)"
@@ -145,6 +166,7 @@ copy_script() {
 for file in \
   scripts/cta_special_config_server.py scripts/cta_special_dashboard.py \
   scripts/start_cta_special.sh scripts/stop_cta_special.sh \
+  scripts/start_cta_special_bbo_pub.sh scripts/stop_cta_special_bbo_pub.sh \
   scripts/start_cta_special_signal.sh scripts/stop_cta_special_signal.sh \
   scripts/start_cta_special_factor_model_1m_pub.sh scripts/stop_cta_special_factor_model_1m_pub.sh \
   scripts/start_cta_special_config_server.sh scripts/stop_cta_special_config_server.sh \
@@ -158,7 +180,8 @@ for file in \
   intra_scripts/sync_intra_risk_params.py intra_scripts/print_intra_risk_params.py; do
   copy_script "$file"
 done
-for file in web/cta_special/index.html web/cta_special_config/index.html config/iceoryx2.toml; do
+for file in web/cta_special/index.html web/cta_special_config/index.html \
+  config/iceoryx2.toml config/mkt_cfg.yaml; do
   copy_file "$file"
 done
 
@@ -227,6 +250,7 @@ manifest="$TARGET_DIR/intra-release.manifest"
     "trade_engine:trade_engine" \
     "rapidx_account_monitor:account_monitor_binance" \
     "persist_manager:persist_manager" \
+    "spread_pbs:cta_special_bbo_pub" \
     "cta_special_signal:cta_special_signal" \
     "cta_special_factor_model_1m_pub:cta_special_factor_model_1m_pub"; do
     name="${spec%%:*}"
@@ -239,7 +263,7 @@ release_id="$(sha256sum "${manifest}.tmp" | awk '{print $1}')"
 rm -f "${manifest}.tmp"
 
 echo "[INFO] deployed disabled CTA special env: $TARGET_DIR"
-echo "[INFO] factor=$FACTOR config_port=$CONFIG_PORT dashboard_port=$DASHBOARD_PORT backend=ltp"
+echo "[INFO] factor=$FACTOR config_port=$CONFIG_PORT dashboard_port=$DASHBOARD_PORT backend=ltp spread_root=$SPREAD_SERVICE_ROOT bbo_core=${BBO_CORE:-shared}"
 echo "[INFO] initialize the isolated risk key before starting:"
 echo "       cd $TARGET_DIR && ./intra_scripts/sync_cta_risk_params.py --env-name $ENV_NAME --open-venue binance-futures --hedge-venue binance-futures"
 echo "[INFO] dry-run start: cd $TARGET_DIR && ./scripts/start_cta_special.sh"

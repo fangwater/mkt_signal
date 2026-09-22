@@ -45,6 +45,7 @@ const STATS_LOG_INTERVAL_SECS: u64 = 60;
 
 struct FactorOutput {
     name: &'static str,
+    factor_index: usize,
     service: String,
     publisher: ModelPublisher,
     seq_no: u64,
@@ -464,19 +465,19 @@ impl CtaSpecialFactorModel1mPubApp {
         kafka_config.enable_auto_commit = false;
         let consumer = RawKafkaConsumer::new(&kafka_config)
             .context("create CTA special factor Kafka consumer")?;
-        let mut outputs = Vec::new();
-        for name in FACTOR_NAMES {
-            let service = output_service_path(&venue_slug, name);
-            let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
-                .replace('-', "_")
-                .to_ascii_lowercase();
-            outputs.push(FactorOutput {
-                name,
-                publisher: ModelPublisher::new(&node_name, &service)?,
-                service,
-                seq_no: 0,
-            });
-        }
+        let factor_index = configured_factor_index(&strategy_config.rule_name)?;
+        let name = FACTOR_NAMES[factor_index];
+        let service = output_service_path(&venue_slug, name);
+        let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
+            .replace('-', "_")
+            .to_ascii_lowercase();
+        let outputs = vec![FactorOutput {
+            name,
+            factor_index,
+            publisher: ModelPublisher::new(&node_name, &service)?,
+            service,
+            seq_no: 0,
+        }];
         let mut app = Self {
             venue,
             venue_slug,
@@ -723,7 +724,17 @@ impl CtaSpecialFactorModel1mPubApp {
         if !self.publish_enabled {
             return;
         }
-        for (output, factor) in self.outputs.iter_mut().zip(factors) {
+        for output in &mut self.outputs {
+            let Some(factor) = factors.get(output.factor_index) else {
+                self.stats.publish_failed = self.stats.publish_failed.saturating_add(1);
+                warn!(
+                    "CTA special factor output index missing factor={} index={} observations={}",
+                    output.name,
+                    output.factor_index,
+                    factors.len()
+                );
+                continue;
+            };
             output.seq_no = output.seq_no.saturating_add(1);
             let msg = ModelMsg::create(
                 symbol.to_string(),
@@ -897,6 +908,13 @@ pub fn output_service_path(venue_slug: &str, factor: &str) -> String {
     )
 }
 
+fn configured_factor_index(rule_name: &str) -> Result<usize> {
+    FACTOR_NAMES
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(rule_name))
+        .with_context(|| format!("unsupported CTA special rule_name: {rule_name}"))
+}
+
 fn parse_trade_side(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "b" | "buy" => Some(true),
@@ -952,6 +970,13 @@ mod tests {
             output_service_path("binance-futures", "TP_VPI_018"),
             "model_output/one-binance-futures-1m-tp_vpi_018"
         );
+    }
+
+    #[test]
+    fn publisher_owns_only_the_configured_rule_output() {
+        assert_eq!(configured_factor_index("tp_vpi_018").unwrap(), 0);
+        assert_eq!(configured_factor_index("baseline_104").unwrap(), 1);
+        assert!(configured_factor_index("baseline_138").is_err());
     }
 
     #[test]

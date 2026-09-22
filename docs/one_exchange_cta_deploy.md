@@ -164,6 +164,7 @@ Kafka binance-futures PeriodMessage（因子和 futures-mid NQ 同源）
         v
 cta_special_factor_model_1m_pub
   raw -> clip + rolling z-score -> configured exact entry quantiles + score_quantile
+  每个 env 只发布其固定 rule_name 对应的 model service
         v
 model_output/one-binance-futures-1m-<factor>
         |-- cta_special_signal（只判定开仓）
@@ -269,6 +270,8 @@ TTL、因子退出、trailing 和最长持仓均可配置。publisher 始终用�
 所以热更新不改已有 lot。venue、model service、60 秒频率、rolling window、
 min periods、maker/reduce-only、消息新鲜度和冲突策略仍是模式契约。
 `rule_name` 决定 model service，运行中不可修改；其余字段支持热加载。
+每个 factor publisher 只占用该 env 固定 `rule_name` 的 model service，避免
+不同因子的 env 因 `max_publishers=1` 相互冲突，分位参数也保持 env 隔离。
 重复部署已有 env 时，部署脚本会原子迁移旧 JSON，只保留上述字段并立即
 用正式解析器校验。
 
@@ -294,6 +297,21 @@ scripts/deploy_cta_special.sh \
 cd ~/binance-cta-special-rx02
 ./intra_scripts/sync_cta_risk_params.py \
   --env-name binance-cta-special-rx02 \
+  --open-venue binance-futures \
+  --hedge-venue binance-futures
+
+# 当共享 spread_pbs BBO service 达到 node 上限时，为该 env 启动独立 bookticker：
+scripts/deploy_cta_special.sh \
+  --env-name binance-cta-special-rx03 \
+  --factor baseline_104 \
+  --config-port 19185 \
+  --dashboard-port 10193 \
+  --spread-service-root spread_pbs_cta_rx03 \
+  --bbo-core 28
+
+cd ~/binance-cta-special-rx03
+./intra_scripts/sync_cta_risk_params.py \
+  --env-name binance-cta-special-rx03 \
   --open-venue binance-futures \
   --hedge-venue binance-futures
 ./scripts/start_cta_special.sh            # dry-run

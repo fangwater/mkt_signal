@@ -42,6 +42,11 @@
     .decision.long { background:rgba(63,185,80,.16); color:var(--green); }
     .decision.short { background:rgba(248,81,73,.16); color:var(--red); }
     .decision.flat { background:rgba(139,148,158,.16); color:var(--muted); }
+    .position-value.long { color:var(--green); font-weight:650; }
+    .position-value.short { color:var(--red); font-weight:650; }
+    .position-value.flat { color:var(--muted); }
+    .position-row.long td:first-child { border-left:3px solid var(--green); }
+    .position-row.short td:first-child { border-left:3px solid var(--red); }
     .ready { color:var(--green); } .warming { color:var(--warn); }
     .empty { padding:22px; color:var(--muted); text-align:center; }
     .mono { font-family:Menlo,Consolas,monospace; }
@@ -99,7 +104,7 @@
       <div class="table-wrapper">
         <table>
           <thead>
-            <tr><th>symbol</th><th>account_qty</th><th>tracked_qty</th><th>lots</th><th>latest_quantile</th><th>model_time</th></tr>
+            <tr><th>symbol</th><th>account_qty</th><th>account_notional</th><th>tracked_qty</th><th>lots</th><th>latest_quantile</th><th>model_time</th></tr>
           </thead>
           <tbody id="position-body"></tbody>
         </table>
@@ -112,6 +117,7 @@
     const fmt = (value, digits = 5) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '-';
     const timeText = ms => ms > 0 ? new Date(ms).toLocaleString(undefined, { hour12:false }) : '-';
     const ageText = ms => ms == null ? '无数据' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+    const positionSide = value => Number(value) > 0 ? 'long' : Number(value) < 0 ? 'short' : 'flat';
     let snapshot = null;
 
     function chip(label, value) {
@@ -185,7 +191,11 @@
       el('signal-empty').textContent = names.length ? '过滤后没有标的' : '配置里还没有标的';
 
       const positions = executionRows.filter(row => matches(row.symbol) && (!el('hide-flat').checked || Math.abs(Number(row.account_signed_qty) || 0) > 0 || Math.abs(Number(row.tracked_signed_qty) || 0) > 0));
-      el('position-body').innerHTML = positions.map(row => `<tr><td class="mono">${row.symbol}</td><td>${fmt(row.account_signed_qty, 6)}</td><td>${fmt(row.tracked_signed_qty, 6)}</td><td>${Number.isInteger(row.lot_count) ? row.lot_count : '-'}</td><td>${fmt(row.latest_quantile, 4)}</td><td>${timeText(row.latest_model_ts_ms)}</td></tr>`).join('');
+      el('position-body').innerHTML = positions.map(row => {
+        const accountSide = positionSide(row.account_signed_qty);
+        const trackedSide = positionSide(row.tracked_signed_qty);
+        return `<tr class="position-row ${accountSide}"><td class="mono">${row.symbol}</td><td class="position-value ${accountSide}">${fmt(row.account_signed_qty, 6)}</td><td class="position-value ${accountSide}">${fmt(row.account_notional, 2)}</td><td class="position-value ${trackedSide}">${fmt(row.tracked_signed_qty, 6)}</td><td>${Number.isInteger(row.lot_count) ? row.lot_count : '-'}</td><td>${fmt(row.latest_quantile, 4)}</td><td>${timeText(row.latest_model_ts_ms)}</td></tr>`;
+      }).join('');
       el('position-empty').style.display = positions.length ? 'none' : 'block';
       el('position-meta').textContent = executionRows.length ? `${executionRows.length} symbols` : '';
     }

@@ -13,6 +13,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::common::{FundingRateData, Quote};
@@ -38,6 +39,7 @@ const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const DERIVATIVES_DRAIN_BUDGET: usize = 1024;
+const DEFAULT_ASKBID_SERVICE_ROOT: &str = "spread_pbs";
 const DECISION_QUOTE_AGE_KLL_CAPACITY: usize = 10_000;
 const DECISION_QUOTE_AGE_KLL_MAX_WINDOW: Duration = Duration::from_secs(60);
 const GATE_FUNDING_RATE_SMOOTHING_SAMPLES: usize = 12;
@@ -92,7 +94,21 @@ fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
 }
 
 fn askbid_service_root(_venue: TradingVenue) -> &'static str {
-    "spread_pbs"
+    static ROOT: OnceLock<String> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let configured = std::env::var("MKT_SPREAD_SERVICE_ROOT").unwrap_or_default();
+        let configured = configured.trim().trim_matches('/');
+        if configured.is_empty() {
+            return DEFAULT_ASKBID_SERVICE_ROOT.to_string();
+        }
+        if configured.contains('/') {
+            warn!(
+                "invalid MKT_SPREAD_SERVICE_ROOT={configured:?}; using {DEFAULT_ASKBID_SERVICE_ROOT}"
+            );
+            return DEFAULT_ASKBID_SERVICE_ROOT.to_string();
+        }
+        configured.to_string()
+    })
 }
 
 fn derivatives_service_root(_venue: TradingVenue) -> &'static str {
@@ -104,11 +120,11 @@ fn askbid_service_root_for_pair(venue: TradingVenue) -> &'static str {
 }
 
 fn askbid_service_name_for_pair(venue: TradingVenue) -> String {
-    format!(
-        "{}/{}/ask_bid_spread",
-        askbid_service_root_for_pair(venue),
-        venue.data_pub_slug()
-    )
+    askbid_service_name_with_root(venue, askbid_service_root_for_pair(venue))
+}
+
+fn askbid_service_name_with_root(venue: TradingVenue, root: &str) -> String {
+    format!("{}/{}/ask_bid_spread", root, venue.data_pub_slug())
 }
 
 fn derivatives_service_name(venue: TradingVenue) -> String {
@@ -1340,6 +1356,14 @@ mod tests {
         assert_eq!(
             derivatives_service_name(TradingVenue::BinanceFutures),
             "dat_pbs/binance-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn bbo_service_root_can_be_isolated_per_process() {
+        assert_eq!(
+            askbid_service_name_with_root(TradingVenue::BinanceFutures, "spread_pbs_cta_rx03"),
+            "spread_pbs_cta_rx03/binance-futures/ask_bid_spread"
         );
     }
 
