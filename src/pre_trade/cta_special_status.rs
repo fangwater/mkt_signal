@@ -1,4 +1,7 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::symbol_mapper::create_symbol_mapper;
+use crate::pre_trade::symbol_util::is_exposure_exempt_asset;
 use anyhow::{Context, Result};
 use runtime_common::time_util::get_timestamp_us;
 use serde::Serialize;
@@ -18,8 +21,33 @@ struct ExecutionSymbolStatus {
 }
 
 #[derive(Serialize)]
+struct AccountSummary {
+    total_equity_usdt: f64,
+    total_exposure_usdt: f64,
+    total_position_usdt: f64,
+    spot_equity_usdt: f64,
+    um_unrealized_usdt: f64,
+    borrowed_usdt: f64,
+    interest_usdt: f64,
+    long_notional_usdt: f64,
+    short_notional_usdt: f64,
+    net_notional_usdt: f64,
+    leverage: f64,
+    max_leverage: f64,
+}
+
+#[derive(Serialize)]
+struct AssetExposure {
+    asset: String,
+    net_qty: f64,
+    net_usdt: f64,
+}
+
+#[derive(Serialize)]
 struct ExecutionStatus {
     updated_ts_us: i64,
+    account: AccountSummary,
+    exposures: Vec<AssetExposure>,
     symbols: Vec<ExecutionSymbolStatus>,
 }
 
@@ -47,8 +75,11 @@ pub fn write_cta_special_execution_status(path: &Path) -> Result<()> {
             }
         })
         .collect();
+    let exposure_rows = asset_net_exposure_rows();
     let payload = serde_json::to_vec_pretty(&ExecutionStatus {
         updated_ts_us: get_timestamp_us(),
+        account: collect_account_summary(&exposure_rows),
+        exposures: collect_asset_exposures(exposure_rows),
         symbols,
     })?;
     if let Some(parent) = path.parent() {
@@ -66,6 +97,76 @@ pub fn write_cta_special_execution_status(path: &Path) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+fn asset_net_exposure_rows() -> Vec<(String, f64, f64)> {
+    let mon = MonitorChannel::instance();
+    let (exposures, _, _, _, _) = mon.basic_state_snapshot();
+    let price_snapshot = mon.price_table().borrow().snapshot();
+    let price_mapper = create_symbol_mapper(mon.mark_price_exchange());
+    let mut rows = Vec::new();
+    for (asset, (open_qty, hedge_qty)) in exposures {
+        let net_qty = open_qty + hedge_qty;
+        if net_qty.abs() <= 1e-12 || is_exposure_exempt_asset(&asset) {
+            continue;
+        }
+        let symbol = price_mapper.asset_to_price_symbol(&asset);
+        let mark = price_snapshot
+            .get(&symbol)
+            .map(|entry| entry.mark_price)
+            .filter(|price| price.is_finite() && *price > 0.0);
+        let Some(mark) = mark else { continue };
+        rows.push((asset, net_qty, net_qty * mark));
+    }
+    rows.sort_by(|left, right| right.2.abs().total_cmp(&left.2.abs()));
+    rows
+}
+
+fn collect_account_summary(exposure_rows: &[(String, f64, f64)]) -> AccountSummary {
+    let mon = MonitorChannel::instance();
+    let (_, total_equity, abs_total_exposure, total_position, um_unrealized) =
+        mon.basic_state_snapshot();
+    let usdt_snap = mon
+        .usdt_snapshot_for_venue(mon.open_venue())
+        .unwrap_or_default();
+    let (mut long_notional, mut short_notional) = (0.0_f64, 0.0_f64);
+    for (_, _, net_usdt) in exposure_rows {
+        if *net_usdt > 0.0 {
+            long_notional += *net_usdt;
+        } else {
+            short_notional += -*net_usdt;
+        }
+    }
+    let leverage = if total_equity.abs() <= f64::EPSILON {
+        0.0
+    } else {
+        total_position / total_equity
+    };
+    AccountSummary {
+        total_equity_usdt: total_equity,
+        total_exposure_usdt: abs_total_exposure,
+        total_position_usdt: total_position,
+        spot_equity_usdt: total_equity - um_unrealized,
+        um_unrealized_usdt: um_unrealized,
+        borrowed_usdt: usdt_snap.borrowed,
+        interest_usdt: usdt_snap.cumulative_interest,
+        long_notional_usdt: long_notional,
+        short_notional_usdt: short_notional,
+        net_notional_usdt: long_notional - short_notional,
+        leverage,
+        max_leverage: PreTradeParamsLoader::instance().max_leverage(),
+    }
+}
+
+fn collect_asset_exposures(exposure_rows: Vec<(String, f64, f64)>) -> Vec<AssetExposure> {
+    exposure_rows
+        .into_iter()
+        .map(|(asset, net_qty, net_usdt)| AssetExposure {
+            asset,
+            net_qty,
+            net_usdt,
+        })
+        .collect()
 }
 
 fn estimated_account_notional(qty: f64, mark_price: Option<f64>) -> Option<f64> {

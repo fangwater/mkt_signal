@@ -83,6 +83,27 @@
     </section>
 
     <section class="section">
+      <div class="section-header"><h2>账户</h2><div class="meta" id="account-meta"></div></div>
+      <div class="card-grid">
+        <div class="metric-card"><h3>总权益 USDT</h3><div id="acct-equity" class="value">-</div></div>
+        <div class="metric-card"><h3>总敞口 USDT</h3><div id="acct-exposure" class="value">-</div></div>
+        <div class="metric-card"><h3>总仓位 USDT</h3><div id="acct-position" class="value">-</div></div>
+        <div class="metric-card"><h3>Leverage</h3><div id="acct-leverage" class="value">-</div></div>
+        <div class="metric-card"><h3>Max Leverage</h3><div id="acct-max-leverage" class="value">-</div></div>
+      </div>
+      <div class="chips" id="account-chips"></div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>asset</th><th>net_qty</th><th>net_usdt</th></tr>
+          </thead>
+          <tbody id="exposure-body"></tbody>
+        </table>
+      </div>
+      <div id="exposure-empty" class="empty">暂无敞口</div>
+    </section>
+
+    <section class="section">
       <div class="section-header"><h2>最新闭合 Bar</h2><div class="meta">开仓比较 z-score 与 q90/q10。NQ 只放行，不产生方向。归一化 1440 / 1000 / clip 3.0。</div></div>
       <div class="table-wrapper">
         <table>
@@ -178,6 +199,39 @@
       ].join('');
       el('run-meta').textContent = errors.length ? errors.join(' | ') : '';
       el('run-meta').className = 'meta' + (errors.length ? ' stale' : '');
+
+      const account = execution.account || null;
+      const fmtUsd = value => fmt(value, 2);
+      if (account) {
+        el('acct-equity').textContent = fmtUsd(account.total_equity_usdt);
+        el('acct-exposure').textContent = fmtUsd(account.total_exposure_usdt);
+        el('acct-position').textContent = fmtUsd(account.total_position_usdt);
+        const leverage = Number(account.leverage);
+        const maxLeverage = Number(account.max_leverage);
+        el('acct-leverage').textContent = fmt(leverage, 3);
+        el('acct-leverage').className = 'value ' + (Number.isFinite(leverage) && Number.isFinite(maxLeverage) && maxLeverage > 0 && leverage > maxLeverage ? 'bad' : '');
+        el('acct-max-leverage').textContent = fmt(maxLeverage, 3);
+        el('account-chips').innerHTML = [
+          chip('多头名义', fmtUsd(account.long_notional_usdt)),
+          chip('空头名义', fmtUsd(account.short_notional_usdt)),
+          chip('净名义', fmtUsd(account.net_notional_usdt)),
+          chip('UM 未实现', fmtUsd(account.um_unrealized_usdt)),
+          chip('现货权益', fmtUsd(account.spot_equity_usdt)),
+          chip('借款', fmtUsd(account.borrowed_usdt)),
+          chip('利息', fmtUsd(account.interest_usdt))
+        ].join('');
+        el('account-meta').textContent = '';
+      } else {
+        for (const id of ['acct-equity', 'acct-exposure', 'acct-position', 'acct-leverage', 'acct-max-leverage']) el(id).textContent = '-';
+        el('account-chips').innerHTML = '';
+        el('account-meta').textContent = '等待账户数据';
+      }
+      const exposureRows = Array.isArray(execution.exposures) ? execution.exposures : [];
+      el('exposure-body').innerHTML = exposureRows.map(row => {
+        const side = positionSide(row.net_usdt);
+        return `<tr class="position-row ${side}"><td class="mono">${row.asset}</td><td class="position-value ${side}">${fmt(row.net_qty, 6)}</td><td class="position-value ${side}">${fmtUsd(row.net_usdt)}</td></tr>`;
+      }).join('');
+      el('exposure-empty').style.display = exposureRows.length ? 'none' : 'block';
 
       const signalBody = el('signal-body');
       signalBody.innerHTML = visible.map(row => {
