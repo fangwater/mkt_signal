@@ -388,7 +388,7 @@ pub struct CtaSpecialFactorModel1mPubApp {
 }
 
 impl CtaSpecialFactorModel1mPubApp {
-    pub async fn new(path: &str, venue: TradingVenue) -> Result<Self> {
+    pub async fn new(path: &str, venue: TradingVenue, wait_for_publishers: bool) -> Result<Self> {
         anyhow::ensure!(
             venue == TradingVenue::BinanceFutures,
             "CTA special factor publisher only supports binance-futures"
@@ -433,20 +433,6 @@ impl CtaSpecialFactorModel1mPubApp {
         kafka_config.enable_auto_commit = false;
         let consumer = RawKafkaConsumer::new(&kafka_config)
             .context("create CTA special factor Kafka consumer")?;
-        let mut outputs = Vec::with_capacity(FACTOR_NAMES.len());
-        for (factor_index, name) in FACTOR_NAMES.iter().copied().enumerate() {
-            let service = output_service_path(&venue_slug, name);
-            let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
-                .replace('-', "_")
-                .to_ascii_lowercase();
-            outputs.push(FactorOutput {
-                name,
-                factor_index,
-                publisher: ModelPublisher::new(&node_name, &service)?,
-                service,
-                seq_no: 0,
-            });
-        }
         let mut app = Self {
             venue,
             venue_slug,
@@ -466,7 +452,7 @@ impl CtaSpecialFactorModel1mPubApp {
             nq_states: HashMap::new(),
             pending_factors: HashMap::new(),
             pending_nq: HashMap::new(),
-            outputs,
+            outputs: Vec::new(),
             publish_enabled: false,
             symbol_reload_interval: Duration::from_secs(config.tlen_server.symbol_reload_secs),
             last_symbol_reload: Instant::now(),
@@ -475,6 +461,21 @@ impl CtaSpecialFactorModel1mPubApp {
             stats: Stats::default(),
         };
         app.catch_up(&config.kafka)?;
+        loop {
+            match create_shared_outputs(&app.venue_slug) {
+                Ok(outputs) => {
+                    app.outputs = outputs;
+                    break;
+                }
+                Err(err) if wait_for_publishers => {
+                    warn!(
+                        "CTA special factor catch-up complete; waiting for shared publisher ownership: {err:#}"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
         app.publish_enabled = true;
         info!(
             "CTA special shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 nq=1440/1440/720",
@@ -792,6 +793,24 @@ impl CtaSpecialFactorModel1mPubApp {
         self.stats = Stats::default();
         self.last_stats_log = Instant::now();
     }
+}
+
+fn create_shared_outputs(venue_slug: &str) -> Result<Vec<FactorOutput>> {
+    let mut outputs = Vec::with_capacity(FACTOR_NAMES.len());
+    for (factor_index, name) in FACTOR_NAMES.iter().copied().enumerate() {
+        let service = output_service_path(venue_slug, name);
+        let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
+            .replace('-', "_")
+            .to_ascii_lowercase();
+        outputs.push(FactorOutput {
+            name,
+            factor_index,
+            publisher: ModelPublisher::new(&node_name, &service)?,
+            service,
+            seq_no: 0,
+        });
+    }
+    Ok(outputs)
 }
 
 async fn load_enabled_symbols(

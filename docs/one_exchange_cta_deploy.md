@@ -297,6 +297,9 @@ scripts/deploy_cta_special.sh \
 
 # --factor-publisher 只能配置在一个 env；该进程同时提供两个 factor service。
 # 其他 CTA special env 不启动 publisher，只按 rule_name 订阅对应 service。
+# publisher 使用全局进程名 cta_special_factor_shared_binance_futures。迁移旧
+# publisher 时可设置 CTA_SPECIAL_FACTOR_WAIT_FOR_PUBLISHERS=1 先完成 Kafka
+# 预热，释放旧 service 后由新进程立即接管。
 
 cd ~/binance-cta-special-rx02
 ./intra_scripts/sync_cta_risk_params.py \

@@ -13,6 +13,9 @@ struct Args {
     config: String,
     #[arg(long)]
     core: Option<usize>,
+    /// Finish Kafka warm-up, then wait until the shared services are released.
+    #[arg(long)]
+    wait_for_publishers: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -20,7 +23,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "CTA_SPECIAL_FACTOR_MODEL_1M_CORE")?;
-    CtaSpecialFactorModel1mPubApp::new(&args.config, args.venue)
+    CtaSpecialFactorModel1mPubApp::new(&args.config, args.venue, args.wait_for_publishers)
         .await?
         .run()
         .await
