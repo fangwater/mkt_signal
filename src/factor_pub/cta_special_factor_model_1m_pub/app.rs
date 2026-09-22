@@ -9,12 +9,9 @@ use period_pbs::period::normalize_timestamp_ms;
 use rolling_common::exact_rolling_window::ExactRollingWindow;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::amount_threshold::AmountThreshold;
-use crate::cta_special::config::CtaSpecialConfig;
 use crate::depth_pub::orderbook::OrderBook;
 use crate::factor_pub::fusion_factor_pub::app::{
     load_amount_thresholds_from_tlen_server, load_online_symbols_from_tlen_server,
@@ -55,8 +52,6 @@ struct FactorOutput {
 struct FactorObservation {
     score: f64,
     quantile: Option<f64>,
-    long_threshold: Option<f64>,
-    short_threshold: Option<f64>,
     ready: bool,
 }
 
@@ -201,8 +196,6 @@ impl SymbolFactorState {
         msg: TradeFlowFeatureMsg,
         plan: &SymbolFactorPlan,
         record: bool,
-        long_quantile: f64,
-        short_quantile: f64,
     ) -> Result<Option<Vec<FactorObservation>>> {
         if self.last_ts.is_some_and(|last| msg.ts <= last) {
             return Ok(None);
@@ -222,17 +215,10 @@ impl SymbolFactorState {
                     let score = normalize.observe(raw).unwrap_or(f64::NAN);
                     let observed = window.observe_slot(score);
                     let quantile = observed.then(|| window.percentile_rank_last()).flatten();
-                    let long_threshold = window.quantile_linear(long_quantile);
-                    let short_threshold = window.quantile_linear(short_quantile);
                     FactorObservation {
                         score,
                         quantile,
-                        long_threshold,
-                        short_threshold,
-                        ready: observed
-                            && window.len() >= FACTOR_MIN_SAMPLES
-                            && long_threshold.is_some()
-                            && short_threshold.is_some(),
+                        ready: observed && window.len() >= FACTOR_MIN_SAMPLES && quantile.is_some(),
                     }
                 })
                 .collect(),
@@ -243,9 +229,9 @@ impl SymbolFactorState {
 #[derive(Debug, Clone, Copy)]
 struct NqObservation {
     long_value: Option<f64>,
-    long_threshold: Option<f64>,
+    long_quantile: Option<f64>,
     short_value: Option<f64>,
-    short_threshold: Option<f64>,
+    short_quantile: Option<f64>,
     ready: bool,
 }
 
@@ -274,12 +260,7 @@ impl Default for NqState {
 }
 
 impl NqState {
-    fn on_book(
-        &mut self,
-        book: &IncrementOrderBookInfo,
-        long_quantile: f64,
-        short_quantile: f64,
-    ) -> Vec<(i64, NqObservation)> {
+    fn on_book(&mut self, book: &IncrementOrderBookInfo) -> Vec<(i64, NqObservation)> {
         let timestamp_ms = normalize_timestamp_ms(book.timestamp);
         let target_start = timestamp_ms.div_euclid(BAR_MS).saturating_mul(BAR_MS);
         let mut closed = Vec::new();
@@ -288,10 +269,7 @@ impl NqState {
             Some(current) if target_start < current => return closed,
             Some(mut current) => {
                 while current < target_start {
-                    closed.push((
-                        current.saturating_add(BAR_MS),
-                        self.close_bar(long_quantile, short_quantile),
-                    ));
+                    closed.push((current.saturating_add(BAR_MS), self.close_bar()));
                     current = current.saturating_add(BAR_MS);
                     self.current_start_ms = Some(current);
                     self.current_close = f64::NAN;
@@ -318,7 +296,7 @@ impl NqState {
         closed
     }
 
-    fn close_bar(&mut self, long_quantile: f64, short_quantile: f64) -> NqObservation {
+    fn close_bar(&mut self) -> NqObservation {
         let close = self.current_close;
         self.closes.push_back(close);
         while self.closes.len() > NQ_LOOKBACK_BARS {
@@ -342,19 +320,19 @@ impl NqState {
             .observe_slot(long_value.unwrap_or(f64::NAN));
         self.short_window
             .observe_slot(short_value.unwrap_or(f64::NAN));
-        let long_threshold = self.long_window.quantile_linear(long_quantile);
-        let short_threshold = self.short_window.quantile_linear(short_quantile);
+        let long_quantile = self.long_window.percentile_rank_last();
+        let short_quantile = self.short_window.percentile_rank_last();
         NqObservation {
             long_value,
-            long_threshold,
+            long_quantile,
             short_value,
-            short_threshold,
+            short_quantile,
             ready: long_value.is_some()
                 && short_value.is_some()
                 && self.long_window.len() >= NQ_MIN_PERIODS
                 && self.short_window.len() >= NQ_MIN_PERIODS
-                && long_threshold.is_some()
-                && short_threshold.is_some(),
+                && long_quantile.is_some()
+                && short_quantile.is_some(),
         }
     }
 }
@@ -397,10 +375,6 @@ pub struct CtaSpecialFactorModel1mPubApp {
     aggregators: HashMap<String, LocalBaselineAggregator>,
     factor_states: HashMap<String, SymbolFactorState>,
     normalize: NormalizeConfig,
-    strategy_config_path: PathBuf,
-    strategy_config_modified: Option<SystemTime>,
-    strategy_config: CtaSpecialConfig,
-    last_strategy_config_check: Instant,
     nq_states: HashMap<String, NqState>,
     pending_factors: HashMap<(String, i64), Vec<FactorObservation>>,
     pending_nq: HashMap<(String, i64), NqObservation>,
@@ -414,18 +388,12 @@ pub struct CtaSpecialFactorModel1mPubApp {
 }
 
 impl CtaSpecialFactorModel1mPubApp {
-    pub async fn new(path: &str, strategy_config_path: &str, venue: TradingVenue) -> Result<Self> {
+    pub async fn new(path: &str, venue: TradingVenue) -> Result<Self> {
         anyhow::ensure!(
             venue == TradingVenue::BinanceFutures,
             "CTA special factor publisher only supports binance-futures"
         );
         let config = CtaSpecialFactorPubConfig::load(path)?;
-        let strategy_config_path = PathBuf::from(strategy_config_path);
-        let strategy_config = CtaSpecialConfig::load(&strategy_config_path)
-            .context("load CTA special strategy config for publisher thresholds")?;
-        let strategy_config_modified = fs::metadata(&strategy_config_path)
-            .and_then(|metadata| metadata.modified())
-            .ok();
         let venue_slug = venue.data_pub_slug().to_string();
         let plan = SymbolFactorPlan::from_factor_names(
             "cta_special_factor_model_1m",
@@ -465,19 +433,20 @@ impl CtaSpecialFactorModel1mPubApp {
         kafka_config.enable_auto_commit = false;
         let consumer = RawKafkaConsumer::new(&kafka_config)
             .context("create CTA special factor Kafka consumer")?;
-        let factor_index = configured_factor_index(&strategy_config.rule_name)?;
-        let name = FACTOR_NAMES[factor_index];
-        let service = output_service_path(&venue_slug, name);
-        let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
-            .replace('-', "_")
-            .to_ascii_lowercase();
-        let outputs = vec![FactorOutput {
-            name,
-            factor_index,
-            publisher: ModelPublisher::new(&node_name, &service)?,
-            service,
-            seq_no: 0,
-        }];
+        let mut outputs = Vec::with_capacity(FACTOR_NAMES.len());
+        for (factor_index, name) in FACTOR_NAMES.iter().copied().enumerate() {
+            let service = output_service_path(&venue_slug, name);
+            let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
+                .replace('-', "_")
+                .to_ascii_lowercase();
+            outputs.push(FactorOutput {
+                name,
+                factor_index,
+                publisher: ModelPublisher::new(&node_name, &service)?,
+                service,
+                seq_no: 0,
+            });
+        }
         let mut app = Self {
             venue,
             venue_slug,
@@ -494,10 +463,6 @@ impl CtaSpecialFactorModel1mPubApp {
             aggregators: HashMap::new(),
             factor_states: HashMap::new(),
             normalize: config.normalize.clone(),
-            strategy_config_path,
-            strategy_config_modified,
-            strategy_config,
-            last_strategy_config_check: Instant::now(),
             nq_states: HashMap::new(),
             pending_factors: HashMap::new(),
             pending_nq: HashMap::new(),
@@ -512,24 +477,19 @@ impl CtaSpecialFactorModel1mPubApp {
         app.catch_up(&config.kafka)?;
         app.publish_enabled = true;
         info!(
-            "CTA special factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440/q{:.4}-q{:.4} nq=1440/1440/720/q{:.4}-q{:.4}",
+            "CTA special shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 nq=1440/1440/720",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
             app.normalize.window_bars,
             app.normalize.min_periods,
             app.normalize.clip_zscore,
-            app.strategy_config.entry.factor_long_quantile,
-            app.strategy_config.entry.factor_short_quantile,
-            app.strategy_config.entry.nq_long_quantile,
-            app.strategy_config.entry.nq_short_quantile,
         );
         Ok(app)
     }
 
     pub async fn run(&mut self) -> Result<()> {
         loop {
-            self.maybe_reload_strategy_config();
             self.maybe_reload_symbols().await;
             if let Some(record) = self.consumer.poll(self.poll_timeout_ms) {
                 let record = record.context("read CTA special factor Kafka record")?;
@@ -620,11 +580,9 @@ impl CtaSpecialFactorModel1mPubApp {
         let mut books: Vec<&IncrementOrderBookInfo> = books.iter().collect();
         books.sort_by_key(|book| normalize_timestamp_ms(book.timestamp));
         let mut completed = Vec::new();
-        let long_quantile = self.strategy_config.entry.nq_long_quantile;
-        let short_quantile = self.strategy_config.entry.nq_short_quantile;
         let state = self.nq_states.entry(symbol.to_string()).or_default();
         for book in books {
-            completed.extend(state.on_book(book, long_quantile, short_quantile));
+            completed.extend(state.on_book(book));
         }
         for (ts, observation) in completed {
             if ts >= self.history_start_ms {
@@ -653,19 +611,12 @@ impl CtaSpecialFactorModel1mPubApp {
             }
         };
         let ts = msg.ts;
-        let long_quantile = self.strategy_config.entry.factor_long_quantile;
-        let short_quantile = self.strategy_config.entry.factor_short_quantile;
         let observations = match self
             .factor_states
             .entry(symbol.to_string())
             .or_insert_with(|| SymbolFactorState::new(&self.normalize))
-            .evaluate(
-                msg,
-                &self.plan,
-                ts >= self.history_start_ms,
-                long_quantile,
-                short_quantile,
-            ) {
+            .evaluate(msg, &self.plan, ts >= self.history_start_ms)
+        {
             Ok(Some(value)) => value,
             Ok(None) => return,
             Err(err) => {
@@ -677,41 +628,6 @@ impl CtaSpecialFactorModel1mPubApp {
         self.pending_factors
             .insert((symbol.to_string(), ts), observations);
         self.publish_if_complete(symbol, ts);
-    }
-
-    fn maybe_reload_strategy_config(&mut self) {
-        if self.last_strategy_config_check.elapsed() < Duration::from_secs(1) {
-            return;
-        }
-        self.last_strategy_config_check = Instant::now();
-        let modified = fs::metadata(&self.strategy_config_path)
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        if modified.is_none() || modified == self.strategy_config_modified {
-            return;
-        }
-        match CtaSpecialConfig::load(&self.strategy_config_path) {
-            Ok(next) => {
-                let changed = next.entry.factor_long_quantile
-                    != self.strategy_config.entry.factor_long_quantile
-                    || next.entry.factor_short_quantile
-                        != self.strategy_config.entry.factor_short_quantile
-                    || next.entry.nq_long_quantile != self.strategy_config.entry.nq_long_quantile
-                    || next.entry.nq_short_quantile != self.strategy_config.entry.nq_short_quantile;
-                self.strategy_config = next;
-                self.strategy_config_modified = modified;
-                if changed {
-                    info!(
-                        "CTA special publisher quantiles reloaded factor={:.4}/{:.4} nq={:.4}/{:.4}",
-                        self.strategy_config.entry.factor_long_quantile,
-                        self.strategy_config.entry.factor_short_quantile,
-                        self.strategy_config.entry.nq_long_quantile,
-                        self.strategy_config.entry.nq_short_quantile,
-                    );
-                }
-            }
-            Err(err) => warn!("CTA special publisher config reload rejected: {err:#}"),
-        }
     }
 
     fn publish_if_complete(&mut self, symbol: &str, ts: i64) {
@@ -749,14 +665,15 @@ impl CtaSpecialFactorModel1mPubApp {
                 Vec::new(),
             )
             .with_decision_context(
-                factor.long_threshold,
-                factor.short_threshold,
+                None,
+                None,
                 nq.long_value,
-                nq.long_threshold,
+                None,
                 nq.short_value,
-                nq.short_threshold,
+                None,
                 nq.ready,
-            );
+            )
+            .with_filter_quantiles(nq.long_quantile, nq.short_quantile);
             let published = msg
                 .to_bytes()
                 .map(|payload| output.publisher.publish(&payload))
@@ -908,13 +825,6 @@ pub fn output_service_path(venue_slug: &str, factor: &str) -> String {
     )
 }
 
-fn configured_factor_index(rule_name: &str) -> Result<usize> {
-    FACTOR_NAMES
-        .iter()
-        .position(|name| name.eq_ignore_ascii_case(rule_name))
-        .with_context(|| format!("unsupported CTA special rule_name: {rule_name}"))
-}
-
 fn parse_trade_side(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "b" | "buy" => Some(true),
@@ -973,10 +883,17 @@ mod tests {
     }
 
     #[test]
-    fn publisher_owns_only_the_configured_rule_output() {
-        assert_eq!(configured_factor_index("tp_vpi_018").unwrap(), 0);
-        assert_eq!(configured_factor_index("baseline_104").unwrap(), 1);
-        assert!(configured_factor_index("baseline_138").is_err());
+    fn publisher_exposes_both_shared_factor_services() {
+        assert_eq!(
+            FACTOR_NAMES
+                .iter()
+                .map(|factor| output_service_path("binance-futures", factor))
+                .collect::<Vec<_>>(),
+            vec![
+                "model_output/one-binance-futures-1m-tp_vpi_018",
+                "model_output/one-binance-futures-1m-baseline_104",
+            ]
+        );
     }
 
     #[test]
@@ -997,12 +914,12 @@ mod tests {
         let mut state = NqState::default();
         for _ in 0..719 {
             state.current_close = 100.0;
-            assert!(!state.close_bar(0.5, 0.5).ready);
+            assert!(!state.close_bar().ready);
         }
         state.current_close = 101.0;
-        let observation = state.close_bar(0.5, 0.5);
+        let observation = state.close_bar();
         assert!(observation.ready);
-        assert_eq!(observation.long_threshold, Some(0.0));
-        assert_eq!(observation.short_threshold, Some(0.0));
+        assert!(observation.long_quantile.is_some());
+        assert!(observation.short_quantile.is_some());
     }
 }

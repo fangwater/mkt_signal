@@ -27,7 +27,6 @@ use trade_signal::MktChannel;
 const SIGNAL_CHANNEL: &str = "trade_signal";
 const MAX_DELAYED_SIGNAL_AGE_US: i64 = 5_000_000;
 const MODEL_OUTPUT_MAX_SUBSCRIBERS: usize = 32;
-const BAR_MS: i64 = 60_000;
 
 #[derive(Debug, Clone)]
 struct ScheduledEntry {
@@ -43,13 +42,13 @@ struct SymbolStatus {
     model_ts_ms: i64,
     score: Option<f64>,
     quantile: Option<f64>,
-    long_threshold: Option<f64>,
-    short_threshold: Option<f64>,
+    entry_long_quantile: f64,
+    entry_short_quantile: f64,
     score_ready: bool,
     nq_long_value: Option<f64>,
-    nq_long_threshold: Option<f64>,
+    nq_long_quantile: Option<f64>,
     nq_short_value: Option<f64>,
-    nq_short_threshold: Option<f64>,
+    nq_short_quantile: Option<f64>,
     filter_ready: bool,
     decision: &'static str,
     updated_ts_us: i64,
@@ -178,13 +177,6 @@ impl CtaSpecialSignalApp {
                     self.config_modified = modified;
                     return;
                 }
-                if publisher_threshold_config_changed(&self.config, &next) {
-                    self.entry_live_after_ms = now_us.div_euclid(1_000).saturating_add(BAR_MS);
-                    info!(
-                        "CTA special publisher-owned quantiles changed; pausing entry until model_ts_ms>{}",
-                        self.entry_live_after_ms
-                    );
-                }
                 self.symbols = next.symbol_set();
                 self.scheduled.clear();
                 self.config = next;
@@ -241,13 +233,13 @@ impl CtaSpecialSignalApp {
                 model_ts_ms: lookup.score_ts_ms,
                 score: lookup.score,
                 quantile: lookup.score_quantile,
-                long_threshold: lookup.score_long_threshold,
-                short_threshold: lookup.score_short_threshold,
+                entry_long_quantile: self.config.entry.factor_long_quantile,
+                entry_short_quantile: self.config.entry.factor_short_quantile,
                 score_ready: lookup.score_ready,
                 nq_long_value: lookup.filter_long_value,
-                nq_long_threshold: lookup.filter_long_threshold,
+                nq_long_quantile: lookup.filter_long_quantile,
                 nq_short_value: lookup.filter_short_value,
-                nq_short_threshold: lookup.filter_short_threshold,
+                nq_short_quantile: lookup.filter_short_quantile,
                 filter_ready: lookup.filter_ready,
                 decision: match decision {
                     Some(Side::Buy) => "long",
@@ -376,13 +368,6 @@ fn entry_bar_is_live(model_ts_ms: i64, process_started_ms: i64) -> bool {
     model_ts_ms > process_started_ms
 }
 
-fn publisher_threshold_config_changed(old: &CtaSpecialConfig, new: &CtaSpecialConfig) -> bool {
-    old.entry.factor_long_quantile != new.entry.factor_long_quantile
-        || old.entry.factor_short_quantile != new.entry.factor_short_quantile
-        || old.entry.nq_long_quantile != new.entry.nq_long_quantile
-        || old.entry.nq_short_quantile != new.entry.nq_short_quantile
-}
-
 fn entry_decision(
     config: &CtaSpecialConfig,
     lookup: &ModelOutputScoreLookupResult,
@@ -390,15 +375,11 @@ fn entry_decision(
     if !lookup.score_ready {
         return None;
     }
-    let score = lookup.score.filter(|value| value.is_finite())?;
-    let long_threshold = lookup
-        .score_long_threshold
-        .filter(|value| value.is_finite())?;
-    let short_threshold = lookup
-        .score_short_threshold
-        .filter(|value| value.is_finite())?;
-    let long_signal = config.allows_long() && score > long_threshold;
-    let short_signal = config.allows_short() && score < short_threshold;
+    let score_quantile = lookup
+        .score_quantile
+        .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))?;
+    let long_signal = config.allows_long() && score_quantile > config.entry.factor_long_quantile;
+    let short_signal = config.allows_short() && score_quantile < config.entry.factor_short_quantile;
     if long_signal == short_signal {
         return None;
     }
@@ -408,16 +389,16 @@ fn entry_decision(
         }
         if long_signal
             && !matches!(
-                (lookup.filter_long_value, lookup.filter_long_threshold),
-                (Some(value), Some(threshold)) if value.is_finite() && threshold.is_finite() && value >= threshold
+                lookup.filter_long_quantile,
+                Some(quantile) if quantile.is_finite() && quantile >= config.entry.nq_long_quantile
             )
         {
             return None;
         }
         if short_signal
             && !matches!(
-                (lookup.filter_short_value, lookup.filter_short_threshold),
-                (Some(value), Some(threshold)) if value.is_finite() && threshold.is_finite() && value <= threshold
+                lookup.filter_short_quantile,
+                Some(quantile) if quantile.is_finite() && quantile <= config.entry.nq_short_quantile
             )
         {
             return None;
@@ -589,6 +570,8 @@ mod tests {
             filter_long_threshold: Some(0.1),
             filter_short_value: Some(-0.1),
             filter_short_threshold: Some(-0.2),
+            filter_long_quantile: Some(0.75),
+            filter_short_quantile: Some(0.25),
             filter_ready: true,
             score_ts_ms: 60_000,
             note: "ok".to_string(),
@@ -596,13 +579,13 @@ mod tests {
     }
 
     #[test]
-    fn long_requires_strict_zscore_threshold_and_nq_gate() {
+    fn long_uses_subscriber_factor_and_nq_quantiles() {
         let mut value = lookup();
         assert_eq!(entry_decision(&config(true), &value), Some(Side::Buy));
-        value.filter_long_value = Some(0.05);
+        value.filter_long_quantile = Some(0.4);
         assert_eq!(entry_decision(&config(true), &value), None);
         assert_eq!(entry_decision(&config(false), &value), Some(Side::Buy));
-        value.score = value.score_long_threshold;
+        value.score_quantile = Some(config(false).entry.factor_long_quantile);
         assert_eq!(entry_decision(&config(false), &value), None);
     }
 
@@ -619,12 +602,14 @@ mod tests {
     }
 
     #[test]
-    fn publisher_quantile_change_requires_a_fresh_bar() {
-        let old = config(true);
-        let mut new = old.clone();
-        assert!(!publisher_threshold_config_changed(&old, &new));
-        new.entry.factor_long_quantile = 0.95;
-        assert!(publisher_threshold_config_changed(&old, &new));
+    fn each_subscriber_applies_its_own_factor_quantile() {
+        let value = lookup();
+        let mut permissive = config(false);
+        permissive.entry.factor_long_quantile = 0.9;
+        let mut restrictive = permissive.clone();
+        restrictive.entry.factor_long_quantile = 0.99;
+        assert_eq!(entry_decision(&permissive, &value), Some(Side::Buy));
+        assert_eq!(entry_decision(&restrictive, &value), None);
     }
 
     #[test]

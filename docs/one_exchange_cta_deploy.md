@@ -163,8 +163,8 @@ trade_sides 已移出搜索网格，固定 combine（代码仍支持 long/short/
 Kafka binance-futures PeriodMessage（因子和 futures-mid NQ 同源）
         v
 cta_special_factor_model_1m_pub
-  raw -> clip + rolling z-score -> configured exact entry quantiles + score_quantile
-  每个 env 只发布其固定 rule_name 对应的 model service
+  raw -> clip + rolling z-score -> factor/NQ percentile
+  单个共享 publisher 同时发布 TP_VPI_018 与 baseline_104
         v
 model_output/one-binance-futures-1m-<factor>
         |-- cta_special_signal（只判定开仓）
@@ -201,9 +201,8 @@ overlay、旧 `cta_config_server.py` 和旧 viz 页面都不参与这条链路�
 | 部署/总控 | `scripts/deploy_cta_special.sh`、`scripts/{start,stop}_cta_special.sh` |
 
 配置服务只原子读写 `config/cta_special.json`，保存时做 revision 冲突
-检查。factor publisher、signal 和 pre-trade 都每秒检测同一文件；非法配置
-保留上一份有效配置。入场或 NQ 分位变化后，signal 跳过一个完整 bar，防止
-publisher 与 signal 重载时序造成新旧阈值混用。dashboard 只读 signal 状态
+检查。signal 和 pre-trade 都每秒检测同一文件；非法配置保留上一份有效配置。
+公共 factor publisher 不读取任何 env 策略配置。dashboard 只读 signal 状态
 和 pre-trade 执行状态，不具备交易写入口。
 
 ### 执行保护
@@ -265,13 +264,14 @@ publisher 与 signal 重载时序造成新旧阈值混用。dashboard 只读 sig
 ```
 
 `trade_sides`、因子/NQ 入场分位、cooldown、signal delay、maker 网格与
-TTL、因子退出、trailing 和最长持仓均可配置。publisher 始终用精确线性
-分位阈值，不用 percentile rank 代替；新订单把退出参数写入 `from_key`，
-所以热更新不改已有 lot。venue、model service、60 秒频率、rolling window、
-min periods、maker/reduce-only、消息新鲜度和冲突策略仍是模式契约。
-`rule_name` 决定 model service，运行中不可修改；其余字段支持热加载。
-每个 factor publisher 只占用该 env 固定 `rule_name` 的 model service，避免
-不同因子的 env 因 `max_publishers=1` 相互冲突，分位参数也保持 env 隔离。
+TTL、因子退出、trailing 和最长持仓均可配置。共享 publisher 只发布标准化
+score、factor percentile、NQ 原值及 NQ percentile；每个 signal subscriber
+使用自身配置的入场分位判断，pre-trade 使用自身配置的退出分位。新订单把
+退出参数写入 `from_key`，所以热更新不改已有 lot。venue、model service、
+60 秒频率、rolling window、min periods、maker/reduce-only、消息新鲜度和
+冲突策略仍是模式契约。`rule_name` 决定订阅的 model service，运行中不可
+修改；其余字段支持热加载。每个 factor service 保持一个权威 publisher，
+rx02/rx03 是互相独立配置的 subscriber。
 重复部署已有 env 时，部署脚本会原子迁移旧 JSON，只保留上述字段并立即
 用正式解析器校验。
 
@@ -292,7 +292,11 @@ scripts/deploy_cta_special.sh \
   --env-name binance-cta-special-rx02 \
   --factor tp_vpi_018 \
   --config-port 19182 \
-  --dashboard-port 10192
+  --dashboard-port 10192 \
+  --factor-publisher
+
+# --factor-publisher 只能配置在一个 env；该进程同时提供两个 factor service。
+# 其他 CTA special env 不启动 publisher，只按 rule_name 订阅对应 service。
 
 cd ~/binance-cta-special-rx02
 ./intra_scripts/sync_cta_risk_params.py \

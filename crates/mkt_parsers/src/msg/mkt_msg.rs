@@ -314,12 +314,18 @@ pub struct ModelMsg {
     pub filter_long_threshold: Option<f64>,
     pub filter_short_value: Option<f64>,
     pub filter_short_threshold: Option<f64>,
+    /// Strategy-neutral percentile ranks for directional filter values.
+    /// Subscribers compare these ranks against their own configured quantiles.
+    pub filter_long_quantile: Option<f64>,
+    pub filter_short_quantile: Option<f64>,
     pub filter_ready: bool,
     pub status: u8,
     pub feature_dim: u16,
     pub factor_indices: Vec<u16>,
     pub factor_values: Vec<f32>,
 }
+
+const MODEL_FILTER_QUANTILES_MAGIC: u32 = u32::from_le_bytes(*b"NQP1");
 
 #[allow(dead_code)]
 impl FundingRateMsg {
@@ -1435,6 +1441,8 @@ impl ModelMsg {
             filter_long_threshold: None,
             filter_short_value: None,
             filter_short_threshold: None,
+            filter_long_quantile: None,
+            filter_short_quantile: None,
             filter_ready: false,
             status,
             feature_dim,
@@ -1464,6 +1472,16 @@ impl ModelMsg {
         self
     }
 
+    pub fn with_filter_quantiles(
+        mut self,
+        filter_long_quantile: Option<f64>,
+        filter_short_quantile: Option<f64>,
+    ) -> Self {
+        self.filter_long_quantile = filter_long_quantile;
+        self.filter_short_quantile = filter_short_quantile;
+        self
+    }
+
     pub fn to_bytes(&self) -> Result<Bytes> {
         if self.msg_type != MODEL_MSG_TYPE {
             bail!(
@@ -1489,7 +1507,9 @@ impl ModelMsg {
             + 8
             + 1
             + 8 * 6
-            + 1;
+            + 1
+            + 4
+            + 8 * 2;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type);
         buf.put_u32_le(self.symbol_length);
@@ -1521,6 +1541,9 @@ impl ModelMsg {
             buf.put_f64_le(value.unwrap_or(f64::NAN));
         }
         buf.put_u8(if self.filter_ready { 1 } else { 0 });
+        buf.put_u32_le(MODEL_FILTER_QUANTILES_MAGIC);
+        buf.put_f64_le(self.filter_long_quantile.unwrap_or(f64::NAN));
+        buf.put_f64_le(self.filter_short_quantile.unwrap_or(f64::NAN));
         Ok(buf.freeze())
     }
 
@@ -1591,6 +1614,19 @@ impl ModelMsg {
         let filter_short_value = read_optional();
         let filter_short_threshold = read_optional();
         let filter_ready = cursor.get_u8() != 0;
+        let (filter_long_quantile, filter_short_quantile) = if cursor.remaining() >= 20
+            && cursor.get_u32_le() == MODEL_FILTER_QUANTILES_MAGIC
+        {
+            let long_value = cursor.get_f64_le();
+            let short_value = cursor.get_f64_le();
+            (
+                (long_value.is_finite() && (0.0..=1.0).contains(&long_value)).then_some(long_value),
+                (short_value.is_finite() && (0.0..=1.0).contains(&short_value))
+                    .then_some(short_value),
+            )
+        } else {
+            (None, None)
+        };
 
         Ok(Self {
             msg_type,
@@ -1608,6 +1644,8 @@ impl ModelMsg {
             filter_long_threshold,
             filter_short_value,
             filter_short_threshold,
+            filter_long_quantile,
+            filter_short_quantile,
             filter_ready,
             status,
             feature_dim: feature_dim as u16,
@@ -1643,7 +1681,8 @@ mod tests {
             Some(-0.04),
             Some(-0.03),
             true,
-        );
+        )
+        .with_filter_quantiles(Some(0.75), Some(0.25));
 
         let decoded = ModelMsg::from_bytes(msg.to_bytes().unwrap().as_ref()).unwrap();
         assert_eq!(decoded.symbol, "BTCUSDT");
@@ -1656,9 +1695,55 @@ mod tests {
         assert_eq!(decoded.filter_long_threshold, Some(0.02));
         assert_eq!(decoded.filter_short_value, Some(-0.04));
         assert_eq!(decoded.filter_short_threshold, Some(-0.03));
+        assert_eq!(decoded.filter_long_quantile, Some(0.75));
+        assert_eq!(decoded.filter_short_quantile, Some(0.25));
         assert!(decoded.filter_ready);
         assert_eq!(decoded.factor_indices, vec![1, 7]);
         assert_eq!(decoded.factor_values, vec![0.5, -0.25]);
+    }
+
+    #[test]
+    fn model_msg_accepts_payload_without_filter_quantiles() {
+        let msg = ModelMsg::create(
+            "BTCUSDT".to_string(),
+            100,
+            200,
+            3,
+            0.42,
+            Some(0.91),
+            true,
+            MODEL_STATUS_OK,
+            vec![],
+            vec![],
+        );
+        let encoded = msg.to_bytes().unwrap();
+        let legacy_len = encoded.len() - 20;
+        let decoded = ModelMsg::from_bytes(&encoded[..legacy_len]).unwrap();
+        assert_eq!(decoded.filter_long_quantile, None);
+        assert_eq!(decoded.filter_short_quantile, None);
+    }
+
+    #[test]
+    fn model_msg_zero_padded_legacy_payload_has_no_filter_quantiles() {
+        let msg = ModelMsg::create(
+            "BTCUSDT".to_string(),
+            100,
+            200,
+            3,
+            0.42,
+            Some(0.91),
+            true,
+            MODEL_STATUS_OK,
+            vec![],
+            vec![],
+        );
+        let encoded = msg.to_bytes().unwrap();
+        let legacy_len = encoded.len() - 20;
+        let mut padded = encoded[..legacy_len].to_vec();
+        padded.resize(crate::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES, 0);
+        let decoded = ModelMsg::from_bytes(&padded).unwrap();
+        assert_eq!(decoded.filter_long_quantile, None);
+        assert_eq!(decoded.filter_short_quantile, None);
     }
 
     #[test]

@@ -88,8 +88,8 @@
         <table>
           <thead>
             <tr>
-              <th>symbol</th><th>decision</th><th>z-score</th><th>percentile</th><th>q10</th><th>q90</th>
-              <th>long NQ</th><th>long NQ q</th><th>short NQ</th><th>short NQ q</th>
+              <th>symbol</th><th>decision</th><th>z-score</th><th>percentile</th><th>short trigger q</th><th>long trigger q</th>
+              <th>long NQ</th><th>long NQ percentile</th><th>short NQ</th><th>short NQ percentile</th>
               <th>score</th><th>nq</th><th>bar time</th>
             </tr>
           </thead>
@@ -185,7 +185,7 @@
         const decision = ['long','short'].includes(signal.decision) ? signal.decision : 'flat';
         const score = signal.score_ready ? 'ready' : 'warming';
         const nq = signal.filter_ready ? 'ready' : 'warming';
-        return `<tr><td class="mono">${row.symbol}</td><td><span class="decision ${decision}">${decision}</span></td><td>${fmt(signal.score)}</td><td>${fmt(signal.quantile, 4)}</td><td>${fmt(signal.short_threshold)}</td><td>${fmt(signal.long_threshold)}</td><td>${fmt(signal.nq_long_value, 6)}</td><td>${fmt(signal.nq_long_threshold, 6)}</td><td>${fmt(signal.nq_short_value, 6)}</td><td>${fmt(signal.nq_short_threshold, 6)}</td><td class="${score}">${score}</td><td class="${nq}">${nq}</td><td>${timeText(signal.model_ts_ms)}</td></tr>`;
+        return `<tr><td class="mono">${row.symbol}</td><td><span class="decision ${decision}">${decision}</span></td><td>${fmt(signal.score)}</td><td>${fmt(signal.quantile, 4)}</td><td>${fmt(signal.entry_short_quantile, 4)}</td><td>${fmt(signal.entry_long_quantile, 4)}</td><td>${fmt(signal.nq_long_value, 6)}</td><td>${fmt(signal.nq_long_quantile, 4)}</td><td>${fmt(signal.nq_short_value, 6)}</td><td>${fmt(signal.nq_short_quantile, 4)}</td><td class="${score}">${score}</td><td class="${nq}">${nq}</td><td>${timeText(signal.model_ts_ms)}</td></tr>`;
       }).join('');
       el('signal-empty').style.display = visible.length ? 'none' : 'block';
       el('signal-empty').textContent = names.length ? '过滤后没有标的' : '配置里还没有标的';
