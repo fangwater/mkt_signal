@@ -284,6 +284,16 @@ that `git branch --show-current` returns `arbmm` and that it is synchronized
 with `origin/arbmm`. `main` may receive merges for integration, but it is not a
 production deployment source.
 
+Build production Rust binaries in the actively maintained local worktree
+`/home/fanghaizhou/mkt_signal`; never run Cargo builds on a production host.
+After a successful local release build, upload the exact artifacts with `scp`
+to explicit temporary paths on the target host, verify SHA-256 checksums, and
+atomically install them into the environment directory before restarting any
+process. Production hosts such as `jp-meta-elvpn` and `sg` only run published
+artifacts. If a deploy wrapper normally builds locally, use its publish-only or
+`--skip-build` path after the locally built artifacts have been uploaded; do not
+fall back to compiling on the remote host.
+
 Check worktree state before editing:
 
 ```bash
