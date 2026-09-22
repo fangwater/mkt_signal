@@ -40,6 +40,10 @@ cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 printf '{"apps":[{"name":"%s","script":"%s","args":["--venue","binance-futures","--config","config/cta_special_factor_model_1m_pub.toml"%s%s],"cwd":"%s","env":{"RUST_LOG":"%s"}}]}\n' \
   "$PROC_NAME" "$BIN_PATH" "$core_args" "$wait_args" "$BASE_DIR" "${RUST_LOG:-info}" >"$cfg_file"
-PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_cta_special_factor_model_1m_pub.sh"
+if [[ -n "$wait_args" ]]; then
+  "$PMDAEMON_BIN" delete "$PROC_NAME" >/dev/null 2>&1 || true
+else
+  PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_cta_special_factor_model_1m_pub.sh"
+fi
 "$PMDAEMON_BIN" --config "$cfg_file" start --name "$PROC_NAME"
 echo "[INFO] started $PROC_NAME"
