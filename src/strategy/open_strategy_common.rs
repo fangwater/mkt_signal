@@ -330,6 +330,14 @@ fn should_promote_open_pending_query_reason(
     )
 }
 
+fn should_record_open_fill_hedge(
+    status: OrderStatus,
+    hedge_on_incremental_open_fill: bool,
+) -> bool {
+    status.is_finished()
+        || (hedge_on_incremental_open_fill && status == OrderStatus::PartiallyFilled)
+}
+
 fn order_qv_from_quantized_value(qv: QuantizedValue) -> OrderQuantizedValue {
     let (tick_i64, tick_exp) = qv.get_tick_parts();
     OrderQuantizedValue::new(tick_i64, tick_exp, qv.get_count())
@@ -2316,16 +2324,13 @@ pub trait OpenStrategyCommon {
             self.clear_live_order_query_state(client_order_id);
         }
 
-        let record_open_fill_hedge = matches!(
+        let terminal_update = order_update.status().is_finished();
+        let record_open_fill_hedge = should_record_open_fill_hedge(
             order_update.status(),
-            OrderStatus::Canceled | OrderStatus::Filled
-        ) || (self.hedge_on_incremental_open_fill()
-            && matches!(order_update.status(), OrderStatus::PartiallyFilled));
+            self.hedge_on_incremental_open_fill(),
+        );
         if record_open_fill_hedge {
-            let update_detail = if matches!(
-                order_update.status(),
-                OrderStatus::Canceled | OrderStatus::Filled
-            ) {
+            let update_detail = if terminal_update {
                 "order_update_terminal"
             } else {
                 "order_update_partial_fill"
@@ -3158,12 +3163,14 @@ pub trait OpenStrategyCommon {
 mod tests {
     use super::{
         build_open_order_request_bytes_scoped, build_open_order_request_prepared_scoped,
-        should_promote_open_pending_query_reason, OpenStrategyCommon, OpenStrategyState,
-        PendingOrderQueryReason, QueryWatchdog,
+        should_promote_open_pending_query_reason, should_record_open_fill_hedge,
+        OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason, QueryWatchdog,
     };
     use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
     use crate::strategy::manager::OrphanStrategyRole;
-    use order_common::{BinanceAccountMode, OrderManager, OrderType, Side, TradingVenue};
+    use order_common::{
+        BinanceAccountMode, OrderManager, OrderStatus, OrderType, Side, TradingVenue,
+    };
     use std::cell::RefCell;
 
     struct TestOpenStrategy {
@@ -3221,6 +3228,28 @@ mod tests {
         ) -> Result<f64, String> {
             Ok(1.0)
         }
+    }
+
+    #[test]
+    fn terminal_order_updates_record_open_fill_hedge() {
+        for status in [
+            OrderStatus::Filled,
+            OrderStatus::Canceled,
+            OrderStatus::Expired,
+            OrderStatus::ExpiredInMatch,
+        ] {
+            assert!(should_record_open_fill_hedge(status, false), "{status:?}");
+        }
+
+        assert!(!should_record_open_fill_hedge(
+            OrderStatus::PartiallyFilled,
+            false
+        ));
+        assert!(should_record_open_fill_hedge(
+            OrderStatus::PartiallyFilled,
+            true
+        ));
+        assert!(!should_record_open_fill_hedge(OrderStatus::New, true));
     }
 
     #[test]

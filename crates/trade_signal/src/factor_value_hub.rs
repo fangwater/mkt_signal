@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
+use iceoryx2::service::port_factory::publish_subscribe::PortFactory as PublishSubscribeService;
 use log::{error, info, warn};
 use redis::Commands;
 use serde::Deserialize;
@@ -27,6 +28,8 @@ use runtime_common::time_util::get_timestamp_us;
 const FACTOR_VALUE_PAYLOAD_MAX_BYTES: usize = 256;
 const FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
 const FACTOR_VALUE_POLL_MAX_PER_CALL: usize = 512;
+const FACTOR_VALUE_RECONNECT_AFTER: Duration = Duration::from_secs(5 * 60);
+const FACTOR_VALUE_RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const DEFAULT_PNLU_MAX_AGE_SECS: i64 = 30 * 60;
 const FACTOR_VALUE_ISSUE_LOG_INTERVAL_SECS: u64 = 10;
 const TRADE_FLOW_FEATURE_SUBSCRIBER_BUFFER_SIZE: usize = 1024;
@@ -122,6 +125,21 @@ struct FactorIssueLogState {
     last_log_at: Instant,
 }
 
+type FactorValueService =
+    PublishSubscribeService<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>;
+type FactorValueSubscriber = Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>;
+
+fn factor_value_reconnect_due(
+    now: Instant,
+    last_update_at: Instant,
+    last_attempt_at: Option<Instant>,
+) -> bool {
+    now.duration_since(last_update_at) >= FACTOR_VALUE_RECONNECT_AFTER
+        && last_attempt_at.is_none_or(|last_attempt_at| {
+            now.duration_since(last_attempt_at) >= FACTOR_VALUE_RECONNECT_RETRY_INTERVAL
+        })
+}
+
 struct PnluRedis {
     settings: RedisSettings,
     client: redis::Client,
@@ -180,7 +198,10 @@ pub struct FactorValueHub {
     inline_volatility_percentile: Option<f64>,
     factor_value_service_name: String,
     factor_value_max_age_ms: i64,
-    factor_value_sub: Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>,
+    factor_value_service: FactorValueService,
+    factor_value_sub: Option<FactorValueSubscriber>,
+    last_factor_value_update_at: Instant,
+    last_factor_value_reconnect_attempt_at: Option<Instant>,
     trade_flow_feature_sub:
         Option<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>>,
     factor_value_cache: HashMap<(u16, String), FactorValueSnapshot>,
@@ -207,8 +228,17 @@ impl FactorValueHub {
         factor_value_max_age_ms: i64,
         enable_trade_flow_feature: bool,
     ) -> Result<Self> {
-        let factor_value_sub =
-            Self::create_factor_value_subscriber(node, hedge_venue, target_factor_name)?;
+        let factor_value_service_name = format!(
+            "factor_pub/{}/{}",
+            hedge_venue.data_pub_slug(),
+            factor_name_to_channel(target_factor_name)
+        );
+        let factor_value_service =
+            Self::open_factor_value_service(node, &factor_value_service_name)?;
+        let factor_value_sub = Self::create_factor_value_subscriber(
+            &factor_value_service,
+            &factor_value_service_name,
+        )?;
         let target_factor_index = factor_name_to_index(target_factor_name).ok_or_else(|| {
             anyhow::anyhow!("missing factor index mapping for {target_factor_name}")
         })?;
@@ -227,12 +257,6 @@ impl FactorValueHub {
             DEFAULT_PNLU_MAX_AGE_SECS
         };
         let pnlu_profile = Self::build_pnlu_profile(open_venue, hedge_venue);
-        let factor_value_service_name = format!(
-            "factor_pub/{}/{}",
-            hedge_venue.data_pub_slug(),
-            factor_name_to_channel(target_factor_name)
-        );
-
         Ok(Self {
             hedge_venue,
             pnlu_profile,
@@ -243,7 +267,10 @@ impl FactorValueHub {
                 .map(|v| v.clamp(0.0, 100.0)),
             factor_value_service_name,
             factor_value_max_age_ms,
-            factor_value_sub,
+            factor_value_service,
+            factor_value_sub: Some(factor_value_sub),
+            last_factor_value_update_at: Instant::now(),
+            last_factor_value_reconnect_attempt_at: None,
             trade_flow_feature_sub,
             factor_value_cache: HashMap::new(),
             last_valid_factor_value_cache: HashMap::new(),
@@ -305,23 +332,22 @@ impl FactorValueHub {
         format!("{symbol_key}{key_suffix}_{profile}")
     }
 
-    fn create_factor_value_subscriber(
+    fn open_factor_value_service(
         node: &Node<ipc::Service>,
-        hedge_venue: TradingVenue,
-        factor_name: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES], ()>> {
-        let service_name = format!(
-            "factor_pub/{}/{}",
-            hedge_venue.data_pub_slug(),
-            factor_name_to_channel(factor_name)
-        );
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
+        service_name: &str,
+    ) -> Result<FactorValueService> {
+        node.service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; FACTOR_VALUE_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
             .max_subscribers(10)
             .open()
-            .with_context(|| format!("failed to open factor subscriber service={service_name}"))?;
+            .with_context(|| format!("failed to open factor subscriber service={service_name}"))
+    }
+
+    fn create_factor_value_subscriber(
+        service: &FactorValueService,
+        service_name: &str,
+    ) -> Result<FactorValueSubscriber> {
         let service_max_buffer = service.static_config().subscriber_max_buffer_size();
         let service_history = service.static_config().history_size();
         let requested_buffer = service_max_buffer.clamp(1, FACTOR_VALUE_SUBSCRIBER_BUFFER_SIZE);
@@ -338,6 +364,40 @@ impl FactorValueHub {
             .buffer_size(requested_buffer)
             .create()
             .context("failed to create factor subscriber")
+    }
+
+    fn maybe_reconnect_factor_value_subscriber(&mut self) {
+        let now = Instant::now();
+        if !factor_value_reconnect_due(
+            now,
+            self.last_factor_value_update_at,
+            self.last_factor_value_reconnect_attempt_at,
+        ) {
+            return;
+        }
+        self.last_factor_value_reconnect_attempt_at = Some(now);
+
+        self.factor_value_sub.take();
+        match Self::create_factor_value_subscriber(
+            &self.factor_value_service,
+            &self.factor_value_service_name,
+        ) {
+            Ok(subscriber) => {
+                self.factor_value_sub = Some(subscriber);
+                warn!(
+                    "FactorValueHub: rebuilt stalled factor subscriber service={} no_update_secs={}",
+                    self.factor_value_service_name,
+                    now.duration_since(self.last_factor_value_update_at)
+                        .as_secs(),
+                );
+            }
+            Err(err) => {
+                error!(
+                    "FactorValueHub: failed to rebuild stalled factor subscriber service={} err={:#}",
+                    self.factor_value_service_name, err,
+                );
+            }
+        }
     }
 
     fn create_trade_flow_feature_subscriber(
@@ -425,9 +485,13 @@ impl FactorValueHub {
     }
 
     pub fn poll_factor_value_updates(&mut self) {
+        self.maybe_reconnect_factor_value_subscriber();
         let mut polled = 0usize;
         while polled < FACTOR_VALUE_POLL_MAX_PER_CALL {
-            match self.factor_value_sub.receive() {
+            let Some(factor_value_sub) = self.factor_value_sub.as_ref() else {
+                break;
+            };
+            match factor_value_sub.receive() {
                 Ok(Some(sample)) => {
                     polled += 1;
                     let payload = sample.payload();
@@ -441,6 +505,7 @@ impl FactorValueHub {
                             continue;
                         }
                     };
+                    self.last_factor_value_update_at = Instant::now();
 
                     let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
                     for (factor_index, value, ready) in msg.factors() {
@@ -566,9 +631,13 @@ impl FactorValueHub {
             return sampled;
         };
 
+        self.maybe_reconnect_factor_value_subscriber();
         let mut polled = 0usize;
         while polled < FACTOR_VALUE_POLL_MAX_PER_CALL {
-            match self.factor_value_sub.receive() {
+            let Some(factor_value_sub) = self.factor_value_sub.as_ref() else {
+                break;
+            };
+            match factor_value_sub.receive() {
                 Ok(Some(sample)) => {
                     polled += 1;
                     let payload = sample.payload();
@@ -582,6 +651,7 @@ impl FactorValueHub {
                             continue;
                         }
                     };
+                    self.last_factor_value_update_at = Instant::now();
 
                     let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
                     for (factor_index, value, ready) in msg.factors() {
@@ -989,8 +1059,9 @@ impl FactorValueHub {
 
 #[cfg(test)]
 mod tests {
-    use super::{FactorValueHub, FactorValueSnapshot};
+    use super::{factor_value_reconnect_due, FactorValueHub, FactorValueSnapshot};
     use order_common::TradingVenue;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn builds_profile_from_open_and_hedge_venues() {
@@ -1040,5 +1111,38 @@ mod tests {
             FactorValueHub::validate_factor_snapshot(&snapshot, 20_000, 10_000),
             Err("factor_ipc_timeout(age_ms=11000 max_age_ms=10000)".to_string())
         );
+    }
+
+    #[test]
+    fn factor_subscriber_reconnects_after_five_minutes_without_updates() {
+        let started_at = Instant::now();
+
+        assert!(!factor_value_reconnect_due(
+            started_at + Duration::from_secs(299),
+            started_at,
+            None,
+        ));
+        assert!(factor_value_reconnect_due(
+            started_at + Duration::from_secs(300),
+            started_at,
+            None,
+        ));
+    }
+
+    #[test]
+    fn factor_subscriber_reconnect_retry_is_rate_limited() {
+        let started_at = Instant::now();
+        let first_attempt_at = started_at + Duration::from_secs(300);
+
+        assert!(!factor_value_reconnect_due(
+            first_attempt_at + Duration::from_secs(29),
+            started_at,
+            Some(first_attempt_at),
+        ));
+        assert!(factor_value_reconnect_due(
+            first_attempt_at + Duration::from_secs(30),
+            started_at,
+            Some(first_attempt_at),
+        ));
     }
 }
