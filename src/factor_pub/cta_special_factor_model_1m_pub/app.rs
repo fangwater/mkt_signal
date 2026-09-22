@@ -471,7 +471,12 @@ impl CtaSpecialFactorModel1mPubApp {
                     warn!(
                         "CTA special factor catch-up complete; waiting for shared publisher ownership: {err:#}"
                     );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if let Some(record) = app.consumer.poll(app.poll_timeout_ms) {
+                        let record = record.context(
+                            "read CTA special factor Kafka record while waiting for publishers",
+                        )?;
+                        app.consume_record(&record.topic, &record.payload);
+                    }
                 }
                 Err(err) => return Err(err),
             }
