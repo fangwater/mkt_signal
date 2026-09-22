@@ -306,21 +306,6 @@ cd ~/binance-cta-special-rx02
   --env-name binance-cta-special-rx02 \
   --open-venue binance-futures \
   --hedge-venue binance-futures
-
-# 当共享 spread_pbs BBO service 达到 node 上限时，为该 env 启动独立 bookticker：
-scripts/deploy_cta_special.sh \
-  --env-name binance-cta-special-rx03 \
-  --factor baseline_104 \
-  --config-port 19185 \
-  --dashboard-port 10193 \
-  --spread-service-root spread_pbs_cta_rx03 \
-  --bbo-core 28
-
-cd ~/binance-cta-special-rx03
-./intra_scripts/sync_cta_risk_params.py \
-  --env-name binance-cta-special-rx03 \
-  --open-venue binance-futures \
-  --hedge-venue binance-futures
 ./scripts/start_cta_special.sh            # dry-run
 ./scripts/start_cta_special.sh --execute  # live process mutation
 ```

@@ -16,7 +16,7 @@ fi
   exit 1
 }
 echo "[PLAN] env=${ENV_NAME} exchange=binance symbol_scope=config/cta_special.json live_mutation=stop-processes"
-echo "[PLAN] signal -> factor publisher -> pre_trade -> persist_manager -> trade_engine -> dedicated BBO -> account_monitor -> dashboard -> config server"
+echo "[PLAN] signal -> factor publisher -> pre_trade -> persist_manager -> trade_engine -> account_monitor -> dashboard -> config server"
 if [[ "$EXECUTE" -ne 1 ]]; then
   echo "[DRY-RUN] no process was stopped; pass --execute to proceed"
   exit 0
@@ -28,7 +28,6 @@ cd "$BASE_DIR"
 "${BASE_DIR}/intra_scripts/stop_intra_pre_trade.sh"
 "${BASE_DIR}/intra_scripts/stop_intra_persist_manager.sh"
 "${BASE_DIR}/intra_scripts/stop_intra_trade_engine.sh"
-"${BASE_DIR}/scripts/stop_cta_special_bbo_pub.sh"
 "${BASE_DIR}/intra_scripts/stop_intra_monitors.sh"
 "${BASE_DIR}/scripts/stop_cta_special_dashboard.sh"
 "${BASE_DIR}/scripts/stop_cta_special_config_server.sh"

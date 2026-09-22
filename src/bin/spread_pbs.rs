@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
-use mkt_signal::spread_pbs::publisher::{
-    SpreadPbsPublishRoots, DEFAULT_DAT_SERVICE_ROOT, DEFAULT_SPREAD_SERVICE_ROOT,
-};
+use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
 use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, MarketDataProvider, SpreadPbsApp};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
@@ -27,14 +25,6 @@ struct Args {
     /// Publish to isolated test channels instead of production market-data channels.
     #[arg(long)]
     test: bool,
-
-    /// Override the production BBO service root for an isolated consumer group.
-    #[arg(long, conflicts_with = "test")]
-    spread_service_root: Option<String>,
-
-    /// Override the production derivatives service root.
-    #[arg(long, conflicts_with = "test")]
-    dat_service_root: Option<String>,
 
     /// Binance futures only: full, market, or bookticker.
     #[arg(long, value_parser = parse_binance_futures_role, default_value = "full")]
@@ -76,21 +66,8 @@ async fn main() -> Result<()> {
     let publish_roots = if args.test {
         SpreadPbsPublishRoots::test()
     } else {
-        SpreadPbsPublishRoots::new(
-            args.spread_service_root
-                .as_deref()
-                .unwrap_or(DEFAULT_SPREAD_SERVICE_ROOT),
-            args.dat_service_root
-                .as_deref()
-                .unwrap_or(DEFAULT_DAT_SERVICE_ROOT),
-        )?
+        SpreadPbsPublishRoots::production()
     };
-    log::info!(
-        "spread_pbs publish roots: spread_root={} dat_root={} test={}",
-        publish_roots.spread_root(),
-        publish_roots.dat_root(),
-        args.test
-    );
     let configs = load_selected_configs(&config_str, &args.venue).await?;
 
     // current_thread runtime + spawn_local 需要 LocalSet 上下文

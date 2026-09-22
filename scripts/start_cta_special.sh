@@ -40,7 +40,7 @@ source "$EXECUTION_BACKEND_LIB"
 config_enabled="$(python3 -c 'import json,sys; print(str(bool(json.load(open(sys.argv[1]))["enabled"])).lower())' "${BASE_DIR}/config/cta_special.json" 2>/dev/null || echo invalid)"
 echo "[PLAN] env=${ENV_NAME} exchange=binance symbol_scope=config/cta_special.json backend=ltp live_mutation=start-processes"
 echo "[PLAN] trading_enabled=${config_enabled}"
-echo "[PLAN] account_monitor -> dedicated BBO (when configured) -> trade_engine -> persist_manager -> pre_trade -> shared factor publisher (when configured) -> config server -> dashboard -> signal"
+echo "[PLAN] account_monitor -> trade_engine -> persist_manager -> pre_trade -> shared factor publisher (when configured) -> config server -> dashboard -> signal"
 if [[ "$EXECUTE" -ne 1 ]]; then
   echo "[DRY-RUN] no process was started; pass --execute to proceed"
   exit 0
@@ -48,7 +48,6 @@ fi
 
 cd "$BASE_DIR"
 "${BASE_DIR}/intra_scripts/start_intra_monitors.sh"
-"${BASE_DIR}/scripts/start_cta_special_bbo_pub.sh"
 "${BASE_DIR}/intra_scripts/start_intra_trade_engine.sh"
 "${BASE_DIR}/intra_scripts/start_intra_persist_manager.sh"
 "${BASE_DIR}/intra_scripts/start_intra_pre_trade.sh"
