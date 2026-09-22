@@ -102,6 +102,16 @@ cd ~/gate_fr_arb01
 ./scripts/stop_account_monitor.sh
 ```
 
+Always start and stop env processes through these env-local scripts
+(`~/` `<env>` `/scripts/*.sh`, `~/` `<env>` `/intra_scripts/*.sh`), never through
+raw `pmdaemon`/`pm2` subcommands. The scripts wrap the supervisor with the
+correct env.sh, cwd, process name, and startup semantics (e.g. exec-pre-trade
+cancels open orders on startup; cta_special pre_trade must start before
+cta_special_signal because `signal_pubs/trade_signal` is created with
+`.create()` by pre_trade). Direct `pmdaemon stop`/`restart` can desync the
+registry from the real process state (marks stopped while the pid stays
+alive, or reports a start that never spawned).
+
 ## Known Exec Deployment: el01
 
 The following is a historical snapshot verified on 2026-08-10 UTC. It proves that the environment existed at that time, but it is not a statement that the same processes, binaries, ports, or configuration are still live. Re-check the remote host before any operation. The original full deployment invocation was not found; the available evidence starts with a post-deployment audit.
