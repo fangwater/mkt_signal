@@ -3,114 +3,332 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CTA Special Config</title>
+  <title>CTA 配置中心</title>
   <style>
-    :root { color-scheme: light; --ink:#17202a; --muted:#667085; --line:#d7dde5; --bg:#f4f6f8; --panel:#fff; --accent:#126b52; --danger:#b42318; --warn:#a15c00; }
-    * { box-sizing:border-box; letter-spacing:0; }
-    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    header { position:sticky; top:0; z-index:3; min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:20px; padding:10px 24px; background:#17202a; color:#fff; border-bottom:3px solid #2d9b75; }
-    header h1 { margin:0; font-size:18px; font-weight:650; }
-    .header-meta { display:flex; align-items:center; gap:12px; color:#c8d0da; font-size:12px; }
-    .state { display:inline-flex; align-items:center; gap:7px; }
-    .dot { width:8px; height:8px; border-radius:50%; background:#98a2b3; }
-    .dot.ok { background:#42c692; } .dot.bad { background:#f97066; }
-    main { width:min(1120px,calc(100% - 32px)); margin:20px auto 48px; }
-    .bar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 14px; background:var(--panel); border:1px solid var(--line); border-radius:5px; }
-    .toggle { display:inline-flex; align-items:center; gap:9px; font-weight:650; }
-    .toggle input { width:38px; height:20px; accent-color:var(--accent); }
-    .actions { display:flex; gap:8px; }
-    button { border:1px solid transparent; border-radius:4px; padding:8px 13px; background:var(--accent); color:white; font:inherit; font-weight:650; cursor:pointer; }
-    button.secondary { background:#fff; color:var(--ink); border-color:#b8c1cc; }
-    button:disabled { opacity:.55; cursor:not-allowed; }
-    section { margin-top:16px; padding:0 0 18px; border-bottom:1px solid var(--line); }
-    section h2 { margin:0 0 12px; font-size:15px; }
-    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px 16px; }
-    .span-2 { grid-column:span 2; } .span-3 { grid-column:1/-1; }
-    label.field { display:flex; min-width:0; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; font-weight:600; }
-    input,select,textarea { width:100%; min-width:0; border:1px solid #b8c1cc; border-radius:4px; background:white; color:var(--ink); padding:8px 9px; font:14px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; }
-    input:focus,select:focus,textarea:focus { outline:2px solid #8bd6bc; outline-offset:1px; border-color:var(--accent); }
-    input[readonly] { background:#eef1f4; color:#59636f; }
-    textarea { min-height:104px; resize:vertical; }
-    .switch-row { min-height:38px; display:flex; align-items:center; gap:8px; color:var(--ink); font-size:14px; }
-    .switch-row input { width:18px; height:18px; accent-color:var(--accent); }
-    #message { min-height:21px; margin-top:12px; font-size:13px; }
-    #message.ok { color:var(--accent); } #message.bad { color:var(--danger); } #message.warn { color:var(--warn); }
-    @media (max-width:760px) { header { align-items:flex-start; padding:11px 16px; } .header-meta { flex-direction:column; align-items:flex-end; gap:2px; } main { width:min(100% - 20px,1120px); margin-top:10px; } .grid { grid-template-columns:1fr; } .span-2,.span-3 { grid-column:auto; } .bar { align-items:flex-start; } }
+    :root { color-scheme: dark; --bg:#0b1221; --panel:#111a33; --border:#223259; --muted:#94a3b8; --text:#e4ecff; --accent:#38bdf8; --accent-2:#2563eb; --danger:#ef4444; --ok:#34d399; --warn:#fbbf24; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:"Segoe UI","PingFang SC","Helvetica Neue",sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:18px 20px; background:linear-gradient(180deg,#0f1830,#0b1221); border-bottom:1px solid var(--border); }
+    h1 { margin:0 0 12px; font-size:20px; font-weight:650; }
+    main { padding:20px; }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow:0 10px 28px rgba(0,0,0,.35); margin-bottom:18px; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:end; }
+    .field { display:flex; flex-direction:column; gap:6px; min-width:180px; }
+    label { font-size:12px; color:var(--muted); }
+    input, select, button, textarea { padding:8px 10px; border-radius:8px; border:1px solid #2f4066; background:#0f1c3b; color:var(--text); font-family:inherit; font-size:13px; }
+    input.mono, textarea.mono, .kv-key { font-family:Menlo,Consolas,monospace; }
+    textarea { width:100%; min-height:160px; resize:vertical; }
+    input[readonly], select:disabled, textarea[readonly] { color:#cbd5e1; }
+    button { cursor:pointer; border-color:var(--accent-2); background:linear-gradient(90deg,var(--accent-2),var(--accent)); color:white; font-weight:650; }
+    button.secondary { background:#16213c; border-color:#31446d; color:#cbd5f5; }
+    button.ghost { background:transparent; border-color:#2f4066; color:#cbd5f5; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .section-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .section-header h2 { margin:0; font-size:16px; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .status { font-size:12px; color:var(--muted); min-height:16px; margin-top:8px; }
+    .status.ok { color:var(--ok); } .status.err { color:var(--danger); } .status.warn { color:var(--warn); }
+    .hint { color:var(--muted); font-size:12px; line-height:1.5; }
+    .hint code { color:#dbe7ff; }
+    .grid-2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+    .kv-table { display:grid; grid-template-columns:280px minmax(180px,1fr) 1.6fr; gap:8px; align-items:center; }
+    .kv-key { padding:8px 10px; background:#0c142b; border:1px solid #1b294c; border-radius:6px; font-size:12px; }
+    .kv-input input, .kv-input select { width:100%; }
+    .kv-desc { font-size:12px; color:var(--muted); padding:8px 4px; }
+    .subnav { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
+    .subnav a { color:#cbd5f5; text-decoration:none; padding:6px 10px; border:1px solid #26375b; border-radius:999px; font-size:12px; }
+    .badge { font-size:12px; color:var(--muted); }
+    .inline { display:inline-flex; align-items:center; gap:8px; }
+    h3 { margin:0 0 8px; font-size:14px; }
+    @media (max-width:960px) { .kv-table { grid-template-columns:1fr; } header, main { padding-left:12px; padding-right:12px; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>CTA Special Config</h1>
-    <div class="header-meta"><span id="revision">revision -</span><span class="state"><span id="health-dot" class="dot"></span><span id="health">loading</span></span></div>
+    <h1>CTA 配置中心</h1>
+    <div class="toolbar">
+      <div class="field"><label for="env-name">Env</label><input id="env-name" class="mono" readonly></div>
+      <div class="field"><label for="open-venue">Open Venue</label><input id="open-venue" class="mono" readonly value="binance-futures"></div>
+      <div class="field"><label for="hedge-venue">Hedge Venue</label><input id="hedge-venue" class="mono" readonly value="binance-futures"></div>
+      <div class="field"><label for="model-service">Model Service</label><input id="model-service" class="mono" readonly></div>
+      <div class="field"><label>Revision</label><div class="inline"><span id="revision" class="badge">-</span></div></div>
+      <a id="monitor-link" class="subnav" href="../"><span style="padding:6px 10px;border:1px solid #26375b;border-radius:999px">监控</span></a>
+      <button id="reload-all" class="ghost" type="button">读取全部</button>
+      <button id="save-all" type="button">保存全部</button>
+    </div>
   </header>
   <main>
-    <div class="bar">
-      <label class="toggle"><input id="enabled" type="checkbox">Trading enabled</label>
-      <div class="actions"><button id="reload" class="secondary" type="button">Reload</button><button id="save" type="button">Save config</button></div>
+    <div class="subnav">
+      <a href="#cta-signal">CTA 信号</a>
+      <a href="#symbol-lists">Symbol Lists</a>
+      <a href="#strategy-params">Strategy Params</a>
+      <a href="#fixed-contract">固定契约</a>
+      <a href="#risk-params">Risk Params</a>
     </div>
 
-    <form id="config-form">
-      <section>
-        <h2>Strategy</h2>
-        <div class="grid">
-          <label class="field">Factor<select id="rule-name" disabled><option value="tp_vpi_018">TP_VPI_018</option><option value="baseline_104">baseline_104</option></select></label>
-          <label class="field"><span>NQ gate</span><span class="switch-row"><input id="nq-enabled" type="checkbox">Enabled</span></label>
-          <label class="field span-3">Symbols<textarea id="symbols" spellcheck="false"></textarea></label>
+    <section id="cta-signal" class="panel">
+      <div class="section-header">
+        <h2>CTA 信号 <span class="badge" id="signal-key"></span></h2>
+        <div class="actions">
+          <button id="signal-load" class="secondary" type="button">读取</button>
+          <button id="signal-save" type="button">保存</button>
         </div>
-      </section>
+      </div>
+      <div class="hint">文件 <code>config/cta_special.json</code>。signal 与 pre_trade 每秒热加载。只决定开仓开关和 NQ 闸门；方向仍由因子 z-score 相对 q90/q10 产生。当前没有交易进程时，改 <code>enabled</code> 不会下单。</div>
+      <div class="kv-table" id="signal-table"></div>
+      <div id="signal-status" class="status"></div>
+    </section>
 
-      <section>
-        <h2>Orders And Exit</h2>
-        <div class="grid">
-          <label class="field">Notional per level (USDT)<input id="notional" type="number" min="0" step="any"></label>
-          <label class="field">Long exit quantile<input id="exit-long" type="number" min="0" max="0.899999" step="0.01"></label>
-          <label class="field">Short exit quantile<input id="exit-short" type="number" min="0.100001" max="1" step="0.01"></label>
-          <label class="field">Trailing trigger<input id="trigger" type="number" min="0" step="0.001"></label>
-          <label class="field">Trailing move<input id="move" type="number" min="0" step="0.001"></label>
+    <section id="symbol-lists" class="panel">
+      <div class="section-header">
+        <h2>Symbol Lists <span class="badge" id="symbol-count"></span></h2>
+        <div class="actions">
+          <button id="sym-load" class="secondary" type="button">读取</button>
+          <button id="sym-save" type="button">保存</button>
         </div>
-      </section>
-    </form>
-    <div id="message"></div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <h3>交易列表 <span class="hint">多空同一宇宙</span></h3>
+          <textarea id="symbols" class="mono" spellcheck="false" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+          <h3>平仓列表</h3>
+          <textarea class="mono" readonly placeholder="无独立平仓列表">因子退出和 trailing 对持仓生效，不使用 dump symbol 列表。</textarea>
+          <div class="hint" style="margin-top:8px">单所纯合约没有现货腿，也没有正套/反套两套列表。平仓由 pre_trade 按 lot 的出场分位和 trailing 执行，订单固定 reduce_only。</div>
+        </div>
+      </div>
+      <div id="sym-status" class="status"></div>
+    </section>
+
+    <section id="strategy-params" class="panel">
+      <div class="section-header">
+        <h2>Strategy Params</h2>
+        <div class="actions">
+          <button id="strategy-load" class="secondary" type="button">读取</button>
+          <button id="strategy-save" type="button">保存</button>
+        </div>
+      </div>
+      <div class="hint">这些是还要费率复跑锁定的执行参数。出场分位必须落在开仓带内侧：多头退出 &lt; 0.9，空头退出 &gt; 0.1，trailing move 必须小于 trigger。</div>
+      <div class="kv-table" id="strategy-table"></div>
+      <div id="strategy-status" class="status"></div>
+    </section>
+
+    <section id="fixed-contract" class="panel">
+      <div class="section-header"><h2>固定契约</h2></div>
+      <div class="hint">下面这些由代码固化，页面只展示，不写入 JSON。保存时如果带上这些字段会被拒绝。</div>
+      <div class="kv-table" id="fixed-table"></div>
+    </section>
+
+    <section id="risk-params" class="panel">
+      <div class="section-header">
+        <h2>Risk Params (pre_trade)</h2>
+        <div class="actions">
+          <button id="risk-load" class="secondary" type="button">读取</button>
+          <button id="risk-save" type="button">保存</button>
+          <button id="risk-default" class="ghost" type="button">默认</button>
+        </div>
+      </div>
+      <div class="hint">hash key: <code id="risk-key">-</code>。pre_trade 60 秒热加载。默认 <code>max_pos_u=1000</code>，Binance 10 秒对冲频率固定 300。</div>
+      <div class="kv-table" id="risk-table"></div>
+      <div id="risk-status" class="status"></div>
+    </section>
   </main>
   <script>
     let revision = '';
+    let ruleName = '';
     const byId = id => document.getElementById(id);
-    const number = id => Number(byId(id).value);
-    const setMessage = (text, kind = '') => { const el=byId('message'); el.textContent=text; el.className=kind; };
+    const envMatch = location.pathname.match(/binance-cta-special-[a-z0-9_-]+/);
+    const envName = envMatch ? envMatch[0] : 'binance-cta-special';
+    byId('env-name').value = envName;
+    byId('signal-key').textContent = 'config/cta_special.json';
+    let riskDefaults = {};
+    let riskComments = {};
+    let riskOrder = [];
+
+    const signalRows = [
+      ['enabled', 'select', [['false','false'],['true','true']], 'true 才允许开仓。signal 未启动时只改文件。'],
+      ['rule_name', 'readonly', null, '环境因子，运行中不可改。rx02=tp_vpi_018，rx03=baseline_104。'],
+      ['nq_change_enabled', 'select', [['true','true'],['false','false']], '开仓闸门。做多要求 BUY_NQ >= q0.5，做空要求 SELL_NQ <= q0.5。不产生方向。']
+    ];
+    const strategyRows = [
+      ['order_notional_usdt', '每一档 maker 的名义 USDT，必须为正。'],
+      ['factor_exit_quantile_long', '多头出场分位，范围 [0, 0.9)。score 分位落到该值及以下则平多。'],
+      ['factor_exit_quantile_short', '空头出场分位，范围 (0.1, 1]。score 分位落到该值及以上则平空。'],
+      ['trailing_stop_trigger_step', '最大有利收益达到该比例后激活 trailing。可选 0.01 / 0.02 / 0.05。'],
+      ['trailing_stop_move_step', '每档止盈上移比例，必须大于 0 且小于 trigger。可选 0.005 / 0.01。']
+    ];
+    const fixedRows = [
+      ['long_entry', 'z-score > linear q0.9'],
+      ['short_entry', 'z-score < linear q0.1'],
+      ['normalize', '1440 bars / min_periods 1000 / clip_zscore 3.0'],
+      ['percentile_window', '2880 slots，至少 1440 个有限 score 才 ready'],
+      ['nq', '合约 mid，1440 根，q0.5，min_periods 720'],
+      ['open_offsets', '0, 0.0001, 0.0003, 0.0005 四档 futures maker'],
+      ['signal_delay', '1 秒。bar 收盘后 cts+1 创建挂单'],
+      ['order_ttl', '120 秒'],
+      ['freshness', '模型消息超过 120 秒或超前 5 秒拒绝'],
+      ['exit', '因子退出 + BBO trailing，Market reduce_only'],
+      ['spread', '无。不读现货，不做价差 overlay'],
+      ['conflict', '多空同时成立则 flat；有反向仓位时禁止新开']
+    ];
+
+    function row(key, control, desc) {
+      return `<div class="kv-key">${key}</div><div class="kv-input">${control}</div><div class="kv-desc">${desc}</div>`;
+    }
+    function selectHtml(id, options) {
+      return `<select id="${id}">${options.map(([value,label]) => `<option value="${value}">${label}</option>`).join('')}</select>`;
+    }
+    byId('signal-table').innerHTML = signalRows.map(([key, kind, options, desc]) => {
+      const control = kind === 'readonly'
+        ? `<input id="${key}" class="mono" readonly>`
+        : selectHtml(key, options);
+      return row(key, control, desc);
+    }).join('');
+    byId('strategy-table').innerHTML = strategyRows.map(([key, desc]) => row(key, `<input id="${key}" class="mono" inputmode="decimal">`, desc)).join('');
+    byId('fixed-table').innerHTML = fixedRows.map(([key, desc]) => row(key, `<input class="mono" readonly value="${desc}">`, '代码固化')).join('');
+
+    function setStatus(id, text, kind) {
+      const el = byId(id);
+      el.textContent = text;
+      el.className = 'status' + (kind ? ' ' + kind : '');
+    }
+    function modelService(rule) {
+      return `model_output/one-binance-futures-1m-${rule || ''}`;
+    }
     function populate(config, nextRevision) {
-      revision=nextRevision; byId('revision').textContent=`revision ${revision.slice(0,12)}`;
-      byId('enabled').checked=config.enabled; byId('rule-name').value=config.rule_name;
-      byId('symbols').value=config.symbols.join('\n'); byId('nq-enabled').checked=config.entry.nq_change_enabled;
-      byId('notional').value=config.execution.order_notional_usdt; byId('exit-long').value=config.execution.factor_exit_quantile_long;
-      byId('exit-short').value=config.execution.factor_exit_quantile_short;
-      byId('trigger').value=config.execution.trailing_stop_trigger_step; byId('move').value=config.execution.trailing_stop_move_step;
-      byId('health-dot').className='dot ok'; byId('health').textContent='loaded';
+      revision = nextRevision;
+      ruleName = config.rule_name;
+      byId('revision').textContent = revision.slice(0, 12);
+      byId('enabled').value = config.enabled ? 'true' : 'false';
+      byId('rule_name').value = config.rule_name;
+      byId('nq_change_enabled').value = config.entry.nq_change_enabled ? 'true' : 'false';
+      byId('model-service').value = modelService(config.rule_name);
+      byId('symbols').value = (config.symbols || []).join('\n');
+      byId('symbol-count').textContent = `${(config.symbols || []).length} symbols`;
+      const execution = config.execution || {};
+      for (const [key] of strategyRows) byId(key).value = execution[key] ?? '';
+    }
+    function renderRisk(values) {
+      byId('risk-table').innerHTML = riskOrder.map(key => row(
+        key,
+        `<input class="mono" data-risk-key="${key}" value="${String(values[key] ?? '').replace(/"/g, '&quot;')}">`,
+        riskComments[key] || ''
+      )).join('');
+    }
+    function collectRisk() {
+      const values = {};
+      document.querySelectorAll('[data-risk-key]').forEach(input => { values[input.dataset.riskKey] = input.value.trim(); });
+      return values;
     }
     function collect() {
-      const rule=byId('rule-name').value;
+      const symbols = byId('symbols').value.split(/[\s,]+/).map(v => v.trim().toUpperCase()).filter(Boolean);
+      const execution = {};
+      for (const [key] of strategyRows) {
+        const value = Number(byId(key).value);
+        if (!Number.isFinite(value)) throw new Error(`${key} 必须是数字`);
+        execution[key] = value;
+      }
       return {
-        enabled:byId('enabled').checked, rule_name:rule,
-        symbols:byId('symbols').value.split(/[\s,]+/).map(v=>v.trim().toUpperCase()).filter(Boolean),
-        entry:{nq_change_enabled:byId('nq-enabled').checked},
-        execution:{order_notional_usdt:number('notional'),
-          factor_exit_quantile_long:number('exit-long'),factor_exit_quantile_short:number('exit-short'),
-          trailing_stop_trigger_step:number('trigger'),trailing_stop_move_step:number('move')}
+        enabled: byId('enabled').value === 'true',
+        rule_name: ruleName,
+        symbols,
+        entry: { nq_change_enabled: byId('nq_change_enabled').value === 'true' },
+        execution
       };
     }
     async function load() {
-      byId('reload').disabled=true; setMessage('Loading...');
-      try { const response=await fetch('/api/config',{cache:'no-store'}); const body=await response.json(); if(!response.ok) throw new Error(body.error||`HTTP ${response.status}`); populate(body.config,body.revision); setMessage('Configuration loaded.','ok'); }
-      catch(error) { byId('health-dot').className='dot bad'; byId('health').textContent='error'; setMessage(error.message,'bad'); }
-      finally { byId('reload').disabled=false; }
+      setStatus('signal-status', '读取中...');
+      try {
+        const response = await fetch('api/config', { cache: 'no-store' });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        populate(body.config, body.revision);
+        setStatus('signal-status', '读取完成', 'ok');
+        setStatus('sym-status', '读取完成', 'ok');
+        setStatus('strategy-status', '读取完成', 'ok');
+      } catch (error) {
+        setStatus('signal-status', error.message, 'err');
+      }
     }
     async function save() {
-      byId('save').disabled=true; setMessage('Saving...');
-      try { const response=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),expected_revision:revision})}); const body=await response.json(); if(!response.ok) throw new Error(body.error||`HTTP ${response.status}`); populate(body.config,body.revision); setMessage('Saved.','ok'); }
-      catch(error) { setMessage(error.message,responseKind(error.message),'bad'); }
-      finally { byId('save').disabled=false; }
+      setStatus('signal-status', '保存中...');
+      try {
+        const response = await fetch('api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: collect(), expected_revision: revision })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        populate(body.config, body.revision);
+        setStatus('signal-status', '保存成功', 'ok');
+        setStatus('sym-status', '保存成功', 'ok');
+        setStatus('strategy-status', '保存成功', 'ok');
+      } catch (error) {
+        const kind = String(error.message).includes('reload') ? 'warn' : 'err';
+        setStatus('signal-status', error.message, kind);
+        setStatus('strategy-status', error.message, kind);
+      }
     }
-    function responseKind(text) { return text.includes('reload') ? 'warn' : 'bad'; }
-    byId('reload').addEventListener('click',load); byId('save').addEventListener('click',save); load();
+    async function loadRisk() {
+      setStatus('risk-status', '读取中...');
+      try {
+        const schemaResponse = await fetch('api/risk-schema', { cache: 'no-store' });
+        const schema = await schemaResponse.json();
+        if (!schemaResponse.ok) throw new Error(schema.error || `HTTP ${schemaResponse.status}`);
+        riskDefaults = schema.defaults || {};
+        riskComments = schema.comments || {};
+        riskOrder = schema.order || Object.keys(riskDefaults);
+        byId('risk-key').textContent = schema.key || '-';
+        const response = await fetch('api/risk-params', { cache: 'no-store' });
+        const body = await response.json();
+        if (response.status === 404) {
+          renderRisk(riskDefaults);
+          setStatus('risk-status', '尚未配置，已载入默认值（修改后点保存写入）', 'warn');
+          return;
+        }
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        renderRisk({ ...riskDefaults, ...(body.values || {}) });
+        const extra = body.stale_count ? `，忽略 ${body.stale_count} 个未知字段` : '';
+        setStatus('risk-status', `读取完成 (${body.count || 0} 字段${extra})`, 'ok');
+      } catch (error) {
+        if (Object.keys(riskDefaults).length) renderRisk(riskDefaults);
+        setStatus('risk-status', error.message, 'err');
+      }
+    }
+    async function saveRisk() {
+      setStatus('risk-status', '保存中...');
+      try {
+        const response = await fetch('api/risk-params', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values: collectRisk() })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        renderRisk(body.values || {});
+        setStatus('risk-status', `保存成功 (${body.count} 字段)`, 'ok');
+      } catch (error) {
+        setStatus('risk-status', error.message, 'err');
+      }
+    }
+    byId('reload-all').addEventListener('click', () => { load(); loadRisk(); });
+    byId('save-all').addEventListener('click', save);
+    byId('signal-load').addEventListener('click', load);
+    byId('sym-load').addEventListener('click', load);
+    byId('strategy-load').addEventListener('click', load);
+    byId('signal-save').addEventListener('click', save);
+    byId('sym-save').addEventListener('click', save);
+    byId('strategy-save').addEventListener('click', save);
+    byId('risk-load').addEventListener('click', loadRisk);
+    byId('risk-save').addEventListener('click', saveRisk);
+    byId('risk-default').addEventListener('click', () => {
+      renderRisk(riskDefaults);
+      setStatus('risk-status', '已载入默认值，点保存写入 Redis', 'warn');
+    });
+    load();
+    loadRisk();
   </script>
 </body>
 </html>

@@ -9,12 +9,24 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+_INTRA_SCRIPTS = Path(__file__).resolve().parents[1] / "intra_scripts"
+if str(_INTRA_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_INTRA_SCRIPTS))
+
+import sync_cta_risk_params as risk_defaults  # noqa: E402
+
+OPEN_VENUE = "binance-futures"
+HEDGE_VENUE = "binance-futures"
+BINANCE_HEDGE_RATE_10S = "300"
+BINANCE_HEDGE_RATE_10S_KEY = "arb_hedge_order_rate_limit_10s"
 
 MAX_BODY_BYTES = 64 * 1024
 RULE_NAMES = {"tp_vpi_018", "baseline_104"}
@@ -198,7 +210,82 @@ class ConfigStore:
             return config, self._revision(config)
 
 
-def make_handler(store: ConfigStore, index_path: Path):
+def risk_schema() -> tuple[dict[str, str], dict[str, str], list[str]]:
+    defaults = {key: str(value) for key, value in risk_defaults.RISK_PARAMS.items()}
+    defaults[BINANCE_HEDGE_RATE_10S_KEY] = BINANCE_HEDGE_RATE_10S
+    comments = dict(risk_defaults.PARAM_COMMENTS)
+    comments[BINANCE_HEDGE_RATE_10S_KEY] = "Binance futures 10 秒对冲下单上限，固定 300"
+    order = list(risk_defaults.PARAM_PRINT_ORDER)
+    for key in defaults:
+        if key not in order:
+            order.append(key)
+    return defaults, comments, order
+
+
+def risk_params_key(env_name: str) -> str:
+    return f"{env_name}:{OPEN_VENUE}:{HEDGE_VENUE}:pre_trade_risk_params"
+
+
+def _decode_redis(value: Any) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "ignore")
+    return str(value)
+
+
+def read_risk_hash(redis_client: Any, key: str) -> dict[str, str]:
+    raw = redis_client.hgetall(key) or {}
+    return {_decode_redis(name): _decode_redis(value) for name, value in raw.items()}
+
+
+def normalize_risk_values(values: Any) -> dict[str, str]:
+    defaults, _comments, order = risk_schema()
+    if not isinstance(values, dict):
+        raise ValueError("values must be an object")
+    allowed = set(defaults)
+    unknown = sorted(str(key) for key in values if str(key) not in allowed)
+    if unknown:
+        raise ValueError("unknown risk fields: " + ", ".join(unknown))
+    mapping = dict(defaults)
+    for key in order:
+        if key in values and values[key] is not None and str(values[key]).strip() != "":
+            mapping[key] = str(values[key]).strip()
+    for key, raw in mapping.items():
+        try:
+            number = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{key} must be a number") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{key} must be finite")
+        mapping[key] = f"{number:g}"
+    trigger = float(mapping["unimmr_trigger_line"])
+    recover = float(mapping["unimmr_recover_line"])
+    if not (1.5 <= trigger < recover):
+        raise ValueError("unimmr control lines must satisfy 1.5 <= unimmr_trigger_line < unimmr_recover_line")
+    if float(mapping[BINANCE_HEDGE_RATE_10S_KEY]) != float(BINANCE_HEDGE_RATE_10S):
+        raise ValueError(f"{BINANCE_HEDGE_RATE_10S_KEY} must be {BINANCE_HEDGE_RATE_10S}")
+    mapping[BINANCE_HEDGE_RATE_10S_KEY] = BINANCE_HEDGE_RATE_10S
+    if float(mapping["max_pos_u"]) <= 0:
+        raise ValueError("max_pos_u must be positive")
+    return mapping
+
+
+def replace_risk_hash(redis_client: Any, key: str, mapping: dict[str, str]) -> dict[str, Any]:
+    existing = {_decode_redis(item) for item in (redis_client.hkeys(key) or [])}
+    stale = sorted(existing - set(mapping))
+    pipe = redis_client.pipeline()
+    pipe.hset(key, mapping=mapping)
+    if stale:
+        pipe.hdel(key, *stale)
+    pipe.execute()
+    return {"key": key, "count": len(mapping), "values": mapping, "removed_fields": stale}
+
+
+def make_handler(
+    store: ConfigStore,
+    index_path: Path,
+    redis_client: Any = None,
+    env_name: str | None = None,
+):
     class Handler(BaseHTTPRequestHandler):
         server_version = "cta-special-config"
 
@@ -233,10 +320,65 @@ def make_handler(store: ConfigStore, index_path: Path):
                     config, revision = store.load()
                     self._json(200, {"config": config, "revision": revision})
                     return
+                if path == "/api/risk-schema":
+                    defaults, comments, order = risk_schema()
+                    self._json(
+                        200,
+                        {
+                            "key": risk_params_key(env_name or ""),
+                            "defaults": defaults,
+                            "comments": comments,
+                            "order": order,
+                        },
+                    )
+                    return
+                if path == "/api/risk-params":
+                    if redis_client is None or not env_name:
+                        self._json(503, {"error": "redis risk params are unavailable"})
+                        return
+                    key = risk_params_key(env_name)
+                    raw_values = read_risk_hash(redis_client, key)
+                    defaults, _comments, order = risk_schema()
+                    values = {name: raw_values[name] for name in order if name in raw_values}
+                    stale = {name: value for name, value in raw_values.items() if name not in defaults}
+                    if not values and not raw_values:
+                        self._json(404, {"error": f"risk params not found: {key}", "key": key})
+                        return
+                    self._json(
+                        200,
+                        {
+                            "key": key,
+                            "values": values,
+                            "count": len(values),
+                            "stale_count": len(stale),
+                            "stale_values": stale,
+                        },
+                    )
+                    return
                 if path in {"/", "/index.html"}:
                     self._send(200, index_path.read_bytes(), "text/html; charset=utf-8")
                     return
                 self._json(404, {"error": "not found"})
+            except Exception as exc:
+                self._json(500, {"error": str(exc)})
+
+        def do_POST(self) -> None:  # noqa: N802
+            if urlparse(self.path).path != "/api/risk-params":
+                self._json(404, {"error": "not found"})
+                return
+            if redis_client is None or not env_name:
+                self._json(503, {"error": "redis risk params are unavailable"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > MAX_BODY_BYTES:
+                    raise ValueError("invalid request body size")
+                request = _object(json.loads(self.rfile.read(length)), "request")
+                _reject_unknown(request, {"values"}, "request")
+                mapping = normalize_risk_values(request.get("values"))
+                self._json(200, replace_risk_hash(redis_client, risk_params_key(env_name), mapping))
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._json(400, {"error": str(exc)})
             except Exception as exc:
                 self._json(500, {"error": str(exc)})
 
@@ -278,7 +420,15 @@ def main() -> None:
     if args.check:
         print(f"[cta-special-config] valid: {args.config}")
         return
-    server = ThreadingHTTPServer((args.bind, args.port), make_handler(store, args.index.resolve()))
+    import redis
+
+    env_name = os.path.basename(os.getcwd()).strip().lower()
+    redis_client = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
+    redis_client.ping()
+    server = ThreadingHTTPServer(
+        (args.bind, args.port),
+        make_handler(store, args.index.resolve(), redis_client, env_name),
+    )
     print(f"[cta-special-config] listening on http://{args.bind}:{args.port}")
     server.serve_forever()
 

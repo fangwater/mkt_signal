@@ -18,9 +18,19 @@ def _read_json(path: Path) -> tuple[Any, str | None]:
     try:
         return json.loads(path.read_text(encoding="utf-8")), None
     except FileNotFoundError:
-        return None, f"missing {path}"
+        return None, None
     except (OSError, json.JSONDecodeError) as exc:
-        return None, f"read {path}: {exc}"
+        return None, f"{path.name}: {exc}"
+
+
+def _feed_state(value: Any, error: str | None, age_ms: int | None) -> str:
+    if error:
+        return "error"
+    if not isinstance(value, dict):
+        return "offline"
+    if age_ms is None or age_ms > MAX_HEALTHY_STATUS_AGE_MS:
+        return "stale"
+    return "online"
 
 
 def build_snapshot(
@@ -40,17 +50,17 @@ def build_snapshot(
         if execution_updated_ts_us > 0
         else None
     )
+    signal_state = _feed_state(status, status_error, status_age_ms)
+    execution_state = _feed_state(execution, execution_error, execution_age_ms)
     return {
         "server_ts_us": now_us,
         "status_age_ms": status_age_ms,
         "execution_age_ms": execution_age_ms,
+        "signal_state": signal_state,
+        "execution_state": execution_state,
         "healthy": config_error is None
-        and status_error is None
-        and execution_error is None
-        and status_age_ms is not None
-        and status_age_ms <= MAX_HEALTHY_STATUS_AGE_MS
-        and execution_age_ms is not None
-        and execution_age_ms <= MAX_HEALTHY_STATUS_AGE_MS,
+        and signal_state == "online"
+        and execution_state == "online",
         "config": config,
         "status": status,
         "execution": execution,

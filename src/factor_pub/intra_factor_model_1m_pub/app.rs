@@ -1085,10 +1085,9 @@ fn select_enabled_symbols(
 
 fn plan_has_required_factors(plan: &SymbolFactorPlan) -> bool {
     let names: Vec<&str> = plan.factor_names().collect();
-    names.len() == INTRA_FACTOR_NAMES.len()
-        && INTRA_FACTOR_NAMES
-            .iter()
-            .all(|required| names.contains(required))
+    INTRA_FACTOR_NAMES
+        .iter()
+        .all(|required| names.contains(required))
 }
 
 pub fn output_service_path(venue_slug: &str, factor_name: &str) -> String {
@@ -1180,6 +1179,14 @@ mod tests {
         .expect("incomplete plan");
         assert!(plan_has_required_factors(&complete));
         assert!(!plan_has_required_factors(&incomplete));
+        let mut with_single_venue = INTRA_FACTOR_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        with_single_venue.extend(["TP_VPI_018".to_string(), "baseline_104".to_string()]);
+        let extended = SymbolFactorPlan::from_factor_names("SOLUSDT", with_single_venue)
+            .expect("extended plan");
+        assert!(plan_has_required_factors(&extended));
 
         let symbols = select_enabled_symbols(
             TradingVenue::BinanceFutures,

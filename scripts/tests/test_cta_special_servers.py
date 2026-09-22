@@ -133,8 +133,74 @@ class CtaSpecialServerTests(unittest.TestCase):
         )
         snapshot = DASHBOARD.build_snapshot(self.config_path, status_path, execution_path)
         self.assertTrue(snapshot["healthy"])
+        self.assertEqual(snapshot["signal_state"], "online")
+        self.assertEqual(snapshot["execution_state"], "online")
         self.assertGreaterEqual(snapshot["status_age_ms"], 0)
         self.assertEqual(snapshot["status"]["scheduled_entries"], 2)
+
+    def test_dashboard_snapshot_treats_absent_status_as_offline(self):
+        snapshot = DASHBOARD.build_snapshot(
+            self.config_path,
+            self.directory / "missing_status.json",
+            self.directory / "missing_execution.json",
+        )
+        self.assertFalse(snapshot["healthy"])
+        self.assertEqual(snapshot["errors"], [])
+        self.assertEqual(snapshot["signal_state"], "offline")
+        self.assertEqual(snapshot["execution_state"], "offline")
+        self.assertEqual(snapshot["config"]["rule_name"], "tp_vpi_018")
+
+    def test_risk_params_round_trip_uses_env_redis_key(self):
+        class FakeRedis:
+            def __init__(self):
+                self.hashes = {}
+
+            def hgetall(self, key):
+                return dict(self.hashes.get(key, {}))
+
+            def hkeys(self, key):
+                return list(self.hashes.get(key, {}))
+
+            def pipeline(self):
+                return self
+
+            def hset(self, key, mapping):
+                self.hashes.setdefault(key, {}).update(mapping)
+                return self
+
+            def hdel(self, key, *fields):
+                for field in fields:
+                    self.hashes.get(key, {}).pop(field, None)
+                return self
+
+            def execute(self):
+                return []
+
+        redis = FakeRedis()
+        store = CONFIG_SERVER.ConfigStore(self.config_path)
+        base = self.serve(
+            CONFIG_SERVER.make_handler(store, self.index_path, redis, "binance-cta-special-rx02")
+        )
+        with self.assertRaises(HTTPError) as missing:
+            request_json(f"{base}/api/risk-params")
+        self.assertEqual(missing.exception.code, 404)
+        missing_body = json.load(missing.exception)
+        missing.exception.close()
+        self.assertIn("binance-cta-special-rx02:binance-futures:binance-futures", missing_body["key"])
+        _schema_status, schema = request_json(f"{base}/api/risk-schema")
+        values = dict(schema["defaults"])
+        values["max_pos_u"] = "1500"
+        status, saved = request_json(f"{base}/api/risk-params", method="POST", body={"values": values})
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["values"]["max_pos_u"], "1500")
+        self.assertEqual(saved["values"]["arb_hedge_order_rate_limit_10s"], "300")
+        _status, loaded = request_json(f"{base}/api/risk-params")
+        self.assertEqual(loaded["values"]["max_pos_u"], "1500")
+        values["arb_hedge_order_rate_limit_10s"] = "10"
+        with self.assertRaises(HTTPError) as caught:
+            request_json(f"{base}/api/risk-params", method="POST", body={"values": values})
+        self.assertEqual(caught.exception.code, 400)
+        caught.exception.close()
 
 
 if __name__ == "__main__":
