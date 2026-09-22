@@ -62,28 +62,46 @@ class CtaSpecialServerTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_port}"
 
-    def test_config_normalization_matches_fixed_contract(self):
+    def test_config_normalization_preserves_strategy_controls(self):
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         config["rule_name"] = "BASELINE_104"
         config["symbols"] = ["ethusdt", "BTCUSDT", "ethusdt"]
         normalized = CONFIG_SERVER.normalize_config(config)
         self.assertEqual(normalized["rule_name"], "baseline_104")
         self.assertEqual(normalized["symbols"], ["BTCUSDT", "ETHUSDT"])
-        self.assertEqual(normalized["entry"], {"nq_change_enabled": True})
+        self.assertEqual(normalized["entry"]["trade_sides"], "both")
+        self.assertEqual(normalized["entry"]["factor_long_quantile"], 0.9)
+        self.assertEqual(normalized["entry"]["nq_long_quantile"], 0.5)
+        self.assertEqual(
+            normalized["execution"]["open_offsets"],
+            [0.0, 0.0001, 0.0003, 0.0005],
+        )
         self.assertNotIn("runtime", normalized)
 
         del config["enabled"]
         self.assertFalse(CONFIG_SERVER.normalize_config(config)["enabled"])
 
-    def test_config_rejects_removed_fixed_fields(self):
+    def test_config_rejects_unknown_and_invalid_strategy_fields(self):
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         config["venue"] = "binance-futures"
         with self.assertRaisesRegex(ValueError, "unknown fields"):
             CONFIG_SERVER.normalize_config(config)
         del config["venue"]
-        config["execution"]["open_offsets"] = [0, 0.0001, 0.0003, 0.0005]
-        with self.assertRaisesRegex(ValueError, "unknown fields"):
+        config["execution"]["open_offsets"] = [0, 0.0001, 0.0001]
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
             CONFIG_SERVER.normalize_config(config)
+
+    def test_config_validates_entry_and_exit_quantiles_together(self):
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["entry"]["factor_long_quantile"] = 0.6
+        config["execution"]["factor_exit_quantile_long"] = 0.7
+        with self.assertRaisesRegex(ValueError, "below entry"):
+            CONFIG_SERVER.normalize_config(config)
+
+        config["entry"]["factor_long_quantile"] = 0.8
+        config["execution"]["factor_exit_quantile_long"] = 0.7
+        normalized = CONFIG_SERVER.normalize_config(config)
+        self.assertEqual(normalized["entry"]["factor_long_quantile"], 0.8)
 
     def test_config_http_save_is_revision_checked(self):
         store = CONFIG_SERVER.ConfigStore(self.config_path)

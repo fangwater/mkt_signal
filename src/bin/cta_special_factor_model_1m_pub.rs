@@ -11,6 +11,8 @@ struct Args {
     venue: TradingVenue,
     #[arg(long, default_value = "config/cta_special_factor_model_1m_pub.toml")]
     config: String,
+    #[arg(long, default_value = "config/cta_special.json")]
+    strategy_config: String,
     #[arg(long)]
     core: Option<usize>,
 }
@@ -20,7 +22,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "CTA_SPECIAL_FACTOR_MODEL_1M_CORE")?;
-    CtaSpecialFactorModel1mPubApp::new(&args.config, args.venue)
+    CtaSpecialFactorModel1mPubApp::new(&args.config, &args.strategy_config, args.venue)
         .await?
         .run()
         .await

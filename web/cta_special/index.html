@@ -157,13 +157,20 @@
       el('ready-count').textContent = status.symbols ? `${counts.ready}/${names.length}` : '-';
       el('decisions').textContent = status.symbols ? `${counts.long} / ${counts.short} / ${counts.flat}` : '-';
       const execCfg = config.execution || {};
+      const entryCfg = config.entry || {};
+      const offsets = Array.isArray(execCfg.open_offsets)
+        ? execCfg.open_offsets.map(value => fmt(Number(value) * 10000, 1)).join(' / ') + ' bp'
+        : '-';
       el('param-chips').innerHTML = [
+        chip('entry q', `${fmt(entryCfg.factor_short_quantile, 2)} / ${fmt(entryCfg.factor_long_quantile, 2)}`),
         chip('notional', fmt(execCfg.order_notional_usdt, 2)),
         chip('exit long q', fmt(execCfg.factor_exit_quantile_long, 2)),
         chip('exit short q', fmt(execCfg.factor_exit_quantile_short, 2)),
         chip('trigger', fmt(execCfg.trailing_stop_trigger_step, 3)),
         chip('move', fmt(execCfg.trailing_stop_move_step, 3)),
-        chip('open offsets', '0 / 1 / 3 / 5 bp')
+        chip('open offsets', offsets),
+        chip('maker TTL', `${execCfg.maker_ttl_seconds ?? '-'}s`),
+        chip('max hold', `${execCfg.max_holding_seconds ?? '-'}s`)
       ].join('');
       el('run-meta').textContent = errors.length ? errors.join(' | ') : '';
       el('run-meta').className = 'meta' + (errors.length ? ' stale' : '');

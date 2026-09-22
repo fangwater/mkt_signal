@@ -33,11 +33,17 @@ RULE_NAMES = {"tp_vpi_018", "baseline_104"}
 SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
 
 TOP_FIELDS = {"enabled", "rule_name", "symbols", "entry", "execution"}
-ENTRY_FIELDS = {"nq_change_enabled"}
+ENTRY_FIELDS = {
+    "trade_sides", "factor_long_quantile", "factor_short_quantile",
+    "cooldown_seconds", "signal_delay_seconds", "nq_change_enabled",
+    "nq_long_quantile", "nq_short_quantile",
+}
 EXECUTION_FIELDS = {
-    "order_notional_usdt",
+    "order_notional_usdt", "open_offsets", "maker_ttl_seconds",
+    "factor_exit_enabled",
     "factor_exit_quantile_long", "factor_exit_quantile_short",
-    "trailing_stop_trigger_step", "trailing_stop_move_step",
+    "trailing_stop_enabled", "trailing_stop_trigger_step", "trailing_stop_move_step",
+    "max_holding_seconds",
 }
 
 
@@ -68,6 +74,12 @@ def _number(raw: Any, field: str) -> float:
     return value
 
 
+def _integer(raw: Any, field: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"{field} must be an integer")
+    return raw
+
+
 def normalize_config(raw: Any) -> dict[str, Any]:
     root = _object(raw, "config")
     _reject_unknown(root, TOP_FIELDS, "config")
@@ -88,54 +100,114 @@ def normalize_config(raw: Any) -> dict[str, Any]:
 
     entry = _object(root.get("entry", {}), "entry")
     _reject_unknown(entry, ENTRY_FIELDS, "entry")
+    trade_sides = str(entry.get("trade_sides", "both")).strip().lower()
+    if trade_sides in {"combine", "long_short", "long,short", "short,long"}:
+        trade_sides = "both"
+    if trade_sides not in {"long", "short", "both"}:
+        raise ValueError("entry.trade_sides must be long, short, or both")
+    factor_long = _number(entry.get("factor_long_quantile", 0.9), "entry.factor_long_quantile")
+    factor_short = _number(entry.get("factor_short_quantile", 0.1), "entry.factor_short_quantile")
+    if not (0.0 <= factor_short < factor_long <= 1.0):
+        raise ValueError("entry factor quantiles must satisfy 0 <= short < long <= 1")
+    cooldown = _integer(entry.get("cooldown_seconds", 0), "entry.cooldown_seconds")
+    signal_delay = _integer(
+        entry.get("signal_delay_seconds", 1), "entry.signal_delay_seconds"
+    )
+    if cooldown < 0 or signal_delay < 0:
+        raise ValueError("entry cooldown_seconds and signal_delay_seconds cannot be negative")
+    nq_long = _number(entry.get("nq_long_quantile", 0.5), "entry.nq_long_quantile")
+    nq_short = _number(entry.get("nq_short_quantile", 0.5), "entry.nq_short_quantile")
+    if not (0.0 <= nq_long <= 1.0 and 0.0 <= nq_short <= 1.0):
+        raise ValueError("entry NQ quantiles must be in [0, 1]")
 
     execution = _object(root["execution"], "execution")
     _reject_unknown(execution, EXECUTION_FIELDS, "execution")
-    for required in (
-        "factor_exit_quantile_long", "factor_exit_quantile_short",
-        "trailing_stop_trigger_step", "trailing_stop_move_step",
-    ):
-        if required not in execution:
-            raise ValueError(f"execution.{required} is required")
     notional = _number(
         execution.get("order_notional_usdt", 100.0), "execution.order_notional_usdt"
     )
     if notional <= 0:
         raise ValueError("execution.order_notional_usdt must be positive")
+    offsets_raw = execution.get("open_offsets", [0.0, 0.0001, 0.0003, 0.0005])
+    if not isinstance(offsets_raw, list) or not 1 <= len(offsets_raw) <= 8:
+        raise ValueError("execution.open_offsets must be an array with 1..=8 levels")
+    offsets = [
+        _number(value, f"execution.open_offsets[{index}]")
+        for index, value in enumerate(offsets_raw)
+    ]
+    if any(not 0.0 <= value <= 0.01 for value in offsets):
+        raise ValueError("execution.open_offsets values must be in [0, 0.01]")
+    if any(current <= previous for previous, current in zip(offsets, offsets[1:])):
+        raise ValueError("execution.open_offsets must be strictly increasing")
+    maker_ttl = _integer(
+        execution.get("maker_ttl_seconds", 120), "execution.maker_ttl_seconds"
+    )
+    if maker_ttl <= 0:
+        raise ValueError("execution.maker_ttl_seconds must be positive")
+    factor_exit_enabled = _bool(
+        execution.get("factor_exit_enabled", True), "execution.factor_exit_enabled"
+    )
     exit_long = _number(
-        execution["factor_exit_quantile_long"], "execution.factor_exit_quantile_long"
+        execution.get("factor_exit_quantile_long", 0.3),
+        "execution.factor_exit_quantile_long",
     )
     exit_short = _number(
-        execution["factor_exit_quantile_short"], "execution.factor_exit_quantile_short"
+        execution.get("factor_exit_quantile_short", 0.7),
+        "execution.factor_exit_quantile_short",
     )
-    if not 0.0 <= exit_long < 0.9:
-        raise ValueError("execution.factor_exit_quantile_long must be in [0, 0.9)")
-    if not 0.1 < exit_short <= 1.0:
-        raise ValueError("execution.factor_exit_quantile_short must be in (0.1, 1]")
+    if not 0.0 <= exit_long < factor_long:
+        raise ValueError(
+            "execution.factor_exit_quantile_long must be below entry.factor_long_quantile"
+        )
+    if not factor_short < exit_short <= 1.0:
+        raise ValueError(
+            "execution.factor_exit_quantile_short must be above entry.factor_short_quantile"
+        )
+    trailing_enabled = _bool(
+        execution.get("trailing_stop_enabled", True), "execution.trailing_stop_enabled"
+    )
     trigger = _number(
-        execution["trailing_stop_trigger_step"], "execution.trailing_stop_trigger_step"
+        execution.get("trailing_stop_trigger_step", 0.02),
+        "execution.trailing_stop_trigger_step",
     )
     move = _number(
-        execution["trailing_stop_move_step"], "execution.trailing_stop_move_step"
+        execution.get("trailing_stop_move_step", 0.01),
+        "execution.trailing_stop_move_step",
     )
-    if not (trigger > 0.0 and 0.0 < move < trigger):
+    if trailing_enabled and not (trigger > 0.0 and 0.0 < move < trigger):
         raise ValueError("trailing move must be positive and below trigger")
+    max_holding = _integer(
+        execution.get("max_holding_seconds", 0), "execution.max_holding_seconds"
+    )
+    if max_holding < 0:
+        raise ValueError("execution.max_holding_seconds cannot be negative")
 
     return {
         "enabled": _bool(root.get("enabled", False), "enabled"),
         "rule_name": rule_name,
         "symbols": symbols,
         "entry": {
+            "trade_sides": trade_sides,
+            "factor_long_quantile": factor_long,
+            "factor_short_quantile": factor_short,
+            "cooldown_seconds": cooldown,
+            "signal_delay_seconds": signal_delay,
             "nq_change_enabled": _bool(
                 entry.get("nq_change_enabled", True), "entry.nq_change_enabled"
             ),
+            "nq_long_quantile": nq_long,
+            "nq_short_quantile": nq_short,
         },
         "execution": {
             "order_notional_usdt": notional,
+            "open_offsets": offsets,
+            "maker_ttl_seconds": maker_ttl,
+            "factor_exit_enabled": factor_exit_enabled,
             "factor_exit_quantile_long": exit_long,
             "factor_exit_quantile_short": exit_short,
+            "trailing_stop_enabled": trailing_enabled,
             "trailing_stop_trigger_step": trigger,
             "trailing_stop_move_step": move,
+            "max_holding_seconds": max_holding,
         },
     }
 

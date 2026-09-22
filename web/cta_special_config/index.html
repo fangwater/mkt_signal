@@ -74,7 +74,7 @@
           <button id="signal-save" type="button">保存</button>
         </div>
       </div>
-      <div class="hint">文件 <code>config/cta_special.json</code>。signal 与 pre_trade 每秒热加载。只决定开仓开关和 NQ 闸门；方向仍由因子 z-score 相对 q90/q10 产生。当前没有交易进程时，改 <code>enabled</code> 不会下单。</div>
+      <div class="hint">文件 <code>config/cta_special.json</code>。signal、factor publisher 与 pre_trade 每秒热加载。入场和 NQ 分位使用 publisher 给出的线性分位阈值；修改这些分位后 signal 会暂停一个 bar，避免新旧阈值混用。</div>
       <div class="kv-table" id="signal-table"></div>
       <div id="signal-status" class="status"></div>
     </section>
@@ -109,14 +109,14 @@
           <button id="strategy-save" type="button">保存</button>
         </div>
       </div>
-      <div class="hint">这些是还要费率复跑锁定的执行参数。出场分位必须落在开仓带内侧：多头退出 &lt; 0.9，空头退出 &gt; 0.1，trailing move 必须小于 trigger。</div>
+      <div class="hint">执行参数按新开订单做快照，热更新不改已有 lot。出场分位必须落在当前入场带内侧；网格偏移严格递增，最多 8 档。</div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
     </section>
 
     <section id="fixed-contract" class="panel">
       <div class="section-header"><h2>固定契约</h2></div>
-      <div class="hint">下面这些由代码固化，页面只展示，不写入 JSON。保存时如果带上这些字段会被拒绝。</div>
+      <div class="hint">这里只保留模型算法、执行安全和单所路由的不变量；策略旋钮都在上面配置。</div>
       <div class="kv-table" id="fixed-table"></div>
     </section>
 
@@ -149,28 +149,36 @@
     const signalRows = [
       ['enabled', 'select', [['false','false'],['true','true']], 'true 才允许开仓。signal 未启动时只改文件。'],
       ['rule_name', 'readonly', null, '环境因子，运行中不可改。rx02=tp_vpi_018，rx03=baseline_104。'],
-      ['nq_change_enabled', 'select', [['true','true'],['false','false']], '开仓闸门。做多要求 BUY_NQ >= q0.5，做空要求 SELL_NQ <= q0.5。不产生方向。']
+      ['trade_sides', 'select', [['both','both'],['long','long'],['short','short']], '允许方向；both 对应研究配置 combine。'],
+      ['factor_long_quantile', 'number', null, '做多入场线性分位，score 严格大于该阈值。'],
+      ['factor_short_quantile', 'number', null, '做空入场线性分位，score 严格小于该阈值。'],
+      ['cooldown_seconds', 'number', null, '同一 symbol 两次网格开仓的最小间隔，0 表示不限制。'],
+      ['signal_delay_seconds', 'number', null, 'bar 收盘后延迟多少秒创建 maker 网格。'],
+      ['nq_change_enabled', 'select', [['true','true'],['false','false']], '是否启用本合约 mid 的 NQ 开仓闸门。'],
+      ['nq_long_quantile', 'number', null, '做多 NQ 阈值线性分位，BUY_NQ 必须大于等于该阈值。'],
+      ['nq_short_quantile', 'number', null, '做空 NQ 阈值线性分位，SELL_NQ 必须小于等于该阈值。']
     ];
     const strategyRows = [
-      ['order_notional_usdt', '每一档 maker 的名义 USDT，必须为正。'],
-      ['factor_exit_quantile_long', '多头出场分位，范围 [0, 0.9)。score 分位落到该值及以下则平多。'],
-      ['factor_exit_quantile_short', '空头出场分位，范围 (0.1, 1]。score 分位落到该值及以上则平空。'],
-      ['trailing_stop_trigger_step', '最大有利收益达到该比例后激活 trailing。可选 0.01 / 0.02 / 0.05。'],
-      ['trailing_stop_move_step', '每档止盈上移比例，必须大于 0 且小于 trigger。可选 0.005 / 0.01。']
+      ['order_notional_usdt', 'number', '每一档 maker 的名义 USDT，必须为正。'],
+      ['open_offsets', 'offsets', '网格价格偏移 JSON 数组，范围 [0, 0.01]，严格递增，最多 8 档。'],
+      ['maker_ttl_seconds', 'number', '开仓 maker 存活秒数，必须为正。'],
+      ['factor_exit_enabled', 'boolean', '控制因子衰减撤单和因子分位平仓。'],
+      ['factor_exit_quantile_long', 'number', '多头出场分位，必须低于做多入场分位。'],
+      ['factor_exit_quantile_short', 'number', '空头出场分位，必须高于做空入场分位。'],
+      ['trailing_stop_enabled', 'boolean', '是否启用逐 lot BBO trailing。'],
+      ['trailing_stop_trigger_step', 'number', '最大有利收益达到该比例后激活 trailing。'],
+      ['trailing_stop_move_step', 'number', '每档止盈上移比例，启用 trailing 时必须小于 trigger。'],
+      ['max_holding_seconds', 'number', '逐 lot 最长持仓秒数，0 表示不限制。']
     ];
     const fixedRows = [
-      ['long_entry', 'z-score > linear q0.9'],
-      ['short_entry', 'z-score < linear q0.1'],
       ['normalize', '1440 bars / min_periods 1000 / clip_zscore 3.0'],
       ['percentile_window', '2880 slots，至少 1440 个有限 score 才 ready'],
-      ['nq', '合约 mid，1440 根，q0.5，min_periods 720'],
-      ['open_offsets', '0, 0.0001, 0.0003, 0.0005 四档 futures maker'],
-      ['signal_delay', '1 秒。bar 收盘后 cts+1 创建挂单'],
-      ['order_ttl', '120 秒'],
+      ['nq_window', '合约 mid，lookback 1440，quantile window 1440，min_periods 720'],
+      ['bar_frequency', '60 秒 / each_bar / linear quantile / conflict flat'],
       ['freshness', '模型消息超过 120 秒或超前 5 秒拒绝'],
-      ['exit', '因子退出 + BBO trailing，Market reduce_only'],
+      ['execution', 'futures maker 入场；Market reduce_only 退出'],
       ['spread', '无。不读现货，不做价差 overlay'],
-      ['conflict', '多空同时成立则 flat；有反向仓位时禁止新开']
+      ['position_conflict', '有反向仓位时禁止新开']
     ];
 
     function row(key, control, desc) {
@@ -182,10 +190,17 @@
     byId('signal-table').innerHTML = signalRows.map(([key, kind, options, desc]) => {
       const control = kind === 'readonly'
         ? `<input id="${key}" class="mono" readonly>`
-        : selectHtml(key, options);
+        : kind === 'select'
+          ? selectHtml(key, options)
+          : `<input id="${key}" class="mono" inputmode="decimal">`;
       return row(key, control, desc);
     }).join('');
-    byId('strategy-table').innerHTML = strategyRows.map(([key, desc]) => row(key, `<input id="${key}" class="mono" inputmode="decimal">`, desc)).join('');
+    byId('strategy-table').innerHTML = strategyRows.map(([key, kind, desc]) => {
+      const control = kind === 'boolean'
+        ? selectHtml(key, [['true','true'],['false','false']])
+        : `<input id="${key}" class="mono" inputmode="decimal">`;
+      return row(key, control, desc);
+    }).join('');
     byId('fixed-table').innerHTML = fixedRows.map(([key, desc]) => row(key, `<input class="mono" readonly value="${desc}">`, '代码固化')).join('');
 
     function setStatus(id, text, kind) {
@@ -202,12 +217,20 @@
       byId('revision').textContent = revision.slice(0, 12);
       byId('enabled').value = config.enabled ? 'true' : 'false';
       byId('rule_name').value = config.rule_name;
-      byId('nq_change_enabled').value = config.entry.nq_change_enabled ? 'true' : 'false';
+      const entry = config.entry || {};
+      byId('trade_sides').value = entry.trade_sides || 'both';
+      for (const key of ['factor_long_quantile','factor_short_quantile','cooldown_seconds','signal_delay_seconds','nq_long_quantile','nq_short_quantile']) {
+        byId(key).value = entry[key] ?? '';
+      }
+      byId('nq_change_enabled').value = entry.nq_change_enabled ? 'true' : 'false';
       byId('model-service').value = modelService(config.rule_name);
       byId('symbols').value = (config.symbols || []).join('\n');
       byId('symbol-count').textContent = `${(config.symbols || []).length} symbols`;
       const execution = config.execution || {};
-      for (const [key] of strategyRows) byId(key).value = execution[key] ?? '';
+      for (const [key, kind] of strategyRows) {
+        const value = execution[key];
+        byId(key).value = kind === 'offsets' && Array.isArray(value) ? JSON.stringify(value) : (value ?? '');
+      }
     }
     function renderRisk(values) {
       byId('risk-table').innerHTML = riskOrder.map(key => row(
@@ -224,16 +247,35 @@
     function collect() {
       const symbols = byId('symbols').value.split(/[\s,]+/).map(v => v.trim().toUpperCase()).filter(Boolean);
       const execution = {};
-      for (const [key] of strategyRows) {
+      for (const [key, kind] of strategyRows) {
+        const raw = byId(key).value.trim();
+        if (kind === 'boolean') {
+          execution[key] = raw === 'true';
+        } else if (kind === 'offsets') {
+          let value;
+          try { value = JSON.parse(raw); } catch (_) { value = raw.split(/[\s,]+/).filter(Boolean).map(Number); }
+          if (!Array.isArray(value) || !value.length || value.some(item => !Number.isFinite(Number(item)))) throw new Error(`${key} 必须是数字数组`);
+          execution[key] = value.map(Number);
+        } else {
+          const value = Number(raw);
+          if (!Number.isFinite(value)) throw new Error(`${key} 必须是数字`);
+          execution[key] = value;
+        }
+      }
+      const entry = {
+        trade_sides: byId('trade_sides').value,
+        nq_change_enabled: byId('nq_change_enabled').value === 'true'
+      };
+      for (const key of ['factor_long_quantile','factor_short_quantile','cooldown_seconds','signal_delay_seconds','nq_long_quantile','nq_short_quantile']) {
         const value = Number(byId(key).value);
         if (!Number.isFinite(value)) throw new Error(`${key} 必须是数字`);
-        execution[key] = value;
+        entry[key] = value;
       }
       return {
         enabled: byId('enabled').value === 'true',
         rule_name: ruleName,
         symbols,
-        entry: { nq_change_enabled: byId('nq_change_enabled').value === 'true' },
+        entry,
         execution
       };
     }

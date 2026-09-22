@@ -19,11 +19,13 @@ const MAX_BBO_AGE_US: i64 = 5_000_000;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CtaSpecialExitConfig {
     pub rule_name: String,
+    pub factor_exit_enabled: bool,
     pub factor_exit_quantile_long: f64,
     pub factor_exit_quantile_short: f64,
     pub trailing_stop_enabled: bool,
     pub trailing_stop_trigger_step: f64,
     pub trailing_stop_move_step: f64,
+    pub max_holding_seconds: i64,
 }
 
 impl CtaSpecialExitConfig {
@@ -35,11 +37,17 @@ impl CtaSpecialExitConfig {
         }
         let config = Self {
             rule_name: value("cta_rule=")?.to_string(),
+            factor_exit_enabled: value("cta_factor_exit=")
+                .map(|raw| matches!(raw, "1" | "true"))
+                .unwrap_or(true),
             factor_exit_quantile_long: value("cta_exit_long=")?.parse().ok()?,
             factor_exit_quantile_short: value("cta_exit_short=")?.parse().ok()?,
             trailing_stop_enabled: matches!(value("cta_trailing=")?, "1" | "true"),
             trailing_stop_trigger_step: value("cta_trigger=")?.parse().ok()?,
             trailing_stop_move_step: value("cta_move=")?.parse().ok()?,
+            max_holding_seconds: value("cta_max_hold_s=")
+                .and_then(|raw| raw.parse().ok())
+                .unwrap_or(0),
         };
         config.validate().then_some(config)
     }
@@ -47,9 +55,10 @@ impl CtaSpecialExitConfig {
     fn validate(&self) -> bool {
         !self.rule_name.is_empty()
             && self.factor_exit_quantile_long.is_finite()
-            && (0.0..0.9).contains(&self.factor_exit_quantile_long)
+            && (0.0..=1.0).contains(&self.factor_exit_quantile_long)
             && self.factor_exit_quantile_short.is_finite()
-            && (0.1..=1.0).contains(&self.factor_exit_quantile_short)
+            && (0.0..=1.0).contains(&self.factor_exit_quantile_short)
+            && self.max_holding_seconds >= 0
             && (!self.trailing_stop_enabled
                 || (self.trailing_stop_trigger_step.is_finite()
                     && self.trailing_stop_trigger_step > 0.0
@@ -64,6 +73,7 @@ struct CtaSpecialLot {
     side: Side,
     qty: f64,
     entry_price: f64,
+    entry_ts: i64,
     earliest_exit_ts: i64,
     trailing_level: u32,
     exit_requested_ts: i64,
@@ -79,6 +89,9 @@ impl CtaSpecialLot {
     }
 
     fn factor_exit(&self, quantile: Option<f64>) -> bool {
+        if !self.config.factor_exit_enabled {
+            return false;
+        }
         let Some(quantile) = quantile.filter(|value| value.is_finite()) else {
             return false;
         };
@@ -86,6 +99,12 @@ impl CtaSpecialLot {
             Side::Buy => quantile < self.config.factor_exit_quantile_long,
             Side::Sell => quantile > self.config.factor_exit_quantile_short,
         }
+    }
+
+    fn max_holding_exit(&self, now_ts: i64) -> bool {
+        self.config.max_holding_seconds > 0
+            && now_ts.saturating_sub(self.entry_ts)
+                >= self.config.max_holding_seconds.saturating_mul(1_000_000)
     }
 
     fn trailing_exit(&mut self, executable_price: f64) -> bool {
@@ -236,6 +255,7 @@ impl CtaSpecialStrategy {
                 side,
                 qty,
                 entry_price: recovery_mark_price,
+                entry_ts: now_ts,
                 earliest_exit_ts: now_ts.saturating_add(MIN_EXIT_DELAY_US),
                 trailing_level: 0,
                 exit_requested_ts: 0,
@@ -258,7 +278,8 @@ impl CtaSpecialStrategy {
     fn exit_plan(&mut self, now_ts: i64, bid: f64, ask: f64) -> Option<(Side, f64, &'static str)> {
         let mut close_side = None;
         let mut qty = 0.0;
-        let mut reason = "factor_exit";
+        let mut reason = "max_holding";
+        let mut reason_priority = 0;
         for lot in &mut self.lots {
             if now_ts < lot.earliest_exit_ts
                 || (lot.exit_requested_ts > 0
@@ -274,7 +295,8 @@ impl CtaSpecialStrategy {
             let factor_exit = lot.factor_exit(matching_factor_quantile);
             let executable_price = if lot.side == Side::Buy { bid } else { ask };
             let trailing_exit = lot.trailing_exit(executable_price);
-            if !factor_exit && !trailing_exit {
+            let max_holding_exit = lot.max_holding_exit(now_ts);
+            if !factor_exit && !trailing_exit && !max_holding_exit {
                 continue;
             }
             let lot_close_side = if lot.side == Side::Buy {
@@ -288,8 +310,15 @@ impl CtaSpecialStrategy {
             close_side = Some(lot_close_side);
             qty += lot.qty;
             lot.exit_requested_ts = now_ts;
-            if trailing_exit {
+            if trailing_exit && reason_priority < 3 {
                 reason = "trailing_stop";
+                reason_priority = 3;
+            } else if factor_exit && reason_priority < 2 {
+                reason = "factor_exit";
+                reason_priority = 2;
+            } else if max_holding_exit && reason_priority < 1 {
+                reason = "max_holding";
+                reason_priority = 1;
             }
         }
         close_side.map(|side| (side, qty, reason))
@@ -302,6 +331,9 @@ impl CtaSpecialStrategy {
         let Some(config) = self.latest_config.as_ref() else {
             return;
         };
+        if !config.factor_exit_enabled {
+            return;
+        }
         let manager = MonitorChannel::instance().strategy_mgr();
         let mut manager = manager.borrow_mut();
         if quantile < config.factor_exit_quantile_long {
@@ -498,6 +530,7 @@ impl OrderTerminalRecorder for CtaSpecialStrategy {
             side,
             qty,
             entry_price: price,
+            entry_ts: terminal_ts,
             earliest_exit_ts: terminal_ts.saturating_add(MIN_EXIT_DELAY_US),
             trailing_level: 0,
             exit_requested_ts: 0,
@@ -535,11 +568,13 @@ mod tests {
     fn config() -> CtaSpecialExitConfig {
         CtaSpecialExitConfig {
             rule_name: "test".to_string(),
+            factor_exit_enabled: true,
             factor_exit_quantile_long: 0.3,
             factor_exit_quantile_short: 0.7,
             trailing_stop_enabled: true,
             trailing_stop_trigger_step: 0.01,
             trailing_stop_move_step: 0.005,
+            max_holding_seconds: 0,
         }
     }
 
@@ -559,6 +594,7 @@ mod tests {
             side: Side::Buy,
             qty: 1.0,
             entry_price: 100.0,
+            entry_ts: 0,
             earliest_exit_ts: 0,
             trailing_level: 0,
             exit_requested_ts: 0,
@@ -577,6 +613,7 @@ mod tests {
             side: Side::Sell,
             qty: 1.0,
             entry_price: 100.0,
+            entry_ts: 0,
             earliest_exit_ts: 0,
             trailing_level: 0,
             exit_requested_ts: 0,
@@ -584,6 +621,43 @@ mod tests {
         };
         assert!(!lot.factor_exit(Some(0.7)));
         assert!(lot.factor_exit(Some(0.71)));
+    }
+
+    #[test]
+    fn disabled_factor_exit_does_not_close_or_cancel_by_quantile() {
+        let mut disabled = config();
+        disabled.factor_exit_enabled = false;
+        let lot = CtaSpecialLot {
+            side: Side::Buy,
+            qty: 1.0,
+            entry_price: 100.0,
+            entry_ts: 0,
+            earliest_exit_ts: 0,
+            trailing_level: 0,
+            exit_requested_ts: 0,
+            config: disabled,
+        };
+        assert!(!lot.factor_exit(Some(0.0)));
+    }
+
+    #[test]
+    fn max_holding_uses_lot_entry_timestamp() {
+        let mut max_hold = config();
+        max_hold.factor_exit_enabled = false;
+        max_hold.trailing_stop_enabled = false;
+        max_hold.max_holding_seconds = 10;
+        let lot = CtaSpecialLot {
+            side: Side::Buy,
+            qty: 1.0,
+            entry_price: 100.0,
+            entry_ts: 5_000_000,
+            earliest_exit_ts: 0,
+            trailing_level: 0,
+            exit_requested_ts: 0,
+            config: max_hold,
+        };
+        assert!(!lot.max_holding_exit(14_999_999));
+        assert!(lot.max_holding_exit(15_000_000));
     }
 
     #[test]
@@ -595,6 +669,7 @@ mod tests {
                 side: Side::Buy,
                 qty: 1.0,
                 entry_price,
+                entry_ts: 0,
                 earliest_exit_ts: 0,
                 trailing_level: 0,
                 exit_requested_ts: 0,
@@ -637,6 +712,7 @@ mod tests {
             side: Side::Buy,
             qty: 0.5,
             entry_price: 101.0,
+            entry_ts: 0,
             earliest_exit_ts: 0,
             trailing_level: 0,
             exit_requested_ts: 0,
@@ -702,6 +778,7 @@ mod tests {
             side: Side::Buy,
             qty: 1.0,
             entry_price: 100.0,
+            entry_ts: 0,
             earliest_exit_ts: 0,
             trailing_level: 0,
             exit_requested_ts: 0,

@@ -3,13 +3,25 @@
   "rule_name": "tp_vpi_018",
   "symbols": ["BTCUSDT"],
   "entry": {
-    "nq_change_enabled": true
+    "trade_sides": "both",
+    "factor_long_quantile": 0.9,
+    "factor_short_quantile": 0.1,
+    "cooldown_seconds": 0,
+    "signal_delay_seconds": 1,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
   },
   "execution": {
     "order_notional_usdt": 100.0,
+    "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
+    "maker_ttl_seconds": 120,
+    "factor_exit_enabled": true,
     "factor_exit_quantile_long": 0.3,
     "factor_exit_quantile_short": 0.7,
+    "trailing_stop_enabled": true,
     "trailing_stop_trigger_step": 0.02,
-    "trailing_stop_move_step": 0.01
+    "trailing_stop_move_step": 0.01,
+    "max_holding_seconds": 0
   }
 }

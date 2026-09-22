@@ -1,6 +1,4 @@
-use crate::cta_special::config::{
-    CtaSpecialConfig, CTA_SPECIAL_MAX_MODEL_AGE_MS, CTA_SPECIAL_TRAILING_STOP_ENABLED,
-};
+use crate::cta_special::config::{CtaSpecialConfig, CTA_SPECIAL_MAX_MODEL_AGE_MS};
 use crate::strategy::cta_special_strategy::CtaSpecialExitConfig;
 use anyhow::Result;
 use iceoryx2::prelude::*;
@@ -169,11 +167,13 @@ impl CtaSpecialFactorChannel {
 fn exit_config(config: &CtaSpecialConfig) -> CtaSpecialExitConfig {
     CtaSpecialExitConfig {
         rule_name: config.rule_name.clone(),
+        factor_exit_enabled: config.execution.factor_exit_enabled,
         factor_exit_quantile_long: config.execution.factor_exit_quantile_long,
         factor_exit_quantile_short: config.execution.factor_exit_quantile_short,
-        trailing_stop_enabled: CTA_SPECIAL_TRAILING_STOP_ENABLED,
+        trailing_stop_enabled: config.execution.trailing_stop_enabled,
         trailing_stop_trigger_step: config.execution.trailing_stop_trigger_step,
         trailing_stop_move_step: config.execution.trailing_stop_move_step,
+        max_holding_seconds: config.execution.max_holding_seconds,
     }
 }
 

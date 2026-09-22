@@ -1,8 +1,6 @@
 use crate::cta_special::config::{
     CtaSpecialConfig, CTA_SPECIAL_MAX_MODEL_AGE_MS, CTA_SPECIAL_MAX_QUOTE_AGE_MS,
-    CTA_SPECIAL_OPEN_OFFSETS, CTA_SPECIAL_OPEN_TTL_US, CTA_SPECIAL_SIGNAL_DELAY_US,
-    CTA_SPECIAL_SIGNAL_POLL_INTERVAL_MS, CTA_SPECIAL_STATUS_PATH,
-    CTA_SPECIAL_TRAILING_STOP_ENABLED, CTA_SPECIAL_VENUE_NAME,
+    CTA_SPECIAL_SIGNAL_POLL_INTERVAL_MS, CTA_SPECIAL_STATUS_PATH, CTA_SPECIAL_VENUE_NAME,
 };
 use anyhow::{Context, Result};
 use iceoryx2::prelude::*;
@@ -29,6 +27,7 @@ use trade_signal::MktChannel;
 const SIGNAL_CHANNEL: &str = "trade_signal";
 const MAX_DELAYED_SIGNAL_AGE_US: i64 = 5_000_000;
 const MODEL_OUTPUT_MAX_SUBSCRIBERS: usize = 32;
+const BAR_MS: i64 = 60_000;
 
 #[derive(Debug, Clone)]
 struct ScheduledEntry {
@@ -79,6 +78,7 @@ pub struct CtaSpecialSignalApp {
     min_qty_table: VenueMinQtyTable,
     symbols: HashSet<String>,
     last_model_ts: HashMap<String, i64>,
+    last_scheduled_entry_ts_us: HashMap<String, i64>,
     scheduled: Vec<ScheduledEntry>,
     status: HashMap<String, SymbolStatus>,
     last_reload_check_us: i64,
@@ -138,6 +138,7 @@ impl CtaSpecialSignalApp {
             min_qty_table,
             symbols,
             last_model_ts: HashMap::new(),
+            last_scheduled_entry_ts_us: HashMap::new(),
             scheduled: Vec::new(),
             status: HashMap::new(),
             last_reload_check_us: 0,
@@ -176,6 +177,13 @@ impl CtaSpecialSignalApp {
                     );
                     self.config_modified = modified;
                     return;
+                }
+                if publisher_threshold_config_changed(&self.config, &next) {
+                    self.entry_live_after_ms = now_us.div_euclid(1_000).saturating_add(BAR_MS);
+                    info!(
+                        "CTA special publisher-owned quantiles changed; pausing entry until model_ts_ms>{}",
+                        self.entry_live_after_ms
+                    );
                 }
                 self.symbols = next.symbol_set();
                 self.scheduled.clear();
@@ -255,10 +263,28 @@ impl CtaSpecialSignalApp {
             self.write_status();
             return;
         };
+        let model_ts_us = lookup.score_ts_ms.saturating_mul(1_000);
+        let cooldown_us = self.config.entry.cooldown_seconds.saturating_mul(1_000_000);
+        if cooldown_us > 0
+            && self
+                .last_scheduled_entry_ts_us
+                .get(symbol)
+                .is_some_and(|last| model_ts_us.saturating_sub(*last) < cooldown_us)
+        {
+            self.write_status();
+            return;
+        }
+        self.last_scheduled_entry_ts_us
+            .insert(symbol.to_string(), model_ts_us);
         let due_ts_us = lookup
             .score_ts_ms
             .saturating_mul(1_000)
-            .saturating_add(CTA_SPECIAL_SIGNAL_DELAY_US)
+            .saturating_add(
+                self.config
+                    .entry
+                    .signal_delay_seconds
+                    .saturating_mul(1_000_000),
+            )
             .max(now_us);
         self.scheduled.push(ScheduledEntry {
             symbol: symbol.to_string(),
@@ -350,6 +376,13 @@ fn entry_bar_is_live(model_ts_ms: i64, process_started_ms: i64) -> bool {
     model_ts_ms > process_started_ms
 }
 
+fn publisher_threshold_config_changed(old: &CtaSpecialConfig, new: &CtaSpecialConfig) -> bool {
+    old.entry.factor_long_quantile != new.entry.factor_long_quantile
+        || old.entry.factor_short_quantile != new.entry.factor_short_quantile
+        || old.entry.nq_long_quantile != new.entry.nq_long_quantile
+        || old.entry.nq_short_quantile != new.entry.nq_short_quantile
+}
+
 fn entry_decision(
     config: &CtaSpecialConfig,
     lookup: &ModelOutputScoreLookupResult,
@@ -364,8 +397,8 @@ fn entry_decision(
     let short_threshold = lookup
         .score_short_threshold
         .filter(|value| value.is_finite())?;
-    let long_signal = score > long_threshold;
-    let short_signal = score < short_threshold;
+    let long_signal = config.allows_long() && score > long_threshold;
+    let short_signal = config.allows_short() && score < short_threshold;
     if long_signal == short_signal {
         return None;
     }
@@ -420,7 +453,10 @@ fn publish_entry_grid(
     } else {
         quote.ask
     };
-    let specs: Vec<QuotePlanLevelSpec> = CTA_SPECIAL_OPEN_OFFSETS
+    let specs: Vec<QuotePlanLevelSpec> = scheduled
+        .config
+        .execution
+        .open_offsets
         .iter()
         .enumerate()
         .map(|(index, offset)| QuotePlanLevelSpec {
@@ -460,19 +496,27 @@ fn publish_entry_grid(
             level.side_level_index
         );
         ctx.create_ts = now_us;
-        ctx.exp_time = now_us.saturating_add(CTA_SPECIAL_OPEN_TTL_US);
+        ctx.exp_time = now_us.saturating_add(
+            scheduled
+                .config
+                .execution
+                .maker_ttl_seconds
+                .saturating_mul(1_000_000),
+        );
         ctx.price_offset = level.offset;
         ctx.spread_rate = 0.0;
         ctx.hedge_timeout_us = 0;
         ctx.set_from_key(
             format!(
-                "cta_special=1:cta_rule={}:cta_exit_long={}:cta_exit_short={}:cta_trailing={}:cta_trigger={}:cta_move={}:model_ts_ms={}:level={}",
+                "cta_special=1:cta_rule={}:cta_factor_exit={}:cta_exit_long={}:cta_exit_short={}:cta_trailing={}:cta_trigger={}:cta_move={}:cta_max_hold_s={}:model_ts_ms={}:level={}",
                 scheduled.config.rule_name,
+                u8::from(scheduled.config.execution.factor_exit_enabled),
                 scheduled.config.execution.factor_exit_quantile_long,
                 scheduled.config.execution.factor_exit_quantile_short,
-                u8::from(CTA_SPECIAL_TRAILING_STOP_ENABLED),
+                u8::from(scheduled.config.execution.trailing_stop_enabled),
                 scheduled.config.execution.trailing_stop_trigger_step,
                 scheduled.config.execution.trailing_stop_move_step,
+                scheduled.config.execution.max_holding_seconds,
                 scheduled.model_ts_ms,
                 level.side_level_index,
             )
@@ -507,6 +551,7 @@ mod tests {
             symbols: vec!["BTCUSDT".to_string()],
             entry: EntryConfig {
                 nq_change_enabled: nq,
+                ..EntryConfig::default()
             },
             execution: ExecutionConfig {
                 order_notional_usdt: 100.0,
@@ -514,6 +559,7 @@ mod tests {
                 factor_exit_quantile_short: 0.7,
                 trailing_stop_trigger_step: 0.02,
                 trailing_stop_move_step: 0.01,
+                ..ExecutionConfig::default()
             },
         }
     }
@@ -547,6 +593,27 @@ mod tests {
         assert_eq!(entry_decision(&config(false), &value), Some(Side::Buy));
         value.score = value.score_long_threshold;
         assert_eq!(entry_decision(&config(false), &value), None);
+    }
+
+    #[test]
+    fn entry_decision_respects_configured_trade_sides() {
+        let value = lookup();
+        let mut short_only = config(false);
+        short_only.entry.trade_sides = "short".to_string();
+        assert_eq!(entry_decision(&short_only, &value), None);
+
+        let mut long_only = config(false);
+        long_only.entry.trade_sides = "long".to_string();
+        assert_eq!(entry_decision(&long_only, &value), Some(Side::Buy));
+    }
+
+    #[test]
+    fn publisher_quantile_change_requires_a_fresh_bar() {
+        let old = config(true);
+        let mut new = old.clone();
+        assert!(!publisher_threshold_config_changed(&old, &new));
+        new.entry.factor_long_quantile = 0.95;
+        assert!(publisher_threshold_config_changed(&old, &new));
     }
 
     #[test]

@@ -11,12 +11,10 @@ pub const CTA_SPECIAL_SIGNAL_POLL_INTERVAL_MS: u64 = 10;
 pub const CTA_SPECIAL_MAX_QUOTE_AGE_MS: u64 = 5_000;
 pub const CTA_SPECIAL_MAX_MODEL_AGE_MS: u64 = 120_000;
 pub const CTA_SPECIAL_STATUS_PATH: &str = "run/cta_special_status.json";
-pub const CTA_SPECIAL_SIGNAL_DELAY_US: i64 = 1_000_000;
-pub const CTA_SPECIAL_OPEN_OFFSETS: [f64; 4] = [0.0, 0.0001, 0.0003, 0.0005];
-pub const CTA_SPECIAL_OPEN_TTL_US: i64 = 120_000_000;
-pub const CTA_SPECIAL_TRAILING_STOP_ENABLED: bool = true;
 
 const MODEL_SERVICE_PREFIX: &str = "model_output/one-binance-futures-1m-";
+const MAX_OPEN_LEVELS: usize = 8;
+const MAX_OPEN_OFFSET: f64 = 0.01;
 
 fn default_enabled() -> bool {
     false
@@ -26,8 +24,60 @@ fn default_nq_enabled() -> bool {
     true
 }
 
+fn default_trade_sides() -> String {
+    "both".to_string()
+}
+
+fn default_factor_long_quantile() -> f64 {
+    0.9
+}
+
+fn default_factor_short_quantile() -> f64 {
+    0.1
+}
+
+fn default_nq_quantile() -> f64 {
+    0.5
+}
+
+fn default_signal_delay_seconds() -> i64 {
+    1
+}
+
 fn default_notional() -> f64 {
     100.0
+}
+
+fn default_open_offsets() -> Vec<f64> {
+    vec![0.0, 0.0001, 0.0003, 0.0005]
+}
+
+fn default_maker_ttl_seconds() -> i64 {
+    120
+}
+
+fn default_factor_exit_enabled() -> bool {
+    true
+}
+
+fn default_factor_exit_quantile_long() -> f64 {
+    0.3
+}
+
+fn default_factor_exit_quantile_short() -> f64 {
+    0.7
+}
+
+fn default_trailing_stop_enabled() -> bool {
+    true
+}
+
+fn default_trailing_stop_trigger_step() -> f64 {
+    0.02
+}
+
+fn default_trailing_stop_move_step() -> f64 {
+    0.01
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,26 +95,61 @@ pub struct CtaSpecialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct EntryConfig {
+    pub trade_sides: String,
+    pub factor_long_quantile: f64,
+    pub factor_short_quantile: f64,
+    pub cooldown_seconds: i64,
+    pub signal_delay_seconds: i64,
     pub nq_change_enabled: bool,
+    pub nq_long_quantile: f64,
+    pub nq_short_quantile: f64,
 }
 
 impl Default for EntryConfig {
     fn default() -> Self {
         Self {
+            trade_sides: default_trade_sides(),
+            factor_long_quantile: default_factor_long_quantile(),
+            factor_short_quantile: default_factor_short_quantile(),
+            cooldown_seconds: 0,
+            signal_delay_seconds: default_signal_delay_seconds(),
             nq_change_enabled: default_nq_enabled(),
+            nq_long_quantile: default_nq_quantile(),
+            nq_short_quantile: default_nq_quantile(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExecutionConfig {
-    #[serde(default = "default_notional")]
     pub order_notional_usdt: f64,
+    pub open_offsets: Vec<f64>,
+    pub maker_ttl_seconds: i64,
+    pub factor_exit_enabled: bool,
     pub factor_exit_quantile_long: f64,
     pub factor_exit_quantile_short: f64,
+    pub trailing_stop_enabled: bool,
     pub trailing_stop_trigger_step: f64,
     pub trailing_stop_move_step: f64,
+    pub max_holding_seconds: i64,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            order_notional_usdt: default_notional(),
+            open_offsets: default_open_offsets(),
+            maker_ttl_seconds: default_maker_ttl_seconds(),
+            factor_exit_enabled: default_factor_exit_enabled(),
+            factor_exit_quantile_long: default_factor_exit_quantile_long(),
+            factor_exit_quantile_short: default_factor_exit_quantile_short(),
+            trailing_stop_enabled: default_trailing_stop_enabled(),
+            trailing_stop_trigger_step: default_trailing_stop_trigger_step(),
+            trailing_stop_move_step: default_trailing_stop_move_step(),
+            max_holding_seconds: 0,
+        }
+    }
 }
 
 impl CtaSpecialConfig {
@@ -93,6 +178,10 @@ impl CtaSpecialConfig {
 
     fn normalize(&mut self) {
         self.rule_name = self.rule_name.trim().to_ascii_lowercase();
+        self.entry.trade_sides = match self.entry.trade_sides.trim().to_ascii_lowercase().as_str() {
+            "combine" | "long_short" | "long,short" | "short,long" => "both".to_string(),
+            value => value.to_string(),
+        };
         for symbol in &mut self.symbols {
             *symbol = symbol.trim().to_ascii_uppercase();
         }
@@ -117,24 +206,80 @@ impl CtaSpecialConfig {
         {
             bail!("execution.order_notional_usdt must be positive");
         }
-        if !(0.0..0.9).contains(&self.execution.factor_exit_quantile_long) {
-            bail!("factor_exit_quantile_long must be in [0, 0.9)");
+        if !matches!(self.entry.trade_sides.as_str(), "long" | "short" | "both") {
+            bail!("entry.trade_sides must be long, short, or both");
         }
-        if !(self.execution.factor_exit_quantile_short > 0.1
+        if !(self.entry.factor_long_quantile.is_finite()
+            && self.entry.factor_short_quantile.is_finite()
+            && self.entry.factor_long_quantile > 0.0
+            && self.entry.factor_long_quantile <= 1.0
+            && self.entry.factor_short_quantile >= 0.0
+            && self.entry.factor_short_quantile < 1.0
+            && self.entry.factor_short_quantile < self.entry.factor_long_quantile)
+        {
+            bail!("entry factor quantiles must satisfy 0 <= short < long <= 1");
+        }
+        if self.entry.cooldown_seconds < 0 || self.entry.signal_delay_seconds < 0 {
+            bail!("entry cooldown_seconds and signal_delay_seconds cannot be negative");
+        }
+        if ![self.entry.nq_long_quantile, self.entry.nq_short_quantile]
+            .into_iter()
+            .all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+        {
+            bail!("entry NQ quantiles must be finite values in [0, 1]");
+        }
+        if self.execution.open_offsets.is_empty()
+            || self.execution.open_offsets.len() > MAX_OPEN_LEVELS
+        {
+            bail!("execution.open_offsets must contain 1..={MAX_OPEN_LEVELS} levels");
+        }
+        let mut previous = None;
+        for offset in &self.execution.open_offsets {
+            if !(offset.is_finite() && (0.0..=MAX_OPEN_OFFSET).contains(offset)) {
+                bail!("execution.open_offsets values must be finite and in [0, {MAX_OPEN_OFFSET}]");
+            }
+            if previous.is_some_and(|value| *offset <= value) {
+                bail!("execution.open_offsets must be strictly increasing");
+            }
+            previous = Some(*offset);
+        }
+        if self.execution.maker_ttl_seconds <= 0 {
+            bail!("execution.maker_ttl_seconds must be positive");
+        }
+        if !(self.execution.factor_exit_quantile_long.is_finite()
+            && self.execution.factor_exit_quantile_long >= 0.0
+            && self.execution.factor_exit_quantile_long < self.entry.factor_long_quantile)
+        {
+            bail!("factor_exit_quantile_long must be in [0, entry.factor_long_quantile)");
+        }
+        if !(self.execution.factor_exit_quantile_short.is_finite()
+            && self.execution.factor_exit_quantile_short > self.entry.factor_short_quantile
             && self.execution.factor_exit_quantile_short <= 1.0)
         {
-            bail!("factor_exit_quantile_short must be in (0.1, 1]");
+            bail!("factor_exit_quantile_short must be in (entry.factor_short_quantile, 1]");
         }
-        if !(self.execution.trailing_stop_trigger_step.is_finite()
-            && self.execution.trailing_stop_trigger_step > 0.0)
-            || !(self.execution.trailing_stop_move_step.is_finite()
-                && self.execution.trailing_stop_move_step > 0.0
-                && self.execution.trailing_stop_move_step
-                    < self.execution.trailing_stop_trigger_step)
+        if self.execution.trailing_stop_enabled
+            && (!(self.execution.trailing_stop_trigger_step.is_finite()
+                && self.execution.trailing_stop_trigger_step > 0.0)
+                || !(self.execution.trailing_stop_move_step.is_finite()
+                    && self.execution.trailing_stop_move_step > 0.0
+                    && self.execution.trailing_stop_move_step
+                        < self.execution.trailing_stop_trigger_step))
         {
             bail!("trailing_stop_move_step must be positive and below trigger_step");
         }
+        if self.execution.max_holding_seconds < 0 {
+            bail!("execution.max_holding_seconds cannot be negative");
+        }
         Ok(())
+    }
+
+    pub fn allows_long(&self) -> bool {
+        matches!(self.entry.trade_sides.as_str(), "long" | "both")
+    }
+
+    pub fn allows_short(&self) -> bool {
+        matches!(self.entry.trade_sides.as_str(), "short" | "both")
     }
 }
 
@@ -169,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_removed_fixed_fields() {
+    fn rejects_unknown_top_level_fields() {
         let result = serde_json::from_str::<CtaSpecialConfig>(
             r#"{
               "venue":"binance-futures",

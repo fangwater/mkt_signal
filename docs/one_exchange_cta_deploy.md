@@ -1,6 +1,6 @@
 # 单所 CTA 部署（纯合约）
 
-最后更新：2026-09-21
+最后更新：2026-09-22
 
 本文是 V007 单所纯合约 CTA 的**唯一权威实现文档**：研究契约、参考
 notebook、部署因子、rx01 框架复用分析、代码级卡点、改造清单、部署
@@ -18,7 +18,7 @@ notebook、部署因子、rx01 框架复用分析、代码级卡点、改造清�
 
 两因子均为 baseline489 族成员，`BaselineReplayState` + `factor_plan_1m`
 现成求值，不需要 ICIR/gplearn 求值器。每个 env 只加载**一条规则、
-一组钉死的执行参数**（trig/move/exit_q_long/exit_q_short/nq）。
+一组独立的信号、过滤和执行参数**。
 
 ## 参考来源（只读）
 
@@ -163,11 +163,11 @@ trade_sides 已移出搜索网格，固定 combine（代码仍支持 long/short/
 Kafka binance-futures PeriodMessage（因子和 futures-mid NQ 同源）
         v
 cta_special_factor_model_1m_pub
-  raw -> clip + rolling z-score -> exact q90/q10 + score_quantile
+  raw -> clip + rolling z-score -> configured exact entry quantiles + score_quantile
         v
 model_output/one-binance-futures-1m-<factor>
         |-- cta_special_signal（只判定开仓）
-        |       `-- ArbOpen：四档 futures maker
+        |       `-- ArbOpen：配置化多档 futures maker
         |
         `-- pre_trade 直接订阅 1m ModelMsg
                 |-- 因子衰减撤销未成交 maker
@@ -200,8 +200,10 @@ overlay、旧 `cta_config_server.py` 和旧 viz 页面都不参与这条链路�
 | 部署/总控 | `scripts/deploy_cta_special.sh`、`scripts/{start,stop}_cta_special.sh` |
 
 配置服务只原子读写 `config/cta_special.json`，保存时做 revision 冲突
-检查。signal 和 pre-trade 都每秒检测同一文件；非法配置保留上一份有效
-配置。dashboard 只读 signal 状态和 pre-trade 执行状态，不具备交易写入口。
+检查。factor publisher、signal 和 pre-trade 都每秒检测同一文件；非法配置
+保留上一份有效配置。入场或 NQ 分位变化后，signal 跳过一个完整 bar，防止
+publisher 与 signal 重载时序造成新旧阈值混用。dashboard 只读 signal 状态
+和 pre-trade 执行状态，不具备交易写入口。
 
 ### 执行保护
 
@@ -229,28 +231,43 @@ overlay、旧 `cta_config_server.py` 和旧 viz 页面都不参与这条链路�
 
 ### 配置与 Redis
 
-`config/cta_special.json` 只保留需要由操作员调整的策略变量：
+`config/cta_special.json` 保留研究契约里对线上执行有意义的策略变量：
 
 ```json
 {
   "enabled": false,
   "rule_name": "tp_vpi_018",
   "symbols": ["BTCUSDT"],
-  "entry": { "nq_change_enabled": true },
+  "entry": {
+    "trade_sides": "both",
+    "factor_long_quantile": 0.9,
+    "factor_short_quantile": 0.1,
+    "cooldown_seconds": 0,
+    "signal_delay_seconds": 1,
+    "nq_change_enabled": true,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
+  },
   "execution": {
     "order_notional_usdt": 100.0,
+    "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
+    "maker_ttl_seconds": 120,
+    "factor_exit_enabled": true,
     "factor_exit_quantile_long": 0.3,
     "factor_exit_quantile_short": 0.7,
+    "trailing_stop_enabled": true,
     "trailing_stop_trigger_step": 0.02,
-    "trailing_stop_move_step": 0.01
+    "trailing_stop_move_step": 0.01,
+    "max_holding_seconds": 0
   }
 }
 ```
 
-venue、model service、q90/q10 开仓阈值、1 秒信号延迟、四档 maker
-offset、120 秒 TTL、trailing 开关、消息新鲜度和轮询参数都是此模式的
-固定契约，由代码派生或固化，不再重复暴露为配置。配置解析严格拒绝这些
-已删除字段，避免页面、signal 和 pre-trade 对同一语义出现不同值。
+`trade_sides`、因子/NQ 入场分位、cooldown、signal delay、maker 网格与
+TTL、因子退出、trailing 和最长持仓均可配置。publisher 始终用精确线性
+分位阈值，不用 percentile rank 代替；新订单把退出参数写入 `from_key`，
+所以热更新不改已有 lot。venue、model service、60 秒频率、rolling window、
+min periods、maker/reduce-only、消息新鲜度和冲突策略仍是模式契约。
 `rule_name` 决定 model service，运行中不可修改；其余字段支持热加载。
 重复部署已有 env 时，部署脚本会原子迁移旧 JSON，只保留上述字段并立即
 用正式解析器校验。
