@@ -62,7 +62,6 @@
       <a href="#cta-signal">CTA 信号</a>
       <a href="#symbol-lists">Symbol Lists</a>
       <a href="#strategy-params">Strategy Params</a>
-      <a href="#fixed-contract">固定契约</a>
       <a href="#risk-params">Risk Params</a>
     </div>
 
@@ -112,12 +111,6 @@
       <div class="hint">执行参数按新开订单做快照，热更新不改已有 lot。出场分位必须落在当前入场带内侧；网格偏移严格递增，最多 8 档。</div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
-    </section>
-
-    <section id="fixed-contract" class="panel">
-      <div class="section-header"><h2>固定契约</h2></div>
-      <div class="hint">这里只保留模型算法、执行安全和单所路由的不变量；策略旋钮都在上面配置。</div>
-      <div class="kv-table" id="fixed-table"></div>
     </section>
 
     <section id="risk-params" class="panel">
@@ -170,17 +163,6 @@
       ['trailing_stop_move_step', 'number', '每档止盈上移比例，启用 trailing 时必须小于 trigger。'],
       ['max_holding_seconds', 'number', '逐 lot 最长持仓秒数，0 表示不限制。']
     ];
-    const fixedRows = [
-      ['normalize', '1440 bars / min_periods 1000 / clip_zscore 3.0'],
-      ['percentile_window', '2880 slots，至少 1440 个有限 score 才 ready'],
-      ['nq_window', '合约 mid，lookback 1440，quantile window 1440，min_periods 720'],
-      ['bar_frequency', '60 秒 / each_bar / linear quantile / conflict flat'],
-      ['freshness', '模型消息超过 120 秒或超前 5 秒拒绝'],
-      ['execution', 'futures maker 入场；Market reduce_only 退出'],
-      ['spread', '无。不读现货，不做价差 overlay'],
-      ['position_conflict', '有反向仓位时禁止新开']
-    ];
-
     function row(key, control, desc) {
       return `<div class="kv-key">${key}</div><div class="kv-input">${control}</div><div class="kv-desc">${desc}</div>`;
     }
@@ -201,8 +183,6 @@
         : `<input id="${key}" class="mono" inputmode="decimal">`;
       return row(key, control, desc);
     }).join('');
-    byId('fixed-table').innerHTML = fixedRows.map(([key, desc]) => row(key, `<input class="mono" readonly value="${desc}">`, '代码固化')).join('');
-
     function setStatus(id, text, kind) {
       const el = byId(id);
       el.textContent = text;
