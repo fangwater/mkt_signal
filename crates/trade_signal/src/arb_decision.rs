@@ -1897,6 +1897,14 @@ fn drive_cta_decision(
         );
         let (new_bar, open_side) =
             cta_rule_eval(rule, state, vote, lookup.score_ts_ms, in_dump, now_us);
+        if new_bar {
+            super::cta_signal_status::record(
+                &rule.rule_id,
+                open_symbol_key.as_ref(),
+                &lookup,
+                vote,
+            );
+        }
 
         // spread overlay 撤单：与引擎一致按 bar 评估；同 bar 多 rule 去重。
         if new_bar {

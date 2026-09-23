@@ -18,6 +18,7 @@ pub mod arb_tlen_cancel;
 pub mod common;
 pub mod config_loader;
 pub mod cta_config;
+mod cta_signal_status;
 pub mod decision_router;
 pub mod factor_value_hub;
 pub mod fr_threshold_loader;

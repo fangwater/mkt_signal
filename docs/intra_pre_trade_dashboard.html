@@ -139,6 +139,9 @@
         gap: 12px;
         box-shadow: 0 8px 22px var(--shadow);
       }
+      section.section[hidden] {
+        display: none;
+      }
       .section-header {
         display: flex;
         align-items: baseline;
@@ -390,6 +393,29 @@
     </header>
 
     <main>
+      <section class="section" id="cta-config-section" hidden>
+        <div class="section-header">
+          <h2>CTA 配置</h2>
+          <div class="meta" id="cta-config-meta">等待配置</div>
+          <a href="config/" target="_blank" rel="noopener noreferrer">配置中心</a>
+        </div>
+        <div id="cta-config-content"></div>
+      </section>
+
+      <section class="section" id="cta-signal-section" hidden>
+        <div class="section-header">
+          <h2>最新 CTA 信号（模型 bar）</h2>
+          <div class="meta" id="cta-signal-meta">等待信号</div>
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th>symbol</th><th>rule</th><th>模型方向</th><th>score</th><th>percentile</th><th>long 阈值</th><th>short 阈值</th><th>NQ long 值 / 分位 / 阈值</th><th>NQ short 值 / 分位 / 阈值</th><th>score / NQ</th><th>bar time</th></tr></thead>
+            <tbody id="cta-signal-body"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="cta-signal-empty">暂无信号</div>
+      </section>
+
       <section class="section" id="risk-section">
         <div class="section-header">
           <h2>风险指标</h2>
@@ -474,6 +500,8 @@
         const POLL_MS = 2000;
         const MAX_WS_FAILS = 2;
         const WS_CONNECT_TIMEOUT_MS = 5000;
+        const isCtaRx01 = /^\/cta\/binance-cta-rx01(?:\/|$)/.test(location.pathname);
+        let ctaRuleConfig = null;
 
         const state = {
           ws: null,
@@ -546,6 +574,104 @@
           minimumFractionDigits: 4,
           maximumFractionDigits: 4,
         });
+
+        function ctaText(value) {
+          if (value == null) return "-";
+          return typeof value === "object" ? JSON.stringify(value) : String(value);
+        }
+
+        async function ctaGet(path) {
+          const response = await fetch(new URL(`config/api/${path}`, location.href), { cache: "no-store" });
+          if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+          return response.json();
+        }
+
+        async function refreshCtaConfig() {
+          const meta = document.getElementById("cta-config-meta");
+          const content = document.getElementById("cta-config-content");
+          const sources = [
+            ["信号规则", "cta-rules", "values"],
+            ["交易与禁用标的", "symbol-lists", null],
+            ["执行参数", "strategy-params", "values"],
+            ["价差阈值", "spread-thresholds", "values"],
+            ["风险参数", "risk-params", "values"],
+          ];
+          const results = await Promise.allSettled(sources.map(([, path]) => ctaGet(path)));
+          content.replaceChildren();
+          results.forEach((result, index) => {
+            const [title, , field] = sources[index];
+            const heading = document.createElement("h3");
+            heading.textContent = title;
+            content.append(heading);
+            if (result.status !== "fulfilled") {
+              const error = document.createElement("div");
+              error.className = "meta stale";
+              error.textContent = `读取失败：${result.reason}`;
+              content.append(error);
+              return;
+            }
+            const values = field ? result.value[field] : {
+              trade_symbols: result.value.trade_symbols,
+              dump_symbols: result.value.dump_symbols,
+            };
+            const grid = document.createElement("div");
+            grid.className = "card-grid";
+            Object.entries(values || {}).forEach(([key, value]) => {
+              const card = document.createElement("div");
+              card.className = "metric-card";
+              const label = document.createElement("h3");
+              label.textContent = key;
+              const text = document.createElement("span");
+              text.className = "mono small";
+              text.textContent = ctaText(value);
+              card.append(label, text);
+              grid.append(card);
+            });
+            content.append(grid);
+          });
+          if (results[0].status === "fulfilled") ctaRuleConfig = results[0].value.values;
+          meta.textContent = `${results.filter(result => result.status === "fulfilled").length}/${sources.length} 项已读取（Redis 配置，trade_signal 热加载可能延迟）`;
+          meta.classList.toggle("stale", results.some(result => result.status !== "fulfilled"));
+        }
+
+        async function refreshCtaSignal() {
+          const meta = document.getElementById("cta-signal-meta");
+          const body = document.getElementById("cta-signal-body");
+          const empty = document.getElementById("cta-signal-empty");
+          try {
+            const status = await ctaGet("signal-status");
+            const rows = Object.entries(status.rules || {}).filter(([rule]) =>
+              !ctaRuleConfig?.rule_id || rule === ctaRuleConfig.rule_id
+            ).flatMap(([rule, symbols]) =>
+              Object.entries(symbols).map(([symbol, signal]) => ({ rule, symbol, signal }))
+            ).filter(row => matchesFilter(row.symbol, state.filter));
+            body.replaceChildren();
+            rows.sort((left, right) => left.symbol.localeCompare(right.symbol));
+            rows.forEach(({ rule, symbol, signal }) => {
+              const row = document.createElement("tr");
+              const fields = [symbol, rule, signal.decision, signal.score, signal.quantile,
+                signal.long_threshold, signal.short_threshold,
+                `${ctaText(signal.nq_long_value)} / ${ctaText(signal.nq_long_quantile)} / ${ctaText(signal.nq_long_threshold)}`,
+                `${ctaText(signal.nq_short_value)} / ${ctaText(signal.nq_short_quantile)} / ${ctaText(signal.nq_short_threshold)}`,
+                `${signal.score_ready ? "ready" : "warming"} / ${ctaRuleConfig?.nq_change_enabled === false ? "off" : signal.filter_ready ? "ready" : "warming"}`,
+                signal.model_ts_ms > 0 ? new Date(signal.model_ts_ms).toLocaleString() : "-" ];
+              fields.forEach(value => {
+                const cell = document.createElement("td");
+                cell.textContent = ctaText(value);
+                row.append(cell);
+              });
+              body.append(row);
+            });
+            empty.style.display = rows.length ? "none" : "block";
+            meta.textContent = `${status.state} · ${status.age_ms == null ? "无数据" : (status.age_ms / 1000).toFixed(1) + "s"} · ${rows.length} symbols`;
+            meta.classList.toggle("stale", status.state !== "online");
+          } catch (error) {
+            body.replaceChildren();
+            empty.style.display = "block";
+            meta.textContent = `信号读取失败：${error}`;
+            meta.classList.add("stale");
+          }
+        }
 
         function setStatus(cls, text) {
           el.wsIndicator.className = `indicator ${cls}`;
@@ -1015,6 +1141,7 @@
         el.filterInput.addEventListener("input", () => {
           state.filter = normalizeStr(el.filterInput.value);
           renderAll();
+          if (isCtaRx01) refreshCtaSignal();
         });
         el.hideZero.addEventListener("change", () => {
           state.hideZero = !!el.hideZero.checked;
@@ -1027,6 +1154,16 @@
         });
 
         connect();
+        if (isCtaRx01) {
+          document.title = "CTA Pre-Trade Dashboard";
+          document.querySelector("header h1").textContent = "CTA Pre-Trade";
+          document.getElementById("cta-config-section").hidden = false;
+          document.getElementById("cta-signal-section").hidden = false;
+          refreshCtaConfig();
+          refreshCtaSignal();
+          setInterval(refreshCtaConfig, 30000);
+          setInterval(refreshCtaSignal, 5000);
+        }
         setInterval(renderAll, 1000);
         renderAll();
       })();

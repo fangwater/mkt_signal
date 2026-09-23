@@ -228,6 +228,7 @@ LOCAL_RELATIVE=(
   "scripts/intra_config_server.py"
   "scripts/arb_per_symbol_overrides.py"
   "scripts/cta_config_server.py"
+  "docs/intra_pre_trade_dashboard.html"
   "scripts/sync_cta_rules.py"
   "scripts/print_cta_rules.py"
   "intra_scripts/sync_intra_risk_params.py"
@@ -269,6 +270,7 @@ UPLOAD_NAMES=(
   "intra_config_server.py"
   "arb_per_symbol_overrides.py"
   "cta_config_server.py"
+  "intra_pre_trade_dashboard.html"
   "sync_cta_rules.py"
   "print_cta_rules.py"
   "sync_intra_risk_params.py"
@@ -405,7 +407,7 @@ case "$stage" in
   *) echo "[ERROR] invalid staging path: $stage" >&2; exit 1 ;;
 esac
 [[ "$(readlink -f -- "$target")" == "$target" ]]
-[[ -d "$target/scripts" && -d "$target/intra_scripts" ]]
+[[ -d "$target/scripts" && -d "$target/intra_scripts" && -d "$target/www" ]]
 [[ -f "$stage/SHA256SUMS" ]]
 
 publish_file() {
@@ -437,6 +439,12 @@ publish_file persist_manager persist_manager
 publish_file intra_config_server.py scripts/intra_config_server.py
 publish_file arb_per_symbol_overrides.py scripts/arb_per_symbol_overrides.py
 publish_file cta_config_server.py scripts/cta_config_server.py
+publish_file intra_pre_trade_dashboard.html www/index.html 644
+dashboard_copy="$target/www/.pre_trade_dashboard.html.publish.$$"
+cp "$target/www/index.html" "$dashboard_copy"
+dashboard_hash="$(awk '$2 == "intra_pre_trade_dashboard.html" { print $1 }' "$stage/SHA256SUMS")"
+[[ "$(sha256sum "$dashboard_copy" | awk '{print $1}')" == "$dashboard_hash" ]]
+mv -f "$dashboard_copy" "$target/www/pre_trade_dashboard.html"
 publish_file sync_cta_rules.py scripts/sync_cta_rules.py
 publish_file print_cta_rules.py scripts/print_cta_rules.py
 publish_file sync_intra_risk_params.py scripts/sync_intra_risk_params.py

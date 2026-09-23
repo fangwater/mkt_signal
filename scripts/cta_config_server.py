@@ -26,8 +26,10 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -48,6 +50,24 @@ except Exception:
     pass
 
 SUPPORTED_EXCHANGES = base.SUPPORTED_EXCHANGES
+CTA_SIGNAL_STATUS_PATH = Path("run/cta_signal_status.json")
+
+
+def read_signal_status(path: Path) -> Dict[str, Any]:
+    status = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(status, dict) or not isinstance(status.get("rules"), dict):
+        raise ValueError("invalid signal status")
+    updated_ts_us = status.get("updated_ts_us")
+    age_ms = (
+        max(0, (time.time_ns() // 1000 - updated_ts_us) // 1000)
+        if isinstance(updated_ts_us, int) and updated_ts_us > 0 else None
+    )
+    return {
+        "state": "online" if age_ms is not None and age_ms <= 90_000 else "stale",
+        "age_ms": age_ms,
+        "updated_ts_us": updated_ts_us,
+        "rules": status["rules"],
+    }
 
 _CSS_MATCH = re.search(
     r"<style>(.*?)</style>", base.INDEX_HTML_TEMPLATE, re.DOTALL
@@ -801,6 +821,17 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/signal-status":
+            try:
+                status = read_signal_status(CTA_SIGNAL_STATUS_PATH)
+            except FileNotFoundError:
+                self._send_json(200, {"state": "offline", "rules": {}, "age_ms": None})
+                return
+            except (OSError, ValueError) as exc:
+                self._send_error(503, f"signal status unavailable: {exc}")
+                return
+            self._send_json(200, status)
+            return
         if parsed.path == "/":
             self._send_html(
                 render_index_html(

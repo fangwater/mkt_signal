@@ -1,6 +1,18 @@
 # Intra Factor Deploy
 
-最后更新：2026-09-17
+最后更新：2026-09-23
+
+## rx01 dashboard
+
+rx01 dashboard 使用 `docs/intra_pre_trade_dashboard.html`，在风险和敞口之外只对
+`/cta/binance-cta-rx01/` 显示 CTA 规则、交易标的、执行/价差/风险配置以及
+最新模型 bar 的方向、分数、阈值和 NQ 状态。配置读取该 env 的 config server
+只读 GET 接口，代表 Redis 中当前配置，最多需要 60 秒才会反映到 `trade_signal`。
+信号进程异步写入 `run/cta_signal_status.json`，config server 的
+`/api/signal-status` 只读接口提供数据和时效状态；方向是模型 vote，不代表已成交
+或已通过价差、冷却与 pre-trade 风控。页面通过 `/config/api/` 访问此接口。
+`scripts/publish-cta.sh` 同步页面和 config server；要使信号状态生效，还需
+发布新 `trade_signal` 并通过 env 内脚本重启信号与 config server。
 
 ## 结论
 
