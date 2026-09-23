@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-09-22。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-09-23。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
@@ -23,26 +23,20 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 12 | spread_pbs okex-both | |
 | 13 | depth_pub_general | 本机 8 路 depth25（BN/OKX/Bitget/Gate × margin+futures）；**不含 Bybit**（Bybit 在 sg）。pm2 `dp_general` |
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
-| 15 | persist_manager ×N | intra-arb01、okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
-| 16 | account_monitor(binance-intra-arb01) | |
-| 17 | trade_signal(binance-intra-arb01) | |
-| 18 | pre_trade(binance-intra-arb01) | |
-| 19 | trade_engine(binance-intra-arb01) | 单线程，只需一核；`TRADE_ENGINE_IPC_CORE` 已废弃 |
-| 20 | account_monitor(okex_mm_alpha) | 公共进程之后第一套是 binance-intra；okex MM 从 20 起 |
+| 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
+| 16-19 | (空) | 原 binance-intra-arb01 已下线退役 |
+| 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
 | 21 | trade_signal(okex_mm_alpha) | |
 | 22 | pre_trade(okex_mm_alpha) | |
 | 23 | trade_engine(okex_mm_alpha) | 单线程 |
-| 24 | account_monitor(binance_mm_alpha) | 紧贴 okex_mm_alpha(20-23)，原 27-30 前移 |
-| 25 | trade_signal(binance_mm_alpha) | |
-| 26 | pre_trade(binance_mm_alpha) | |
-| 27 | trade_engine(binance_mm_alpha) | 单线程；原 31 号 te-ipc 核已回收 |
+| 24-27 | (空) | 原 binance_mm_alpha 已下线退役 |
 | 28-35 | (空) | 原 binance-intra-arb02 已下线删除；`binance-cta-special-rx03` 独立 BBO(`spread_pbs_cta_rx03`)已于共享服务 max_nodes=64 重建后回收，core 28 释放 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
-binance_fr_arb01/02/03/04、gate_fr_arb01/02/03、bitget_fr_arb01/02、okex_fr_arb01、
+binance_fr_arb01/02/03/04、gate_fr_arb01/02/03、bitget_fr_arb01/02、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `okex_mm_alpha` 的 persist_manager 与其它 persist 一起堆叠在 15。

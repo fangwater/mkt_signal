@@ -19,7 +19,7 @@ notes = [
   "Bybit intra arb01 is fixed on SG 6351 and should not be moved.",
   "Bybit intra arb02 is fixed on SG 6353 and should not be moved.",
   "Binance intra arb02 is fixed on JP 6358 and should not be moved.",
-  "Local arb01 sources on this machine use 127.0.0.1 with fixed ports 6342-6345.",
+  "Local arb01 sources on this machine use 127.0.0.1 with fixed ports 6343-6345 (6342 freed when binance-intra-arb01 retired).",
   "Unmentioned strategies/envs must not receive concrete allocations.",
 ]
 
@@ -49,17 +49,7 @@ bind = "127.0.0.1:50057"
 status = "planned"
 
 # Local intra/cross arb01 sources on this machine.
-[[allocations]]
-port = 6342
-region = "local"
-strategy = "intra"
-env = "binance-intra-arb01"
-source_id = "binance-intra-arb01"
-public_url = "http://127.0.0.1:6342"
-bind = "127.0.0.1:50042"
-status = "fixed"
-
-
+# binance-intra-arb01 retired 2026-09-22; port 6342 freed.
 [[allocations]]
 port = 6343
 region = "local"
@@ -133,17 +123,9 @@ public_url = "http://127.0.0.1:6355"
 bind = "127.0.0.1:50055"
 status = "fixed"
 
-# JP Binance MM persist sync source.
-# 50049 collided with okex_fr_arb01 on jp-meta-elvpn; moved to 6356/50056.
-[[allocations]]
-port = 6356
-region = "local"
-strategy = "mm"
-env = "binance_mm_alpha"
-source_id = "binance_mm_alpha"
-public_url = "http://127.0.0.1:6356"
-bind = "127.0.0.1:50056"
-status = "fixed"
+# JP Binance MM persist sync source retired 2026-09-22 (binance_mm_alpha
+# decommissioned); port 6356 freed. Historical note: 50049 collided with
+# okex_fr_arb01 on jp-meta-elvpn; the source had been moved to 6356/50056.
 
 # Requested OKEX intra source on HK.
 [[allocations]]

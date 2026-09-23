@@ -120,6 +120,11 @@ impl ExactRollingWindow {
         self.last().and_then(|value| self.percentile_rank(value))
     }
 
+    pub fn percentile_rank_last_inclusive(&self) -> Option<f64> {
+        self.last()
+            .map(|value| self.upper_bound(value) as f64 / self.sorted.len() as f64)
+    }
+
     fn insert_sorted(&mut self, value: f64) {
         let idx = self.lower_bound(value);
         self.sorted.insert(idx, value);
@@ -182,6 +187,9 @@ mod tests {
 
         assert_eq!(window.percentile_rank(2.0), Some(0.5));
         assert_eq!(window.percentile_rank_last(), Some(0.875));
+        assert_eq!(window.percentile_rank_last_inclusive(), Some(1.0));
+        assert!(window.observe(2.0));
+        assert_eq!(window.percentile_rank_last_inclusive(), Some(0.8));
     }
 
     #[test]

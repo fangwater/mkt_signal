@@ -67,19 +67,13 @@ def print_rule(index: int, rule: dict) -> None:
         f"notional={_fmt(rule.get('order_notional_usdt'), 100.0)}u "
         f"ttl={_fmt(rule.get('open_ttl_seconds'), 120)}s"
     )
-    tp = rule.get("take_profit", 0.005)
-    rr = rule.get("reward_risk_ratio", 1.0)
-    try:
-        sl = float(tp) / float(rr) if float(rr) > 0 else float("nan")
-    except (TypeError, ValueError):
-        sl = float("nan")
     print(
         "    exits:                    "
-        f"tp={tp} rr={rr} -> stop_loss={sl:.6g} "
+        f"factor_exit_long={_fmt(rule.get('factor_exit_quantile_long'), 0.3)} "
+        f"factor_exit_short={_fmt(rule.get('factor_exit_quantile_short'), 0.7)} "
         f"trailing={'on' if rule.get('trailing_stop_enabled', True) else 'off'}"
-        f"(trig={_fmt(rule.get('trailing_stop_trigger_step'), 0.001)}"
-        f"/move={_fmt(rule.get('trailing_stop_move_step'), 0.0005)}) "
-        f"max_holding={_fmt(rule.get('max_holding_seconds'), 14400)}s"
+        f"(trig={_fmt(rule.get('trailing_stop_trigger_step'), 0.01)}"
+        f"/move={_fmt(rule.get('trailing_stop_move_step'), 0.005)})"
     )
 
 
@@ -135,9 +129,9 @@ def main() -> int:
     strat_key = f"{env_name}:cta_strategy_params:{open_venue}:{hedge_venue}"
     exec_fields = (
         "order_notional_usdt", "open_offsets", "open_ttl_seconds",
-        "take_profit", "reward_risk_ratio",
+        "factor_exit_quantile_long", "factor_exit_quantile_short",
         "trailing_stop_enabled", "trailing_stop_trigger_step",
-        "trailing_stop_move_step", "max_holding_seconds",
+        "trailing_stop_move_step",
     )
     try:
         strat = rds.hgetall(strat_key) or {}

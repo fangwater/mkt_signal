@@ -880,6 +880,29 @@ impl StrategyManager {
         canceled
     }
 
+    pub fn cancel_cta_opening_makers(
+        &mut self,
+        symbol: &str,
+        side: Side,
+        trigger_ts: i64,
+        reason: &'static str,
+    ) -> usize {
+        let strategy_ids = self.cta_open_strategy_ids_by_symbol_and_side(symbol, side);
+        let mut canceled = 0;
+        for strategy_id in strategy_ids {
+            if self.cancel_arb_open_by_id_with_signal(
+                strategy_id,
+                side,
+                reason,
+                trigger_ts,
+                "CtaFactorExit",
+            ) {
+                canceled += 1;
+            }
+        }
+        canceled
+    }
+
     /// A CTA symbol may have opening makers in only one direction. An opposite
     /// signal first cancels every maker from the old direction; the new signal
     /// is dropped until those orders reach terminal state and leave the index.

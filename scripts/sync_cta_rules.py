@@ -8,9 +8,9 @@
   - {env}:cta_rules    - 例如 binance-cta-rx01:cta_rules
 
 `{env}:cta_rules` 存放信号配置对象（model_service/分位/方向）；
-执行/网格参数（open_offsets、单笔名义、TP、trailing 等）归
+执行/网格参数（open_offsets、单笔名义、因子退出、trailing 等）归
 `{env}:cta_strategy_params:{open}:{hedge}` hash（本脚本提供 parse_exec_params
-供 config server 校验写入）。为兼容旧格式，--file 也接受规则数组。
+供 config server 校验写入）。
 
 校验规则与 trade_signal `cta_config.rs` 的 `CtaRule::validate` 保持一致
 （在写入前本地全量校验，避免把 loader 会拒绝的配置写进 Redis）。
@@ -51,12 +51,11 @@ ALLOWED_FIELDS = {
     "order_notional_usdt",
     "open_offsets",
     "open_ttl_seconds",
-    "take_profit",
-    "reward_risk_ratio",
+    "factor_exit_quantile_long",
+    "factor_exit_quantile_short",
     "trailing_stop_enabled",
     "trailing_stop_trigger_step",
     "trailing_stop_move_step",
-    "max_holding_seconds",
     "enabled",
 }
 
@@ -77,23 +76,21 @@ EXEC_FIELD_TYPES: Dict[str, str] = {
     "order_notional_usdt": "float",
     "open_offsets": "offsets",
     "open_ttl_seconds": "int",
-    "take_profit": "float",
-    "reward_risk_ratio": "float",
+    "factor_exit_quantile_long": "float",
+    "factor_exit_quantile_short": "float",
     "trailing_stop_enabled": "bool",
     "trailing_stop_trigger_step": "float",
     "trailing_stop_move_step": "float",
-    "max_holding_seconds": "int",
 }
 EXEC_FIELD_DEFAULTS: Dict[str, Any] = {
     "order_notional_usdt": 100.0,
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
     "open_ttl_seconds": 120,
-    "take_profit": 0.005,
-    "reward_risk_ratio": 1.0,
+    "factor_exit_quantile_long": 0.3,
+    "factor_exit_quantile_short": 0.7,
     "trailing_stop_enabled": True,
-    "trailing_stop_trigger_step": 0.001,
-    "trailing_stop_move_step": 0.0005,
-    "max_holding_seconds": 14400,
+    "trailing_stop_trigger_step": 0.01,
+    "trailing_stop_move_step": 0.005,
 }
 
 _BOOL_TRUE = {"true", "1", "yes", "on"}
@@ -111,12 +108,11 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "order_notional_usdt": 100.0,
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
     "open_ttl_seconds": 120,
-    "take_profit": 0.005,
-    "reward_risk_ratio": 1.0,
+    "factor_exit_quantile_long": 0.3,
+    "factor_exit_quantile_short": 0.7,
     "trailing_stop_enabled": True,
-    "trailing_stop_trigger_step": 0.001,
-    "trailing_stop_move_step": 0.0005,
-    "max_holding_seconds": 14400,
+    "trailing_stop_trigger_step": 0.01,
+    "trailing_stop_move_step": 0.005,
     "enabled": True,
 }
 
@@ -190,20 +186,18 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     normalized_trade_sides = str(trade_sides).strip().lower()
     if normalized_trade_sides not in TRADE_SIDES:
         _fail(rid, f"trade_sides must be long, short, or both, got '{trade_sides}'", errors)
-    elif normalized_trade_sides not in {"both", "long_short", "long,short", "short,long"}:
-        _fail(rid, f"selected CTA contract requires both long and short, got '{trade_sides}'", errors)
 
     nq_enabled = raw.get("nq_change_enabled", True)
-    if nq_enabled is not True:
-        _fail(rid, f"nq_change_enabled must be true for the selected backtests, got {nq_enabled}", errors)
+    if not isinstance(nq_enabled, bool):
+        _fail(rid, f"nq_change_enabled must be bool, got {nq_enabled}", errors)
 
     cooldown = raw.get("cooldown_seconds", 0)
-    if not _is_int(cooldown) or cooldown != 0:
-        _fail(rid, f"cooldown_seconds must equal backtest contract value 0, got {cooldown}", errors)
+    if not _is_int(cooldown) or cooldown < 0:
+        _fail(rid, f"cooldown_seconds must be non-negative, got {cooldown}", errors)
 
     app = str(raw.get("application", "each_bar")).strip().lower()
-    if app != "each_bar":
-        _fail(rid, f"application must equal backtest contract value each_bar, got '{app}'", errors)
+    if app not in {"each_bar", "on_change"}:
+        _fail(rid, f"application must be each_bar or on_change, got '{app}'", errors)
 
     order_notional = raw.get("order_notional_usdt", 100.0)
     if not _is_num(order_notional) or float(order_notional) <= 0.0:
@@ -221,24 +215,28 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     if not _is_int(ttl) or ttl <= 0:
         _fail(rid, f"open_ttl_seconds must be positive int, got {ttl}", errors)
 
-    tp = raw.get("take_profit", 0.005)
-    if not _is_num(tp) or not 0.0 < float(tp) < 1.0:
-        _fail(rid, f"take_profit must be finite in (0,1), got {tp}", errors)
-    rr = raw.get("reward_risk_ratio", 1.0)
-    if not _is_num(rr) or float(rr) <= 0.0:
-        _fail(rid, f"reward_risk_ratio must be positive finite, got {rr}", errors)
-    elif _is_num(tp) and float(tp) / float(rr) >= 1.0:
-        _fail(rid, f"take_profit/reward_risk_ratio must be < 1, got tp={tp} rr={rr}", errors)
+    for field, default, lower, upper in (
+        ("factor_exit_quantile_long", 0.3, 0.0, 0.9),
+        ("factor_exit_quantile_short", 0.7, 0.1, 1.0),
+    ):
+        value = raw.get(field, default)
+        valid = _is_num(value) and lower <= float(value) <= upper
+        if field.endswith("long") and valid:
+            valid = float(value) < upper
+        if field.endswith("short") and valid:
+            valid = float(value) > lower
+        if not valid:
+            _fail(rid, f"{field} must be within V007 exit band, got {value}", errors)
 
     trailing_enabled = raw.get("trailing_stop_enabled", True)
     if not isinstance(trailing_enabled, bool):
         _fail(rid, f"trailing_stop_enabled must be bool, got {trailing_enabled}", errors)
     for name in ("trailing_stop_trigger_step", "trailing_stop_move_step"):
-        v = raw.get(name, 0.001 if name == "trailing_stop_trigger_step" else 0.0005)
+        v = raw.get(name, 0.01 if name == "trailing_stop_trigger_step" else 0.005)
         if trailing_enabled is True and (not _is_num(v) or float(v) <= 0.0):
             _fail(rid, f"{name} must be positive finite when trailing_stop_enabled, got {v}", errors)
-    trigger = raw.get("trailing_stop_trigger_step", 0.001)
-    move = raw.get("trailing_stop_move_step", 0.0005)
+    trigger = raw.get("trailing_stop_trigger_step", 0.01)
+    move = raw.get("trailing_stop_move_step", 0.005)
     if (
         trailing_enabled is True
         and _is_num(trigger)
@@ -251,9 +249,6 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
             errors,
         )
 
-    max_hold = raw.get("max_holding_seconds", 14_400)
-    if not _is_int(max_hold) or max_hold < 0:
-        _fail(rid, f"max_holding_seconds must be a non-negative int (0 disables), got {max_hold}", errors)
 
     enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):
@@ -429,15 +424,10 @@ def parse_exec_params(values: Any) -> Tuple[Dict[str, str], List[str]]:
             break
     if eff["open_ttl_seconds"] <= 0:
         errors.append(f"open_ttl_seconds must be positive, got {eff['open_ttl_seconds']}")
-    if not 0 < eff["take_profit"] < 1:
-        errors.append(f"take_profit must be in (0,1), got {eff['take_profit']}")
-    if eff["reward_risk_ratio"] <= 0:
-        errors.append(f"reward_risk_ratio must be positive, got {eff['reward_risk_ratio']}")
-    elif eff["take_profit"] / eff["reward_risk_ratio"] >= 1:
-        errors.append(
-            "take_profit/reward_risk_ratio must be < 1, got "
-            f"tp={eff['take_profit']} rr={eff['reward_risk_ratio']}"
-        )
+    if not 0 <= eff["factor_exit_quantile_long"] < 0.9:
+        errors.append("factor_exit_quantile_long must be in [0,0.9)")
+    if not 0.1 < eff["factor_exit_quantile_short"] <= 1:
+        errors.append("factor_exit_quantile_short must be in (0.1,1]")
     if eff["trailing_stop_enabled"]:
         for name in ("trailing_stop_trigger_step", "trailing_stop_move_step"):
             if eff[name] <= 0:
@@ -447,8 +437,6 @@ def parse_exec_params(values: Any) -> Tuple[Dict[str, str], List[str]]:
                 "trailing_stop_move_step must be < trailing_stop_trigger_step, got "
                 f"move={eff['trailing_stop_move_step']} trigger={eff['trailing_stop_trigger_step']}"
             )
-    if eff["max_holding_seconds"] < 0:
-        errors.append(f"max_holding_seconds cannot be negative (0 disables), got {eff['max_holding_seconds']}")
 
     if not errors:
         for name, value in typed.items():

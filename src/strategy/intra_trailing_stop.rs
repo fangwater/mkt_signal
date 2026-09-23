@@ -1,19 +1,20 @@
+use crate::strategy::cta_special_strategy::cta_factor_decayed;
+use order_common::Side;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use serde::Deserialize;
-use signal_common::common::align_price_floor;
 
 const EPS: f64 = 1e-12;
 const TRIGGER_STEP: f64 = 0.001;
 const MOVE_STEP: f64 = 0.0005;
+const CTA_FACTOR_MAX_AGE_US: i64 = 120_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CtaExitConfig {
-    pub take_profit: f64,
-    pub reward_risk_ratio: f64,
+    pub factor_exit_quantile_long: f64,
+    pub factor_exit_quantile_short: f64,
     pub trailing_stop_enabled: bool,
     pub trailing_stop_trigger_step: f64,
     pub trailing_stop_move_step: f64,
-    pub max_holding_us: i64,
 }
 
 impl CtaExitConfig {
@@ -23,8 +24,8 @@ impl CtaExitConfig {
             return None;
         }
         let value = |key: &str| raw.split(':').find_map(|field| field.strip_prefix(key));
-        let take_profit = value("cta_tp=")?.parse::<f64>().ok()?;
-        let reward_risk_ratio = value("cta_rr=")?.parse::<f64>().ok()?;
+        let factor_exit_quantile_long = value("cta_exit_long=")?.parse::<f64>().ok()?;
+        let factor_exit_quantile_short = value("cta_exit_short=")?.parse::<f64>().ok()?;
         let trailing_stop_enabled = match value("cta_trailing=")? {
             "1" | "true" => true,
             "0" | "false" => false,
@@ -32,14 +33,10 @@ impl CtaExitConfig {
         };
         let trailing_stop_trigger_step = value("cta_trigger=")?.parse::<f64>().ok()?;
         let trailing_stop_move_step = value("cta_move=")?.parse::<f64>().ok()?;
-        let max_holding_seconds = value("cta_max_hold_s=")?.parse::<i64>().ok()?;
-        if !take_profit.is_finite()
-            || take_profit <= 0.0
-            || take_profit >= 1.0
-            || !reward_risk_ratio.is_finite()
-            || reward_risk_ratio <= 0.0
-            || take_profit / reward_risk_ratio >= 1.0
-            || max_holding_seconds < 0
+        if !factor_exit_quantile_long.is_finite()
+            || !(0.0..0.9).contains(&factor_exit_quantile_long)
+            || !factor_exit_quantile_short.is_finite()
+            || !(factor_exit_quantile_short > 0.1 && factor_exit_quantile_short <= 1.0)
             || (trailing_stop_enabled
                 && (!trailing_stop_trigger_step.is_finite()
                     || trailing_stop_trigger_step <= 0.0
@@ -50,12 +47,11 @@ impl CtaExitConfig {
             return None;
         }
         Some(Self {
-            take_profit,
-            reward_risk_ratio,
+            factor_exit_quantile_long,
+            factor_exit_quantile_short,
             trailing_stop_enabled,
             trailing_stop_trigger_step,
             trailing_stop_move_step,
-            max_holding_us: max_holding_seconds.saturating_mul(1_000_000),
         })
     }
 }
@@ -133,13 +129,38 @@ impl TrailingPosition {
         }
     }
 
-    fn evaluate_cta(&mut self, now_ts: i64, price: f64, config: CtaExitConfig) {
-        if self.exit_reason.is_some()
-            || !price.is_finite()
+    fn evaluate_cta(
+        &mut self,
+        now_ts: i64,
+        price: f64,
+        config: CtaExitConfig,
+        quantile: Option<f64>,
+    ) {
+        if now_ts < self.opened_ts.saturating_add(1_000_000) {
+            return;
+        }
+        let side = if self.signed_qty > 0.0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        let factor_exit = cta_factor_decayed(
+            side,
+            quantile,
+            config.factor_exit_quantile_long,
+            config.factor_exit_quantile_short,
+        );
+        if self.exit_reason.is_some() {
+            return;
+        }
+        if !price.is_finite()
             || price <= 0.0
             || !self.entry_price.is_finite()
             || self.entry_price <= 0.0
         {
+            if factor_exit {
+                self.exit_reason = Some("cta_factor_exit");
+            }
             return;
         }
         let direction = self.signed_qty.signum();
@@ -149,29 +170,23 @@ impl TrailingPosition {
                 ((progress.max(0.0) / config.trailing_stop_trigger_step) + 1e-10).floor() as u64;
             self.trailing_level = self.trailing_level.max(level);
         }
-        let trailing_move = if config.trailing_stop_enabled {
-            self.trailing_level as f64 * config.trailing_stop_move_step
-        } else {
-            0.0
-        };
-        let candidate = self.entry_price
-            * (1.0 + direction * (-config.take_profit / config.reward_risk_ratio + trailing_move));
-        let stop = match self.stop_price {
-            Some(previous) if direction > 0.0 => previous.max(candidate),
-            Some(previous) => previous.min(candidate),
-            None => candidate,
-        };
-        self.stop_price = Some(stop);
-        if direction * (price - stop) <= self.entry_price * EPS {
-            self.exit_reason = Some(if self.trailing_level > 0 {
-                "cta_trailing_stop"
-            } else {
-                "cta_stop_loss"
+        if self.trailing_level > 0 {
+            let candidate = self.entry_price
+                * (1.0 + direction * self.trailing_level as f64 * config.trailing_stop_move_step);
+            self.stop_price = Some(match self.stop_price {
+                Some(previous) if direction > 0.0 => previous.max(candidate),
+                Some(previous) => previous.min(candidate),
+                None => candidate,
             });
-        } else if config.max_holding_us > 0
-            && now_ts >= self.opened_ts.saturating_add(config.max_holding_us)
+        }
+        if self.trailing_level > 0
+            && self
+                .stop_price
+                .is_some_and(|stop| direction * (price - stop) <= self.entry_price * EPS)
         {
-            self.exit_reason = Some("cta_max_holding");
+            self.exit_reason = Some("cta_trailing_stop");
+        } else if factor_exit {
+            self.exit_reason = Some("cta_factor_exit");
         }
     }
 }
@@ -182,59 +197,6 @@ pub struct ProtectiveTrigger {
     pub available_qv: f64,
     pub reserved_qty: f64,
     pub reason: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CtaTakeProfitTarget {
-    pub open_id: i64,
-    pub qv: f64,
-    pub entry_price: f64,
-    pub take_profit: f64,
-    pub lot_count: usize,
-    pub component_open_ids: Vec<i64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CtaTakeProfitOrderConstraints {
-    pub min_qty: f64,
-    pub step_size: f64,
-    pub min_notional: f64,
-    pub price_tick: f64,
-}
-
-impl CtaTakeProfitOrderConstraints {
-    fn aligned_qty(self, qty: f64) -> f64 {
-        if self.step_size.is_finite() && self.step_size > 0.0 {
-            align_price_floor(qty, self.step_size)
-        } else {
-            qty
-        }
-    }
-
-    fn aligned_price(self, price: f64) -> f64 {
-        if self.price_tick.is_finite() && self.price_tick > 0.0 {
-            align_price_floor(price, self.price_tick)
-        } else {
-            price
-        }
-    }
-
-    fn executable_qty(self, qty: f64, price: f64) -> Option<f64> {
-        let aligned_qty = self.aligned_qty(qty);
-        let aligned_price = self.aligned_price(price);
-        if !(aligned_qty.is_finite()
-            && aligned_qty > EPS
-            && aligned_price.is_finite()
-            && aligned_price > 0.0)
-            || (self.min_qty.is_finite() && self.min_qty > 0.0 && aligned_qty + EPS < self.min_qty)
-            || (self.min_notional.is_finite()
-                && self.min_notional > 0.0
-                && aligned_qty * aligned_price + EPS < self.min_notional)
-        {
-            return None;
-        }
-        Some(aligned_qty)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +211,8 @@ pub struct HedgeAllocation {
 pub struct IntraTrailingBook {
     pub positions: FastHashMap<i64, TrailingPosition>,
     next_seq: u64,
+    latest_factor_quantile: Option<f64>,
+    latest_factor_ts_ms: i64,
 }
 
 impl IntraTrailingBook {
@@ -256,7 +220,24 @@ impl IntraTrailingBook {
         Self {
             positions: fast_hash_map(),
             next_seq: 0,
+            latest_factor_quantile: None,
+            latest_factor_ts_ms: 0,
         }
+    }
+
+    pub fn apply_factor_update(
+        &mut self,
+        model_ts_ms: i64,
+        quantile: Option<f64>,
+        ready: bool,
+    ) -> bool {
+        if model_ts_ms <= self.latest_factor_ts_ms {
+            return false;
+        }
+        self.latest_factor_ts_ms = model_ts_ms;
+        self.latest_factor_quantile =
+            quantile.filter(|value| ready && value.is_finite() && (0.0..=1.0).contains(value));
+        true
     }
 
     pub fn record_open(
@@ -422,6 +403,11 @@ impl IntraTrailingBook {
         hedge_bid: f64,
         hedge_ask: f64,
     ) -> Vec<ProtectiveTrigger> {
+        let factor_quantile = (self.latest_factor_ts_ms > 0
+            && now_ts.saturating_sub(self.latest_factor_ts_ms.saturating_mul(1_000))
+                <= CTA_FACTOR_MAX_AGE_US)
+            .then_some(self.latest_factor_quantile)
+            .flatten();
         if config.is_none() {
             for p in self.positions.values_mut().filter(|p| p.cta_exit.is_none()) {
                 p.stop_price = None;
@@ -440,6 +426,7 @@ impl IntraTrailingBook {
                         hedge_ask
                     },
                     cta_exit,
+                    factor_quantile,
                 );
             } else if let Some(config) = config {
                 p.evaluate(
@@ -477,89 +464,6 @@ impl IntraTrailingBook {
                 position.cta_exit.is_some() && position.signed_qty * opening_qv < -EPS
             })
     }
-
-    pub fn next_cta_take_profit_target(&self, now_ts: i64) -> Option<CtaTakeProfitTarget> {
-        self.next_cta_take_profit_target_with_constraints(
-            now_ts,
-            CtaTakeProfitOrderConstraints {
-                min_qty: 0.0,
-                step_size: 0.0,
-                min_notional: 0.0,
-                price_tick: 0.0,
-            },
-        )
-    }
-
-    pub fn next_cta_take_profit_target_with_constraints(
-        &self,
-        now_ts: i64,
-        constraints: CtaTakeProfitOrderConstraints,
-    ) -> Option<CtaTakeProfitTarget> {
-        let mut eligible = self
-            .positions
-            .iter()
-            .filter(|(_, p)| {
-                p.cta_exit.is_some()
-                    && p.exit_reason.is_none()
-                    && p.available() > EPS
-                    && (p.close_ts <= 0 || p.close_ts <= now_ts)
-            })
-            .map(|(&open_id, p)| ((p.close_ts, p.ts, p.pending_seq), open_id, p))
-            .collect::<Vec<_>>();
-        eligible.sort_unstable_by_key(|(key, _, _)| *key);
-
-        let (_, _, first) = eligible.first()?;
-        let direction = first.signed_qty.signum();
-        let mut total_qty = 0.0;
-        let mut lot_count = 0usize;
-        let mut component_open_ids = Vec::new();
-        let mut price_anchor: Option<(i64, &TrailingPosition, f64)> = None;
-
-        for (_, open_id, position) in eligible {
-            if position.signed_qty.signum() != direction {
-                continue;
-            }
-            let available = position.available();
-            let exit = position
-                .cta_exit
-                .expect("eligible CTA position has exit config");
-            let tp_price = if direction > 0.0 {
-                position.entry_price * (1.0 + exit.take_profit)
-            } else {
-                position.entry_price * (1.0 - exit.take_profit)
-            };
-            total_qty += available;
-            lot_count += 1;
-            component_open_ids.push(open_id);
-
-            let replace_anchor = price_anchor
-                .as_ref()
-                .map(|(_, _, current_price)| {
-                    (direction > 0.0 && tp_price > *current_price)
-                        || (direction < 0.0 && tp_price < *current_price)
-                })
-                .unwrap_or(true);
-            if replace_anchor {
-                price_anchor = Some((open_id, position, tp_price));
-            }
-
-            let (_, anchor, strict_tp_price) = price_anchor.as_ref().unwrap();
-            let Some(executable_qty) = constraints.executable_qty(total_qty, *strict_tp_price)
-            else {
-                continue;
-            };
-            let exit = anchor.cta_exit.expect("CTA price anchor has exit config");
-            return Some(CtaTakeProfitTarget {
-                open_id: price_anchor.as_ref().unwrap().0,
-                qv: direction * executable_qty,
-                entry_price: anchor.entry_price,
-                take_profit: exit.take_profit,
-                lot_count,
-                component_open_ids,
-            });
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -573,11 +477,8 @@ mod tests {
         }
     }
 
-    fn cta_from_key(max_hold_s: i64) -> Vec<u8> {
-        format!(
-            "1:cta_rule=r:cta_tp=0.01:cta_rr=2:cta_trailing=1:cta_trigger=0.002:cta_move=0.001:cta_max_hold_s={max_hold_s}"
-        )
-        .into_bytes()
+    fn cta_from_key() -> &'static [u8] {
+        b"1:cta_rule=r:cta_exit_long=0.3:cta_exit_short=0.7:cta_trailing=1:cta_trigger=0.01:cta_move=0.005"
     }
 
     #[test]
@@ -699,7 +600,8 @@ mod tests {
     #[test]
     fn cta_uses_hedge_quote_and_preserves_reserved_trigger() {
         let mut book = IntraTrailingBook::new();
-        book.record_open(7, 1_000_000, 0, 1.0, 100.0, &cta_from_key(14_400));
+        book.record_open(7, 1_000_000, 0, 1.0, 100.0, cta_from_key());
+        assert!(book.apply_factor_update(1_000, Some(0.2), true));
         let allocation = book.reserve(7, 1.0, 100.0);
         let triggers = book.triggers(2_000_000, Some(config()), 200.0, 201.0, 99.49, 99.5);
         assert_eq!(
@@ -708,7 +610,7 @@ mod tests {
                 open_id: 7,
                 available_qv: 0.0,
                 reserved_qty: 1.0,
-                reason: "cta_stop_loss",
+                reason: "cta_factor_exit",
             }]
         );
         book.release(2_000_000, &allocation);
@@ -719,125 +621,51 @@ mod tests {
     }
 
     #[test]
-    fn cta_trailing_and_max_holding_match_per_lot_parameters() {
-        let mut trailing = IntraTrailingBook::new();
-        trailing.record_open(1, 1_000_000, 0, 1.0, 100.0, &cta_from_key(100));
-        assert!(trailing
-            .triggers(2_000_000, None, 0.0, 0.0, 100.2, 100.3)
-            .is_empty());
-        assert_eq!(trailing.positions[&1].trailing_level, 1);
-        let trigger = trailing.triggers(3_000_000, None, 0.0, 0.0, 99.59, 99.6);
-        assert_eq!(trigger[0].reason, "cta_trailing_stop");
-
-        let mut held = IntraTrailingBook::new();
-        held.record_open(2, 1_000_000, 0, -1.0, 100.0, &cta_from_key(4));
-        held.record_open(2, 3_000_000, 0, -0.5, 100.0, &cta_from_key(4));
-        assert!(held
-            .triggers(4_999_999, None, 0.0, 0.0, 99.9, 100.0)
-            .is_empty());
+    fn cta_factor_exit_does_not_require_a_fresh_quote() {
+        let mut book = IntraTrailingBook::new();
+        book.record_open(7, 1_000_000, 0, 1.0, 100.0, cta_from_key());
+        assert!(book.apply_factor_update(1_000, Some(0.2), true));
         assert_eq!(
-            held.triggers(5_000_000, None, 0.0, 0.0, 99.9, 100.0)[0].reason,
-            "cta_max_holding"
+            book.triggers(2_000_000, None, f64::NAN, f64::NAN, f64::NAN, f64::NAN)[0].reason,
+            "cta_factor_exit"
         );
     }
 
     #[test]
-    fn cta_take_profit_target_is_exact_unreserved_lot() {
+    fn cta_does_not_reuse_expired_factor_for_new_lot() {
         let mut book = IntraTrailingBook::new();
-        book.record_open(2, 2, 0, 1.0, 101.0, &cta_from_key(100));
-        book.record_open(1, 1, 0, 2.0, 99.0, &cta_from_key(100));
-        let target = book.next_cta_take_profit_target(10).unwrap();
-        assert_eq!(target.open_id, 1);
-        assert_eq!(target.qv, 2.0);
-        assert_eq!(target.entry_price, 99.0);
-        assert_eq!(target.take_profit, 0.01);
-        assert_eq!(target.lot_count, 1);
-        assert_eq!(target.component_open_ids, vec![1]);
-        let _allocation = book.reserve(1, 2.0, 99.0);
-        assert_eq!(book.next_cta_take_profit_target(10).unwrap().open_id, 2);
-    }
-
-    #[test]
-    fn cta_take_profit_dust_waits_for_next_lot_and_floors_to_step() {
-        let mut book = IntraTrailingBook::new();
-        book.record_open(1, 1, 0, 0.0004, 100.0, &cta_from_key(100));
-        let constraints = CtaTakeProfitOrderConstraints {
-            min_qty: 0.001,
-            step_size: 0.001,
-            min_notional: 0.0,
-            price_tick: 0.1,
-        };
+        assert!(book.apply_factor_update(1_000, Some(0.2), true));
+        book.record_open(7, 122_000_000, 0, 1.0, 100.0, cta_from_key());
         assert!(book
-            .next_cta_take_profit_target_with_constraints(10, constraints)
-            .is_none());
-
-        book.record_open(2, 2, 0, 0.0008, 110.0, &cta_from_key(100));
-        let target = book
-            .next_cta_take_profit_target_with_constraints(10, constraints)
-            .unwrap();
-        assert!((target.qv - 0.001).abs() < 1e-12);
-        assert_eq!(target.open_id, 2);
-        assert_eq!(target.entry_price, 110.0);
-        assert_eq!(target.lot_count, 2);
-        assert_eq!(target.component_open_ids, vec![1, 2]);
+            .triggers(123_000_000, None, 0.0, 0.0, 100.0, 100.0)
+            .is_empty());
     }
 
     #[test]
-    fn cta_take_profit_batch_enforces_min_notional_after_quantization() {
-        let mut book = IntraTrailingBook::new();
-        book.record_open(1, 1, 0, 0.02, 100.0, &cta_from_key(100));
-        let constraints = CtaTakeProfitOrderConstraints {
-            min_qty: 0.001,
-            step_size: 0.001,
-            min_notional: 5.0,
-            price_tick: 0.1,
-        };
-        assert!(book
-            .next_cta_take_profit_target_with_constraints(10, constraints)
-            .is_none());
-
-        book.record_open(2, 2, 0, 0.04, 110.0, &cta_from_key(100));
-        let target = book
-            .next_cta_take_profit_target_with_constraints(10, constraints)
-            .unwrap();
-        assert!((target.qv - 0.06).abs() < 1e-12);
-        assert_eq!(target.open_id, 2);
-        assert_eq!(target.lot_count, 2);
-        assert!(target.qv * target.entry_price * (1.0 + target.take_profit) >= 5.0);
-    }
-
-    #[test]
-    fn cta_short_batch_uses_lowest_take_profit_price() {
-        let mut book = IntraTrailingBook::new();
-        book.record_open(1, 1, 0, -0.0004, 110.0, &cta_from_key(100));
-        book.record_open(2, 2, 0, -0.0008, 100.0, &cta_from_key(100));
-        let target = book
-            .next_cta_take_profit_target_with_constraints(
-                10,
-                CtaTakeProfitOrderConstraints {
-                    min_qty: 0.001,
-                    step_size: 0.001,
-                    min_notional: 0.0,
-                    price_tick: 0.1,
-                },
-            )
-            .unwrap();
-        assert!((target.qv + 0.001).abs() < 1e-12);
-        assert_eq!(target.open_id, 2);
-        assert_eq!(target.entry_price, 100.0);
-        assert_eq!(target.lot_count, 2);
+    fn cta_trailing_needs_a_favorable_move_and_no_hard_stop() {
+        let mut trailing = IntraTrailingBook::new();
+        trailing.record_open(1, 1_000_000, 0, 1.0, 100.0, cta_from_key());
+        assert!(trailing
+            .triggers(2_000_000, None, 0.0, 0.0, 99.0, 99.1)
+            .is_empty());
+        assert!(trailing
+            .triggers(3_000_000, None, 0.0, 0.0, 101.1, 101.2)
+            .is_empty());
+        assert_eq!(trailing.positions[&1].trailing_level, 1);
+        let trigger = trailing.triggers(4_000_000, None, 0.0, 0.0, 100.4, 100.5);
+        assert_eq!(trigger[0].reason, "cta_trailing_stop");
     }
 
     #[test]
     fn cta_exit_config_rejects_move_not_below_trigger() {
-        let invalid = b"1:cta_rule=r:cta_tp=0.01:cta_rr=2:cta_trailing=1:cta_trigger=0.001:cta_move=0.001:cta_max_hold_s=14400";
+        let invalid = b"1:cta_rule=r:cta_exit_long=0.3:cta_exit_short=0.7:cta_trailing=1:cta_trigger=0.001:cta_move=0.001";
         assert!(CtaExitConfig::from_open_from_key(invalid).is_none());
     }
 
     #[test]
     fn cta_opposite_position_gate_uses_live_lot_direction() {
         let mut book = IntraTrailingBook::new();
-        book.record_open(1, 1, 0, 1.0, 100.0, &cta_from_key(100));
+        book.record_open(1, 1, 0, 1.0, 100.0, cta_from_key());
         assert!(!book.has_opposite_cta_position(1.0));
         assert!(book.has_opposite_cta_position(-1.0));
     }

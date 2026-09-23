@@ -1,5 +1,5 @@
-# Raw 1-minute notebook factors exposed as one ModelMsg stream per factor.
-# score = raw factor value; decision thresholds are exact rolling q90/q10.
+# V007 normalized 1-minute factors exposed as one ModelMsg stream per factor.
+# score uses a causal clipped rolling z-score; entry thresholds use rolling q90/q10.
 [tlen_server]
 # The deployed JP environment reaches its host-local TLen service through this loopback URL.
 base_url = "http://127.0.0.1:6322"
@@ -16,7 +16,7 @@ min_samples = 1440
 # subscribes to current IPC trade-flow.
 [kafka]
 lookback_secs = 259200
-catchup_timeout_secs = 1800
+catchup_timeout_secs = 5400
 factor_topic = "binance-futures"
 nq_topic = "binance-spot"
 topics = ["binance-futures", "binance-spot"]

@@ -37,13 +37,13 @@ const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
 const BAR_MS: i64 = 60_000;
 const FACTOR_LONG_QUANTILE: f64 = 0.9;
 const FACTOR_SHORT_QUANTILE: f64 = 0.1;
-const NQ_LOOKBACK_BARS: usize = 60;
+const NQ_LOOKBACK_BARS: usize = 1_440;
 const NQ_QUANTILE_WINDOW: usize = 1_440;
 const NQ_MIN_PERIODS: usize = 720;
-const NQ_QUANTILE: f64 = 0.95;
+const NQ_QUANTILE: f64 = 0.5;
 const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 
-pub const INTRA_FACTOR_NAMES: [&str; 9] = [
+pub const INTRA_FACTOR_NAMES: [&str; 10] = [
     "baseline_035",
     "TD_PR_011",
     "baseline_053",
@@ -53,6 +53,7 @@ pub const INTRA_FACTOR_NAMES: [&str; 9] = [
     "net_buy_medium",
     "factor_004",
     "baseline_091",
+    "TD_TI_008",
 ];
 
 struct FactorOutput {
@@ -209,7 +210,9 @@ impl SymbolState {
             .map(|((raw, window), normalize)| {
                 let score = normalize.observe(raw).unwrap_or(f64::NAN);
                 let observed = window.observe_slot(score);
-                let score_quantile = observed.then(|| window.percentile_rank_last()).flatten();
+                let score_quantile = observed
+                    .then(|| window.percentile_rank_last_inclusive())
+                    .flatten();
                 let score_long_threshold = window.quantile_linear(FACTOR_LONG_QUANTILE);
                 let score_short_threshold = window.quantile_linear(FACTOR_SHORT_QUANTILE);
                 let score_ready = observed
@@ -329,9 +332,11 @@ impl SpotNqState {
 
     fn close_current_bar(&mut self) -> NqObservation {
         let close = self.current_close;
-        self.closes.push_back(close);
-        while self.closes.len() > NQ_LOOKBACK_BARS {
-            self.closes.pop_front();
+        if close.is_finite() && close > 0.0 {
+            self.closes.push_back(close);
+            while self.closes.len() > NQ_LOOKBACK_BARS {
+                self.closes.pop_front();
+            }
         }
         let finite: Vec<f64> = self
             .closes
@@ -1156,6 +1161,7 @@ mod tests {
 
         assert_eq!(services.len(), INTRA_FACTOR_NAMES.len());
         assert!(services.contains("model_output/intra-binance-futures-1m-baseline_035"));
+        assert!(services.contains("model_output/intra-binance-futures-1m-td_ti_008"));
     }
 
     #[test]
@@ -1221,7 +1227,7 @@ mod tests {
         assert!(!first[0].score_ready);
         // Capped window [1.0, 2.0] -> z = (2.0 - 1.5) / std(1.0, 2.0) ≈ 0.7071.
         assert!((second[0].score - 0.7071).abs() < 1e-3);
-        assert_eq!(second[0].score_quantile, Some(0.5));
+        assert_eq!(second[0].score_quantile, Some(1.0));
         assert!(!second[0].score_ready);
         // Capped window [1.0, 2.0, 3.0] -> z = (3.0 - 2.0) / std = 1.0, and the
         // percentile window now holds two finite values meeting min_samples.
@@ -1252,6 +1258,19 @@ mod tests {
         assert!(!missing.ready);
         assert_eq!(missing.long_value, None);
         assert_eq!(missing.short_value, None);
+    }
+
+    #[test]
+    fn nq_lookback_counts_valid_spot_bars_across_gaps() {
+        let mut state = SpotNqState::default();
+        state.current_close = 90.0;
+        state.close_current_bar();
+        state.current_close = f64::NAN;
+        state.close_current_bar();
+        state.current_close = 100.0;
+        let observation = state.close_current_bar();
+        assert_eq!(state.closes.len(), 2);
+        assert!((observation.long_value.unwrap() - 10.0 / 90.0).abs() < 1e-12);
     }
 
     #[test]

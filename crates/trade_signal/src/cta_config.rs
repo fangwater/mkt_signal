@@ -1,6 +1,6 @@
 //! cta 模式信号配置（Redis 热加载）。
 //!
-//! 语义对齐 research 引擎 `version005_long_short_rust_two_exchange` 的
+//! 语义对齐 research 引擎 `version007_long_short_rust_two_exchange` 的
 //! `SignalRule`：一条独立因子信号流（`model_output/<service>`）。
 //!
 //! Redis key：`{env_dir}:cta_rules`
@@ -9,10 +9,8 @@
 //! - value 为单个 JSON 对象（信号配置）；解析器接受单元素数组，但一个环境最多
 //!   配置一条独立规则（`rule_id` 可省略，缺省 "default"）；空数组停用规则。
 //!
-//! 执行/网格参数（`open_offsets` 档位、单笔名义、TP、trailing、持仓上限等）
-//! 不放在该对象里，而是 `{env}:cta_strategy_params:{open}:{hedge}` hash 的字段；
-//! 加载时 `CtaExecOverrides` 从 hash 解析并覆盖到规则上（对象内同名字段仅作
-//! 兼容回退）。
+//! 执行/网格参数（档位、单笔名义、因子退出分位、trailing）由
+//! `{env}:cta_strategy_params:{open}:{hedge}` hash 覆盖；缺失字段使用规则默认值。
 
 use std::collections::HashMap;
 
@@ -29,43 +27,6 @@ const RULE_ID_MAX_LEN: usize = 32;
 const MAX_OPEN_LEVELS: usize = 8;
 /// open_offsets 单项上限（价格分数）。
 const MAX_OPEN_OFFSET: f64 = 0.01;
-const SELECTED_MODEL_PREFIX: &str = "model_output/intra-binance-futures-1m-";
-
-#[derive(Debug, Clone, Copy)]
-struct SelectedRuleContract {
-    take_profit: f64,
-    reward_risk_ratio: f64,
-    trailing_trigger: f64,
-    trailing_move: f64,
-}
-
-fn selected_rule_contract(model_service: &str) -> Result<Option<SelectedRuleContract>> {
-    let Some(factor) = model_service.strip_prefix(SELECTED_MODEL_PREFIX) else {
-        return Ok(None);
-    };
-    let values = match factor {
-        "baseline_035" | "td_pr_011" => (0.005, 1.0, 0.001, 0.0005),
-        "baseline_053" | "factor_116" => (0.01, 1.0, 0.002, 0.001),
-        "tp_vpi_006" => (0.01, 2.0, 0.002, 0.001),
-        "td_pr_005" => (0.01, 1.0, 0.001, 0.0005),
-        "net_buy_medium" => (0.01, 1.0, 0.002, 0.0005),
-        "factor_004" | "baseline_091" => (0.01, 1.0, 0.001, 0.0005),
-        _ => bail!(
-            "unsupported selected CTA factor service '{}'; deployment contract contains exactly nine factors",
-            model_service
-        ),
-    };
-    Ok(Some(SelectedRuleContract {
-        take_profit: values.0,
-        reward_risk_ratio: values.1,
-        trailing_trigger: values.2,
-        trailing_move: values.3,
-    }))
-}
-
-fn same_param(actual: f64, expected: f64) -> bool {
-    (actual - expected).abs() <= 1e-12
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CtaApplication {
@@ -109,20 +70,14 @@ pub struct CtaRule {
     pub open_offsets: Vec<f64>,
     /// 开仓挂单存活时间（秒）。引擎 `maker_ttl_seconds`。
     pub open_ttl_seconds: i64,
-    /// swap 腿 maker 止盈偏移（价格分数），必须为正。
-    /// 引擎 `take_profit`。
-    pub take_profit: f64,
-    /// 止盈/止损比：stop_loss = take_profit / reward_risk_ratio。
-    /// 引擎 `reward_risk_ratio`。
-    pub reward_risk_ratio: f64,
+    pub factor_exit_quantile_long: f64,
+    pub factor_exit_quantile_short: f64,
     /// trailing stop 开关。引擎 `trailing_stop_enabled`。
     pub trailing_stop_enabled: bool,
     /// trailing 触发步进（价格分数）。引擎 `trailing_stop_trigger_step`。
     pub trailing_stop_trigger_step: f64,
     /// trailing 移动步进（价格分数）。引擎 `trailing_stop_move_step`。
     pub trailing_stop_move_step: f64,
-    /// 最长持仓秒数；0 = 不限制。引擎 `max_holding_seconds`。
-    pub max_holding_seconds: i64,
     pub enabled: bool,
 }
 
@@ -145,18 +100,16 @@ struct RawCtaRule {
     open_offsets: Option<Vec<f64>>,
     #[serde(default = "default_open_ttl_seconds")]
     open_ttl_seconds: i64,
-    #[serde(default = "default_take_profit")]
-    take_profit: f64,
-    #[serde(default = "default_reward_risk_ratio")]
-    reward_risk_ratio: f64,
+    #[serde(default = "default_factor_exit_quantile_long")]
+    factor_exit_quantile_long: f64,
+    #[serde(default = "default_factor_exit_quantile_short")]
+    factor_exit_quantile_short: f64,
     #[serde(default = "default_trailing_stop_enabled")]
     trailing_stop_enabled: bool,
     #[serde(default = "default_trailing_stop_trigger_step")]
     trailing_stop_trigger_step: f64,
     #[serde(default = "default_trailing_stop_move_step")]
     trailing_stop_move_step: f64,
-    #[serde(default = "default_max_holding_seconds")]
-    max_holding_seconds: i64,
     #[serde(default = "default_enabled")]
     enabled: bool,
 }
@@ -170,23 +123,20 @@ fn default_order_notional_usdt() -> f64 {
 fn default_open_ttl_seconds() -> i64 {
     120
 }
-fn default_take_profit() -> f64 {
-    0.005
+fn default_factor_exit_quantile_long() -> f64 {
+    0.3
 }
-fn default_reward_risk_ratio() -> f64 {
-    1.0
+fn default_factor_exit_quantile_short() -> f64 {
+    0.7
 }
 fn default_trailing_stop_enabled() -> bool {
     true
 }
 fn default_trailing_stop_trigger_step() -> f64 {
-    0.001
+    0.01
 }
 fn default_trailing_stop_move_step() -> f64 {
-    0.0005
-}
-fn default_max_holding_seconds() -> i64 {
-    14_400
+    0.005
 }
 fn default_enabled() -> bool {
     true
@@ -200,12 +150,12 @@ fn default_open_offsets() -> Vec<f64> {
 /// （覆盖到 `CtaRule` 执行段；与 RawCtaRule 同名字段一一对应）。
 const CTA_EXEC_FLOAT_FIELDS: &[&str] = &[
     "order_notional_usdt",
-    "take_profit",
-    "reward_risk_ratio",
+    "factor_exit_quantile_long",
+    "factor_exit_quantile_short",
     "trailing_stop_trigger_step",
     "trailing_stop_move_step",
 ];
-const CTA_EXEC_INT_FIELDS: &[&str] = &["open_ttl_seconds", "max_holding_seconds"];
+const CTA_EXEC_INT_FIELDS: &[&str] = &["open_ttl_seconds"];
 const CTA_EXEC_BOOL_FIELDS: &[&str] = &["trailing_stop_enabled"];
 const CTA_EXEC_OFFSETS_FIELD: &str = "open_offsets";
 
@@ -216,12 +166,11 @@ pub struct CtaExecOverrides {
     order_notional_usdt: Option<f64>,
     open_offsets: Option<Vec<f64>>,
     open_ttl_seconds: Option<i64>,
-    take_profit: Option<f64>,
-    reward_risk_ratio: Option<f64>,
+    factor_exit_quantile_long: Option<f64>,
+    factor_exit_quantile_short: Option<f64>,
     trailing_stop_enabled: Option<bool>,
     trailing_stop_trigger_step: Option<f64>,
     trailing_stop_move_step: Option<f64>,
-    max_holding_seconds: Option<i64>,
 }
 
 fn parse_exec_bool(raw: &str) -> Option<bool> {
@@ -232,82 +181,56 @@ fn parse_exec_bool(raw: &str) -> Option<bool> {
     }
 }
 
-/// `open_offsets` 在 hash 里存 JSON 数组字符串（`"[0.0, 0.0001]"`），
-/// 也兼容逗号/空白分隔的裸列表（`"0, 0.0001, 0.0003"`）。
+/// `open_offsets` 在 hash 里存 JSON 数组字符串（`"[0.0, 0.0001]"`）。
 fn parse_exec_offsets(raw: &str) -> Option<Vec<f64>> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Ok(v) = serde_json::from_str::<Vec<f64>>(trimmed) {
-        return Some(v);
-    }
-    let parsed: Option<Vec<f64>> = trimmed
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse::<f64>().ok())
-        .collect();
-    parsed.filter(|v| !v.is_empty())
+    serde_json::from_str(raw.trim()).ok()
 }
 
 impl CtaExecOverrides {
     /// 从 env-scoped CTA strategy params hash 解析执行参数覆盖。
-    /// 单个字段解析失败只 warn 跳过（沿用对象内字段/serde 默认），不整轮失败。
-    pub fn from_strategy_params(params: &HashMap<String, String>, key_ctx: &str) -> Self {
+    /// 拒绝过期字段和无效值，避免错误配置被静默忽略。
+    pub fn from_strategy_params(params: &HashMap<String, String>, key_ctx: &str) -> Result<Self> {
         let mut out = Self::default();
         for (field, raw) in params {
             let value = raw.trim();
             match field.as_str() {
-                name if CTA_EXEC_FLOAT_FIELDS.contains(&name) => match value.parse::<f64>() {
-                    Ok(v) => match name {
-                        "order_notional_usdt" => out.order_notional_usdt = Some(v),
-                        "take_profit" => out.take_profit = Some(v),
-                        "reward_risk_ratio" => out.reward_risk_ratio = Some(v),
-                        "trailing_stop_trigger_step" => out.trailing_stop_trigger_step = Some(v),
-                        "trailing_stop_move_step" => out.trailing_stop_move_step = Some(v),
+                name if CTA_EXEC_FLOAT_FIELDS.contains(&name) => {
+                    let parsed = value.parse::<f64>().with_context(|| {
+                        format!("CTA '{}' field '{}' must be a number", key_ctx, name)
+                    })?;
+                    match name {
+                        "order_notional_usdt" => out.order_notional_usdt = Some(parsed),
+                        "factor_exit_quantile_long" => out.factor_exit_quantile_long = Some(parsed),
+                        "factor_exit_quantile_short" => {
+                            out.factor_exit_quantile_short = Some(parsed)
+                        }
+                        "trailing_stop_trigger_step" => {
+                            out.trailing_stop_trigger_step = Some(parsed)
+                        }
+                        "trailing_stop_move_step" => out.trailing_stop_move_step = Some(parsed),
                         _ => {}
-                    },
-                    Err(_) => log::warn!(
-                        "cta exec param '{}' 在 '{}' 中不是数字: '{}'",
-                        name,
-                        key_ctx,
-                        value
-                    ),
-                },
-                name if CTA_EXEC_INT_FIELDS.contains(&name) => match value.parse::<i64>() {
-                    Ok(v) => match name {
-                        "open_ttl_seconds" => out.open_ttl_seconds = Some(v),
-                        "max_holding_seconds" => out.max_holding_seconds = Some(v),
-                        _ => {}
-                    },
-                    Err(_) => log::warn!(
-                        "cta exec param '{}' 在 '{}' 中不是整数: '{}'",
-                        name,
-                        key_ctx,
-                        value
-                    ),
-                },
-                name if CTA_EXEC_BOOL_FIELDS.contains(&name) => match parse_exec_bool(value) {
-                    Some(v) => out.trailing_stop_enabled = Some(v),
-                    None => log::warn!(
-                        "cta exec param '{}' 在 '{}' 中不是布尔值: '{}'",
-                        name,
-                        key_ctx,
-                        value
-                    ),
-                },
-                name if name == CTA_EXEC_OFFSETS_FIELD => match parse_exec_offsets(value) {
-                    Some(v) => out.open_offsets = Some(v),
-                    None => log::warn!(
-                        "cta exec param 'open_offsets' 在 '{}' 中不是合法数组: '{}'",
-                        key_ctx,
-                        value
-                    ),
-                },
-                _ => {}
+                    }
+                }
+                name if CTA_EXEC_INT_FIELDS.contains(&name) => {
+                    out.open_ttl_seconds = Some(value.parse::<i64>().with_context(|| {
+                        format!("CTA '{}' field '{}' must be an integer", key_ctx, name)
+                    })?);
+                }
+                name if CTA_EXEC_BOOL_FIELDS.contains(&name) => {
+                    out.trailing_stop_enabled =
+                        Some(parse_exec_bool(value).with_context(|| {
+                            format!("CTA '{}' field '{}' must be a boolean", key_ctx, name)
+                        })?);
+                }
+                CTA_EXEC_OFFSETS_FIELD => {
+                    out.open_offsets = Some(parse_exec_offsets(value).with_context(|| {
+                        format!("CTA '{}' open_offsets must be a JSON array", key_ctx)
+                    })?);
+                }
+                _ => bail!("CTA '{}' unknown exec field '{}'", key_ctx, field),
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -385,10 +308,12 @@ impl CtaRule {
             open_ttl_seconds: exec
                 .and_then(|e| e.open_ttl_seconds)
                 .unwrap_or(raw.open_ttl_seconds),
-            take_profit: exec.and_then(|e| e.take_profit).unwrap_or(raw.take_profit),
-            reward_risk_ratio: exec
-                .and_then(|e| e.reward_risk_ratio)
-                .unwrap_or(raw.reward_risk_ratio),
+            factor_exit_quantile_long: exec
+                .and_then(|e| e.factor_exit_quantile_long)
+                .unwrap_or(raw.factor_exit_quantile_long),
+            factor_exit_quantile_short: exec
+                .and_then(|e| e.factor_exit_quantile_short)
+                .unwrap_or(raw.factor_exit_quantile_short),
             trailing_stop_enabled: exec
                 .and_then(|e| e.trailing_stop_enabled)
                 .unwrap_or(raw.trailing_stop_enabled),
@@ -398,9 +323,6 @@ impl CtaRule {
             trailing_stop_move_step: exec
                 .and_then(|e| e.trailing_stop_move_step)
                 .unwrap_or(raw.trailing_stop_move_step),
-            max_holding_seconds: exec
-                .and_then(|e| e.max_holding_seconds)
-                .unwrap_or(raw.max_holding_seconds),
             enabled: raw.enabled,
         };
         rule.validate()?;
@@ -446,23 +368,14 @@ impl CtaRule {
                 self.open_ttl_seconds
             );
         }
-        if !self.take_profit.is_finite()
-            || self.take_profit <= 0.0
-            || self.take_profit >= 1.0
-            || self.take_profit / self.reward_risk_ratio >= 1.0
+        if !self.factor_exit_quantile_long.is_finite()
+            || !(0.0..0.9).contains(&self.factor_exit_quantile_long)
+            || !self.factor_exit_quantile_short.is_finite()
+            || !(self.factor_exit_quantile_short > 0.1 && self.factor_exit_quantile_short <= 1.0)
         {
             bail!(
-                "cta rule '{}' take_profit must be in (0,1) and take_profit/reward_risk_ratio < 1, got tp={} rr={}",
-                self.rule_id,
-                self.take_profit,
-                self.reward_risk_ratio
-            );
-        }
-        if !self.reward_risk_ratio.is_finite() || self.reward_risk_ratio <= 0.0 {
-            bail!(
-                "cta rule '{}' reward_risk_ratio must be positive finite, got {}",
-                self.rule_id,
-                self.reward_risk_ratio
+                "cta rule '{}' factor exit quantiles must satisfy long < 0.9 and short > 0.1",
+                self.rule_id
             );
         }
         for (name, step) in [
@@ -488,42 +401,6 @@ impl CtaRule {
                 self.trailing_stop_move_step,
                 self.trailing_stop_trigger_step
             );
-        }
-        if self.max_holding_seconds < 0 {
-            bail!(
-                "cta rule '{}' max_holding_seconds cannot be negative (0 disables), got {}",
-                self.rule_id,
-                self.max_holding_seconds
-            );
-        }
-        if let Some(contract) = selected_rule_contract(&self.model_service)? {
-            let offsets_match = self.open_offsets.len() == 4
-                && self
-                    .open_offsets
-                    .iter()
-                    .zip([0.0, 0.0001, 0.0003, 0.0005])
-                    .all(|(actual, expected)| same_param(*actual, expected));
-            if !self.allow_long
-                || !self.allow_short
-                || self.application != CtaApplication::EachBar
-                || self.cooldown_seconds != 0
-                || !self.nq_change_enabled
-                || !same_param(self.order_notional_usdt, 100.0)
-                || !offsets_match
-                || self.open_ttl_seconds != 120
-                || !same_param(self.take_profit, contract.take_profit)
-                || !same_param(self.reward_risk_ratio, contract.reward_risk_ratio)
-                || !self.trailing_stop_enabled
-                || !same_param(self.trailing_stop_trigger_step, contract.trailing_trigger)
-                || !same_param(self.trailing_stop_move_step, contract.trailing_move)
-                || self.max_holding_seconds != 14_400
-            {
-                bail!(
-                    "cta rule '{}' parameters do not match selected backtest contract for '{}'",
-                    self.rule_id,
-                    self.model_service
-                );
-            }
         }
         Ok(())
     }
@@ -696,12 +573,11 @@ mod tests {
         assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
         assert_eq!(rule.open_ttl_seconds, 120);
-        assert_eq!(rule.take_profit, 0.005);
-        assert_eq!(rule.reward_risk_ratio, 1.0);
+        assert_eq!(rule.factor_exit_quantile_long, 0.3);
+        assert_eq!(rule.factor_exit_quantile_short, 0.7);
         assert!(rule.trailing_stop_enabled);
-        assert_eq!(rule.trailing_stop_trigger_step, 0.001);
-        assert_eq!(rule.trailing_stop_move_step, 0.0005);
-        assert_eq!(rule.max_holding_seconds, 14_400);
+        assert_eq!(rule.trailing_stop_trigger_step, 0.01);
+        assert_eq!(rule.trailing_stop_move_step, 0.005);
         assert!(rule.enabled);
     }
 
@@ -716,12 +592,11 @@ mod tests {
             "order_notional_usdt": 250.0,
             "open_offsets": [0.0, 0.0002],
             "open_ttl_seconds": 60,
-            "take_profit": 0.005,
-            "reward_risk_ratio": 2.0,
+            "factor_exit_quantile_long": 0.5,
+            "factor_exit_quantile_short": 0.5,
             "trailing_stop_enabled": true,
             "trailing_stop_trigger_step": 0.002,
             "trailing_stop_move_step": 0.001,
-            "max_holding_seconds": 7200,
             "enabled": false
         }]"#;
         let set = CtaRuleSet::parse(raw).unwrap();
@@ -729,11 +604,10 @@ mod tests {
         assert!(!rule.allow_long && rule.allow_short);
         assert_eq!(rule.application, CtaApplication::OnChange);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0002]);
-        assert_eq!(rule.take_profit, 0.005);
-        assert_eq!(rule.reward_risk_ratio, 2.0);
+        assert_eq!(rule.factor_exit_quantile_long, 0.5);
+        assert_eq!(rule.factor_exit_quantile_short, 0.5);
         assert_eq!(rule.trailing_stop_trigger_step, 0.002);
         assert_eq!(rule.trailing_stop_move_step, 0.001);
-        assert_eq!(rule.max_holding_seconds, 7200);
         assert!(!rule.enabled);
     }
 
@@ -751,13 +625,11 @@ mod tests {
 
     #[test]
     fn rejects_invalid_exit_params() {
-        let raw = r#"[{"rule_id":"r","model_service":"svc","take_profit":-0.01}]"#;
+        let raw = r#"[{"rule_id":"r","model_service":"svc","factor_exit_quantile_long":0.9}]"#;
         assert!(CtaRuleSet::parse(raw).is_err());
-        let raw = r#"[{"rule_id":"r","model_service":"svc","reward_risk_ratio":0.0}]"#;
+        let raw = r#"[{"rule_id":"r","model_service":"svc","factor_exit_quantile_short":0.1}]"#;
         assert!(CtaRuleSet::parse(raw).is_err());
         let raw = r#"[{"rule_id":"r","model_service":"svc","trailing_stop_trigger_step":0.0}]"#;
-        assert!(CtaRuleSet::parse(raw).is_err());
-        let raw = r#"[{"rule_id":"r","model_service":"svc","max_holding_seconds":-1}]"#;
         assert!(CtaRuleSet::parse(raw).is_err());
         let raw = r#"[{"rule_id":"r","model_service":"svc","trailing_stop_trigger_step":0.001,"trailing_stop_move_step":0.001}]"#;
         assert!(CtaRuleSet::parse(raw).is_err());
@@ -767,40 +639,10 @@ mod tests {
     }
 
     #[test]
-    fn selected_factor_rejects_backtest_parameter_drift() {
-        let service = "intra-binance-futures-1m-baseline_053";
-        assert!(CtaRuleSet::parse(&rule_json("r", service)).is_err());
-        let raw = format!(
-            r#"{{"rule_id":"r","model_service":"{service}","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.001}}"#
-        );
-        assert!(CtaRuleSet::parse(&raw).is_ok());
-        let short_only = format!(
-            r#"{{"rule_id":"r","model_service":"{service}","trade_sides":"short","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.001}}"#
-        );
-        assert!(CtaRuleSet::parse(&short_only).is_err());
-        let drifted = format!(
-            r#"{{"rule_id":"r","model_service":"{service}","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.0005}}"#
-        );
-        assert!(CtaRuleSet::parse(&drifted).is_err());
-    }
-
-    #[test]
-    fn all_selected_factor_exit_contracts_are_accepted() {
-        for (factor, tp, rr, trigger, move_step) in [
-            ("baseline_035", 0.005, 1.0, 0.001, 0.0005),
-            ("td_pr_011", 0.005, 1.0, 0.001, 0.0005),
-            ("baseline_053", 0.01, 1.0, 0.002, 0.001),
-            ("tp_vpi_006", 0.01, 2.0, 0.002, 0.001),
-            ("td_pr_005", 0.01, 1.0, 0.001, 0.0005),
-            ("factor_116", 0.01, 1.0, 0.002, 0.001),
-            ("net_buy_medium", 0.01, 1.0, 0.002, 0.0005),
-            ("factor_004", 0.01, 1.0, 0.001, 0.0005),
-            ("baseline_091", 0.01, 1.0, 0.001, 0.0005),
-        ] {
-            let raw = format!(
-                r#"{{"rule_id":"r","model_service":"intra-binance-futures-1m-{factor}","take_profit":{tp},"reward_risk_ratio":{rr},"trailing_stop_trigger_step":{trigger},"trailing_stop_move_step":{move_step}}}"#
-            );
-            assert!(CtaRuleSet::parse(&raw).is_ok(), "factor={factor}");
+    fn rejects_obsolete_v005_fields() {
+        for field in ["take_profit", "reward_risk_ratio", "max_holding_seconds"] {
+            let raw = format!(r#"{{"model_service":"svc","{field}":1}}"#);
+            assert!(CtaRuleSet::parse(&raw).is_err(), "{field}");
         }
     }
 
@@ -839,31 +681,31 @@ mod tests {
         params.insert("order_notional_usdt".to_string(), "250".to_string());
         params.insert("open_offsets".to_string(), "[0.0, 0.0002]".to_string());
         params.insert("open_ttl_seconds".to_string(), "60".to_string());
-        params.insert("take_profit".to_string(), "0.005".to_string());
+        params.insert("factor_exit_quantile_long".to_string(), "0.5".to_string());
         params.insert("trailing_stop_enabled".to_string(), "false".to_string());
-        let exec = CtaExecOverrides::from_strategy_params(&params, "test");
+        let exec = CtaExecOverrides::from_strategy_params(&params, "test").unwrap();
         let set = CtaRuleSet::parse_with_exec(raw, Some(&exec)).unwrap();
         let rule = &set.rules()[0];
         assert_eq!(rule.order_notional_usdt, 250.0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0002]);
         assert_eq!(rule.open_ttl_seconds, 60);
-        assert_eq!(rule.take_profit, 0.005);
+        assert_eq!(rule.factor_exit_quantile_long, 0.5);
         assert!(!rule.trailing_stop_enabled);
     }
 
     #[test]
-    fn exec_overrides_tolerate_bad_and_csv_offsets() {
-        // 坏值只 warn 跳过，对象内字段兜底；open_offsets 兼容裸 CSV。
-        let raw = r#"{"model_service":"svc","order_notional_usdt":50.0,"open_ttl_seconds":30}"#;
+    fn exec_overrides_reject_obsolete_or_invalid_values() {
         let mut params = HashMap::new();
+        for field in ["take_profit", "reward_risk_ratio", "max_holding_seconds"] {
+            params.insert(field.to_string(), "0.01".to_string());
+            assert!(CtaExecOverrides::from_strategy_params(&params, "test").is_err());
+            params.remove(field);
+        }
         params.insert("order_notional_usdt".to_string(), "not_a_num".to_string());
-        params.insert("open_offsets".to_string(), "0, 0.0001, 0.0003".to_string());
-        let exec = CtaExecOverrides::from_strategy_params(&params, "test");
-        let set = CtaRuleSet::parse_with_exec(raw, Some(&exec)).unwrap();
-        let rule = &set.rules()[0];
-        assert_eq!(rule.order_notional_usdt, 50.0); // 坏值被忽略，对象内字段兜底
-        assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003]);
-        assert_eq!(rule.open_ttl_seconds, 30);
+        assert!(CtaExecOverrides::from_strategy_params(&params, "test").is_err());
+        params.remove("order_notional_usdt");
+        params.insert("open_offsets".to_string(), "0, 0.0001".to_string());
+        assert!(CtaExecOverrides::from_strategy_params(&params, "test").is_err());
     }
 
     #[test]

@@ -1076,8 +1076,8 @@ impl CtaShell {
                                         // 撤单与 per-lot 对冲管理，不响应 tlen
                                         // cancel-candidate 轮询。
                                         ArbBackwardQueryMsg::CancelCandidates(_) => {}
-                                        ArbBackwardQueryMsg::Hedge(query) => {
-                                            drive_cta_hedge_query(&decision.runtime, query)
+                                        ArbBackwardQueryMsg::Hedge(_) => {
+                                            log::warn!("{CTA_SHELL_NAME}: unexpected hedge query; V007 only exits through pre-trade factor/trailing taker");
                                         }
                                     }
                                 }
@@ -1813,8 +1813,7 @@ fn drive_funding_decision(
 /// - spread overlay 开仓 gate 与撤单走 SpreadFactor 阈值（rolling_metrics 热加载）；
 ///   撤单是 symbol+side 级广播（strategy_id=0, Spread reason）。
 /// - 仓位上限由 pre_trade max_pos_u 兜底执行；反向仓位互斥由 execution 层保证。
-/// - 现货 fill 后的退出（swap 腿 TP / 止损 / trailing / max_holding）见
-///   drive_cta_hedge_query 与策略层 per-lot 管理。
+/// - 现货 fill 后的因子/trailing 退出由 pre-trade 逐 lot 定向 taker 管理。
 fn drive_cta_decision(
     decision: &mut CtaShell,
     open_symbol: &str,
@@ -2017,28 +2016,6 @@ fn cta_rule_eval(
     (new_bar, Some(if vote > 0 { Side::Buy } else { Side::Sell }))
 }
 
-/// cta swap 腿 TP 挂单价：多仓 → 卖空 swap 于 entry*(1+tp)；
-/// 空仓（margin 借币卖）→ 买回 swap 于 entry*(1-tp)。
-fn cta_hedge_tp_price(side: Side, entry_price: f64, take_profit: f64) -> f64 {
-    match side {
-        Side::Sell => entry_price * (1.0 + take_profit),
-        Side::Buy => entry_price * (1.0 - take_profit),
-    }
-}
-
-fn cta_hedge_order_meets_minimums(qty: f64, price: f64, min_qty: f64, min_notional: f64) -> bool {
-    qty.is_finite()
-        && qty > 0.0
-        && price.is_finite()
-        && price > 0.0
-        && min_qty.is_finite()
-        && min_qty > 0.0
-        && min_notional.is_finite()
-        && min_notional > 0.0
-        && qty + 1e-12 >= min_qty
-        && qty * price + 1e-12 >= min_notional
-}
-
 /// 按 rule.open_offsets 在现货腿发一组网格 maker 挂单。
 /// 档价 = inner * (1 ∓ offset)，inner 为 touch 价（买单取 bid，卖单取 ask）。
 #[allow(clippy::too_many_arguments)]
@@ -2175,15 +2152,17 @@ fn emit_cta_open_signals(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "NA".to_string()),
             ),
-            ("cta_tp", rule.take_profit.to_string()),
-            ("cta_rr", rule.reward_risk_ratio.to_string()),
+            ("cta_exit_long", rule.factor_exit_quantile_long.to_string()),
+            (
+                "cta_exit_short",
+                rule.factor_exit_quantile_short.to_string(),
+            ),
             (
                 "cta_trailing",
                 if rule.trailing_stop_enabled { "1" } else { "0" }.to_string(),
             ),
             ("cta_trigger", rule.trailing_stop_trigger_step.to_string()),
             ("cta_move", rule.trailing_stop_move_step.to_string()),
-            ("cta_max_hold_s", rule.max_holding_seconds.to_string()),
         ],
     );
     let open_order_ttl_us = rule.open_ttl_seconds.saturating_mul(1_000_000);
@@ -2279,204 +2258,6 @@ fn emit_cta_spread_cancel(
         );
     }
     sent
-}
-
-/// cta 的 hedge query 响应：不走共享的 inventory market-hedge 计划（那会把每个
-/// 现货 fill 立刻对冲成无方向敞口的套利对）。引擎语义是 per-lot TP 单挂在
-/// swap 腿、价格锚定 entry*(1±take_profit)、常驻不撤（exp_time=0 → 策略层
-/// 不做超时撤单）。
-///
-/// 正常 query 绑定一个 opening `open_id`。低于 venue 最小数量/名义时，pre-trade
-/// 可把同方向 dust 与后续 lot 合成可执行数量；`target_open_id` 此时是严格 TP 价格锚点，
-/// 真实逐 lot allocation 仍由 pre-trade 保留。
-fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMsg) {
-    let symbol = query.get_symbol().to_uppercase();
-    log::info!(
-        "{CTA_SHELL_NAME}: cta ArbHedge query received strategy_id={} symbol={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} weighted_inventory_price={:.8}",
-        query.strategy_id,
-        symbol,
-        query.request_seq,
-        query.net_qty,
-        query.due_hedge_qty,
-        query.pending_hedge_qty,
-        query.weighted_inventory_price
-    );
-    if symbol.is_empty() {
-        log::warn!("{CTA_SHELL_NAME}: cta hedge query missing symbol");
-        return;
-    }
-    if query.due_hedge_qty.abs() <= 1e-12 {
-        log::debug!(
-            "{CTA_SHELL_NAME}: cta hedge query skip zero due qty strategy_id={} symbol={} request_seq={}",
-            query.strategy_id,
-            symbol,
-            query.request_seq
-        );
-        return;
-    }
-    if query.target_open_id <= 0 {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} due={:.8} reason=missing target_open_id",
-            query.strategy_id,
-            symbol,
-            query.due_hedge_qty
-        );
-        return;
-    }
-    let take_profit = query.target_take_profit;
-    if !(take_profit.is_finite() && take_profit > 0.0 && take_profit < 1.0) {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} open_id={} invalid take_profit={}",
-            query.strategy_id,
-            symbol,
-            query.target_open_id,
-            take_profit
-        );
-        return;
-    }
-    let entry_price = query.target_entry_price;
-    if !(entry_price.is_finite() && entry_price > 0.0) {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} open_id={} invalid target_entry_price={}",
-            query.strategy_id,
-            symbol,
-            query.target_open_id,
-            entry_price
-        );
-        return;
-    }
-    let hedge_venue = runtime.venues.1;
-    let Some(quote) = MktChannel::instance().get_quote(&symbol, hedge_venue) else {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge query quote unavailable strategy_id={} symbol={} venue={:?}",
-            query.strategy_id,
-            symbol,
-            hedge_venue
-        );
-        return;
-    };
-    let hedge_side = if query.due_hedge_qty >= 0.0 {
-        Side::Sell
-    } else {
-        Side::Buy
-    };
-    let tp_price = cta_hedge_tp_price(hedge_side, entry_price, take_profit);
-    let table = if hedge_venue == runtime.venues.0 {
-        &runtime.open_min_qty_table
-    } else {
-        &runtime.hedge_min_qty_table
-    };
-    let symbol_key = min_qty_symbol_key(hedge_venue, &symbol);
-    let (Some(price_tick), Some(qty_tick), Some(min_qty), Some(min_notional)) = (
-        table.price_tick(&symbol_key),
-        table.step_size(&symbol_key),
-        table.min_qty(&symbol_key),
-        table.min_notional(&symbol_key),
-    ) else {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge skipped because complete order constraints are unavailable strategy_id={} symbol={} venue={:?}",
-            query.strategy_id,
-            symbol,
-            hedge_venue
-        );
-        return;
-    };
-    let Some(price_qv) = QuantizedValue::encode_floor(tp_price, price_tick) else {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge tp price qv invalid strategy_id={} symbol={} price={:.8} tick={:.8}",
-            query.strategy_id,
-            symbol,
-            tp_price,
-            price_tick
-        );
-        return;
-    };
-    let Some(amount_qv) = QuantizedValue::encode_floor(query.due_hedge_qty.abs(), qty_tick) else {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge amount qv invalid strategy_id={} symbol={} qty={:.8} tick={:.8}",
-            query.strategy_id,
-            symbol,
-            query.due_hedge_qty,
-            qty_tick
-        );
-        return;
-    };
-    let aligned_price = price_qv.get_val();
-    let aligned_qty = amount_qv.get_val();
-    if price_qv.get_count() <= 0
-        || amount_qv.get_count() <= 0
-        || !cta_hedge_order_meets_minimums(aligned_qty, aligned_price, min_qty, min_notional)
-    {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta hedge quantized order below venue minimum strategy_id={} symbol={} qty={:.8} price={:.8} min_qty={:.8} min_notional={:.8} qty_tick={:.8} price_tick={:.8}",
-            query.strategy_id,
-            symbol,
-            aligned_qty,
-            aligned_price,
-            min_qty,
-            min_notional,
-            qty_tick,
-            price_tick
-        );
-        return;
-    }
-
-    let mut ctx = ArbHedgeCtx::new();
-    ctx.strategy_id = query.strategy_id;
-    ctx.set_side(hedge_side);
-    ctx.hedging_leg = TradingLeg::new_with_qty(
-        hedge_venue,
-        quote.bid,
-        quote.bid_qty,
-        quote.ask,
-        quote.ask_qty,
-        quote.ts,
-    );
-    ctx.set_hedging_symbol(&symbol);
-    ctx.price_qv = price_qv;
-    ctx.amount_qv = amount_qv;
-    ctx.price_offset = 0.0;
-    ctx.signal_ts = get_timestamp_us();
-    // 常驻 TP：策略层 expire_ts<=0 时不做超时撤单（与引擎 expires_ts=MAX 一致）。
-    ctx.exp_time = 0;
-    ctx.request_seq = query.request_seq;
-    ctx.set_from_key(
-        format!(
-            "{}:cta_tp:open_id={}:tp={:.6}:entry={:.8}",
-            ctx.signal_ts, query.target_open_id, take_profit, entry_price
-        )
-        .into_bytes(),
-    );
-
-    let context = ctx.to_bytes();
-    if let Err(err) = runtime.signal_pub.publish_trade_signal_parts(
-        SignalType::ArbHedge,
-        get_timestamp_us(),
-        0.0,
-        context.as_ref(),
-    ) {
-        log::warn!(
-            "{CTA_SHELL_NAME}: publish cta ArbHedge failed strategy_id={} symbol={} err={:#}",
-            query.strategy_id,
-            symbol,
-            err
-        );
-        return;
-    }
-    log::info!(
-        "{CTA_SHELL_NAME}: cta TP hedge reply strategy_id={} symbol={} open_id={} side={:?} qty={:.8} tp_price={:.8} entry={:.8} tp={:.6} request_seq={} net_qty={:.8} due_hedge_qty={:.8}",
-        query.strategy_id,
-        symbol,
-        query.target_open_id,
-        hedge_side,
-        ctx.amount_value(),
-        ctx.price_value(),
-        entry_price,
-        take_profit,
-        query.request_seq,
-        query.net_qty,
-        query.due_hedge_qty
-    );
 }
 
 fn drive_spread_arb_decision(
@@ -7351,21 +7132,5 @@ mod cta_decision_tests {
         let mut state = CtaRuleSymbolState::default();
         let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, true, 1_000_000);
         assert_eq!(side, None);
-    }
-
-    #[test]
-    fn hedge_tp_price_anchors_entry() {
-        // spot 多 → swap 卖单挂在 entry*(1+tp)；spot 空 → swap 买挂在 entry*(1-tp)
-        assert!((cta_hedge_tp_price(Side::Sell, 100.0, 0.005) - 100.5).abs() < 1e-12);
-        assert!((cta_hedge_tp_price(Side::Buy, 100.0, 0.005) - 99.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn hedge_tp_minimums_use_quantized_qty_and_price() {
-        assert!(cta_hedge_order_meets_minimums(0.05, 100.0, 0.001, 5.0));
-        assert!(!cta_hedge_order_meets_minimums(
-            0.0009, 10_000.0, 0.001, 5.0
-        ));
-        assert!(!cta_hedge_order_meets_minimums(0.049, 100.0, 0.001, 5.0));
     }
 }

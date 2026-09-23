@@ -1044,8 +1044,8 @@ impl StrategyParams {
         let hash_map = client.hgetall_map(&redis_key).await?;
         if hash_map.is_empty() {
             if ns == "cta" {
-                // cta 的每笔执行参数都在 cta_rules 内（网格档/单笔名义/TP/trailing），
-                // strategy hash 只承载共享执行管道参数，允许缺省走全默认。
+                // CTA 的网格、因子退出和 trailing 参数在独立的 CTA strategy hash 中；
+                // 共享执行管道参数为空时使用默认值。
                 warn!(
                     "Redis hash '{}' 为空或不存在，cta 使用默认策略参数",
                     redis_key

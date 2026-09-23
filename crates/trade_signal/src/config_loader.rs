@@ -272,10 +272,9 @@ async fn reload_symbol_list(
 
 /// 重载 cta 信号配置（`{env}:cta_rules`，单对象；兼容数组）。
 ///
-/// - 执行/网格参数（open_offsets/单笔名义/TP/trailing 等）来自
+/// - 执行/网格参数（open_offsets/单笔名义/因子退出/trailing 等）来自
 ///   `{env}:cta_strategy_params:{open}:{hedge}` hash，加载时覆盖到规则上；
-///   hash 缺失/字段缺失时先走规则对象/serde 默认；九条入选规则随后仍须通过
-///   精确执行参数契约校验，否则保留上一份已加载配置。
+///   hash 缺失/字段缺失时走规则默认值；未知或无效字段拒绝重载。
 /// - key 缺失 / Redis 失败 / 解析失败：warn 并保留上一份已应用配置；
 /// - key 存在且解析成功：原子替换规则集，并把去重后的 model_output
 ///   service 列表推给 ArbDecision 的订阅 hub（空的 `[]` 会显式清空订阅）。
@@ -298,50 +297,66 @@ async fn reload_cta_rules(
             return Ok(());
         }
     };
-    let exec = match client.hgetall_map(&strategy_key).await {
-        Ok(map) => CtaExecOverrides::from_strategy_params(&map, &strategy_key),
-        Err(err) => {
-            warn!(
-                "cta exec params 读取失败 (key='{}')，使用对象内字段/默认值: {:?}",
-                strategy_key, err
-            );
-            CtaExecOverrides::default()
-        }
-    };
-    match client.get_string(&redis_key).await {
-        Ok(Some(raw)) => match CtaRuleSet::parse_with_exec(&raw, Some(&exec)) {
-            Ok(rule_set) => {
-                let rule_count = rule_set.rules().len();
-                let services = rule_set.model_services();
-                let applied = ArbDecision::apply_cta_rule_set(rule_set);
-                if applied {
-                    info!(
-                        "cta rules 重载成功 key='{}' rules={} services={:?}",
-                        redis_key, rule_count, services
-                    );
-                } else {
-                    warn!(
-                        "cta rules 已解析但 ArbDecision 未初始化，本轮丢弃 (key='{}' rules={})",
-                        redis_key, rule_count
-                    );
-                }
-            }
-            Err(err) => {
-                warn!(
-                    "cta rules 解析失败，保留上一份配置 (key='{}'): {:#}",
-                    redis_key, err
-                );
-            }
-        },
+    let raw = match client.get_string(&redis_key).await {
+        Ok(Some(raw)) => raw,
         Ok(None) => {
             warn!(
                 "cta rules key '{}' 不存在，保留现有配置（如需清空请写 []）",
                 redis_key
             );
+            return Ok(());
         }
         Err(err) => {
             warn!(
                 "cta rules 重载：读取 key '{}' 失败，保留现有配置: {:?}",
+                redis_key, err
+            );
+            return Ok(());
+        }
+    };
+    if raw.trim() == "[]" {
+        ArbDecision::apply_cta_rule_set(CtaRuleSet::parse(&raw)?);
+        return Ok(());
+    }
+    let exec = match client.hgetall_map(&strategy_key).await {
+        Ok(map) => match CtaExecOverrides::from_strategy_params(&map, &strategy_key) {
+            Ok(exec) => exec,
+            Err(err) => {
+                warn!(
+                    "cta exec params 拒绝重载 (key='{}'): {:#}",
+                    strategy_key, err
+                );
+                return Ok(());
+            }
+        },
+        Err(err) => {
+            warn!(
+                "cta exec params 读取失败 (key='{}')，保留上一配置: {:?}",
+                strategy_key, err
+            );
+            return Ok(());
+        }
+    };
+    match CtaRuleSet::parse_with_exec(&raw, Some(&exec)) {
+        Ok(rule_set) => {
+            let rule_count = rule_set.rules().len();
+            let services = rule_set.model_services();
+            let applied = ArbDecision::apply_cta_rule_set(rule_set);
+            if applied {
+                info!(
+                    "cta rules 重载成功 key='{}' rules={} services={:?}",
+                    redis_key, rule_count, services
+                );
+            } else {
+                warn!(
+                    "cta rules 已解析但 ArbDecision 未初始化，本轮丢弃 (key='{}' rules={})",
+                    redis_key, rule_count
+                );
+            }
+        }
+        Err(err) => {
+            warn!(
+                "cta rules 解析失败，保留上一份配置 (key='{}'): {:#}",
                 redis_key, err
             );
         }

@@ -13,6 +13,7 @@ use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use mkt_signal::pre_trade::chase_exec_config::ChaseExecConfigReloader;
+use mkt_signal::pre_trade::cta_factor_channel::CtaFactorChannel;
 use mkt_signal::pre_trade::cta_special_factor_channel::CtaSpecialFactorChannel;
 use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
 use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
@@ -1042,6 +1043,16 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             } else {
                 None
             };
+            let cta_factor_channel = if arb_mode == ArbMode::Cta {
+                Some(CtaFactorChannel::new(
+                    RedisSettings::default(),
+                    dir_prefix.clone().context("CTA requires an environment name")?,
+                    open_venue,
+                    hedge_venue,
+                ).await.context("initialize CTA pre-trade factor channel")?)
+            } else {
+                None
+            };
             UnimmrOpenLock::initialize(dir_prefix.clone(), arb_mode, binance_account_mode)?;
             UnimmrForceClose::initialize(arb_mode, binance_account_mode);
 
@@ -1421,6 +1432,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 .with_snapshot_query(snapshot_query);
             if let Some(channel) = cta_special_factor_channel {
                 pre_trade = pre_trade.with_cta_special_factor(channel);
+            }
+            if let Some(channel) = cta_factor_channel {
+                pre_trade = pre_trade.with_cta_factor(channel);
             }
             if let Some(channel) = order_queue_position {
                 pre_trade = pre_trade.with_order_queue_position(channel);

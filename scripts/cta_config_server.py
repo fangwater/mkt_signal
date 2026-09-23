@@ -128,7 +128,7 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div class="hint">
         key: <code>{env}:cta_rules</code>（单 JSON 对象，trade_signal 60s 热加载）。
-        配置 model 与多空方向；网格执行参数（档位/单笔名义/TP/trailing）在
+        配置 model 与多空方向；网格执行参数（档位/单笔名义/因子退出/trailing）在
         <a href="#strategy-params">Strategy Params</a>。
       </div>
       <div id="signal-table" class="kv-table"></div>
@@ -171,7 +171,7 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div class="hint">
         hash key: <code>{env}:cta_strategy_params:{open_venue}:{hedge_venue}</code>，trade_signal 60s 热加载。
-        全部为网格报单执行参数（open_offsets 档位、单笔名义、挂单TTL、持仓上限、TP/trailing、最长持仓）。
+        配置网格报单与 V007 因子分位退出（open_offsets、单笔名义、TTL、退出分位、trailing）。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -659,30 +659,29 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
 _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
     "model_service": "因子信号流 service（model_output/<service>，必填），默认 intra-binance-futures-1m-baseline_035",
     "enabled": "false = 不产生任何信号（配置保留）",
-    "trade_sides": "当前 CTA 固定 both（多空都做）",
-    "application": "入选回测固定 each_bar（每根 bar 评估）",
-    "nq_change_enabled": "现货 BBO NQ 过滤（选中规则固定开启）",
+    "trade_sides": "V007 允许 long、short、both",
+    "application": "each_bar 或 on_change",
+    "nq_change_enabled": "现货 BBO NQ 过滤（V007 可开关）",
     "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
 }
 _CTA_SIGNAL_ORDER: List[str] = list(_CTA_SIGNAL_DEFAULTS.keys())
 _CTA_SIGNAL_SELECTS: Dict[str, List[str]] = {
-    "trade_sides": ["both"],
-    "application": ["each_bar"],
+    "trade_sides": ["both", "long", "short"],
+    "application": ["each_bar", "on_change"],
 }
 _CTA_SIGNAL_BOOLS: List[str] = ["enabled", "nq_change_enabled"]
 
 # strategy_params hash 只承载 cta 执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES
-# 全集）——Rust CtaExecOverrides 加载时覆盖到规则上，与 cta_rules 对象同名字段兼容。
+# 全集）——Rust CtaExecOverrides 加载时覆盖到规则上。
 _CTA_EXEC_COMMENTS: Dict[str, str] = {
     "order_notional_usdt": "网格单档挂单名义（USDT）",
     "open_offsets": "网格档位价格偏移，JSON 数组或逗号分隔（0..0.01），档数=个数",
     "open_ttl_seconds": "开仓挂单 TTL（秒）",
-    "take_profit": "swap 腿逐 lot maker 止盈偏移（价格分数，必须在 0..1）",
-    "reward_risk_ratio": "止盈/止损比：stop_loss = take_profit / rr",
+    "factor_exit_quantile_long": "多头因子分位低于此值时合约 taker 退出并撤未成交现货买单（<0.9）",
+    "factor_exit_quantile_short": "空头因子分位高于此值时合约 taker 退出并撤未成交现货卖单（>0.1）",
     "trailing_stop_enabled": "trailing stop 开关（true/false）",
     "trailing_stop_trigger_step": "trailing 触发步进（价格分数）",
     "trailing_stop_move_step": "trailing 移动步进（价格分数）",
-    "max_holding_seconds": "最长持仓（秒），0=不限制",
 }
 # CTA strategy hash 只承载执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES）。
 # intra 共享链路里被其它 arb 模式消费的旋钮对 cta 均为死参数，不暴露：
@@ -690,8 +689,8 @@ _CTA_EXEC_COMMENTS: Dict[str, str] = {
 #                          cta 的同语义旋钮是信号对象里的 cooldown_seconds
 #   open_order_timeout   —— open ctx 的 TTL 兜底；cta 网格单 TTL 用
 #                          per-rule open_ttl_seconds
-#   hedge_timeout        —— intra/xarb 对冲腿成交时限；cta 对冲是 entry 锚定
-#                          per-lot maker TP，生命周期由 trailing/max_holding 管
+#   hedge_timeout        —— intra/xarb 对冲腿成交时限；cta 平仓由
+#                          合约侧因子分位或 trailing 的定向 taker 管理
 #   enable_tlen_cancel / tlen_cancel_freq_ms —— tlen 衰减撤单；
 #                          CtaShell 对 cancel trigger/candidate 显式 no-op
 _CTA_STRATEGY_KEYS: Tuple[str, ...] = tuple(sync_cta_rules.EXEC_FIELD_TYPES.keys())

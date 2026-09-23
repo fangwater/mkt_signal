@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-09-22。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-09-23。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -15,7 +15,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 `ens41`（主网卡，metric 100）上的 `172.31.35.228/20`–`.234/20` 对应 7 个公网 IPv4：
 
 - `.228` / `13.115.227.29`：主 IP、默认出口、SSH/管理入口；**套利**固定 IP。
-- `.229` / `52.193.90.33` 与 `.230` / `54.238.72.43`：MM 使用（当前 `binance_mm_alpha` 与 `okex_mm_alpha` 共用）。
+- `.229` / `52.193.90.33` 与 `.230` / `54.238.72.43`：MM 使用（当前 `okex_mm_alpha`；原共用的 `binance_mm_alpha` 已下线退役）。
 - `.231` / `52.69.78.134`：资金费率固定 IP。
 - `.232` / `54.238.97.67` 与 `.233` / `54.64.165.84`：`gate_fr_arb02`。
 - `.234` / `54.64.228.233`：**未使用池**。新业务要独立 source IP 时优先用它。
@@ -33,10 +33,10 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-intra-arb01`、`binance-cta-rx01`、`binance-cta-special-rx02`、`binance-cta-special-rx03`、`okex-intra-arb01`、`bitget-intra-arb01` |
-| `172.31.35.229` | `52.193.90.33` | 已使用 | `binance_mm_alpha` / `okex_mm_alpha` `local_ips[0]` |
-| `172.31.35.230` | `54.238.72.43` | 已使用 | `binance_mm_alpha` / `okex_mm_alpha` `local_ips[1]` |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`、`okex_fr_arb01` |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`binance-cta-special-rx02`、`binance-cta-special-rx03`、`okex-intra-arb01`、`bitget-intra-arb01` |
+| `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
+| `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 未使用 | 无 `trade_engine.toml` 引用 |
@@ -65,13 +65,11 @@ ens42  172.31.46.91/20 172.31.46.92/20 172.31.46.93/20
 ## 当前 `trade_engine.toml local_ips`
 
 ```text
-binance-intra-arb01          172.31.35.228, 172.31.35.228   whitelist=172.31.35.228
 binance-cta-rx01             172.31.35.228                  RapidX/LTP
 binance-cta-special-rx02     172.31.35.228                  RapidX/LTP
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 bitget-intra-arb01           172.31.35.228, 172.31.35.228
-binance_mm_alpha             172.31.35.229, 172.31.35.230
 okex_mm_alpha                172.31.35.229, 172.31.35.230
 binance_fr_arb01             172.31.35.231, 172.31.35.231
 binance_fr_arb02             172.31.35.231, 172.31.35.231
@@ -81,7 +79,6 @@ gate_fr_arb01                172.31.35.231, 172.31.35.231
 gate_fr_arb03                172.31.35.231, 172.31.35.231
 bitget_fr_arb01              172.31.35.231, 172.31.35.231
 bitget_fr_arb02              172.31.35.231, 172.31.35.231
-okex_fr_arb01                172.31.35.231, 172.31.35.231
 gate_fr_arb02                172.31.35.232, 172.31.35.233
 gate-intra-arb01             0.0.0.0, 0.0.0.0
 bitget-gate-cross-arb01      0.0.0.0, 0.0.0.0
@@ -106,4 +103,4 @@ bitget-gate-cross-arb01      0.0.0.0, 0.0.0.0
 1. 改 `local_ips`、给环境分配新 EIP、或下线占用 IP 的环境后，立刻改本文件的日期、表格和引用列表。
 2. `.228` 不要改作他用。
 3. `.234` 与 `ens42` 的四个地址在写入任何 `trade_engine.toml` 之前先占表。
-4. `okex_mm_alpha` 当前与 `binance_mm_alpha` 共用 `.229/.230`；若要拆开，优先把 okex MM 迁到 `.234` 或 `ens42` 未分配地址。
+4. `okex_mm_alpha` 现独占 `.229/.230`（原共用的 `binance_mm_alpha` 已下线退役）。

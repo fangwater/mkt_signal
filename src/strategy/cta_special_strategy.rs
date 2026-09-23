@@ -68,6 +68,21 @@ impl CtaSpecialExitConfig {
     }
 }
 
+pub fn cta_factor_decayed(
+    side: Side,
+    quantile: Option<f64>,
+    long_exit: f64,
+    short_exit: f64,
+) -> bool {
+    let Some(quantile) = quantile.filter(|value| value.is_finite()) else {
+        return false;
+    };
+    match side {
+        Side::Buy => quantile < long_exit,
+        Side::Sell => quantile > short_exit,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CtaSpecialLot {
     side: Side,
@@ -92,13 +107,12 @@ impl CtaSpecialLot {
         if !self.config.factor_exit_enabled {
             return false;
         }
-        let Some(quantile) = quantile.filter(|value| value.is_finite()) else {
-            return false;
-        };
-        match self.side {
-            Side::Buy => quantile < self.config.factor_exit_quantile_long,
-            Side::Sell => quantile > self.config.factor_exit_quantile_short,
-        }
+        cta_factor_decayed(
+            self.side,
+            quantile,
+            self.config.factor_exit_quantile_long,
+            self.config.factor_exit_quantile_short,
+        )
     }
 
     fn max_holding_exit(&self, now_ts: i64) -> bool {
