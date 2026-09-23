@@ -62,6 +62,10 @@ name = "spread_pbs"
 path = "src/bin/spread_pbs.rs"
 
 [[bin]]
+name = "binance_futures_ipc_proxy"
+path = "src/bin/binance_futures_ipc_proxy.rs"
+
+[[bin]]
 name = "spread_bbo_zmq_pub"
 path = "src/bin/spread_bbo_zmq_pub.rs"
 

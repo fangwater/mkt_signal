@@ -1,8 +1,12 @@
 use crate::pre_trade::exec_algorithm_switch::{
     active_names_key, load_switches, switch_key, ExecAlgorithmSwitch, ExecFamily, ExecSwitchState,
 };
+use crate::pre_trade::exec_position_ledger::{
+    current_family_positions, family_account_qty, other_family_positions, outgoing_switch_symbols,
+    ExecPositionLedger,
+};
 use crate::pre_trade::PersistChannel;
-use crate::strategy::batch_exec_strategy::{BatchExecStrategy, BatchExecTarget};
+use crate::strategy::batch_exec_strategy::BatchExecTarget;
 use crate::strategy::chase_exec::{
     validate_chase_target, ChaseExecConfig, ChaseExecConfigOverride,
     CHASE_EXEC_POSITION_CLOSE_STRATEGY_NAME,
@@ -106,12 +110,6 @@ pub struct ChaseExecConfigReloader {
     pending_ledger_removals: BTreeSet<String>,
     removal_configs: BTreeMap<String, ChaseExecConfig>,
     close_configs: BTreeMap<String, ChaseExecConfig>,
-    /// Symbols where a live BatchExec strategy was seen on this venue. Both
-    /// exec ledgers assume exclusive ownership of the shared account
-    /// position; conflicted symbols are skipped by reconcile/cross so the
-    /// same physical position is never allocated twice. Kept to warn only on
-    /// transitions.
-    conflicted_symbols: BTreeSet<String>,
     switching_out_symbols: BTreeSet<String>,
 }
 
@@ -126,7 +124,6 @@ fn chase_exec_venue_supported(venue: TradingVenue) -> bool {
 }
 const POSITION_LEDGER_KEY: &str = "chase_exec_state:position_allocations";
 const LEVERAGE_INIT_KEY: &str = "chase_exec_state:leverage_initialized";
-const POSITION_LEDGER_VERSION: u32 = 1;
 const LEVERAGE_INIT_VERSION: u32 = 1;
 const POSITION_ALLOCATION_EPS: f64 = 1e-10;
 const INTERNAL_CROSS_MAX_QUOTE_AGE_US: i64 = 5_000_000;
@@ -223,67 +220,7 @@ impl ChaseExecLeverageInitScope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ChaseExecPositionLedger {
-    version: u32,
-    updated_at_us: i64,
-    positions: BTreeMap<String, BTreeMap<String, f64>>,
-}
-
-impl ChaseExecPositionLedger {
-    fn empty() -> Self {
-        Self {
-            version: POSITION_LEDGER_VERSION,
-            updated_at_us: 0,
-            positions: BTreeMap::new(),
-        }
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.version != POSITION_LEDGER_VERSION {
-            anyhow::bail!(
-                "unsupported ChaseExec position ledger version: expected={} actual={}",
-                POSITION_LEDGER_VERSION,
-                self.version
-            );
-        }
-        for (strategy_name, positions) in &self.positions {
-            validate_strategy_name(strategy_name)?;
-            for (symbol, position_qty) in positions {
-                if symbol.is_empty() || normalize_symbol_for_internal(symbol) != *symbol {
-                    anyhow::bail!(
-                        "ChaseExec position ledger symbol is not normalized: strategy_name={strategy_name} symbol={symbol}"
-                    );
-                }
-                if !position_qty.is_finite() {
-                    anyhow::bail!(
-                        "ChaseExec position ledger quantity must be finite: strategy_name={strategy_name} symbol={symbol}"
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn get(&self, strategy_name: &str, symbol: &str) -> Option<f64> {
-        self.positions
-            .get(strategy_name)
-            .and_then(|positions| positions.get(symbol))
-            .copied()
-    }
-
-    fn set(&mut self, strategy_name: &str, symbol: &str, position_qty: f64) {
-        self.positions
-            .entry(strategy_name.to_string())
-            .or_default()
-            .insert(symbol.to_string(), position_qty);
-    }
-
-    fn remove_strategy(&mut self, strategy_name: &str) {
-        self.positions.remove(strategy_name);
-    }
-}
+type ChaseExecPositionLedger = ExecPositionLedger;
 
 #[derive(Debug, Clone)]
 struct PositionAllocationCandidate {
@@ -604,7 +541,6 @@ impl ChaseExecConfigReloader {
             pending_ledger_removals: BTreeSet::new(),
             removal_configs: BTreeMap::new(),
             close_configs: BTreeMap::new(),
-            conflicted_symbols: BTreeSet::new(),
             switching_out_symbols: BTreeSet::new(),
         })
     }
@@ -707,35 +643,26 @@ impl ChaseExecConfigReloader {
         strategy_mgr: &Rc<RefCell<StrategyManager>>,
         switches: &BTreeMap<String, ExecAlgorithmSwitch>,
     ) -> BTreeSet<String> {
-        let requested = switches
-            .iter()
-            .filter(|(_, switch)| {
-                switch.from_family == ExecFamily::ChaseExec
-                    && switch.state == ExecSwitchState::Requested
-            })
-            .map(|(name, _)| name.as_str())
-            .collect::<BTreeSet<_>>();
-        let mut symbols = BTreeSet::new();
-        if let Some(ledger) = self.position_ledger.as_ref() {
-            for strategy_name in &requested {
-                if let Some(positions) = ledger.positions.get(*strategy_name) {
-                    symbols.extend(positions.keys().cloned());
-                }
-            }
-        }
         let manager = strategy_mgr.borrow();
-        for strategy_id in manager.iter_ids().copied() {
-            if let Some(exec) = manager
-                .get(strategy_id)
-                .and_then(|strategy| strategy.as_any().downcast_ref::<ChaseExecStrategy>())
-                .filter(|exec| {
-                    exec.exec_venue() == self.venue && requested.contains(exec.strategy_name())
+        let live = manager.iter_ids().copied().filter_map(|strategy_id| {
+            manager
+                .get(strategy_id)?
+                .as_any()
+                .downcast_ref::<ChaseExecStrategy>()
+                .filter(|exec| exec.exec_venue() == self.venue)
+                .map(|exec| {
+                    (
+                        exec.strategy_name().to_string(),
+                        exec.exec_symbol().to_string(),
+                    )
                 })
-            {
-                symbols.insert(exec.exec_symbol().to_string());
-            }
-        }
-        symbols
+        });
+        outgoing_switch_symbols(
+            ExecFamily::ChaseExec,
+            self.position_ledger.as_ref(),
+            live,
+            switches,
+        )
     }
 
     async fn import_ready_switches(
@@ -1219,30 +1146,6 @@ impl ChaseExecConfigReloader {
         candidates
     }
 
-    /// Symbols with a live BatchExec strategy on this venue. The BatchExec and
-    /// ChaseExec position ledgers each assume exclusive ownership of the
-    /// shared account position, so a symbol present in both families must be
-    /// skipped by reconcile and internal cross to avoid allocating the same
-    /// physical position twice.
-    fn batch_exec_symbols(
-        strategy_mgr: &Rc<RefCell<StrategyManager>>,
-        venue: TradingVenue,
-    ) -> BTreeSet<String> {
-        let manager = strategy_mgr.borrow();
-        manager
-            .iter_ids()
-            .copied()
-            .filter_map(|strategy_id| {
-                manager
-                    .get(strategy_id)?
-                    .as_any()
-                    .downcast_ref::<BatchExecStrategy>()
-                    .filter(|exec| exec.exec_venue() == venue)
-                    .map(|exec| exec.exec_symbol().to_string())
-            })
-            .collect()
-    }
-
     /// Crosses opposite unexecuted target gaps inside each symbol group. Every
     /// leg books a synthetic internal fill at the current mid so the sum of
     /// per-strategy ledger positions stays equal to the shared account
@@ -1261,10 +1164,7 @@ impl ChaseExecConfigReloader {
                 .or_default()
                 .push(candidate);
         }
-        groups.retain(|symbol, _| {
-            !self.conflicted_symbols.contains(symbol)
-                && !self.switching_out_symbols.contains(symbol)
-        });
+        groups.retain(|symbol, _| !self.switching_out_symbols.contains(symbol));
         let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
         let mut applied = 0usize;
         let mut last_publish_ts_us = 0i64;
@@ -1425,6 +1325,7 @@ impl ChaseExecConfigReloader {
     async fn reconcile_position_allocations(
         &mut self,
         strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        switches: &BTreeMap<String, ExecAlgorithmSwitch>,
     ) -> Result<usize> {
         self.load_position_ledger().await?;
         if !crate::pre_trade::monitor_channel::MonitorChannel::instance()
@@ -1434,16 +1335,14 @@ impl ChaseExecConfigReloader {
         }
 
         let now_ts = get_timestamp_us();
-        let conflicting = Self::batch_exec_symbols(strategy_mgr, self.venue);
-        for symbol in conflicting.difference(&self.conflicted_symbols) {
-            warn!(
-                "ChaseExec position reconcile disabled: symbol={symbol} also has live BatchExec strategies; the two exec ledgers must not both claim the shared account position"
-            );
-        }
-        for symbol in self.conflicted_symbols.difference(&conflicting) {
-            info!("ChaseExec position conflict resolved: symbol={symbol}");
-        }
-        self.conflicted_symbols = conflicting;
+        let other_positions = other_family_positions(
+            &mut self.client,
+            strategy_mgr,
+            self.venue,
+            ExecFamily::ChaseExec,
+            switches,
+        )
+        .await?;
         let internal_cross_legs = self.net_opposite_unexecuted_targets(strategy_mgr, now_ts);
         if internal_cross_legs > 0 {
             info!("ChaseExec internal cross applied: legs={internal_cross_legs}");
@@ -1457,10 +1356,7 @@ impl ChaseExecConfigReloader {
                 .or_default()
                 .push(candidate.clone());
         }
-        groups.retain(|symbol, _| {
-            !self.conflicted_symbols.contains(symbol)
-                && !self.switching_out_symbols.contains(symbol)
-        });
+        groups.retain(|symbol, _| !self.switching_out_symbols.contains(symbol));
 
         let mut missing_close_symbols = BTreeSet::new();
         for (symbol, group) in &groups {
@@ -1476,7 +1372,11 @@ impl ChaseExecConfigReloader {
             {
                 continue;
             }
-            let account_position_qty = monitor.get_position_qty(symbol, self.venue);
+            let account_position_qty = family_account_qty(
+                monitor.get_position_qty(symbol, self.venue),
+                &other_positions,
+                symbol,
+            );
             let allocated_qty: f64 = group.iter().map(|candidate| candidate.position_qty).sum();
             let difference = account_position_qty - allocated_qty;
             let needs_initialization = group.iter().any(|candidate| !candidate.allocation_ready);
@@ -1507,15 +1407,16 @@ impl ChaseExecConfigReloader {
                     .or_default()
                     .push(candidate.clone());
             }
-            groups.retain(|symbol, _| {
-                !self.conflicted_symbols.contains(symbol)
-                    && !self.switching_out_symbols.contains(symbol)
-            });
+            groups.retain(|symbol, _| !self.switching_out_symbols.contains(symbol));
         }
 
         let mut plans = Vec::new();
         for (symbol, mut group) in groups {
-            let account_position_qty = monitor.get_position_qty(&symbol, self.venue);
+            let account_position_qty = family_account_qty(
+                monitor.get_position_qty(&symbol, self.venue),
+                &other_positions,
+                &symbol,
+            );
             let allocated_qty: f64 = group.iter().map(|candidate| candidate.position_qty).sum();
             let difference = account_position_qty - allocated_qty;
             let needs_initialization = group.iter().any(|candidate| !candidate.allocation_ready);
@@ -1660,6 +1561,14 @@ impl ChaseExecConfigReloader {
         {
             return Ok(0);
         }
+        let other_positions = other_family_positions(
+            &mut self.client,
+            strategy_mgr,
+            self.venue,
+            ExecFamily::ChaseExec,
+            switches,
+        )
+        .await?;
         let requested = switches
             .iter()
             .filter(|(_, switch)| {
@@ -1732,12 +1641,16 @@ impl ChaseExecConfigReloader {
                     .position_ledger
                     .as_ref()
                     .context("ChaseExec position ledger was not loaded")?;
+                let own_positions = current_family_positions(
+                    ledger,
+                    strategy_mgr,
+                    self.venue,
+                    ExecFamily::ChaseExec,
+                    switches,
+                );
                 for symbol in positions.keys() {
-                    let allocated = ledger
-                        .positions
-                        .values()
-                        .filter_map(|strategy_positions| strategy_positions.get(symbol))
-                        .sum::<f64>();
+                    let allocated = own_positions.get(symbol).copied().unwrap_or(0.0)
+                        + other_positions.get(symbol).copied().unwrap_or(0.0);
                     let account = monitor.get_position_qty(symbol, self.venue);
                     if (allocated - account).abs() > POSITION_ALLOCATION_EPS {
                         warn!(
@@ -2097,7 +2010,9 @@ impl ChaseExecConfigReloader {
         let persisted_close_symbols = self.persisted_position_close_symbols();
         applied += self.ensure_position_close_strategies(strategy_mgr, &persisted_close_symbols);
 
-        applied += self.reconcile_position_allocations(strategy_mgr).await?;
+        applied += self
+            .reconcile_position_allocations(strategy_mgr, &switches)
+            .await?;
         applied += self
             .advance_requested_switches(strategy_mgr, &switches)
             .await?;
@@ -2110,7 +2025,12 @@ impl ChaseExecConfigReloader {
     /// Reloads on the shared exec notify (`batch_exec_pubs/reload_notify`) so
     /// Manager publishes once to wake every exec reloader; each reloads only
     /// its own Redis namespace.
-    pub fn spawn(mut self, strategy_mgr: Rc<RefCell<StrategyManager>>, interval: Duration) {
+    pub fn spawn(
+        mut self,
+        strategy_mgr: Rc<RefCell<StrategyManager>>,
+        interval: Duration,
+        position_lock: Rc<tokio::sync::Mutex<()>>,
+    ) {
         let mut notify =
             crate::pre_trade::batch_exec_reload_notify::BatchExecReloadNotify::try_open();
         tokio::task::spawn_local(async move {
@@ -2122,24 +2042,42 @@ impl ChaseExecConfigReloader {
                         "ChaseExec reload notify received: strategy_name={} updated_at_us={}",
                         wakeup.strategy_name, wakeup.updated_at_us
                     );
+                    let _guard = position_lock.lock().await;
                     if let Err(err) = self.reload(&strategy_mgr).await {
                         warn!("ChaseExec Redis reload failed after notify: {err:#}");
+                    } else {
+                        crate::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
+                            &strategy_mgr,
+                            self.venue,
+                        );
                     }
                     continue;
                 }
                 if notify.is_some() {
                     tokio::select! {
                         _ = timer.tick() => {
+                            let _guard = position_lock.lock().await;
                             if let Err(err) = self.reload(&strategy_mgr).await {
                                 warn!("ChaseExec Redis reload failed: {err:#}");
+                            } else {
+                                crate::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
+                                    &strategy_mgr,
+                                    self.venue,
+                                );
                             }
                         }
                         _ = tokio::time::sleep(Duration::from_millis(25)) => {}
                     }
                 } else {
                     timer.tick().await;
+                    let _guard = position_lock.lock().await;
                     if let Err(err) = self.reload(&strategy_mgr).await {
                         warn!("ChaseExec Redis reload failed: {err:#}");
+                    } else {
+                        crate::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
+                            &strategy_mgr,
+                            self.venue,
+                        );
                     }
                     notify =
                         crate::pre_trade::batch_exec_reload_notify::BatchExecReloadNotify::try_open(
@@ -2286,28 +2224,5 @@ mod tests {
         assert!(validate_strategy_name("strategy_names").is_err());
         assert!(validate_strategy_name("removed_strategy_names").is_err());
         assert!(validate_config_strategy_name(CHASE_EXEC_POSITION_CLOSE_STRATEGY_NAME).is_err());
-    }
-
-    #[test]
-    fn batch_exec_symbols_detects_conflicts_scoped_to_venue() {
-        let manager = Rc::new(RefCell::new(StrategyManager::new()));
-        manager.borrow_mut().insert(Box::new(BatchExecStrategy::new(
-            1,
-            "cta_alpha",
-            "BTCUSDT",
-            TradingVenue::BinanceFutures,
-            crate::strategy::batch_exec_strategy::BatchExecConfig::default(),
-        )));
-        manager.borrow_mut().insert(Box::new(BatchExecStrategy::new(
-            2,
-            "cta_beta",
-            "ETHUSDT",
-            TradingVenue::OkexFutures,
-            crate::strategy::batch_exec_strategy::BatchExecConfig::default(),
-        )));
-
-        let symbols =
-            ChaseExecConfigReloader::batch_exec_symbols(&manager, TradingVenue::BinanceFutures);
-        assert_eq!(symbols, BTreeSet::from(["BTCUSDT".to_string()]));
     }
 }

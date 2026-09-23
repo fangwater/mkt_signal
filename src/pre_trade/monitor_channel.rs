@@ -78,6 +78,7 @@ const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
+const BINANCE_PROXY_DERIVATIVES_SERVICE: &str = "dat_pbs_proxy/binance-futures/derivatives";
 const BINANCE_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-coin-futures/derivatives";
 const BITGET_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-coin-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
@@ -4558,6 +4559,14 @@ impl MonitorChannel {
         }
     }
 
+    fn mark_price_service_with_proxy(direct_service: &'static str, enabled: bool) -> &'static str {
+        if direct_service == BINANCE_DIRECT_DERIVATIVES_SERVICE && enabled {
+            BINANCE_PROXY_DERIVATIVES_SERVICE
+        } else {
+            direct_service
+        }
+    }
+
     pub fn usdt_mgr(&self, scope: BasicAccountScope) -> Option<Rc<RefCell<UsdtBalanceManager>>> {
         Self::with_inner(|inner| inner.usdt_mgrs.get(&scope).cloned())
     }
@@ -5085,9 +5094,11 @@ impl MonitorChannel {
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿属于同一交易所时，
         // 切换到对应 venue 的 mark/index price。所有交易所均直连 dat_pbs。
         let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
+        let direct_service =
+            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue, arb_mode);
+        let proxy_enabled = std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1");
         let service_name =
-            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue, arb_mode)
-                .to_string();
+            Self::mark_price_service_with_proxy(direct_service, proxy_enabled).to_string();
         let derivatives_listener =
             DerivativesPriceListener::new(price_table.clone(), node_name, service_name)?;
 
@@ -10611,6 +10622,18 @@ mod tests {
                 ArbMode::IntraArb,
             ),
             "dat_pbs/binance-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn binance_mark_price_proxy_does_not_change_other_venues() {
+        assert_eq!(
+            MonitorChannel::mark_price_service_with_proxy(BINANCE_DIRECT_DERIVATIVES_SERVICE, true,),
+            BINANCE_PROXY_DERIVATIVES_SERVICE
+        );
+        assert_eq!(
+            MonitorChannel::mark_price_service_with_proxy(OKEX_DERIVATIVES_SERVICE, true),
+            OKEX_DERIVATIVES_SERVICE
         );
     }
 

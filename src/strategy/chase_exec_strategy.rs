@@ -418,6 +418,44 @@ impl ChaseExecStrategy {
             })
     }
 
+    pub fn can_apply_internal_cross_fill(
+        &self,
+        signed_base_qty: f64,
+        quote: &Quote,
+    ) -> Result<(), String> {
+        if !signed_base_qty.is_finite() || signed_base_qty.abs() <= QTY_EPS {
+            return Err("internal cross qty must be finite and non-zero".to_string());
+        }
+        let mid = (quote.bid + quote.ask) / 2.0;
+        if !quote.is_valid() || !mid.is_finite() || mid <= 0.0 {
+            return Err("internal cross requires a valid quote".to_string());
+        }
+        if !self.position_allocation_ready()
+            || self.current_from_key().is_none()
+            || self.virtual_position_qty.is_none()
+        {
+            return Err("internal cross requires an applied target and position".to_string());
+        }
+        let symbol = crate::pre_trade::persist_channel::normalize_symbol_for_venue(
+            self.exec_venue,
+            &self.symbol,
+        );
+        let multiplier = crate::pre_trade::persist_channel::resolve_futures_qty_multiplier(
+            self.exec_venue,
+            &symbol,
+            mid,
+        );
+        let venue_qty = signed_base_qty.abs() / multiplier;
+        if !multiplier.is_finite()
+            || multiplier <= 0.0
+            || !venue_qty.is_finite()
+            || venue_qty <= 0.0
+        {
+            return Err("internal cross invalid venue quantity".to_string());
+        }
+        Ok(())
+    }
+
     /// Books an internal cross fill: `signed_base_qty` moves this strategy's
     /// ledger position without touching the shared account position. The
     /// shrinked gap stops further release; live children beyond the new

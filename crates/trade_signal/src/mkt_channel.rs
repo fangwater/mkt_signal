@@ -91,12 +91,32 @@ fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
     }
 }
 
-fn askbid_service_root(_venue: TradingVenue) -> &'static str {
-    "spread_pbs"
+fn binance_futures_proxy_enabled() -> bool {
+    std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1")
 }
 
-fn derivatives_service_root(_venue: TradingVenue) -> &'static str {
-    "dat_pbs"
+fn askbid_service_root(venue: TradingVenue) -> &'static str {
+    askbid_service_root_with_proxy(venue, binance_futures_proxy_enabled())
+}
+
+fn askbid_service_root_with_proxy(venue: TradingVenue, proxy_enabled: bool) -> &'static str {
+    if venue == TradingVenue::BinanceFutures && proxy_enabled {
+        "spread_pbs_proxy"
+    } else {
+        "spread_pbs"
+    }
+}
+
+fn derivatives_service_root(venue: TradingVenue) -> &'static str {
+    derivatives_service_root_with_proxy(venue, binance_futures_proxy_enabled())
+}
+
+fn derivatives_service_root_with_proxy(venue: TradingVenue, proxy_enabled: bool) -> &'static str {
+    if venue == TradingVenue::BinanceFutures && proxy_enabled {
+        "dat_pbs_proxy"
+    } else {
+        "dat_pbs"
+    }
 }
 
 fn askbid_service_root_for_pair(venue: TradingVenue) -> &'static str {
@@ -1340,6 +1360,26 @@ mod tests {
         assert_eq!(
             derivatives_service_name(TradingVenue::BinanceFutures),
             "dat_pbs/binance-futures/derivatives"
+        );
+    }
+
+    #[test]
+    fn binance_futures_proxy_selection_is_venue_scoped() {
+        assert_eq!(
+            askbid_service_root_with_proxy(TradingVenue::BinanceFutures, true),
+            "spread_pbs_proxy"
+        );
+        assert_eq!(
+            derivatives_service_root_with_proxy(TradingVenue::BinanceFutures, true),
+            "dat_pbs_proxy"
+        );
+        assert_eq!(
+            askbid_service_root_with_proxy(TradingVenue::BinanceMargin, true),
+            "spread_pbs"
+        );
+        assert_eq!(
+            derivatives_service_root_with_proxy(TradingVenue::OkexFutures, true),
+            "dat_pbs"
         );
     }
 
