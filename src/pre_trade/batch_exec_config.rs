@@ -109,6 +109,7 @@ pub struct BatchExecConfigReloader {
     removal_configs: BTreeMap<String, BatchExecConfig>,
     close_configs: BTreeMap<String, BatchExecConfig>,
     switching_out_symbols: BTreeSet<String>,
+    new_target_settle_until_us: BTreeMap<String, i64>,
 }
 
 const STRATEGY_NAMES_KEY: &str = "batch_exec:strategy_names";
@@ -117,6 +118,7 @@ const POSITION_LEDGER_KEY: &str = "batch_exec_state:position_allocations";
 const LEVERAGE_INIT_KEY: &str = "batch_exec_state:leverage_initialized";
 const LEVERAGE_INIT_VERSION: u32 = 1;
 const POSITION_ALLOCATION_EPS: f64 = 1e-10;
+const NEW_TARGET_SETTLE_US: i64 = 5_000_000;
 const INTERNAL_CROSS_MAX_QUOTE_AGE_US: i64 = 5_000_000;
 const LEVERAGE_INIT_REQUEST_SPACING: Duration = Duration::from_millis(75);
 
@@ -364,6 +366,27 @@ fn allocate_account_position(
     }
 }
 
+fn allocations_to_pause_for_new_targets(
+    groups: &BTreeMap<String, Vec<PositionAllocationCandidate>>,
+    settling_symbols: &BTreeSet<String>,
+) -> BTreeSet<i32> {
+    groups
+        .iter()
+        .filter(|(symbol, group)| {
+            group
+                .iter()
+                .any(|candidate| candidate.has_target && !candidate.allocation_ready)
+                && (settling_symbols.contains(*symbol)
+                    || group.iter().any(|candidate| {
+                        candidate.execution_in_flight
+                            || (candidate.has_virtual_position && !candidate.reconciliation_settled)
+                    }))
+        })
+        .flat_map(|(_, group)| group.iter().filter(|candidate| candidate.allocation_ready))
+        .map(|candidate| candidate.strategy_id)
+        .collect()
+}
+
 fn assign_residual_to_position_close(
     candidates: &mut [PositionAllocationCandidate],
     residual: f64,
@@ -590,6 +613,7 @@ impl BatchExecConfigReloader {
             removal_configs: BTreeMap::new(),
             close_configs: BTreeMap::new(),
             switching_out_symbols: BTreeSet::new(),
+            new_target_settle_until_us: BTreeMap::new(),
         })
     }
 
@@ -1233,6 +1257,7 @@ impl BatchExecConfigReloader {
                 .flatten();
             let Some(quote) = quote else {
                 warn!("BatchExec internal cross skipped: symbol={symbol} no quote");
+                Self::defer_internal_cross(strategy_mgr, &group);
                 continue;
             };
             if !quote.is_valid()
@@ -1243,6 +1268,24 @@ impl BatchExecConfigReloader {
                     "BatchExec internal cross skipped: symbol={symbol} invalid_or_stale_quote bid={} ask={} quote_ts={}",
                     quote.bid, quote.ask, quote.ts
                 );
+                Self::defer_internal_cross(strategy_mgr, &group);
+                continue;
+            }
+            let preflight = {
+                let manager = strategy_mgr.borrow();
+                legs.iter().try_for_each(|(strategy_id, signed_qty)| {
+                    manager
+                        .get(*strategy_id)
+                        .and_then(|strategy| strategy.as_any().downcast_ref::<BatchExecStrategy>())
+                        .ok_or_else(|| {
+                            format!("strategy {strategy_id} missing during internal cross")
+                        })?
+                        .can_apply_internal_cross_fill(*signed_qty, &quote)
+                })
+            };
+            if let Err(err) = preflight {
+                warn!("BatchExec internal cross deferred: symbol={symbol} err={err}");
+                Self::defer_internal_cross(strategy_mgr, &group);
                 continue;
             }
             info!(
@@ -1280,6 +1323,22 @@ impl BatchExecConfigReloader {
             }
         }
         applied
+    }
+
+    fn defer_internal_cross(
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        group: &[PositionAllocationCandidate],
+    ) {
+        let mut manager = strategy_mgr.borrow_mut();
+        for candidate in group {
+            let Some(mut strategy) = manager.take(candidate.strategy_id) else {
+                continue;
+            };
+            if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                exec.begin_position_reallocation();
+            }
+            manager.insert(strategy);
+        }
     }
 
     fn suspend_position_allocations(
@@ -1397,10 +1456,13 @@ impl BatchExecConfigReloader {
             info!("BatchExec internal cross applied: legs={internal_cross_legs}");
         }
         let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
-        let initialize_empty_ledger = self
-            .position_ledger
-            .as_ref()
-            .is_some_and(|ledger| ledger.positions.is_empty());
+        self.new_target_settle_until_us
+            .retain(|_, until| now_ts < *until);
+        let settling_symbols = self
+            .new_target_settle_until_us
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let mut candidates = self.collect_position_candidates(strategy_mgr, now_ts);
         let mut groups = BTreeMap::<String, Vec<PositionAllocationCandidate>>::new();
         for candidate in &candidates {
@@ -1411,8 +1473,29 @@ impl BatchExecConfigReloader {
         }
         groups.retain(|symbol, _| !self.switching_out_symbols.contains(symbol));
 
+        let pause_ids = allocations_to_pause_for_new_targets(&groups, &settling_symbols);
+        if !pause_ids.is_empty() {
+            let mut manager = strategy_mgr.borrow_mut();
+            for strategy_id in &pause_ids {
+                let Some(mut strategy) = manager.take(*strategy_id) else {
+                    continue;
+                };
+                if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                    exec.begin_position_reallocation();
+                }
+                manager.insert(strategy);
+            }
+            info!(
+                "BatchExec paused active allocations while new strategy waits for order settlement: strategies={}",
+                pause_ids.len()
+            );
+        }
+
         let mut missing_close_symbols = BTreeSet::new();
         for (symbol, group) in &groups {
+            if settling_symbols.contains(symbol) {
+                continue;
+            }
             let symbol_not_tradable = monitor
                 .try_venue_min_qty_table(self.venue)
                 .is_some_and(|table| table.snapshot_loaded() && !table.is_tradable_symbol(symbol));
@@ -1448,7 +1531,7 @@ impl BatchExecConfigReloader {
             let residual = allocate_account_position(
                 &mut proposed,
                 account_position_qty,
-                initialize_empty_ledger,
+                group.iter().all(|candidate| candidate.missing_position),
             );
             if residual.abs() > POSITION_ALLOCATION_EPS {
                 missing_close_symbols.insert(symbol.clone());
@@ -1469,6 +1552,9 @@ impl BatchExecConfigReloader {
 
         let mut plans = Vec::new();
         for (symbol, mut group) in groups {
+            if settling_symbols.contains(&symbol) {
+                continue;
+            }
             let account_position_qty = family_account_qty(
                 monitor.get_position_qty(&symbol, self.venue),
                 &other_positions,
@@ -1514,6 +1600,7 @@ impl BatchExecConfigReloader {
                 continue;
             }
 
+            let initialize_empty_ledger = group.iter().all(|candidate| candidate.missing_position);
             let residual = allocate_account_position(
                 &mut group,
                 account_position_qty,
@@ -1551,6 +1638,9 @@ impl BatchExecConfigReloader {
             next_ledger.remove_strategy(strategy_name);
         }
         for candidate in &candidates {
+            if settling_symbols.contains(&candidate.symbol) || candidate.missing_position {
+                continue;
+            }
             next_ledger.set(
                 &candidate.strategy_name,
                 &candidate.symbol,
@@ -1959,6 +2049,24 @@ impl BatchExecConfigReloader {
                     .copied()
                     .unwrap_or(BatchExecTarget::ZERO);
                 let old_target = previous_targets.get(&symbol).copied();
+                if old_target.is_none()
+                    && target.qty.abs() > POSITION_ALLOCATION_EPS
+                    && self
+                        .position_ledger
+                        .as_ref()
+                        .and_then(|ledger| ledger.get(&strategy_name, &symbol))
+                        .is_none()
+                {
+                    let until = get_timestamp_us().saturating_add(NEW_TARGET_SETTLE_US);
+                    self.new_target_settle_until_us
+                        .insert(symbol.clone(), until);
+                    info!(
+                        "BatchExec waiting for initial target set: symbol={} strategy_name={} settle_ms={}",
+                        symbol,
+                        strategy_name,
+                        NEW_TARGET_SETTLE_US / 1_000
+                    );
+                }
                 let target_changed =
                     old_target != Some(target) || leverage_retry_symbols.contains(&symbol);
                 let effective_config = symbol_overrides
@@ -2089,6 +2197,23 @@ impl BatchExecConfigReloader {
             let mut timer = tokio::time::interval(interval);
             timer.tick().await;
             loop {
+                if self
+                    .new_target_settle_until_us
+                    .values()
+                    .any(|until| get_timestamp_us() >= *until)
+                {
+                    let _guard = position_lock.lock().await;
+                    if let Err(err) = self.reload(&strategy_mgr).await {
+                        warn!("BatchExec Redis reload failed after target settlement: {err:#}");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    } else {
+                        crate::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
+                            &strategy_mgr,
+                            self.venue,
+                        );
+                    }
+                    continue;
+                }
                 if let Some(wakeup) = notify.as_ref().and_then(|channel| channel.drain()) {
                     info!(
                         "BatchExec reload notify received: strategy_name={} updated_at_us={}",
@@ -2121,7 +2246,15 @@ impl BatchExecConfigReloader {
                         _ = tokio::time::sleep(Duration::from_millis(25)) => {}
                     }
                 } else {
-                    timer.tick().await;
+                    if let Some(until) = self.new_target_settle_until_us.values().min() {
+                        let wait_us = until.saturating_sub(get_timestamp_us()).max(1) as u64;
+                        tokio::select! {
+                            _ = timer.tick() => {}
+                            _ = tokio::time::sleep(Duration::from_micros(wait_us)) => {}
+                        }
+                    } else {
+                        timer.tick().await;
+                    }
                     let _guard = position_lock.lock().await;
                     if let Err(err) = self.reload(&strategy_mgr).await {
                         warn!("BatchExec Redis reload failed: {err:#}");
@@ -2375,6 +2508,76 @@ mod tests {
 
         assert!((candidates[0].position_qty - 0.5).abs() < POSITION_ALLOCATION_EPS);
         assert!((candidates[1].position_qty - 1.5).abs() < POSITION_ALLOCATION_EPS);
+    }
+
+    #[test]
+    fn sequential_new_target_pauses_existing_execution_until_reallocation() {
+        let mut existing = allocation_candidate(1, "cta_first", 0.6, 1.0, false);
+        existing.execution_in_flight = true;
+        existing.reconciliation_settled = false;
+        let incoming = allocation_candidate(2, "cta_second", 0.7, 0.0, true);
+        let groups = BTreeMap::from([("BTCUSDT".to_string(), vec![existing, incoming])]);
+
+        assert_eq!(
+            allocations_to_pause_for_new_targets(&groups, &BTreeSet::new()),
+            BTreeSet::from([1])
+        );
+        assert_eq!(
+            allocations_to_pause_for_new_targets(&groups, &BTreeSet::from(["BTCUSDT".to_string()])),
+            BTreeSet::from([1])
+        );
+    }
+
+    #[test]
+    fn sequential_position_allocation_and_cross_leave_only_account_net_gap() {
+        let mut group = vec![
+            allocation_candidate(1, "cta_first", 0.576, 0.99, false),
+            allocation_candidate(2, "cta_second", 0.692, 0.0, true),
+        ];
+        let account_qty = 0.962;
+        let residual = allocate_account_position(&mut group, account_qty, false);
+        assert!(residual.abs() < POSITION_ALLOCATION_EPS);
+        assert!(
+            (group
+                .iter()
+                .map(|candidate| candidate.position_qty)
+                .sum::<f64>()
+                - account_qty)
+                .abs()
+                < POSITION_ALLOCATION_EPS
+        );
+        group[1].allocation_ready = true;
+        group[1].has_virtual_position = true;
+
+        let legs = plan_internal_cross_legs(&group);
+        assert_eq!(legs.len(), 2);
+        assert!(legs.iter().map(|(_, qty)| qty).sum::<f64>().abs() < POSITION_ALLOCATION_EPS);
+        for (strategy_id, signed_qty) in legs {
+            group
+                .iter_mut()
+                .find(|candidate| candidate.strategy_id == strategy_id)
+                .unwrap()
+                .position_qty += signed_qty;
+        }
+
+        let remaining = group
+            .iter()
+            .map(|candidate| candidate.target_qty - candidate.position_qty)
+            .collect::<Vec<_>>();
+        assert!(remaining.iter().all(|gap| *gap >= -POSITION_ALLOCATION_EPS));
+        assert!(
+            (remaining.iter().sum::<f64>() - (0.576 + 0.692 - account_qty)).abs()
+                < POSITION_ALLOCATION_EPS
+        );
+        assert!(
+            (group
+                .iter()
+                .map(|candidate| candidate.position_qty)
+                .sum::<f64>()
+                - account_qty)
+                .abs()
+                < POSITION_ALLOCATION_EPS
+        );
     }
 
     #[test]
