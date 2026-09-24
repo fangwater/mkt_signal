@@ -85,6 +85,10 @@ impl BboSpreadRuntime {
             info!("bbo_spread enrichment disabled by env");
             return None;
         }
+        if !bbo_enrichment_supported(&config.namespace) {
+            info!("bbo_spread enrichment disabled for ns={}", config.namespace);
+            return None;
+        }
 
         let store = Arc::new(BboSpreadStore::new(
             config.ring_len,
@@ -615,6 +619,10 @@ fn infer_venues(namespace: &str, key_suffix: &str) -> Option<(TradingVenue, Trad
     }
 }
 
+fn bbo_enrichment_supported(namespace: &str) -> bool {
+    !matches!(namespace, "fr" | "exec")
+}
+
 fn infer_fr_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
     let suffix = key_suffix.trim().to_ascii_lowercase();
     if !suffix.contains('_') {
@@ -765,6 +773,16 @@ mod tests {
 
         assert_eq!(venues.0, TradingVenue::BinanceMargin);
         assert_eq!(venues.1, TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn fr_and_exec_skip_bbo_enrichment() {
+        let (fr_namespace, _) = parse_namespace_and_key_suffix("binance_fr_arb03").unwrap();
+        let (exec_namespace, _) = parse_namespace_and_key_suffix("binance_exec_trade04").unwrap();
+        assert!(!bbo_enrichment_supported(&fr_namespace));
+        assert!(!bbo_enrichment_supported(&exec_namespace));
+        assert!(bbo_enrichment_supported("intra"));
+        assert!(bbo_enrichment_supported("cross"));
     }
 
     #[test]
