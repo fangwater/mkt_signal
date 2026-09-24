@@ -1,11 +1,13 @@
 use log::warn;
 use std::collections::{HashMap, HashSet};
 
+use anyhow::{bail, Result};
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 
+use super::common::{ArbDirection, CompareOp, OperationType};
 use super::funding_threshold_loader::{FactorDirectionalThresholds, FundingThresholdsResolved};
-use super::spread_factor::SpreadFactor;
+use super::spread_factor::{SpreadFactor, SpreadType};
 
 const QUANTILE_MATCH_EPSILON: f64 = 1e-6;
 
@@ -139,6 +141,40 @@ pub(crate) fn default_fr_spread_mapping() -> HashMap<String, String> {
         ("backward_cancel_mm".to_string(), "spread_25".to_string()),
         ("backward_cancel_mt".to_string(), "askbid_85".to_string()),
     ])
+}
+
+pub(crate) fn intra_mt_factor_overrides(
+    mapping: &HashMap<String, String>,
+) -> Result<HashMap<String, (SpreadType, CompareOp)>> {
+    let mut overrides = HashMap::new();
+    for (field, source) in mapping {
+        if !field.ends_with("_mt") {
+            continue;
+        }
+        let Some((factor, _)) = source.rsplit_once('_') else {
+            continue;
+        };
+        let choice = match (field.as_str(), factor) {
+            ("forward_open_mt", "bidbid_ho") => {
+                Some((SpreadType::BidBidHo, CompareOp::GreaterThan))
+            }
+            ("forward_cancel_mt", "bidbid_ho") => Some((SpreadType::BidBidHo, CompareOp::LessThan)),
+            ("backward_open_mt", "askask_oh") => {
+                Some((SpreadType::AskAskOh, CompareOp::GreaterThan))
+            }
+            ("backward_cancel_mt", "askask_oh") => {
+                Some((SpreadType::AskAskOh, CompareOp::LessThan))
+            }
+            (_, "bidbid_ho" | "askask_oh") => {
+                bail!("intra spread mapping {field} cannot use {source}");
+            }
+            _ => None,
+        };
+        if let Some(choice) = choice {
+            overrides.insert(field.clone(), choice);
+        }
+    }
+    Ok(overrides)
 }
 
 #[cfg(test)]
@@ -547,6 +583,7 @@ pub(crate) fn apply_xarb_spread_thresholds(
     resolved: &HashMap<String, HashMap<String, f64>>,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    mt_factor_overrides: &HashMap<String, (SpreadType, CompareOp)>,
 ) -> usize {
     let spread_factor = SpreadFactor::instance();
     spread_factor.clear_thresholds();
@@ -563,6 +600,18 @@ pub(crate) fn apply_xarb_spread_thresholds(
                 *mm,
                 *mt,
             );
+            if let Some((spread_type, compare_op)) = mt_factor_overrides.get("forward_open_mt") {
+                spread_factor.set_mt_threshold_factor(
+                    open_venue,
+                    symbol,
+                    hedge_venue,
+                    symbol,
+                    ArbDirection::Forward,
+                    OperationType::Open,
+                    *spread_type,
+                    *compare_op,
+                );
+            }
             applied += 1;
         }
         if let (Some(mm), Some(mt)) = (
@@ -577,6 +626,18 @@ pub(crate) fn apply_xarb_spread_thresholds(
                 *mm,
                 *mt,
             );
+            if let Some((spread_type, compare_op)) = mt_factor_overrides.get("forward_cancel_mt") {
+                spread_factor.set_mt_threshold_factor(
+                    open_venue,
+                    symbol,
+                    hedge_venue,
+                    symbol,
+                    ArbDirection::Forward,
+                    OperationType::Cancel,
+                    *spread_type,
+                    *compare_op,
+                );
+            }
             applied += 1;
         }
         if let (Some(mm), Some(mt)) = (
@@ -591,6 +652,18 @@ pub(crate) fn apply_xarb_spread_thresholds(
                 *mm,
                 *mt,
             );
+            if let Some((spread_type, compare_op)) = mt_factor_overrides.get("backward_open_mt") {
+                spread_factor.set_mt_threshold_factor(
+                    open_venue,
+                    symbol,
+                    hedge_venue,
+                    symbol,
+                    ArbDirection::Backward,
+                    OperationType::Open,
+                    *spread_type,
+                    *compare_op,
+                );
+            }
             applied += 1;
         }
         if let (Some(mm), Some(mt)) = (
@@ -605,6 +678,18 @@ pub(crate) fn apply_xarb_spread_thresholds(
                 *mm,
                 *mt,
             );
+            if let Some((spread_type, compare_op)) = mt_factor_overrides.get("backward_cancel_mt") {
+                spread_factor.set_mt_threshold_factor(
+                    open_venue,
+                    symbol,
+                    hedge_venue,
+                    symbol,
+                    ArbDirection::Backward,
+                    OperationType::Cancel,
+                    *spread_type,
+                    *compare_op,
+                );
+            }
             applied += 1;
         }
     }
@@ -710,13 +795,15 @@ pub(crate) fn build_xarb_spread_sync_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        alias_single_side_payloads, build_xarb_spread_sync_entries, default_fr_spread_mapping,
-        extract_quantile_value, factor_chain_to_funding_mapping, factor_field_name,
-        merge_rolling_payloads, normalize_xarb_symbol, parse_funding_chain_config,
-        parse_plain_mapping_config, parse_xarb_mapping_config, resolve_funding_thresholds,
-        resolve_symbol_quantile_thresholds, resolve_threshold_value, xarb_spread_threshold_order,
-        StoredFactorChainEntry,
+        alias_single_side_payloads, apply_xarb_spread_thresholds, build_xarb_spread_sync_entries,
+        default_fr_spread_mapping, extract_quantile_value, factor_chain_to_funding_mapping,
+        factor_field_name, intra_mt_factor_overrides, merge_rolling_payloads,
+        normalize_xarb_symbol, parse_funding_chain_config, parse_plain_mapping_config,
+        parse_xarb_mapping_config, resolve_funding_thresholds, resolve_symbol_quantile_thresholds,
+        resolve_threshold_value, xarb_spread_threshold_order, StoredFactorChainEntry,
     };
+    use crate::common::{ArbDirection, FactorMode, OperationType};
+    use crate::spread_factor::{SpreadFactor, SpreadType};
     use order_common::TradingVenue;
     use std::collections::HashMap;
 
@@ -730,6 +817,120 @@ mod tests {
         });
         let value = extract_quantile_value(&payload, "spread_fr_80").expect("spread_fr_80");
         assert!((value - 0.003).abs() < 1e-12);
+    }
+
+    #[test]
+    fn intra_same_side_mapping_selects_runtime_factor_and_comparison() {
+        let mapping = HashMap::from([
+            ("forward_open_mt".to_string(), "bidbid_ho_90".to_string()),
+            ("forward_cancel_mt".to_string(), "bidbid_ho_85".to_string()),
+            ("backward_open_mt".to_string(), "askask_oh_90".to_string()),
+            ("backward_cancel_mt".to_string(), "askask_oh_85".to_string()),
+        ]);
+        let overrides = intra_mt_factor_overrides(&mapping).expect("same-side mapping");
+        let payload = serde_json::json!({
+            "bidbid_ho_quantiles": [
+                {"quantile": 0.9, "threshold": 0.005},
+                {"quantile": 0.85, "threshold": 0.004}
+            ],
+            "askask_oh_quantiles": [
+                {"quantile": 0.9, "threshold": 0.005},
+                {"quantile": 0.85, "threshold": 0.004}
+            ]
+        });
+        let (resolved, missing, skipped) = resolve_symbol_quantile_thresholds(
+            &HashMap::from([("BTCUSDT".to_string(), payload)]),
+            &mapping,
+        );
+        assert_eq!(missing, 0);
+        assert!(skipped.is_empty());
+        let mut values = resolved["BTCUSDT"].clone();
+        for key in [
+            "forward_open_mm",
+            "forward_cancel_mm",
+            "backward_open_mm",
+            "backward_cancel_mm",
+        ] {
+            values.insert(key.to_string(), 0.0);
+        }
+        let factor = SpreadFactor::instance();
+        factor.set_mode(FactorMode::MT);
+        assert_eq!(
+            apply_xarb_spread_thresholds(
+                &HashMap::from([("BTCUSDT".to_string(), values)]),
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                &overrides,
+            ),
+            4
+        );
+        factor.update(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            100.0,
+            102.0,
+            101.0,
+            101.0,
+        );
+        assert!(factor.satisfy_forward_open(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT"
+        ));
+        assert!(factor.satisfy_backward_open(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT"
+        ));
+        assert!(!factor.satisfy_forward_cancel(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT"
+        ));
+        let detail = factor
+            .get_spread_check_detail(
+                TradingVenue::BinanceMargin,
+                "BTCUSDT",
+                TradingVenue::BinanceFutures,
+                "BTCUSDT",
+                ArbDirection::Forward,
+                OperationType::Open,
+            )
+            .expect("forward detail");
+        assert_eq!(detail.3, SpreadType::BidBidHo);
+        factor.update(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            100.0,
+            102.0,
+            100.2,
+            101.8,
+        );
+        assert!(factor.satisfy_forward_cancel(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT"
+        ));
+        assert!(factor.satisfy_backward_cancel(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT"
+        ));
+    }
+
+    #[test]
+    fn intra_mapping_rejects_same_side_factor_on_wrong_direction() {
+        let mapping = HashMap::from([("backward_open_mt".to_string(), "bidbid_ho_90".to_string())]);
+        assert!(intra_mt_factor_overrides(&mapping).is_err());
     }
 
     #[test]

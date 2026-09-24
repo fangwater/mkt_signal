@@ -24,8 +24,8 @@ use mkt_parsers::msg::mkt_msg::{
 use mkt_parsers::symbol_match::{normalize_symbol_for_pairing, normalize_symbol_for_premium_pair};
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
-    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
-    FACTOR_OPEN_PREMIUM_RATE, FACTOR_SPREAD, FACTOR_SPREAD_FR,
+    DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKASK_OH, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_BIDBID_HO,
+    FACTOR_HEDGE_PREMIUM_RATE, FACTOR_OPEN_PREMIUM_RATE, FACTOR_SPREAD, FACTOR_SPREAD_FR,
 };
 use mkt_signal::rolling_metrics::ring::RingBuffer;
 use mkt_signal::rolling_metrics::service::{
@@ -892,6 +892,8 @@ fn maybe_push_sr(
     let swap_ask = quotes.swap.ask;
     let bidask = compute_bidask_sr(spot_bid, swap_ask);
     let askbid = compute_askbid_sr(spot_ask, swap_bid);
+    let bidbid_ho = compute_bidbid_ho(spot_bid, swap_bid);
+    let askask_oh = compute_askask_oh(spot_ask, swap_ask);
     let (Some(bidask_sr), Some(askbid_sr)) = (bidask, askbid) else {
         return;
     };
@@ -929,6 +931,8 @@ fn maybe_push_sr(
         |factor_name| match factor_name {
             FACTOR_BIDASK => Some(bidask_sr),
             FACTOR_ASKBID => Some(askbid_sr),
+            FACTOR_BIDBID_HO => bidbid_ho,
+            FACTOR_ASKASK_OH => askask_oh,
             FACTOR_SPREAD => spread_rate.and_then(f64_to_f32),
             _ => None,
         },
@@ -1371,6 +1375,20 @@ fn compute_askbid_sr(spot_ask: f64, swap_bid: f64) -> Option<f32> {
     }
 }
 
+fn compute_bidbid_ho(spot_bid: f64, swap_bid: f64) -> Option<f32> {
+    if spot_bid <= 0.0 || swap_bid <= 0.0 {
+        return None;
+    }
+    f64_to_f32((swap_bid - spot_bid) / spot_bid)
+}
+
+fn compute_askask_oh(spot_ask: f64, swap_ask: f64) -> Option<f32> {
+    if spot_ask <= 0.0 || swap_ask <= 0.0 {
+        return None;
+    }
+    f64_to_f32((spot_ask - swap_ask) / spot_ask)
+}
+
 fn compute_mid_price(bid: f64, ask: f64) -> Option<f64> {
     if bid <= 0.0 || ask <= 0.0 {
         return None;
@@ -1685,10 +1703,20 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_symbol_snapshot, compute_premium_rate, compute_spread_fr, get_or_insert_series,
-        symbol_refresh_source, SymbolRefreshSource,
+        apply_symbol_snapshot, compute_askask_oh, compute_bidbid_ho, compute_premium_rate,
+        compute_spread_fr, get_or_insert_series, symbol_refresh_source, SymbolRefreshSource,
     };
     use mkt_signal::rolling_metrics::service::new_series_map;
+
+    #[test]
+    fn same_side_spreads_use_open_side_denominators() {
+        let bidbid = compute_bidbid_ho(100.0, 101.0).expect("bidbid_ho");
+        let askask = compute_askask_oh(102.0, 101.0).expect("askask_oh");
+        assert!((bidbid as f64 - 0.01).abs() < 1e-7);
+        assert!((askask as f64 - 1.0 / 102.0).abs() < 1e-7);
+        assert_eq!(compute_bidbid_ho(0.0, 101.0), None);
+        assert_eq!(compute_askask_oh(102.0, f64::NAN), None);
+    }
 
     #[test]
     fn premium_rate_uses_mark_minus_index_over_index() {

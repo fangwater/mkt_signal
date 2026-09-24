@@ -27,11 +27,11 @@ use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
     alias_single_side_payloads, apply_xarb_spread_thresholds, default_fr_spread_mapping,
     default_single_side_rolling_key, default_xarb_spread_mapping, factor_chain_to_funding_mapping,
-    format_quantile_field_ref, funding_chain_config_key, merge_rolling_payloads,
-    normalize_xarb_symbol, parse_funding_chain_config, parse_plain_mapping_config,
-    parse_xarb_mapping_config, parse_xarb_rolling_payloads, resolve_funding_thresholds,
-    resolve_symbol_quantile_thresholds, resolve_symbol_single_quantile_thresholds,
-    xarb_spread_mapping_key,
+    format_quantile_field_ref, funding_chain_config_key, intra_mt_factor_overrides,
+    merge_rolling_payloads, normalize_xarb_symbol, parse_funding_chain_config,
+    parse_plain_mapping_config, parse_xarb_mapping_config, parse_xarb_rolling_payloads,
+    resolve_funding_thresholds, resolve_symbol_quantile_thresholds,
+    resolve_symbol_single_quantile_thresholds, xarb_spread_mapping_key,
 };
 use super::strategy_loader::StrategyParams;
 use super::symbol_list::SymbolList;
@@ -680,6 +680,11 @@ async fn reload_spread_thresholds_from_rolling(
         client.get_string(&spread_config_key).await?,
         default_xarb_spread_mapping(),
     );
+    let mt_factor_overrides = if namespace == "intra" {
+        intra_mt_factor_overrides(&spread_config.mapping)?
+    } else {
+        HashMap::new()
+    };
     let funding_config = parse_funding_chain_config(client.get_string(&funding_chain_key).await?);
     let funding_mapping = factor_chain_to_funding_mapping(&funding_config.factor_chain);
 
@@ -743,7 +748,12 @@ async fn reload_spread_thresholds_from_rolling(
     let (resolved_funding, funding_missing_refs, funding_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_mapping);
 
-    let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
+    let spread_applied = apply_xarb_spread_thresholds(
+        &resolved_spread,
+        open_venue,
+        hedge_venue,
+        &mt_factor_overrides,
+    );
     let funding_thresholds = resolve_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
 
@@ -865,7 +875,8 @@ async fn reload_fr_dynamic_thresholds_from_rolling(
     let (resolved_funding, funding_missing_refs, funding_skipped) =
         resolve_symbol_quantile_thresholds(&rolling_payloads, &funding_mapping);
 
-    let spread_applied = apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue);
+    let spread_applied =
+        apply_xarb_spread_thresholds(&resolved_spread, open_venue, hedge_venue, &HashMap::new());
     let funding_thresholds = resolve_funding_thresholds(&resolved_funding);
     let funding_symbols = funding_thresholds.len();
 

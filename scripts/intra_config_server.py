@@ -865,7 +865,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         <label for="rolling-factors">factors (JSON)</label>
         <textarea id="rolling-factors" class="mono"></textarea>
       </div>
-      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, spread, hedge_premium_rate, open_vol, hedge_vol。intra 的 funding filter 固定读取 hedge_premium_rate 的 quantiles，无需单独配置 mapping。</div>
+      <div class="hint" style="margin-top: 8px;">可用 factor: bidask, askbid, bidbid_ho, askask_oh, spread, hedge_premium_rate, open_vol, hedge_vol。intra 的 funding filter 固定读取 hedge_premium_rate 的 quantiles，无需单独配置 mapping。</div>
       <div id="rolling-status" class="status"></div>
     </section>
 
@@ -883,7 +883,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <label for="spread-symbol">Symbol (可选)</label>
           <input id="spread-symbol" placeholder="BTCUSDT" />
         </div>
-        <div class="hint">格式: bidask_10 / askbid_90 / spread_15</div>
+        <div class="hint">格式: bidask_10 / askbid_90 / bidbid_ho_90 / askask_oh_90 / spread_15</div>
       </div>
       <div id="spread-table" class="kv-table"></div>
       <div id="spread-status" class="status"></div>

@@ -83,6 +83,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
     p.add_argument("--symbol", help="只同步指定 symbol（如 BTCUSDT）")
+    p.add_argument("--same-side", action="store_true", help="MT 使用 bidbid_ho / askask_oh 分位数")
     return p.parse_args()
 
 
@@ -95,6 +96,14 @@ SPREAD_THRESHOLD_MAPPING = {
     "backward_open_mt": "askbid_90",
     "backward_cancel_mm": "spread_90",
     "backward_cancel_mt": "askbid_85",
+}
+
+SAME_SIDE_SPREAD_THRESHOLD_MAPPING = {
+    **SPREAD_THRESHOLD_MAPPING,
+    "forward_open_mt": "bidbid_ho_90",
+    "forward_cancel_mt": "bidbid_ho_85",
+    "backward_open_mt": "askask_oh_90",
+    "backward_cancel_mt": "askask_oh_85",
 }
 
 THRESHOLD_ORDER = list(SPREAD_THRESHOLD_MAPPING.keys())
@@ -168,26 +177,16 @@ def read_rolling_metrics(rds, key: str) -> Dict[str, Dict]:
 
 
 def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
-    parts = field_ref.split("_")
-    if len(parts) < 2:
+    if "_" not in field_ref:
         return None
-
-    factor = parts[0]
-    percentile_str = parts[1]
+    factor, percentile_str = field_ref.rsplit("_", 1)
 
     try:
         percentile = float(percentile_str) / 100.0
     except ValueError:
         return None
 
-    if factor == "bidask":
-        quantile_key = "bidask_quantiles"
-    elif factor == "askbid":
-        quantile_key = "askbid_quantiles"
-    elif factor == "spread":
-        quantile_key = "spread_quantiles"
-    else:
-        return None
+    quantile_key = f"{factor}_quantiles"
 
     quantiles = obj.get(quantile_key)
     if not isinstance(quantiles, list):
@@ -227,7 +226,10 @@ def extract_quantile_value(obj: Dict, field_ref: str) -> Optional[float]:
     return None
 
 
-def generate_spread_thresholds(symbols: List[str], rolling: Dict[str, Dict]) -> Dict[str, Dict[str, float]]:
+def generate_spread_thresholds(
+    symbols: List[str], rolling: Dict[str, Dict], mapping: Optional[Dict[str, str]] = None
+) -> Dict[str, Dict[str, float]]:
+    mapping = mapping or SPREAD_THRESHOLD_MAPPING
     out: Dict[str, Dict[str, float]] = {}
     for sym in symbols:
         key = normalize_for_rolling(sym)
@@ -235,7 +237,7 @@ def generate_spread_thresholds(symbols: List[str], rolling: Dict[str, Dict]) -> 
         if not obj:
             continue
         row: Dict[str, float] = {}
-        for dst_field, src_ref in SPREAD_THRESHOLD_MAPPING.items():
+        for dst_field, src_ref in mapping.items():
             v = extract_quantile_value(obj, src_ref)
             if v is None or math.isnan(v):
                 continue
@@ -292,7 +294,8 @@ def main() -> int:
         print(f"❌ rolling metrics hash '{rolling_key}' 为空或不存在", file=sys.stderr)
         return 2
 
-    thresholds = generate_spread_thresholds(symbols, rolling)
+    mapping = SAME_SIDE_SPREAD_THRESHOLD_MAPPING if args.same_side else SPREAD_THRESHOLD_MAPPING
+    thresholds = generate_spread_thresholds(symbols, rolling, mapping)
     write_key = f"{NAMESPACE}_spread_thresholds_{open_venue}_{hedge_venue}"
     config_key = f"{NAMESPACE}_spread_thresholds_config_{open_venue}_{hedge_venue}"
 
@@ -302,7 +305,7 @@ def main() -> int:
         "open_venue": open_venue,
         "hedge_venue": hedge_venue,
         "rolling_key": rolling_key,
-        "mapping": SPREAD_THRESHOLD_MAPPING,
+        "mapping": mapping,
         "threshold_order": THRESHOLD_ORDER,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

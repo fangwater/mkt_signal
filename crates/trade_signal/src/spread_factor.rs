@@ -1,7 +1,7 @@
 //! 价差因子单例模块
 //!
 //! 提供价差因子计算、存储和阈值判断功能。
-//! 维护 askbid 和 bidask 两种价差因子，支持正套/反套开仓/撤单/平仓判断。
+//! 维护两种跨侧和两种同侧价差因子，支持正套/反套开仓/撤单/平仓判断。
 
 use super::common::{ArbDirection, CompareOp, FactorMode, OperationType, ThresholdKey, VenuePair};
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
@@ -96,6 +96,8 @@ impl fmt::Display for SpreadSymbolPairKey {
 struct SpreadValues {
     askbid: f64,
     bidask: f64,
+    bidbid_ho: f64,
+    askask_oh: f64,
     spread_rate: f64,
     valid: u8,
 }
@@ -104,6 +106,8 @@ impl SpreadValues {
     const ASKBID_VALID: u8 = 1 << 0;
     const BIDASK_VALID: u8 = 1 << 1;
     const SPREAD_RATE_VALID: u8 = 1 << 2;
+    const BIDBID_HO_VALID: u8 = 1 << 3;
+    const ASKASK_OH_VALID: u8 = 1 << 4;
 
     fn set(&mut self, spread_type: SpreadType, value: f64) {
         let valid_bit = match spread_type {
@@ -114,6 +118,14 @@ impl SpreadValues {
             SpreadType::BidAsk => {
                 self.bidask = value;
                 Self::BIDASK_VALID
+            }
+            SpreadType::BidBidHo => {
+                self.bidbid_ho = value;
+                Self::BIDBID_HO_VALID
+            }
+            SpreadType::AskAskOh => {
+                self.askask_oh = value;
+                Self::ASKASK_OH_VALID
             }
             SpreadType::SpreadRate => {
                 self.spread_rate = value;
@@ -127,6 +139,8 @@ impl SpreadValues {
         let (valid_bit, value) = match spread_type {
             SpreadType::AskBid => (Self::ASKBID_VALID, self.askbid),
             SpreadType::BidAsk => (Self::BIDASK_VALID, self.bidask),
+            SpreadType::BidBidHo => (Self::BIDBID_HO_VALID, self.bidbid_ho),
+            SpreadType::AskAskOh => (Self::ASKASK_OH_VALID, self.askask_oh),
             SpreadType::SpreadRate => (Self::SPREAD_RATE_VALID, self.spread_rate),
         };
         if self.valid & valid_bit != 0 {
@@ -148,11 +162,13 @@ pub struct FrOpenSpreadLimitOverride {
     pub bwd_open_spread: f64,
 }
 
-/// 价差类型 (bidask、askbid或者基于mid price 计算的spread rate)
+/// 价差类型，包含跨侧、同侧和 mid 价差。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpreadType {
     BidAsk,
     AskBid,
+    BidBidHo,
+    AskAskOh,
     SpreadRate,
 }
 
@@ -161,6 +177,8 @@ impl SpreadType {
         match self {
             SpreadType::BidAsk => "bidask",
             SpreadType::AskBid => "askbid",
+            SpreadType::BidBidHo => "bidbid_ho",
+            SpreadType::AskAskOh => "askask_oh",
             SpreadType::SpreadRate => "spread_rate",
         }
     }
@@ -265,9 +283,11 @@ impl SpreadFactor {
 
     /// 统一更新所有价差因子
     ///
-    /// 接受完整盘口数据，一次性更新三个价差因子：
+    /// 接受完整盘口数据，一次性更新价差因子：
     /// - askbid_sr = (venue1_ask - venue2_bid) / venue1_ask
     /// - bidask_sr = (venue1_bid - venue2_ask) / venue1_bid
+    /// - bidbid_ho = (venue2_bid - venue1_bid) / venue1_bid
+    /// - askask_oh = (venue1_ask - venue2_ask) / venue1_ask
     /// - spread_rate = (mid_price_venue1 - mid_price_venue2) / mid_price_venue1
     ///   其中 mid_price = (ask + bid) / 2
     ///
@@ -297,6 +317,17 @@ impl SpreadFactor {
             None
         };
 
+        let bidbid_ho = if venue1_bid > 0.0 && venue2_bid > 0.0 {
+            Some((venue2_bid - venue1_bid) / venue1_bid)
+        } else {
+            None
+        };
+        let askask_oh = if venue1_ask > 0.0 && venue2_ask > 0.0 {
+            Some((venue1_ask - venue2_ask) / venue1_ask)
+        } else {
+            None
+        };
+
         // 计算 spread_rate = (mid_price_venue1 - mid_price_venue2) / mid_price_venue1
         let spread_rate =
             if venue1_bid > 0.0 && venue1_ask > 0.0 && venue2_bid > 0.0 && venue2_ask > 0.0 {
@@ -312,7 +343,12 @@ impl SpreadFactor {
                 None
             };
 
-        if askbid.is_some() || bidask.is_some() || spread_rate.is_some() {
+        if askbid.is_some()
+            || bidask.is_some()
+            || bidbid_ho.is_some()
+            || askask_oh.is_some()
+            || spread_rate.is_some()
+        {
             let symbol_pair = Self::spread_symbol_pair_key(symbol1, symbol2);
             let mut spreads = self.spreads.borrow_mut();
             let values = spreads
@@ -325,6 +361,12 @@ impl SpreadFactor {
             }
             if let Some(value) = bidask {
                 values.set(SpreadType::BidAsk, value);
+            }
+            if let Some(value) = bidbid_ho.filter(|value| value.is_finite()) {
+                values.set(SpreadType::BidBidHo, value);
+            }
+            if let Some(value) = askask_oh.filter(|value| value.is_finite()) {
+                values.set(SpreadType::AskAskOh, value);
             }
             if let Some(value) = spread_rate {
                 values.set(SpreadType::SpreadRate, value);
@@ -354,6 +396,26 @@ impl SpreadFactor {
         symbol2: &str,
     ) -> Option<f64> {
         self.get_spread_value(venue1, symbol1, venue2, symbol2, SpreadType::BidAsk)
+    }
+
+    pub fn get_bidbid_ho(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+    ) -> Option<f64> {
+        self.get_spread_value(venue1, symbol1, venue2, symbol2, SpreadType::BidBidHo)
+    }
+
+    pub fn get_askask_oh(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+    ) -> Option<f64> {
+        self.get_spread_value(venue1, symbol1, venue2, symbol2, SpreadType::AskAskOh)
     }
 
     /// 获取 spread_rate 价差因子
@@ -780,6 +842,24 @@ impl SpreadFactor {
         self.mm_thresholds.borrow_mut().insert(key, mm_config);
     }
 
+    pub(crate) fn set_mt_threshold_factor(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        direction: ArbDirection,
+        operation: OperationType,
+        spread_type: SpreadType,
+        compare_op: CompareOp,
+    ) {
+        let key = Self::threshold_entry_key(venue1, symbol1, venue2, symbol2, direction, operation);
+        if let Some(config) = self.mt_thresholds.borrow_mut().get_mut(&key) {
+            config.spread_type = spread_type;
+            config.compare_op = compare_op;
+        }
+    }
+
     // ===== 6个 satisfy 函数 =====
 
     /// 检查是否满足正套开仓条件
@@ -831,11 +911,7 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            let value = match config.spread_type {
-                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
-            };
+            let value = self.get_spread_value(venue1, symbol1, venue2, symbol2, config.spread_type);
 
             if let Some(v) = value {
                 return config.compare_op.check(v, config.threshold);
@@ -871,11 +947,7 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            let value = match config.spread_type {
-                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
-            };
+            let value = self.get_spread_value(venue1, symbol1, venue2, symbol2, config.spread_type);
 
             if let Some(v) = value {
                 return config.compare_op.check(v, config.threshold);
@@ -946,11 +1018,7 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            let value = match config.spread_type {
-                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
-            };
+            let value = self.get_spread_value(venue1, symbol1, venue2, symbol2, config.spread_type);
 
             if let Some(v) = value {
                 return config.compare_op.check(v, config.threshold);
@@ -986,11 +1054,7 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            let value = match config.spread_type {
-                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
-            };
+            let value = self.get_spread_value(venue1, symbol1, venue2, symbol2, config.spread_type);
 
             if let Some(v) = value {
                 return config.compare_op.check(v, config.threshold);
@@ -1043,11 +1107,7 @@ impl SpreadFactor {
         };
 
         if let Some(config) = thresholds.get(&key) {
-            let value = match config.spread_type {
-                SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-                SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-                SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
-            };
+            let value = self.get_spread_value(venue1, symbol1, venue2, symbol2, config.spread_type);
 
             if let Some(v) = value {
                 return Some((v, config.threshold, config.compare_op, config.spread_type));
@@ -1118,11 +1178,7 @@ impl SpreadFactor {
             };
         };
 
-        let value = match config.spread_type {
-            SpreadType::BidAsk => self.get_bidask(venue1, symbol1, venue2, symbol2),
-            SpreadType::AskBid => self.get_askbid(venue1, symbol1, venue2, symbol2),
-            SpreadType::SpreadRate => self.get_spread_rate(venue1, symbol1, venue2, symbol2),
-        };
+        let value = self.get_spread_value(venue1, symbol1, venue2, symbol2, config.spread_type);
         let status = match value {
             Some(value) if config.compare_op.check(value, config.threshold) => {
                 SpreadCheckStatus::Pass
@@ -1237,6 +1293,8 @@ mod tests {
         ));
         assert_eq!(values.get(SpreadType::AskBid), result.0);
         assert_eq!(values.get(SpreadType::BidAsk), result.1);
+        assert_eq!(values.get(SpreadType::BidBidHo), Some(-0.01));
+        assert_eq!(values.get(SpreadType::AskAskOh), Some(1.0 / 101.0));
         assert_eq!(values.get(SpreadType::SpreadRate), result.2);
     }
 
