@@ -23,6 +23,11 @@ class TestSameSideSpreads(unittest.TestCase):
         self.assertEqual(factors["bidbid_ho"]["quantiles"], [85, 90])
         self.assertEqual(factors["askask_oh"]["quantiles"], [85, 90])
 
+        spot_defaults = intra_cfg.build_runtime_rolling_defaults(
+            "binance-spot", "binance-futures"
+        )["factors"]
+        self.assertEqual(spot_defaults["bidbid_ho"]["quantiles"], [85, 90])
+
     def test_same_side_mapping_reads_quantiles_with_underscores(self):
         rolling = {
             "BTCUSDT": {

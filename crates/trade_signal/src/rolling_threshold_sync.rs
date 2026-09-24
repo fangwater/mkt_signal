@@ -151,9 +151,23 @@ pub(crate) fn intra_mt_factor_overrides(
         if !field.ends_with("_mt") {
             continue;
         }
+        if matches!(source.as_str(), "bidbid_ho" | "askask_oh") {
+            bail!("intra spread mapping {field} requires a quantile suffix: {source}");
+        }
         let Some((factor, _)) = source.rsplit_once('_') else {
             continue;
         };
+        if matches!(factor, "bidbid_ho" | "askask_oh") {
+            let valid_percentile = source
+                .rsplit_once('_')
+                .and_then(|(_, suffix)| suffix.parse::<f64>().ok())
+                .is_some_and(|percentile| {
+                    percentile.is_finite() && (0.0..=100.0).contains(&percentile)
+                });
+            if !valid_percentile {
+                bail!("intra spread mapping {field} has invalid quantile: {source}");
+            }
+        }
         let choice = match (field.as_str(), factor) {
             ("forward_open_mt", "bidbid_ho") => {
                 Some((SpreadType::BidBidHo, CompareOp::GreaterThan))
@@ -931,6 +945,19 @@ mod tests {
     fn intra_mapping_rejects_same_side_factor_on_wrong_direction() {
         let mapping = HashMap::from([("backward_open_mt".to_string(), "bidbid_ho_90".to_string())]);
         assert!(intra_mt_factor_overrides(&mapping).is_err());
+    }
+
+    #[test]
+    fn intra_mapping_keeps_legacy_factors_and_rejects_bare_same_side_names() {
+        assert!(
+            intra_mt_factor_overrides(&super::default_xarb_spread_mapping())
+                .unwrap()
+                .is_empty()
+        );
+        for reference in ["bidbid_ho", "bidbid_ho_nan", "bidbid_ho_101"] {
+            let mapping = HashMap::from([("forward_open_mt".to_string(), reference.to_string())]);
+            assert!(intra_mt_factor_overrides(&mapping).is_err(), "{reference}");
+        }
     }
 
     #[test]
