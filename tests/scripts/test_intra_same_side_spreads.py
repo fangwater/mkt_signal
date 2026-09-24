@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "intra_scripts"))
 
 import intra_config_server as intra_cfg  # noqa: E402
 import sync_intra_spread_thresholds as spread_sync  # noqa: E402
+from rolling_metrics import sync_rolling_metrics_params as rolling_sync  # noqa: E402
 
 
 class TestSameSideSpreads(unittest.TestCase):
@@ -48,6 +49,16 @@ class TestSameSideSpreads(unittest.TestCase):
         self.assertEqual(rows["BTCUSDT"]["forward_cancel_mt"], 0.004)
         self.assertEqual(rows["BTCUSDT"]["backward_open_mt"], 0.007)
         self.assertEqual(rows["BTCUSDT"]["backward_cancel_mt"], 0.005)
+
+    def test_cross_futures_pair_rolling_defaults_include_same_side_quantiles(self):
+        defaults = rolling_sync.clone_defaults()
+        rolling_sync.apply_pair_specific_defaults(
+            "bitget-futures", "gate-futures", defaults
+        )
+        factors = defaults["factors"]
+        self.assertEqual(factors["bidbid_ho"]["quantiles"], [85, 90])
+        self.assertEqual(factors["askask_oh"]["quantiles"], [85, 90])
+        self.assertIn("spread_fr", factors)
 
 
 if __name__ == "__main__":

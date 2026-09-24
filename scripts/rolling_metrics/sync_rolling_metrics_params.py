@@ -73,6 +73,10 @@ SPREAD_FR_FUTURES_PAIRS = {
     ("bitget-futures", "gate-futures"),
 }
 
+SAME_SIDE_SPREAD_CROSS_PAIRS = {
+    ("bitget-futures", "gate-futures"),
+}
+
 
 def build_single_side_factor(
     *, quantiles: list[float], min_periods: int = 7_200
@@ -94,7 +98,10 @@ def apply_pair_specific_defaults(
     if not isinstance(factors, dict):
         return
 
-    if open_venue.endswith(("-margin", "-spot")) and hedge_venue.endswith("-futures"):
+    if (
+        open_venue.endswith(("-margin", "-spot"))
+        and hedge_venue.endswith("-futures")
+    ) or pair in SAME_SIDE_SPREAD_CROSS_PAIRS:
         for factor_name in ("bidbid_ho", "askask_oh"):
             factors.setdefault(
                 factor_name,

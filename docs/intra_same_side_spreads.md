@@ -9,7 +9,7 @@ askask_oh = (v1_ask - v2_ask) / v1_ask
 
 The ratios are not bps. A positive `bidbid_ho` favors buying v1 as Maker and selling v2 as Taker; a positive `askask_oh` favors selling v1 as Maker and buying v2 as Taker. They describe prices conditional on the Maker order filling.
 
-`rolling_metrics_thresholds_{open}_{hedge}` publishes `bidbid_ho`, `askask_oh`, and their `_quantiles` arrays. The margin/spot to futures rolling defaults include q85 and q90 for both factors. Existing Redis factor configurations must also include them before switching intra thresholds; the new series need enough samples to become ready.
+`rolling_metrics_thresholds_{open}_{hedge}` publishes `bidbid_ho`, `askask_oh`, and their `_quantiles` arrays. The margin/spot to futures rolling defaults and the Bitget futures to Gate futures pair include q85 and q90 for both factors. Existing Redis factor configurations must also include them before switching intra thresholds; the new series need enough samples to become ready.
 
 The intra spread mapping keeps the old `bidask` / `askbid` factors by default. To switch MT thresholds, set the four mapping values in `intra_spread_thresholds_config_{open}_{hedge}` to:
 
