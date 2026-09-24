@@ -207,7 +207,8 @@ Per NAV-configured strategy: Redis online universe ∩ `/risk`. Same filters as
 `/risk`. `delist_risk_server` does not keep a separate handwritten account
 list. It reads `slug`, display alias, host, strategy kind, and exchange from
 `/nav-api/strategies`; a strategy added to NAV appears here after the next
-catalog refresh.
+catalog refresh. The NAV `delist` user must also have a strategy grant for the
+new slug; otherwise NAV omits it from the authenticated response and `/accounts`.
 
 The response field `nav_accounts_current` is `true` only after the latest NAV
 catalog request succeeds. It is independent from the per-site `redis` health

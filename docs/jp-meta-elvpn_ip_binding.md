@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-09-23。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-09-24。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -36,7 +36,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`binance-cta-special-rx02`、`binance-cta-special-rx03`、`okex-intra-arb01`、`bitget-intra-arb01`；Exec `trade02`–`trade04` `local_ips[0]` |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02` |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 已配置 | Exec `trade02`、`trade03`、`trade04` `local_ips[1]` |
@@ -79,6 +79,7 @@ gate_fr_arb01                172.31.35.231, 172.31.35.231
 gate_fr_arb03                172.31.35.231, 172.31.35.231
 bitget_fr_arb01              172.31.35.231, 172.31.35.231
 bitget_fr_arb02              172.31.35.231, 172.31.35.231
+bitget_fr_arb03              172.31.35.231, 172.31.35.231
 gate_fr_arb02                172.31.35.232, 172.31.35.233
 gate-intra-arb01             0.0.0.0, 0.0.0.0
 bitget-gate-cross-arb01      0.0.0.0, 0.0.0.0
