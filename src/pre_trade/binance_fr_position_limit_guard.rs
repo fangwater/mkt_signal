@@ -17,15 +17,15 @@ use std::time::Duration;
 use trade_signal::ArbMode;
 
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
+use crate::pre_trade::{
+    POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER, POSITION_LIMIT_PRICE_BUFFER_RATIO,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 30 * 60;
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
-// 按 maxNotionalValue 预留的价格上涨缓冲：检查只用当前 mark，已有仓位会随价格上涨逼近交易所上限
-const PRICE_BUFFER_RATIO: f64 = 0.015;
 
 thread_local! {
     static BINANCE_FR_POSITION_LIMIT_GUARD: RefCell<Option<BinanceFrPositionLimitState>> =
@@ -461,7 +461,7 @@ impl BinanceFrPositionLimitGuard {
                 cap.max_notional_value,
                 cap.buffer,
                 POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER,
-                PRICE_BUFFER_RATIO,
+                POSITION_LIMIT_PRICE_BUFFER_RATIO,
                 cap.cap,
                 cap.pending_limit_orders,
                 cap.amount_u,
@@ -567,7 +567,7 @@ fn calculate_cap_for_record(
     }
     let pending_buffer =
         pending_limit_orders as f64 * amount_u * POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
-    let price_buffer = max_notional_value * PRICE_BUFFER_RATIO;
+    let price_buffer = max_notional_value * POSITION_LIMIT_PRICE_BUFFER_RATIO;
     let buffer = pending_buffer + price_buffer;
     let cap = max_notional_value - buffer;
     if !(cap.is_finite() && cap > 0.0) {
