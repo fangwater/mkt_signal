@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use log::{debug, info, warn};
-use order_common::trade_error_code::{bitget, bybit, gate, hyperliquid};
+use order_common::trade_error_code::{binance, bitget, bybit, gate, hyperliquid};
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
@@ -20,6 +20,8 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT: i32 =
     bitget::POSITION_TIER_LIMIT_EXCEEDED;
+// -2027: Binance UM 当前杠杆下仓位名义价值超限，对冲腿被拒时同向开仓也需锁定
+pub const SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO: i32 = binance::MAX_LEVERAGE_RATIO;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_LIABILITY_OVERFLOW: i32 =
     bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 =
@@ -105,6 +107,9 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         }
         SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT => {
             matches!(exchange, Some(Exchange::Bitget))
+        }
+        SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO => {
+            matches!(exchange, Some(Exchange::Binance))
         }
         SIGNAL_THROTTLE_ERROR_CODE_BYBIT_LIABILITY_OVERFLOW
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
@@ -545,6 +550,9 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
         assert!(is_throttle_error_code(Some(Exchange::Bitget), 25116));
+        assert!(is_throttle_error_code(Some(Exchange::Binance), -2027));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), -2027));
+        assert!(!is_throttle_error_code(Some(Exchange::Bitget), -2027));
         assert!(is_throttle_error_code(
             Some(Exchange::Bitget),
             bitget::POSITION_TIER_LIMIT_EXCEEDED

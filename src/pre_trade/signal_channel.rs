@@ -15,6 +15,7 @@ use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
 use crate::pre_trade::signal_throttle::{
     check_account_signal_throttle, check_signal_throttle,
+    SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO,
     SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT,
 };
 use crate::pre_trade::taker_decision_model::{
@@ -1089,10 +1090,14 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let account_throttle_hit = check_account_signal_throttle();
             let account_open_block_hit = check_account_open_block();
             if let Some(hit) = symbol_throttle_hit.as_ref().filter(|hit| {
-                hit.last_error_code == SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT
+                matches!(
+                    hit.last_error_code,
+                    SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT
+                        | SIGNAL_THROTTLE_ERROR_CODE_BINANCE_MAX_LEVERAGE_RATIO
+                )
             }) {
                 debug!(
-                    "ArbOpen: blocked by Bitget position tier symbol-side lock, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                    "ArbOpen: blocked by position-limit symbol-side lock, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
                     symbol,
                     side.as_str(),
                     hit.remaining_us,

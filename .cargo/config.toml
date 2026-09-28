@@ -1,5 +1,5 @@
-[build]
-target-dir = "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal"
+# Machine-specific build settings (e.g. target-dir) belong in ~/.cargo/config.toml
+# or CARGO_TARGET_DIR, not in this shared file.
 
 [env]
 # Load ONNX Runtime on first use from the repository-local third_party binary.
