@@ -2,7 +2,9 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::is_exposure_exempt_asset;
 use anyhow::Result;
-use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
+use ipc_common::iceoryx_publisher::{
+    ExecStateResamplePublisher, GenericPublisher, ResamplePublisher,
+};
 use log::{info, warn};
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::OnceCell;
@@ -18,7 +20,7 @@ thread_local! {
 }
 
 pub struct ExecResampleChannel {
-    state_pub: Option<ResamplePublisher>,
+    state_pub: Option<ExecStateResamplePublisher>,
     risk_pub: Option<ResamplePublisher>,
 }
 
@@ -34,14 +36,17 @@ impl ExecResampleChannel {
     }
 
     fn new() -> Self {
-        let make_pub = |channel: &str| {
-            ResamplePublisher::new_with_prefix("viz_pubs", channel)
-                .map_err(|err| warn!("ExecResampleChannel init failed channel={channel}: {err:#}"))
-                .ok()
-        };
         Self {
-            state_pub: make_pub(EXEC_STATE_CHANNEL),
-            risk_pub: make_pub(EXEC_RISK_CHANNEL),
+            state_pub: ExecStateResamplePublisher::new_with_prefix("viz_pubs", EXEC_STATE_CHANNEL)
+                .map_err(|err| {
+                    warn!("ExecResampleChannel init failed channel={EXEC_STATE_CHANNEL}: {err:#}")
+                })
+                .ok(),
+            risk_pub: ResamplePublisher::new_with_prefix("viz_pubs", EXEC_RISK_CHANNEL)
+                .map_err(|err| {
+                    warn!("ExecResampleChannel init failed channel={EXEC_RISK_CHANNEL}: {err:#}")
+                })
+                .ok(),
         }
     }
 
@@ -211,20 +216,20 @@ impl ExecResampleChannel {
         Ok(published)
     }
 
-    fn publish_encoded(
+    fn publish_encoded<const PAYLOAD: usize>(
         bytes: Vec<u8>,
-        publisher: &ResamplePublisher,
+        publisher: &GenericPublisher<PAYLOAD>,
         channel: &str,
     ) -> Result<bool> {
         let mut payload = Vec::with_capacity(bytes.len() + 4);
         payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         payload.extend_from_slice(&bytes);
-        if payload.len() > RESAMPLE_PAYLOAD {
+        if payload.len() > PAYLOAD {
             warn!(
                 "exec resample payload too large: channel={} bytes={} limit={}",
                 channel,
                 payload.len(),
-                RESAMPLE_PAYLOAD
+                PAYLOAD
             );
             return Ok(false);
         }

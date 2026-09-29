@@ -11,7 +11,9 @@ use tokio::time::Instant;
 
 use crate::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::server::WsHub;
-use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
+use ipc_common::iceoryx_publisher::{
+    EXEC_STATE_RESAMPLE_PAYLOAD, RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD,
+};
 use runtime_common::time_util::get_timestamp_us;
 use viz_common::resample::{
     ExecAccountRiskResampleEntry, ExecStrategyStateResampleEntry, PreTradeExposureResampleEntry,
@@ -117,7 +119,11 @@ fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
     let namespace = namespace.to_string();
     let namespace_for_msg = namespace.clone();
     let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_STATE_CHANNEL);
-    spawn_resample_channel(
+    spawn_resample_channel_with_payload::<
+        ExecStrategyStateResampleEntry,
+        _,
+        EXEC_STATE_RESAMPLE_PAYLOAD,
+    >(
         &format!("viz_exec_state_{}", sanitize_node_component(&namespace)),
         &service_name,
         move |entry: ExecStrategyStateResampleEntry, hub: WsHub| {
@@ -283,6 +289,24 @@ where
     T: serde::de::DeserializeOwned + Clone + 'static,
     F: Fn(T, WsHub) + 'static,
 {
+    spawn_resample_channel_with_payload::<T, F, RESAMPLE_PAYLOAD>(
+        node_suffix,
+        service_name,
+        on_entry,
+        hub,
+    )
+}
+
+fn spawn_resample_channel_with_payload<T, F, const PAYLOAD: usize>(
+    node_suffix: &str,
+    service_name: &str,
+    on_entry: F,
+    hub: WsHub,
+) -> Result<()>
+where
+    T: serde::de::DeserializeOwned + Clone + 'static,
+    F: Fn(T, WsHub) + 'static,
+{
     let node_suffix = node_suffix.to_string();
     let service_name = service_name.to_string();
 
@@ -307,13 +331,13 @@ where
                 .create::<ipc::Service>()?;
             let service = node
                 .service_builder(&ServiceName::new(&service_name)?)
-                .publish_subscribe::<[u8; RESAMPLE_PAYLOAD]>()
+                .publish_subscribe::<[u8; PAYLOAD]>()
                 .max_publishers(1)
                 .max_subscribers(32)
                 .history_size(128)
                 .subscriber_max_buffer_size(256)
                 .open_or_create()?;
-            let subscriber: Subscriber<ipc::Service, [u8; RESAMPLE_PAYLOAD], ()> =
+            let subscriber: Subscriber<ipc::Service, [u8; PAYLOAD], ()> =
                 service.subscriber_builder().create()?;
             info!(
                 "viz resample relay subscribed: service={} node={}",

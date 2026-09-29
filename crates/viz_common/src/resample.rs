@@ -528,12 +528,12 @@ mod tests {
     }
 
     #[test]
-    fn exec_strategy_state_compact_payload_fits_ipc_limit() {
+    fn exec_strategy_state_compact_payload_fits_expanded_ipc_limit() {
         let mut rows = Vec::new();
         for (strategy, count) in [
-            ("rbf_small", 74),
-            ("rbf_big", 41),
-            ("SYSTEM_POSITION_CLOSE", 45),
+            ("rbf_small", 180),
+            ("rbf_big", 140),
+            ("SYSTEM_POSITION_CLOSE", 120),
             ("funding", 6),
             ("cta_alpha", 4),
             ("cta_beta", 4),
@@ -544,7 +544,8 @@ mod tests {
         }
         let entry = ExecStrategyStateResampleEntry::from_rows(123, true, rows).unwrap();
         let payload_len = entry.to_bytes().unwrap().len() + 4;
-        assert_eq!(entry.expanded_rows().unwrap().len(), 174);
-        assert!(payload_len <= 32 * 1024, "payload_len={payload_len}");
+        assert_eq!(entry.expanded_rows().unwrap().len(), 454);
+        assert!(payload_len > 32 * 1024, "payload_len={payload_len}");
+        assert!(payload_len <= 64 * 1024, "payload_len={payload_len}");
     }
 }
