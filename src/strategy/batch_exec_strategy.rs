@@ -473,6 +473,7 @@ pub struct BatchExecSnapshot {
     pub live_order_qty: f64,
     pub active_batches: usize,
     pub remaining_batches: u32,
+    pub has_execution_in_flight: bool,
     pub estimated_completion_ts_ms: i64,
     pub execution_complete: bool,
     pub completion_reason: String,
@@ -1385,6 +1386,7 @@ impl BatchExecStrategy {
             live_order_qty,
             active_batches: self.batches.len(),
             remaining_batches,
+            has_execution_in_flight: self.has_execution_in_flight(),
             estimated_completion_ts_ms,
             execution_complete,
             completion_reason: completion_reason

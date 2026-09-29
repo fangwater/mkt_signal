@@ -1984,6 +1984,8 @@ impl ChaseExecStrategy {
             pending_qty: taker_pending_qty,
             live_order_qty,
             live_children: self.children.len(),
+            has_execution_in_flight: self.has_execution_in_flight(),
+            taker_obligation_pending: self.taker_pending_base_qty != 0.0,
             execution_complete,
             completion_reason: self
                 .completion_reason

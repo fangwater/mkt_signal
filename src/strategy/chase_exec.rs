@@ -190,6 +190,8 @@ pub struct ChaseExecSnapshot {
     /// Unfilled open order qty across live children (signed).
     pub live_order_qty: f64,
     pub live_children: usize,
+    pub has_execution_in_flight: bool,
+    pub taker_obligation_pending: bool,
     pub execution_complete: bool,
     pub completion_reason: String,
 }
