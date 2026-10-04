@@ -410,8 +410,12 @@ pub fn build_account_views(
             Some(Err(err)) => (false, Some(err.clone()), BTreeSet::new()),
             None => (false, Some("redis not queried".into()), BTreeSet::new()),
         };
-        let covered =
-            !venues.is_empty() && matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate");
+        let covered = !venues.is_empty()
+            && matches!(
+                spec.exchange.as_str(),
+                "binance" | "bitget" | "gate" | "bybit"
+            )
+            && venues.iter().all(|venue| listings.has_venue(venue));
         let mut hits_by_symbol: BTreeMap<String, AccountHit> = BTreeMap::new();
         if redis_ok && covered {
             if let Some(bucket) = risk.exchanges.get(&spec.exchange) {
@@ -702,6 +706,60 @@ mod tests {
     use super::*;
     use crate::common::delist_risk::RiskEventView;
     use axum::{routing::get, Json, Router};
+
+    #[test]
+    fn bybit_requires_complete_catalog_and_matches_only_affected_leg() {
+        let account = AccountSpec {
+            slug: "bybit-intra-arb01".into(),
+            alias: "Bybit".into(),
+            exchange: "bybit".into(),
+            kind: "intra_exchange".into(),
+            host: "sg".into(),
+            site: RedisSite::Sg,
+            config_url: String::new(),
+        };
+        let universe = BTreeMap::from([(
+            account.slug.clone(),
+            Ok(BTreeSet::from(["SCORUSDT".into(), "BTCUSDT".into()])),
+        )]);
+        let mut risk = RiskQueryResponse {
+            ok: true,
+            as_of_ms: 1,
+            abnormal: true,
+            count: 1,
+            exchanges: BTreeMap::new(),
+        };
+        let mut notice = event(&["SCORUSDT"], &[]);
+        notice.exchange = "bybit".into();
+        notice.venue = "bybit-margin".into();
+        notice.status = "upcoming".into();
+        risk.exchanges.insert(
+            "bybit".into(),
+            crate::common::delist_risk::ExchangeRisk {
+                exchange: "bybit".into(),
+                abnormal: true,
+                count: 1,
+                items: vec![notice],
+            },
+        );
+        let mut listings = ListingIndex::default();
+        let accounts = [account];
+        assert_eq!(
+            build_account_views(&accounts, &risk, &listings, &universe)[0].tone,
+            "uncovered"
+        );
+        for venue in ["bybit-margin", "bybit-futures"] {
+            for symbol in ["SCORUSDT", "BTCUSDT"] {
+                listings.insert_test(venue, symbol);
+            }
+        }
+        let view = &build_account_views(&accounts, &risk, &listings, &universe)[0];
+        assert!(view.redis_ok);
+        assert_eq!(view.tone, "risk");
+        assert_eq!(view.hits.len(), 1);
+        assert_eq!(view.hits[0].symbol, "SCORUSDT");
+        assert_eq!(view.hits[0].events[0].venue, "bybit-margin");
+    }
 
     fn event(symbols: &[&str], assets: &[&str]) -> RiskEventView {
         RiskEventView {

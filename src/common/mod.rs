@@ -4,6 +4,7 @@ pub mod announcement_watch;
 pub mod binance_account_mode;
 pub mod binance_announcement;
 pub mod bitget_announcement;
+pub mod bybit_announcement;
 pub mod delist_accounts;
 pub mod delist_dump;
 pub mod delist_flatten;

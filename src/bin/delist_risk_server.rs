@@ -35,6 +35,7 @@ use mkt_signal::common::bitget_announcement::{
     article_body_processed, fetch_delist_notices, fetch_offtime_snapshot, has_article_body,
     hydrate_notice_body, mark_article_body_processed,
 };
+use mkt_signal::common::bybit_announcement;
 use mkt_signal::common::delist_accounts::{
     build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_fr_symbol_list,
     load_universes, nav_login, summarize, AccountRiskResponse, AccountRiskView, AccountSpec,
@@ -71,7 +72,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex as AsyncMutex, RwLock};
+use tokio::sync::{Mutex as AsyncMutex, RwLock, Semaphore};
 use tokio::time;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -192,8 +193,7 @@ struct Args {
     llm_max: usize,
 
     /// Re-extract these announcements even if a previous LLM run succeeded.
-    /// Comma-separated `id` or `exchange:id`. Default re-runs the 2026-08-21
-    /// Binance spot-pair notice that previously promoted SUI/BNB to asset SUI.
+    /// Comma-separated `id` or `exchange:id`. Only explicitly requested IDs are forced.
     #[arg(long)]
     force_llm_ids: Option<String>,
 
@@ -218,6 +218,8 @@ struct AppState {
     book: Arc<RwLock<RiskBook>>,
     status: Arc<RwLock<StatusBook>>,
     listings: Arc<RwLock<ListingIndex>>,
+    llm_locks: Arc<Mutex<BTreeMap<(String, String), Arc<AsyncMutex<()>>>>>,
+    llm_slots: Arc<Semaphore>,
     accounts: Arc<RwLock<Vec<AccountSpec>>>,
     store: Option<Arc<DelistStore>>,
     book_path: PathBuf,
@@ -363,6 +365,8 @@ async fn main() -> Result<()> {
         book: Arc::new(RwLock::new(book)),
         status: Arc::new(RwLock::new(status)),
         listings: Arc::new(RwLock::new(ListingIndex::default())),
+        llm_locks: Arc::new(Mutex::new(BTreeMap::new())),
+        llm_slots: Arc::new(Semaphore::new(2)),
         accounts: Arc::new(RwLock::new(Vec::new())),
         store,
         book_path: args.book.clone(),
@@ -1067,6 +1071,28 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     }
     let llm_budget = Arc::new(Mutex::new(LlmBudget::new(args.llm_max)));
 
+    if !args.skip_ws {
+        let ws_state = state.clone();
+        let ws_llm = llm.clone();
+        let ws_client = llm_client.clone();
+        let ws_budget = llm_budget.clone();
+        tokio::spawn(async move {
+            loop {
+                let result =
+                    gate_ws_session(&ws_state, ws_llm.as_ref(), ws_client.as_ref(), &ws_budget)
+                        .await;
+                match result {
+                    Ok(()) => mark_ok(&ws_state, "gate_ws", "ws").await,
+                    Err(err) => {
+                        warn!("Gate announcement ws session ended: {err:#}");
+                        mark_err(&ws_state, "gate_ws", "ws", &format!("{err:#}")).await;
+                    }
+                }
+                time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
+
     refresh_nav_account_catalog(&state, &nav_client).await;
 
     if !args.skip_official {
@@ -1079,16 +1105,38 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
         persist(&state).await;
     }
     if !args.skip_announcements {
-        refresh_announcements(
-            &state,
-            &public,
-            &binance,
-            llm.as_ref(),
-            llm_client.as_ref(),
-            &llm_budget,
-        )
-        .await;
-        persist(&state).await;
+        let ann_state = state.clone();
+        let ann_llm = llm.clone();
+        let ann_client = llm_client.clone();
+        let ann_budget = llm_budget.clone();
+        let public = public.clone();
+        let binance = binance.clone();
+        let interval_secs = args.announcement_interval_secs.max(60);
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                refresh_announcements(
+                    &ann_state,
+                    &public,
+                    &binance,
+                    ann_llm.as_ref(),
+                    ann_client.as_ref(),
+                    &ann_budget,
+                )
+                .await;
+                backfill_pending_llm(
+                    &ann_state,
+                    ann_llm.as_ref(),
+                    ann_client.as_ref(),
+                    &ann_budget,
+                    &BTreeSet::new(),
+                )
+                .await;
+                persist(&ann_state).await;
+            }
+        });
     }
     if llm.is_some() {
         let backfill_state = state.clone();
@@ -1120,10 +1168,6 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let mut listings = time::interval(Duration::from_secs(args.listing_interval_secs.max(60)));
     listings.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     listings.tick().await;
-    let mut announcements =
-        time::interval(Duration::from_secs(args.announcement_interval_secs.max(60)));
-    announcements.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    announcements.tick().await;
     let mut position_risk = time::interval(Duration::from_secs(
         args.position_risk_interval_secs.max(10),
     ));
@@ -1154,17 +1198,6 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 }
                 persist(&state).await;
             }
-            _ = announcements.tick(), if !args.skip_announcements => {
-                refresh_announcements(
-                    &state,
-                    &public,
-                    &binance,
-                    llm.as_ref(),
-                    llm_client.as_ref(),
-                    &llm_budget,
-                ).await;
-                persist(&state).await;
-            }
             _ = position_risk.tick(), if state.auto_dump_position_risk || state.auto_flatten_position_risk => {
                 run_position_risk_scan(&state).await;
             }
@@ -1180,22 +1213,6 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                         run_position_risk_scan(&state).await;
                     }
                 }
-            }
-            result = gate_ws_session(
-                &state,
-                llm.as_ref(),
-                llm_client.as_ref(),
-                &llm_budget,
-            ), if !args.skip_ws => {
-                match result {
-                    Ok(()) => mark_ok(&state, "gate_ws", "ws").await,
-                    Err(err) => {
-                        warn!("Gate announcement ws session ended: {err:#}");
-                        mark_err(&state, "gate_ws", "ws", &format!("{err:#}")).await;
-                    }
-                }
-                persist(&state).await;
-                time::sleep(Duration::from_secs(3)).await;
             }
             _ = &mut daily_snapshot, if !args.skip_official => {
                 let snapshot_date = Utc::now().date_naive();
@@ -2275,6 +2292,7 @@ async fn ingest_schedule_venues(state: &AppState, days: i64) {
         TradingVenue::BinanceFutures,
         TradingVenue::BinanceCoinFutures,
         TradingVenue::GateFutures,
+        TradingVenue::BybitFutures,
         TradingVenue::BitgetFutures,
         TradingVenue::BitgetCoinFutures,
     ] {
@@ -2396,6 +2414,27 @@ async fn refresh_announcements(
             mark_err(state, "bitget_announcements", "fetch", &format!("{err:#}")).await;
         }
     }
+    match bybit_announcement::fetch_delist_notices(public, state.default_days.max(30) + 7).await {
+        Ok(items) => {
+            mark_ok(state, "bybit_announcements", "fetch").await;
+            let mut errors = Vec::new();
+            for mut item in items {
+                if let Err(err) = bybit_announcement::hydrate_notice_body(public, &mut item).await {
+                    errors.push(format!("{}: {err:#}", item.id));
+                    continue;
+                }
+                let input = LlmExtractInput::from_raw(&item);
+                remember_raw(state, &item).await;
+                maybe_extract(state, llm, llm_client, llm_budget, &input).await;
+            }
+            if errors.is_empty() {
+                mark_ok(state, "bybit_article_detail", "fetch").await;
+            } else {
+                mark_err(state, "bybit_article_detail", "fetch", &errors.join("; ")).await;
+            }
+        }
+        Err(err) => mark_err(state, "bybit_announcements", "fetch", &format!("{err:#}")).await,
+    }
     if bitget_detail_errors.is_empty() {
         mark_ok(state, "bitget_article_detail", "fetch").await;
     } else {
@@ -2451,11 +2490,9 @@ async fn backfill_bitget_details(
     errors
 }
 
-const DEFAULT_FORCE_LLM_IDS: &str = "fab1676df7fb464a9e4634c6f777659e";
-
 fn force_llm_id_set(raw: &Option<String>) -> std::collections::BTreeSet<String> {
     raw.as_deref()
-        .unwrap_or(DEFAULT_FORCE_LLM_IDS)
+        .unwrap_or("")
         .split(',')
         .map(|item| {
             item.trim()
@@ -2504,7 +2541,7 @@ async fn backfill_pending_llm(
             pending += 1;
         }
         let input = LlmExtractInput::from_raw(&item);
-        maybe_extract(state, llm, llm_client, llm_budget, &input).await;
+        extract_announcement(state, llm, llm_client, llm_budget, &input, force).await;
     }
     info!("llm backfill pending={pending} forced={forced}");
 }
@@ -2516,7 +2553,34 @@ async fn maybe_extract(
     llm_budget: &Mutex<LlmBudget>,
     input: &LlmExtractInput,
 ) -> bool {
+    extract_announcement(state, llm, llm_client, llm_budget, input, false).await
+}
+
+async fn extract_announcement(
+    state: &AppState,
+    llm: Option<&LlmConfig>,
+    llm_client: Option<&Client>,
+    llm_budget: &Mutex<LlmBudget>,
+    input: &LlmExtractInput,
+    force: bool,
+) -> bool {
     let (Some(llm), Some(client)) = (llm, llm_client) else {
+        return false;
+    };
+    let key = (input.exchange.clone(), input.id.clone());
+    let gate = {
+        let mut locks = state.llm_locks.lock();
+        locks.entry(key).or_default().clone()
+    };
+    // Serialize each article so an edit arriving during extraction is not lost or
+    // overwritten by an older response. Waiting duplicates reuse the saved result.
+    let _claim = gate.lock().await;
+    if let Some(previous) = state.status.read().await.llm(&input.exchange, &input.id) {
+        if !previous.should_extract(input, Utc::now().timestamp_millis(), force) {
+            return previous.ok;
+        }
+    }
+    let Ok(_slot) = state.llm_slots.acquire().await else {
         return false;
     };
     if !llm_budget.lock().allow() {
@@ -2525,6 +2589,11 @@ async fn maybe_extract(
     match extract_for_emit(client, llm, input).await {
         Ok(value) => {
             state.book.write().await.ingest_llm_value(input, &value);
+            // Save events before the durable success marker so restart dedup cannot lose a result.
+            if !persist(state).await {
+                mark_llm(state, input, false, Some("save extracted risk book failed")).await;
+                return false;
+            }
             mark_llm(state, input, true, None).await;
             true
         }
@@ -2551,11 +2620,14 @@ async fn remember_raw(state: &AppState, item: &RawAnnouncement) {
     }
 }
 
-async fn persist(state: &AppState) {
-    let book = state.book.read().await;
+async fn persist(state: &AppState) -> bool {
+    // Serialize the shared .tmp write/rename across the independent refresh workers.
+    let book = state.book.write().await;
     if let Err(err) = book.save(&state.book_path) {
         warn!("save risk book failed: {err:#}");
+        return false;
     }
+    true
 }
 
 async fn mark_ok(state: &AppState, source: &str, kind: &str) {
@@ -2583,7 +2655,14 @@ async fn mark_err(state: &AppState, source: &str, kind: &str, err: &str) {
 async fn mark_llm(state: &AppState, input: &LlmExtractInput, ok: bool, err: Option<&str>) {
     let (llm_row, source_row) = {
         let mut status = state.status.write().await;
-        status.mark_llm(&input.exchange, &input.id, &input.title, ok, err);
+        status.mark_llm(
+            &input.exchange,
+            &input.id,
+            &input.title,
+            ok,
+            err,
+            input.fingerprint(),
+        );
         (
             status.llm(&input.exchange, &input.id).cloned(),
             status.source("llm").cloned(),
@@ -2628,7 +2707,7 @@ async fn gate_ws_session(
     state: &AppState,
     llm: Option<&LlmConfig>,
     llm_client: Option<&Client>,
-    llm_budget: &Mutex<LlmBudget>,
+    llm_budget: &Arc<Mutex<LlmBudget>>,
 ) -> Result<()> {
     info!("connecting Gate announcement ws {ANN_WS_URL}");
     let (mut ws, _) = tokio_tungstenite::connect_async(ANN_WS_URL)
@@ -2682,14 +2761,19 @@ async fn handle_gate_text(
     text: &str,
     llm: Option<&LlmConfig>,
     llm_client: Option<&Client>,
-    llm_budget: &Mutex<LlmBudget>,
+    llm_budget: &Arc<Mutex<LlmBudget>>,
 ) {
     match parse_ws_text(text) {
         Ok(Some(item)) => {
             let input = LlmExtractInput::from_raw(&item);
             remember_raw(state, &item).await;
-            maybe_extract(state, llm, llm_client, llm_budget, &input).await;
-            persist(state).await;
+            let state = state.clone();
+            let llm = llm.cloned();
+            let client = llm_client.cloned();
+            let budget = llm_budget.clone();
+            tokio::spawn(async move {
+                maybe_extract(&state, llm.as_ref(), client.as_ref(), &budget, &input).await;
+            });
         }
         Ok(None) => {}
         Err(err) => warn!("skip Gate announcement ws frame: {err:#}"),
@@ -2700,6 +2784,123 @@ async fn handle_gate_text(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[tokio::test]
+    async fn repeated_announcements_make_one_request_and_changed_body_reextracts() {
+        use mkt_signal::common::announcement_llm::LlmEndpoint;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    time::sleep(Duration::from_millis(50)).await;
+                    Json(json!({"output_text":json!({"relevant":true,"actions":[{
+                    "exchange":"gate","venue":"gate-margin","action":"delist",
+                    "utc":"2026-10-08T08:00:00Z","assets":["CDL"],"symbols":[],"note":""
+                }]}).to_string()}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = LlmEndpoint {
+            label: "test".into(),
+            api_url: format!("http://{}", listener.local_addr().unwrap()),
+            api_key: "test".into(),
+            model: "test".into(),
+            reasoning_effort: "low".into(),
+            extra_header: None,
+        };
+        let llm = LlmConfig {
+            primary: endpoint.clone(),
+            backup: endpoint,
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("delist-llm-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = AppState {
+            book: Arc::new(RwLock::new(RiskBook::default())),
+            status: Arc::new(RwLock::new(StatusBook::default())),
+            listings: Arc::new(RwLock::new(ListingIndex::default())),
+            accounts: Arc::new(RwLock::new(Vec::new())),
+            llm_locks: Arc::new(Mutex::new(BTreeMap::new())),
+            llm_slots: Arc::new(Semaphore::new(2)),
+            store: None,
+            book_path: dir.join("book.json"),
+            web_dir: dir.clone(),
+            default_days: 30,
+            jp_redis: String::new(),
+            sg_redis: None,
+            auto_remove_redis: false,
+            auto_dump_position_risk: false,
+            auto_flatten_position_risk: false,
+            position_risk_threshold_usdt: 50.0,
+            position_snapshot_max_age_ms: 120_000,
+            flatten_window_ms: 86_400_000,
+            flatten_manual_threshold_usdt: 1000.0,
+            flatten_executor: FlattenExecutor::new(dir.clone(), Duration::from_secs(1)),
+            flatten_inflight: Arc::new(AsyncMutex::new(BTreeSet::new())),
+            notification_client: None,
+            flatten_api_token: None,
+            snapshot_base_url: String::new(),
+            snapshot_client: Client::new(),
+            nav_strategies_url: String::new(),
+            nav_login_url: String::new(),
+            nav_username: None,
+            nav_password: None,
+            nav_session: Arc::new(RwLock::new(None)),
+        };
+        let client = Client::builder().no_proxy().build().unwrap();
+        let budget = Mutex::new(LlmBudget::new(0));
+        let mut input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "101657".into(),
+            title: "Delist CDL".into(),
+            url: String::new(),
+            published_ms: 1,
+            body: "CDL trading ends at 08:00 UTC".into(),
+        };
+        let (first, second) = tokio::join!(
+            maybe_extract(&state, Some(&llm), Some(&client), &budget, &input),
+            maybe_extract(&state, Some(&llm), Some(&client), &budget, &input),
+        );
+        assert!(first);
+        assert!(second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        input.published_ms = 2;
+        assert!(maybe_extract(&state, Some(&llm), Some(&client), &budget, &input).await);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        input.body = "CDL trading ends at 09:00 UTC".into();
+        assert!(maybe_extract(&state, Some(&llm), Some(&client), &budget, &input).await);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let mut revised = input.clone();
+        revised.body = "CDL trading ends at 10:00 UTC".into();
+        let mut latest = input.clone();
+        latest.body = "CDL trading ends at 11:00 UTC".into();
+        let (revised_ok, latest_ok) = tokio::join!(
+            maybe_extract(&state, Some(&llm), Some(&client), &budget, &revised),
+            maybe_extract(&state, Some(&llm), Some(&client), &budget, &latest),
+        );
+        assert!(revised_ok && latest_ok);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            state
+                .status
+                .read()
+                .await
+                .llm("gate", "101657")
+                .unwrap()
+                .input_fingerprint
+                .as_deref(),
+            Some(latest.fingerprint().as_str())
+        );
+        assert_eq!(RiskBook::load(&state.book_path).unwrap().events.len(), 1);
+        server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn next_snapshot_is_exactly_utc_midnight() {

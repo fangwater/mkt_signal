@@ -1,7 +1,9 @@
 # Delist Risk Server
 
+最后更新：2026-10-04 UTC
+
 Public HTTP service for upcoming delist / margin / loan / futures-off risk on
-Binance, Bitget, and Gate. Official market snapshots plus announcement LLM
+Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
 extracts land in one book. Full dump, grouped by exchange.
 
 This is a **risk hint**, not a product timetable. Spot and loan both count as
@@ -40,28 +42,49 @@ No API token. Do not put secrets in query strings.
 
 | Source | Interval | Notes |
 | --- | --- | --- |
-| Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`) | **24h** | List discovery plus article detail; raw JSON stored in Postgres |
+| Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`, Bybit `delistings`) | **24h** | List discovery plus article detail; raw JSON stored in Postgres |
 | Gate announcement WS | persistent | Push stream rather than a polling check; reconnects on drop |
 | Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **24h** | Replaces that source in the book |
 | Complete public product catalogs | **24h**, plus **00:00 UTC** | Drives current listing state and confirmed Redis removal; the midnight fetch is persisted to Postgres |
 | NAV strategy catalog | **60s** | Sole account inventory for the board and account controls; the last successful catalog is retained on failure |
 | FR `fr_unimmr_close_symbols` watch | **60s** | Redis-only read; an empty or missing key on any `funding_rate` account is a finding |
 
-LLM extract runs only on **new** announcements. LLM / fetch failures never
-block the other source. Reasons are queryable at `/status`.
+LLM extraction reuses successful results for the same exchange, announcement ID,
+title, and body. Replayed publication timestamps do not trigger another request.
+Content fingerprints persist in `llm_status`; existing successful rows recover
+fingerprints from their stored original announcement. Concurrent duplicates
+share an extraction, at most two model requests run together, and failed
+attempts wait at least five minutes before retrying. Explicit `--force-llm-ids`
+is the only way to force unchanged successful announcements on startup.
+
+Gate WebSocket and daily announcement extraction run independently of the
+60-second account/position timers. Model latency cannot cancel the connection
+or stop its heartbeat. LLM / fetch failures never block the other source;
+reasons are queryable at `/status`.
 
 ## Venues
 
 | venue | Meaning |
 | --- | --- |
-| `binance-margin` / `bitget-margin` / `gate-margin` | Spot, margin, loan |
-| `binance-futures` / `bitget-futures` / `gate-futures` | USDT-M perpetual / delivery |
+| `binance-margin` / `bitget-margin` / `gate-margin` / `bybit-margin` | Spot, margin, loan |
+| `binance-futures` / `bitget-futures` / `gate-futures` / `bybit-futures` | USDT-M perpetual / delivery |
 | `binance-coin-futures` / `bitget-coin-futures` / `gate-coin-futures` | Coin-M |
 
 `BINANCE_API_KEY` / `BINANCE_API_SECRET` are required for Binance spot/margin
 SAPI (`delist-schedule`, `asset/tags`). Without them, `binance-margin` still
 gets LLM extracts from CMS announcements; official SAPI rows show as fetch
-failures in `/status`. Bitget and Gate public market APIs need no key.
+failures in `/status`. Bitget, Gate, and Bybit public APIs need no key.
+
+Bybit discovery uses `GET /v5/announcements/index?locale=en-US&type=delistings`;
+complete bodies come from the official article page's `__NEXT_DATA__`.
+The lookback is at least 37 days. Both discovery and article-detail failures
+are visible in `/status`. Spot catalogs use `category=spot` without pagination;
+USDT perpetual catalogs use every `category=linear` page, exclude USDC/delivery
+contracts, and flag upcoming `deliveryTime` as pending. Bybit accounts are only
+covered after all their venue catalogs have loaded successfully.
+
+Official contracts: [announcements](https://bybit-exchange.github.io/docs/v5/announcement),
+[instruments](https://bybit-exchange.github.io/docs/v5/market/instrument).
 
 ## Endpoints
 
@@ -112,12 +135,12 @@ curl -sS 'http://<host>:4191/delist/venues?exchange=gate'
 ### `GET /risk`
 
 Full dump. Events keep the same fields across exchanges, but are grouped under
-`exchanges.binance` / `exchanges.bitget` / `exchanges.gate`.
+`exchanges.binance` / `exchanges.bitget` / `exchanges.gate` / `exchanges.bybit`.
 
 | Query | Default | Notes |
 | --- | --- | --- |
 | `venue` | all | optional filter, e.g. `binance-margin` |
-| `exchange` | all | optional filter: `binance` / `bitget` / `gate` |
+| `exchange` | all | optional filter: `binance` / `bitget` / `gate` / `bybit` |
 | `days` | 30 | Horizon for dated events |
 | `include_past` | false | Include events older than 7 days |
 
@@ -250,7 +273,7 @@ repeats every hour while the list stays empty, and sends one `info`
 
 Returns the Redis symbols eligible for automatic removal. A symbol is eligible
 only when every venue used by that account is `delisted` in one complete,
-successful Binance/Bitget/Gate catalog refresh and a fresh account snapshot
+successful Binance/Bitget/Gate/Bybit catalog refresh and a fresh account snapshot
 shows both FR legs below 1 USDT. A missing margin or futures leg keeps the
 symbol in dump while another account venue remains listed. Market-making
 accounts use their futures venue. CTA maps are excluded. The audit `venues`
@@ -385,7 +408,7 @@ Source names:
 
 - fetch: `nav_strategies`, `binance_cms`, `bitget_announcements`, `gate_market`,
   `bitget_instrument_offtime`, `binance_spot_delist`, `binance_margin_delist`,
-  `exchange_info`, `schedule:binance-futures`, `schedule:binance-coin-futures`,
+  `exchange_info`, `bybit_announcements`, `bybit_article_detail`, `schedule:bybit-futures`, `schedule:binance-futures`, `schedule:binance-coin-futures`,
   `schedule:gate-futures`, `schedule:bitget-futures`, `schedule:bitget-coin-futures`
 - check: `fr_unimmr_close_list` — lists the empty FR `unimmr_close_symbols`
   accounts or site read errors in `last_error`
@@ -399,11 +422,11 @@ Database `delist_risk` on `127.0.0.1:5432` stores:
 - `announcements` — raw fetched announcement JSON, `first_fetched_ms`,
   `last_fetched_ms`
 - `source_status` — last success / last error per source
-- `llm_status` — last LLM extract result per announcement
+- `llm_status` — last LLM extract status and input fingerprint per announcement
 - `exchange_symbol_snapshot_runs` — one daily run at `00:00 UTC`, including
   completion state, venue count, symbol count, and failure text
 - `exchange_symbol_snapshots` — complete daily symbol rows for Binance, Bitget,
-  and Gate Spot, USDT-M, and Coin-M; stores both the exchange symbol and its
+  and Gate Spot, USDT-M, and Coin-M, plus Bybit Spot and USDT perpetuals; stores both the exchange symbol and its
   normalized lookup symbol
 - `redis_symbol_dump_audit` — position-aware FR open-to-dump operations and
   failures, with the exact event, position snapshot, threshold, and Redis key
@@ -412,7 +435,7 @@ Database `delist_risk` on `127.0.0.1:5432` stores:
   or operator-triggered clear executions, including exit status and bounded
   stdout/stderr
 
-The daily snapshot is transactional and date-idempotent. All nine public
+The daily snapshot is transactional and date-idempotent. All eleven public
 catalogs must succeed before rows are committed. On restart, the service fills
 the current UTC date only when no successful snapshot exists; the normal run at
 midnight is not overwritten.

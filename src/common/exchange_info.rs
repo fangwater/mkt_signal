@@ -9,6 +9,7 @@ use signal_common::public_api::bitget_public_api_url;
 use std::collections::BTreeMap;
 
 use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
+use crate::common::delist_schedule::{fetch_bybit_instruments, BybitInstrument};
 
 const LISTED_STATUS: &[&str] = &["trading", "online", "tradable", "listed", "normal"];
 
@@ -39,6 +40,10 @@ pub struct ListingRow {
 }
 
 impl ListingIndex {
+    pub fn has_venue(&self, venue: &str) -> bool {
+        self.books.get(venue).is_some_and(|book| !book.is_empty())
+    }
+
     pub fn snapshot_rows(&self) -> Vec<ListingSnapshotRow> {
         self.books
             .iter()
@@ -211,12 +216,66 @@ pub async fn fetch_listing_index(client: &Client) -> (ListingIndex, Vec<(String,
             "gate_coin_futures_exchange_info",
             fetch_gate_coin_futures(client, &mut index, now_ms).await,
         ),
+        (
+            "bybit_spot_exchange_info",
+            fetch_bybit(client, &mut index, "spot", now_ms).await,
+        ),
+        (
+            "bybit_futures_exchange_info",
+            fetch_bybit(client, &mut index, "linear", now_ms).await,
+        ),
     ] {
         if let Err(err) = result {
             errors.push((source.to_string(), format!("{err:#}")));
         }
     }
     (index, errors)
+}
+
+async fn fetch_bybit(
+    client: &Client,
+    index: &mut ListingIndex,
+    category: &str,
+    now_ms: i64,
+) -> Result<()> {
+    let items = fetch_bybit_instruments(client, category).await?;
+    ingest_bybit_instruments(items, index, category, now_ms);
+    let venue = if category == "spot" {
+        "bybit-margin"
+    } else {
+        "bybit-futures"
+    };
+    if !index.has_venue(venue) {
+        bail!("Bybit {category} has no supported instruments");
+    }
+    Ok(())
+}
+
+fn ingest_bybit_instruments(
+    items: Vec<BybitInstrument>,
+    index: &mut ListingIndex,
+    category: &str,
+    now_ms: i64,
+) {
+    let venue = if category == "spot" {
+        "bybit-margin"
+    } else {
+        "bybit-futures"
+    };
+    for item in items {
+        if category == "linear"
+            && (item.contract_type.as_deref() != Some("LinearPerpetual")
+                || item.quote_coin != "USDT")
+        {
+            continue;
+        }
+        let pending = item
+            .delivery_time
+            .parse::<i64>()
+            .ok()
+            .is_some_and(|time| time > now_ms);
+        index.insert(venue, &item.symbol, row(&item.status, pending));
+    }
 }
 
 async fn fetch_binance_spot(client: &Client, index: &mut ListingIndex, now_ms: i64) -> Result<()> {
@@ -528,6 +587,41 @@ struct GateFutures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bybit_catalog_separates_usdt_perpetuals_and_scheduled_delists() {
+        let items: Vec<BybitInstrument> = serde_json::from_value(serde_json::json!([
+            {"symbol":"BTCUSDT","status":"Trading","quoteCoin":"USDT","contractType":"LinearPerpetual","deliveryTime":"0"},
+            {"symbol":"BLASTUSDT","status":"Trading","quoteCoin":"USDT","contractType":"LinearPerpetual","deliveryTime":"2000"},
+            {"symbol":"BTC-PERP","status":"Trading","quoteCoin":"USDC","contractType":"LinearPerpetual","deliveryTime":"0"},
+            {"symbol":"BTCUSDT-26DEC26","status":"Trading","quoteCoin":"USDT","contractType":"LinearFutures","deliveryTime":"2000"}
+        ])).unwrap();
+        let mut index = ListingIndex::default();
+        ingest_bybit_instruments(items, &mut index, "linear", 1000);
+        assert_eq!(
+            index.listing_for("bybit-futures", &["BTCUSDT".into()], &[]),
+            "listed"
+        );
+        assert_eq!(
+            index.listing_for("bybit-futures", &["BLASTUSDT".into()], &[]),
+            "pending"
+        );
+        assert_eq!(index.snapshot_rows().len(), 2);
+        let spot = serde_json::from_value(serde_json::json!([
+            {"symbol":"SCORUSDT","status":"Trading"},
+            {"symbol":"OLDUSDT","status":"Closed"}
+        ]))
+        .unwrap();
+        ingest_bybit_instruments(spot, &mut index, "spot", 1000);
+        assert_eq!(
+            index.listing_for("bybit-margin", &["SCORUSDT".into()], &[]),
+            "listed"
+        );
+        assert_eq!(
+            index.listing_for("bybit-margin", &["OLDUSDT".into()], &[]),
+            "delisted"
+        );
+    }
 
     #[test]
     fn missing_symbol_is_delisted() {

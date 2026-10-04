@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-09-09 UTC
+最后更新：2026-10-04 UTC
 
 ## 状态
 
@@ -272,6 +272,25 @@ curl -sS -D - -o /dev/null 'http://127.0.0.1:28902/api/v3/market/margin-loans?co
 5. 使用独立缓存 zone、本地端口、上游 Host/SNI 和严格路径白名单。
 6. 增加对应的 `<EXCHANGE>_PUBLIC_API_BASE`，不要复用私有 API 基址。
 7. 记录部署主机、配置路径、端口、缓存目录、白名单、TTL 和当前部署状态。
+
+## Bybit 下架风险公共接口
+
+`delist_risk_server` 在 JP 接入以下无鉴权只读来源；当前直接访问官方 HTTPS，
+**未部署 Bybit Nginx 缓存**，也未改用私有 API 基址：
+
+| 来源 | 调用频率 | 分页／正文 |
+| --- | --- | --- |
+| `GET /v5/announcements/index`，`locale=en-US&type=delistings` | 启动及每 24h | 每页 20 条，覆盖至少近 37 天 |
+| `GET /v5/market/instruments-info`，`category=spot` | 启动、每 24h、00:00 UTC | Spot 无分页；完整目录用于已下架判断 |
+| 同一 instruments 路径，`category=linear&limit=1000` | 同上及每 24h 合约下架查询 | 全部 cursor 页，仅 USDT 永续；`deliveryTime` 是永续下架时间 |
+| `https://announcements.bybit.com/` 官方公告正文 | 每次公告列表刷新 | 从 `__NEXT_DATA__` 提取正文；按内容指纹复用 LLM 结果 |
+
+目前是单个监控服务的日级请求，暂不新增本地代理端口或 TTL。后续共享缓存若覆盖
+这些路径，建议公告和 instruments 使用 60s TTL，完整查询参数必须进入 cache key；
+私有账户、订单及任何签名或写请求仍禁止经过缓存。
+
+官方接口契约：[Get Announcement](https://bybit-exchange.github.io/docs/v5/announcement)、
+[Get Instruments Info](https://bybit-exchange.github.io/docs/v5/market/instrument)。
 
 ## 已审计、暂缓实施的项目
 

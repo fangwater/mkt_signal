@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 
+use crate::common::announcement_llm::LlmExtractInput;
 use crate::common::announcement_watch::RawAnnouncement;
 use crate::common::exchange_info::ListingSnapshotRow;
 
@@ -27,6 +28,8 @@ pub struct SourceStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmRunStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_fingerprint: Option<String>,
     pub exchange: String,
     pub announcement_id: String,
     #[serde(default)]
@@ -37,6 +40,20 @@ pub struct LlmRunStatus {
     pub last_success_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+}
+
+impl LlmRunStatus {
+    pub fn should_extract(&self, input: &LlmExtractInput, now_ms: i64, force: bool) -> bool {
+        if force {
+            return true;
+        }
+        let same_content = self.input_fingerprint.as_deref() == Some(input.fingerprint().as_str());
+        if same_content && self.ok {
+            return false;
+        }
+        // Bound failure retries even when a source repeatedly changes its metadata or content.
+        self.ok || now_ms.saturating_sub(self.last_attempt_ms) >= 300_000
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,6 +217,7 @@ impl StatusBook {
         title: &str,
         ok: bool,
         err: Option<&str>,
+        input_fingerprint: String,
     ) {
         let now = chrono::Utc::now().timestamp_millis();
         let key = (exchange.to_string(), announcement_id.to_string());
@@ -212,6 +230,7 @@ impl StatusBook {
                 } else {
                     previous.and_then(|item| item.last_success_ms)
                 },
+                input_fingerprint: Some(input_fingerprint),
                 exchange: exchange.to_string(),
                 announcement_id: announcement_id.to_string(),
                 title: title.to_string(),
@@ -339,6 +358,7 @@ impl DelistStore {
                         last_error TEXT,
                         PRIMARY KEY (exchange, announcement_id)
                     );
+                    ALTER TABLE llm_status ADD COLUMN IF NOT EXISTS input_fingerprint TEXT;
                     CREATE TABLE IF NOT EXISTS redis_symbol_removal_audit (
                         id BIGSERIAL PRIMARY KEY,
                         detected_ms BIGINT NOT NULL,
@@ -583,20 +603,22 @@ impl DelistStore {
         let last_attempt_ms = status.last_attempt_ms;
         let last_success_ms = status.last_success_ms;
         let last_error = status.last_error.clone();
+        let input_fingerprint = status.input_fingerprint.clone();
         self.run(move |client| async move {
             client
                 .execute(
                     r#"
                     INSERT INTO llm_status (
-                        exchange, announcement_id, title, ok, last_attempt_ms, last_success_ms, last_error
+                        exchange, announcement_id, title, ok, last_attempt_ms, last_success_ms, last_error, input_fingerprint
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (exchange, announcement_id) DO UPDATE SET
                         title = EXCLUDED.title,
                         ok = EXCLUDED.ok,
                         last_attempt_ms = EXCLUDED.last_attempt_ms,
                         last_success_ms = EXCLUDED.last_success_ms,
-                        last_error = EXCLUDED.last_error
+                        last_error = EXCLUDED.last_error,
+                        input_fingerprint = EXCLUDED.input_fingerprint
                     "#,
                     &[
                         &exchange,
@@ -606,6 +628,7 @@ impl DelistStore {
                         &last_attempt_ms,
                         &last_success_ms,
                         &last_error,
+                        &input_fingerprint,
                     ],
                 )
                 .await
@@ -620,9 +643,11 @@ impl DelistStore {
             let rows = client
                 .query(
                     r#"
-                    SELECT exchange, announcement_id, title, ok, last_attempt_ms, last_success_ms, last_error
-                    FROM llm_status
-                    ORDER BY last_attempt_ms DESC
+                    SELECT l.exchange, l.announcement_id, l.title, l.ok, l.last_attempt_ms, l.last_success_ms,
+                           l.last_error, l.input_fingerprint, a.raw
+                    FROM llm_status l LEFT JOIN announcements a
+                      ON a.exchange = l.exchange AND a.id = l.announcement_id
+                    ORDER BY l.last_attempt_ms DESC
                     "#,
                     &[],
                 )
@@ -631,6 +656,11 @@ impl DelistStore {
             let out = rows
                 .into_iter()
                 .map(|row| LlmRunStatus {
+                    input_fingerprint: row.get::<_, Option<String>>(7).or_else(|| {
+                        row.get::<_, Option<Value>>(8)
+                            .and_then(|raw| serde_json::from_value::<RawAnnouncement>(raw).ok())
+                            .map(|raw| LlmExtractInput::from_raw(&raw).fingerprint())
+                    }),
                     exchange: row.get(0),
                     announcement_id: row.get(1),
                     title: row.get(2),
@@ -1269,6 +1299,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extraction_reuses_success_across_restart_and_retries_changed_content() {
+        let mut input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "101657".into(),
+            title: "Delist CDL".into(),
+            url: String::new(),
+            published_ms: 1,
+            body: "CDL trading ends at 08:00 UTC".into(),
+        };
+        let mut book = StatusBook::default();
+        book.mark_llm(
+            "gate",
+            "101657",
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let saved = serde_json::to_string(book.llm("gate", "101657").unwrap()).unwrap();
+        let row: LlmRunStatus = serde_json::from_str(&saved).unwrap();
+        input.published_ms = 2;
+        assert!(!row.should_extract(&input, row.last_attempt_ms + 600_000, false));
+        assert!(row.should_extract(&input, row.last_attempt_ms, true));
+        input.body = "CDL trading ends at 09:00 UTC".into();
+        assert!(row.should_extract(&input, row.last_attempt_ms, false));
+        book.mark_llm(
+            "gate",
+            "101657",
+            &input.title,
+            false,
+            Some("timeout"),
+            input.fingerprint(),
+        );
+        let failed = book.llm("gate", "101657").unwrap();
+        assert!(!failed.should_extract(&input, failed.last_attempt_ms + 299_999, false));
+        assert!(failed.should_extract(&input, failed.last_attempt_ms + 300_000, false));
+    }
+
+    #[test]
     fn mark_err_keeps_last_success() {
         let mut book = StatusBook::default();
         book.mark_ok("binance_cms", "fetch");
@@ -1286,8 +1355,15 @@ mod tests {
     #[test]
     fn llm_success_clears_error() {
         let mut book = StatusBook::default();
-        book.mark_llm("binance", "a1", "title", false, Some("401 unauthorized"));
-        book.mark_llm("binance", "a1", "title", true, None);
+        book.mark_llm(
+            "binance",
+            "a1",
+            "title",
+            false,
+            Some("401 unauthorized"),
+            "hash".into(),
+        );
+        book.mark_llm("binance", "a1", "title", true, None, "hash".into());
         let snap = book.snapshot(true);
         assert!(snap.llm_failures.is_empty());
         assert!(snap

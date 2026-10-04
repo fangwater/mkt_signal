@@ -19,6 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 use crate::common::announcement_watch::RawAnnouncement;
@@ -34,7 +35,7 @@ This service tracks listing and delisting lifecycle events only. Gift card, pay,
 Return JSON only. Do not invent tickers, venues, or times that are not in the text.
 If a field is unknown, use an empty string or empty array.
 utc must be ISO-8601 UTC like 2026-09-03T03:00:00Z, or "".
-exchange must be one of: binance, bitget, gate, unknown.
+exchange must be one of: binance, bitget, gate, bybit, unknown.
 venue is only the trading book:
 - {exchange}-futures or {exchange}-coin-futures for perpetual / delivery / futures contracts
 - {exchange}-margin for EVERYTHING else: spot, margin, loan, borrow, isolated, cross, portfolio margin
@@ -120,6 +121,17 @@ impl LlmBudget {
 }
 
 impl LlmExtractInput {
+    /// Publication metadata can change on a replayed push; only article content triggers extraction.
+    pub fn fingerprint(&self) -> String {
+        let mut digest = Sha256::new();
+        for field in [&self.exchange, &self.id, &self.title, &self.body] {
+            let normalized = field.split_whitespace().collect::<Vec<_>>().join(" ");
+            digest.update((normalized.len() as u64).to_le_bytes());
+            digest.update(normalized.as_bytes());
+        }
+        hex::encode(digest.finalize())
+    }
+
     pub fn from_raw(item: &RawAnnouncement) -> Self {
         Self {
             exchange: item.exchange.clone(),
@@ -421,11 +433,13 @@ pub fn normalize_exchange(raw: &str, hint: &str) -> String {
         "binance".into()
     } else if key.contains("bitget") {
         "bitget".into()
+    } else if key.contains("bybit") {
+        "bybit".into()
     } else if key.contains("gate") {
         "gate".into()
     } else {
         match hint.trim().to_ascii_lowercase().as_str() {
-            "binance" | "bitget" | "gate" => hint.trim().to_ascii_lowercase(),
+            "binance" | "bitget" | "gate" | "bybit" => hint.trim().to_ascii_lowercase(),
             _ => "unknown".into(),
         }
     }
@@ -456,6 +470,8 @@ pub fn normalize_venue(exchange: &str, raw: &str, action: &str) -> String {
                     | "bitget-coin-futures"
                     | "gate-margin"
                     | "gate-futures"
+                    | "bybit-margin"
+                    | "bybit-futures"
             ) {
                 key
             } else if exchange == "unknown" {
@@ -602,6 +618,12 @@ mod tests {
             "binance-margin"
         );
         assert_eq!(normalize_exchange("Bitget", "gate"), "bitget");
+        assert_eq!(normalize_exchange("unknown", "bybit"), "bybit");
+        assert_eq!(
+            normalize_venue("bybit", "Perpetual", "delist"),
+            "bybit-futures"
+        );
+        assert_eq!(normalize_venue("bybit", "Spot", "delist"), "bybit-margin");
     }
 
     #[test]
