@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-09-24。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-04。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -63,6 +63,9 @@ ens42  172.31.46.91/20 172.31.46.92/20 172.31.46.93/20
 ```
 
 ## 当前 `trade_engine.toml local_ips`
+
+2026-10-04 核验 `gate_fr_arb03`：两个交易连接仍绑定 `172.31.35.231`；
+本次保证金口径修复发布沿用该配置。
 
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP

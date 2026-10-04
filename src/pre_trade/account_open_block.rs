@@ -129,7 +129,7 @@ impl CapacityVenue {
         match self {
             Self::BinancePm => "total_available_balance",
             Self::OkexUnified => "available",
-            Self::GateUnified => "available",
+            Self::GateUnified => "total_available_margin",
             // Bitget `assets.USDT.available` is a wallet balance, not the
             // unified-account initial-margin headroom for a new UTA order.
             Self::BitgetUnified => "initial_margin_headroom",
@@ -202,7 +202,8 @@ impl CapacityVenue {
         match self {
             Self::BinancePm => None,
             Self::OkexUnified => Some(QueryRequestType::OkexUsdtMaxLoan),
-            Self::GateUnified => Some(QueryRequestType::GateUnifiedUsdtMaxBorrowable),
+            // Borrowing capacity is not additive initial-margin headroom.
+            Self::GateUnified => None,
             Self::BitgetUnified => Some(QueryRequestType::BitgetUsdtMaxTransferable),
             Self::BybitUnified => Some(QueryRequestType::BybitAccountBalanceSnapshot),
         }
@@ -453,7 +454,7 @@ pub fn handle_account_open_block_query_response(
             true
         }
         QueryRequestType::GateUnifiedUsdtAvailableSnapshot => {
-            match parse_gate_unified_usdt_available(body) {
+            match parse_gate_unified_available_margin(body) {
                 Some(value) => {
                     update_capacity_snapshot(
                         CapacityVenue::GateUnified,
@@ -463,24 +464,7 @@ pub fn handle_account_open_block_query_response(
                     );
                 }
                 None => warn!(
-                    "AccountOpenBlock: parse Gate USDT available failed body={}",
-                    trim_body(body)
-                ),
-            }
-            true
-        }
-        QueryRequestType::GateUnifiedUsdtMaxBorrowable => {
-            match parse_gate_unified_max_borrowable(body) {
-                Some(value) => {
-                    update_capacity_snapshot(
-                        CapacityVenue::GateUnified,
-                        req_type,
-                        client_query_id,
-                        value,
-                    );
-                }
-                None => warn!(
-                    "AccountOpenBlock: parse Gate USDT maxBorrowable failed body={}",
+                    "AccountOpenBlock: parse Gate unified available margin failed body={}",
                     trim_body(body)
                 ),
             }
@@ -906,55 +890,22 @@ fn parse_okex_unified_max_loan(body: &Bytes) -> Option<f64> {
     best
 }
 
-fn parse_gate_unified_usdt_available(body: &Bytes) -> Option<f64> {
+fn parse_gate_unified_available_margin(body: &Bytes) -> Option<f64> {
     let text = trim_body(body);
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let details = if let Some(balances) = value.get("balances").and_then(|v| v.as_object()) {
-        balances.get("USDT").or_else(|| {
-            balances.iter().find_map(|(asset, detail)| {
-                if asset.eq_ignore_ascii_case("USDT") {
-                    Some(detail)
-                } else {
-                    None
-                }
-            })
-        })?
-    } else if let Some(rows) = value.as_array() {
-        rows.iter().find(|row| {
-            row.get("currency")
-                .or_else(|| row.get("asset"))
-                .or_else(|| row.get("coin"))
-                .or_else(|| row.get("symbol"))
-                .and_then(|v| v.as_str())
-                .is_some_and(|asset| asset.eq_ignore_ascii_case("USDT"))
-        })?
-    } else if value
-        .get("currency")
-        .or_else(|| value.get("asset"))
-        .or_else(|| value.get("coin"))
-        .or_else(|| value.get("symbol"))
-        .and_then(|v| v.as_str())
-        .is_some_and(|asset| asset.eq_ignore_ascii_case("USDT"))
-    {
-        &value
-    } else {
-        return None;
+    // Gate exposes account-wide headroom for multi-currency/portfolio mode.
+    // In single-currency mode only USDT's available_margin is meaningful;
+    // the top-level total_available_margin is documented to be zero.
+    let margin = match value.get("mode")?.as_str()? {
+        "multi_currency" | "portfolio" => value.get("total_available_margin"),
+        "single_currency" => value.get("balances")?.get("USDT")?.get("available_margin"),
+        _ => return None,
     };
-    parse_json_f64(details.get("available"))
-}
-
-fn parse_gate_unified_max_borrowable(body: &Bytes) -> Option<f64> {
-    let text = trim_body(body);
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    if let Some(amount) = parse_json_f64(value.get("amount")) {
-        return Some(amount);
+    let margin = parse_json_f64(margin).filter(|margin| margin.is_finite())?;
+    if value.get("locked").and_then(|locked| locked.as_bool()) == Some(true) {
+        return Some(0.0);
     }
-    if let Some(data) = value.get("data") {
-        if let Some(amount) = parse_json_f64(data.get("amount")) {
-            return Some(amount);
-        }
-    }
-    None
+    Some(margin)
 }
 
 fn okex_response_ok(value: &serde_json::Value) -> bool {
@@ -1002,6 +953,9 @@ mod tests {
             CapacityVenue::GateUnified.available_params().as_ref(),
             b"currency=USDT"
         );
+        assert!(CapacityVenue::GateUnified
+            .max_borrowable_req_type()
+            .is_none());
     }
 
     #[test]
@@ -1303,17 +1257,14 @@ mod tests {
     fn completed_capacity_snapshot_survives_next_pending_poll() {
         let _guard = TEST_LOCK.lock();
         clear_all();
-        seed_poll_state(CapacityVenue::GateUnified, -19, -20);
+        seed_single_poll_state(CapacityVenue::GateUnified, -19);
 
         assert!(handle_account_open_block_query_response(
             QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
             -19,
-            &Bytes::from_static(br#"{"balances":{"USDT":{"available":"100.0","equity":"100.0"}}}"#,),
-        ));
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::GateUnifiedUsdtMaxBorrowable,
-            -20,
-            &Bytes::from_static(br#"{"amount":"2000.0"}"#),
+            &Bytes::from_static(
+                br#"{"mode":"multi_currency","total_available_margin":"2100.0","balances":{"USDT":{"available":"100.0"}}}"#,
+            ),
         ));
         let completed =
             latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
@@ -1324,9 +1275,9 @@ mod tests {
             let mut state = capacity_poll_state(CapacityVenue::GateUnified).lock();
             state.last_query_sent_us = 4_000_000;
             state.available_query_id = Some(-21);
-            state.max_borrowable_query_id = Some(-22);
+            state.max_borrowable_query_id = None;
             state.last_usdt_available = None;
-            state.last_usdt_max_borrowable = None;
+            state.last_usdt_max_borrowable = Some(0.0);
         }
 
         let still_completed =
@@ -1336,24 +1287,22 @@ mod tests {
     }
 
     #[test]
-    fn locks_when_gate_unified_usdt_capacity_is_below_threshold_without_existing_block() {
+    fn gate_low_margin_locks_despite_high_wallet_balance_and_borrowable() {
         let _guard = TEST_LOCK.lock();
         clear_all();
-        seed_poll_state(CapacityVenue::GateUnified, -7, -8);
+        seed_single_poll_state(CapacityVenue::GateUnified, -7);
 
         assert!(handle_account_open_block_query_response(
             QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
             -7,
             &Bytes::from_static(
-                br#"{"balances":{"USDT":{"available":"10","equity":"10","total_liab":"0"}}}"#,
+                br#"{"mode":"multi_currency","total_available_margin":"1989.0","balances":{"USDT":{"available":"5289.0"}}}"#,
             ),
         ));
-        assert!(check_account_open_block().is_none());
-
-        assert!(handle_account_open_block_query_response(
+        assert!(!handle_account_open_block_query_response(
             QueryRequestType::GateUnifiedUsdtMaxBorrowable,
             -8,
-            &Bytes::from_static(br#"{"currency":"USDT","amount":"1989.0"}"#),
+            &Bytes::from_static(br#"{"currency":"USDT","amount":"10800.0"}"#),
         ));
         let hit = check_account_open_block().expect("low Gate capacity must lock ArbOpen");
         assert_eq!(
@@ -1361,6 +1310,13 @@ mod tests {
             AccountOpenBlockReason::GateUnifiedInsufficientMargin
         );
         assert_eq!(hit.last_error_code, GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE);
+        let snapshot =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .expect("Gate actual margin snapshot");
+        assert_eq!(snapshot.available_label, "total_available_margin");
+        assert_eq!(snapshot.available, 1989.0);
+        assert_eq!(snapshot.max_borrowable, 0.0);
+        assert_eq!(snapshot.usdt_max_available_margin, 1989.0);
     }
 
     #[test]
@@ -1372,21 +1328,84 @@ mod tests {
             -100_508,
             3_000_000,
         );
-        seed_poll_state(CapacityVenue::GateUnified, -9, -10);
+        seed_single_poll_state(CapacityVenue::GateUnified, -9);
 
         assert!(handle_account_open_block_query_response(
             QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
             -9,
-            &Bytes::from_static(br#"[{"currency":"USDT","available":"100.5","equity":"100.5"}]"#,),
-        ));
-        assert!(check_account_open_block().is_some());
-
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::GateUnifiedUsdtMaxBorrowable,
-            -10,
-            &Bytes::from_static(br#"{"amount":"2000.0"}"#),
+            &Bytes::from_static(
+                br#"{"mode":"portfolio","total_available_margin":"3000.0","balances":{"USDT":{"available":"100.5"}}}"#,
+            ),
         ));
         assert!(check_account_open_block().is_none());
+        let snapshot =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .expect("Gate recovered margin snapshot");
+        assert_eq!(snapshot.usdt_max_available_margin, 3000.0);
+        assert_eq!(snapshot.max_borrowable, 0.0);
+    }
+
+    #[test]
+    fn gate_margin_parser_respects_account_mode_and_exchange_lock() {
+        for mode in ["multi_currency", "portfolio"] {
+            let body = Bytes::from(format!(
+                r#"{{"mode":"{mode}","locked":false,"total_available_margin":"3626.739382948874","balances":{{"USDT":{{"available":"5289.018742226709","available_margin":"0"}}}}}}"#
+            ));
+            assert_eq!(
+                parse_gate_unified_available_margin(&body),
+                Some(3626.739382948874)
+            );
+        }
+        assert_eq!(
+            parse_gate_unified_available_margin(&Bytes::from_static(
+                br#"{"mode":"single_currency","total_available_margin":"0","balances":{"USDT":{"available":"5289","available_margin":"2500"}}}"#,
+            )),
+            Some(2500.0)
+        );
+        assert_eq!(
+            parse_gate_unified_available_margin(&Bytes::from_static(
+                br#"{"mode":"multi_currency","locked":true,"total_available_margin":"3000"}"#,
+            )),
+            Some(0.0)
+        );
+        assert_eq!(
+            parse_gate_unified_available_margin(&Bytes::from_static(
+                br#"{"mode":"multi_currency","total_available_margin":-50}"#,
+            )),
+            Some(-50.0)
+        );
+    }
+
+    #[test]
+    fn gate_invalid_margin_snapshot_preserves_open_block_and_completed_snapshot() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        seed_single_poll_state(CapacityVenue::GateUnified, -9);
+        handle_account_open_block_query_response(
+            QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
+            -9,
+            &Bytes::from_static(br#"{"mode":"multi_currency","total_available_margin":"100"}"#),
+        );
+        for body in [
+            br#"{"mode":"multi_currency","balances":{"USDT":{"available":"99999"}}}"#.as_slice(),
+            br#"{"mode":"multi_currency","total_available_margin":"NaN"}"#.as_slice(),
+            br#"{"mode":"multi_currency","total_available_margin":"inf"}"#.as_slice(),
+            br#"{"mode":"classic","total_available_margin":"99999"}"#.as_slice(),
+            br#"{"total_available_margin":"99999"}"#.as_slice(),
+        ] {
+            assert!(handle_account_open_block_query_response(
+                QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
+                -9,
+                &Bytes::copy_from_slice(body),
+            ));
+            assert!(check_account_open_block().is_some());
+            assert_eq!(
+                latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                    .unwrap()
+                    .usdt_max_available_margin,
+                100.0
+            );
+        }
     }
 
     #[test]

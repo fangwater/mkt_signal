@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-09-24。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-04。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
@@ -42,6 +42,8 @@ persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `okex_mm_alpha` 的 persist_manager 与其它 persist 一起堆叠在 15。
 `binance-cta-rx01` 的 persist_manager 同样堆叠在 15。
 `bitget_fr_arb03` 已启动；其 persist_manager 绑核 15，其余进程未绑核。
+2026-10-04 核验 `gate_fr_arb03`：persist_manager 绑核 15，account_monitor、
+trade_signal、pre_trade、trade_engine、viz_server 和 FR dashboard 未固定绑核。
 其中 fr_arb / okex-intra 的 trade_engine 与 housekeeping 上的系统服务同核,
 数据面 NIC IRQ 已迁到 46/47,不再与它们抢硬中断。如在意调度抖动仍可迁入空闲隔离核。
 
