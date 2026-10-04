@@ -54,6 +54,7 @@ struct SignalThrottleEntry {
 enum SignalThrottleSource {
     ExchangeError,
     BinanceFuturesInsufficientMargin,
+    GateInsufficientMargin,
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +246,37 @@ pub fn clear_binance_futures_margin_signal_throttles() -> usize {
     })
 }
 
+/// Recover only Gate account-margin errors confirmed by a newer margin snapshot.
+pub(super) fn clear_gate_margin_signal_throttles(snapshot_us: i64, now_us: i64) {
+    let recovered = |entry: &SignalThrottleEntry| {
+        entry.source == SignalThrottleSource::GateInsufficientMargin
+            && snapshot_us > entry.updated_at_us
+    };
+    let cleared_account = ACCOUNT_SIGNAL_THROTTLE.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        cleanup_account_expired(&mut guard, now_us);
+        if guard.as_ref().is_some_and(recovered) {
+            *guard = None;
+            true
+        } else {
+            false
+        }
+    });
+    let cleared_symbols = SIGNAL_THROTTLE_MAP.with(|map| {
+        let mut guard = map.borrow_mut();
+        cleanup_expired(&mut guard, now_us);
+        let before = guard.len();
+        guard.retain(|_, entry| !recovered(entry));
+        before - guard.len()
+    });
+    if cleared_account || cleared_symbols > 0 {
+        info!(
+            "SignalThrottle: Gate margin recovered snapshot_us={} clear_account={} clear_symbol_locks={}",
+            snapshot_us, cleared_account, cleared_symbols
+        );
+    }
+}
+
 pub fn check_signal_throttle(symbol: &str, dir: Side) -> Option<SignalThrottleHit> {
     let now_us = get_timestamp_us();
     check_signal_throttle_at(symbol, dir, now_us)
@@ -330,7 +362,13 @@ fn register_signal_throttle_at(
         error_code,
         now_us,
         ttl_us,
-        SignalThrottleSource::ExchangeError,
+        if is_account_wide_reduce_only_error_code(exchange, error_code)
+            && exchange == Some(Exchange::Gate)
+        {
+            SignalThrottleSource::GateInsufficientMargin
+        } else {
+            SignalThrottleSource::ExchangeError
+        },
     )
 }
 
@@ -703,6 +741,104 @@ mod tests {
             check_account_signal_throttle_at(now_us + 1).expect("account throttle must be hit");
         assert_eq!(account_hit.last_error_code, gate::INITIAL_MARGIN_TOO_LOW);
         assert!(check_account_signal_throttle_at(now_us + ttl_us).is_none());
+    }
+
+    #[test]
+    fn gate_recovery_requires_snapshot_after_each_margin_error() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        for (symbol, error_us) in [("BTCUSDT", 2_000_000), ("ETHUSDT", 3_000_000)] {
+            assert!(register_signal_throttle_at(
+                symbol,
+                Side::Buy,
+                Some(Exchange::Gate),
+                gate::INITIAL_MARGIN_TOO_LOW,
+                error_us,
+                GATE_SIGNAL_THROTTLE_TTL_US
+            ));
+        }
+        clear_gate_margin_signal_throttles(2_000_000, 4_000_000);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 4_000_000).is_some());
+        clear_gate_margin_signal_throttles(2_500_000, 4_000_000);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 4_000_000).is_none());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 4_000_000).is_some());
+        assert!(check_account_signal_throttle_at(4_000_000).is_some());
+        clear_gate_margin_signal_throttles(3_000_001, 4_000_000);
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 4_000_000).is_none());
+        assert!(check_account_signal_throttle_at(4_000_000).is_none());
+        clear_all();
+    }
+
+    #[test]
+    fn gate_recovery_preserves_other_rejection_causes_and_venues() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        for (symbol, exchange, code) in [
+            ("BTCUSDT", Exchange::Gate, gate::INITIAL_MARGIN_TOO_LOW),
+            ("ETHUSDT", Exchange::Gate, gate::AUTO_BORROW_TOO_MUCH),
+            ("SOLUSDT", Exchange::Gate, gate::RISK_CHECK_MARKET_FORBIDDEN),
+            (
+                "BNBUSDT",
+                Exchange::Binance,
+                SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT,
+            ),
+            (
+                "HYPEUSDC",
+                Exchange::Hyperliquid,
+                hyperliquid::INSUFFICIENT_MARGIN,
+            ),
+        ] {
+            register_signal_throttle_at(
+                symbol,
+                Side::Buy,
+                Some(exchange),
+                code,
+                2_000_000,
+                GATE_SIGNAL_THROTTLE_TTL_US,
+            );
+        }
+        clear_gate_margin_signal_throttles(3_000_000, 4_000_000);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 4_000_000).is_none());
+        for symbol in ["ETHUSDT", "SOLUSDT", "BNBUSDT", "HYPEUSDC"] {
+            assert!(
+                check_signal_throttle_at(symbol, Side::Buy, 4_000_000).is_some(),
+                "{symbol}"
+            );
+        }
+        assert_eq!(
+            check_account_signal_throttle_at(4_000_000)
+                .unwrap()
+                .last_error_code,
+            hyperliquid::INSUFFICIENT_MARGIN
+        );
+        clear_all();
+    }
+
+    #[test]
+    fn later_non_margin_error_on_same_pair_survives_gate_recovery() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        register_signal_throttle_at(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW,
+            2_000_000,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        );
+        register_signal_throttle_at(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::RISK_CHECK_MARKET_FORBIDDEN,
+            3_000_000,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        );
+        clear_gate_margin_signal_throttles(4_000_000, 4_000_000);
+        assert!(check_account_signal_throttle_at(4_000_000).is_none());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 4_000_000).is_some());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Sell, 4_000_000).is_some());
+        clear_all();
     }
 
     #[test]

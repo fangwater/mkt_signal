@@ -391,6 +391,7 @@ mod tests {
             margin_ratio,
             borrowed_usd: 0.0,
             notional_usd: 0.0,
+            available_margin_usd: f64::NAN,
         }
     }
 

@@ -1,8 +1,9 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
+use crate::pre_trade::signal_throttle::clear_gate_margin_signal_throttles;
 use bytes::Bytes;
 use log::{info, warn};
-use mkt_parsers::msg::basic_account_msg::BasicAccountRiskMsg;
+use mkt_parsers::msg::basic_account_msg::{BasicAccountRiskMsg, BasicAccountScope};
 use once_cell::sync::Lazy;
 use order_common::TradingVenue;
 use parking_lot::Mutex;
@@ -21,6 +22,7 @@ const OKEX_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 const OKEX_USDT_MAX_LOAN_PARAMS: &[u8] = b"instId=BTC-USDT&mgnMode=cross&mgnCcy=USDT";
 const GATE_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const GATE_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
+const GATE_MARGIN_SNAPSHOT_MAX_AGE_US: i64 = 60_000_000;
 const GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 const BITGET_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const BITGET_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
@@ -103,6 +105,14 @@ struct CapacityPollState {
     last_completed_usdt_available: Option<f64>,
     last_completed_usdt_max_borrowable: Option<f64>,
     last_usdt_max_available_margin: Option<f64>,
+    last_exchange_snapshot_us: i64,
+    last_gate_ws_snapshot_us: i64,
+}
+
+#[derive(Debug, PartialEq)]
+struct GateAvailableMarginSnapshot {
+    available: f64,
+    timestamp_us: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +293,81 @@ pub fn drive_account_open_block_capacity_poll(now_us: i64) {
     }
 }
 
+/// Gate supplies margin headroom directly in `unified.assets.a`.
+pub fn apply_gate_unified_account_risk(scope: BasicAccountScope, msg: &BasicAccountRiskMsg) {
+    if scope == BasicAccountScope::GateUnified && gate_unified_capacity_poll_enabled() {
+        apply_gate_margin_snapshot_at(
+            msg.available_margin_usd,
+            msg.timestamp.saturating_mul(1_000),
+            get_timestamp_us(),
+            msg.margin_ratio.is_finite().then_some(msg.margin_ratio),
+            true,
+        );
+    }
+}
+
+fn apply_gate_margin_snapshot_at(
+    available: f64,
+    snapshot_us: i64,
+    now_us: i64,
+    margin_ratio: Option<f64>,
+    from_ws: bool,
+) {
+    if !available.is_finite()
+        || snapshot_us <= 0
+        || snapshot_us > now_us
+        || now_us.saturating_sub(snapshot_us) > GATE_MARGIN_SNAPSHOT_MAX_AGE_US
+    {
+        return;
+    }
+    {
+        let mut state = GATE_UNIFIED_CAPACITY_POLL.lock();
+        // A REST reply can arrive after a newer WS update, and vice versa.
+        if snapshot_us < state.last_exchange_snapshot_us {
+            return;
+        }
+        state.last_exchange_snapshot_us = snapshot_us;
+        if from_ws {
+            state.last_gate_ws_snapshot_us = snapshot_us;
+        }
+        state.last_completed_usdt_available = Some(available);
+        state.last_completed_usdt_max_borrowable = Some(0.0);
+        state.last_usdt_max_available_margin = Some(available);
+        state.last_capacity_check_us = now_us;
+        if margin_ratio.is_some() {
+            state.last_margin_ratio = margin_ratio;
+        }
+    }
+
+    evaluate_capacity(
+        CapacityVenue::GateUnified,
+        available,
+        0.0,
+        now_us,
+        snapshot_us,
+    );
+    if available > GATE_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD {
+        clear_gate_margin_signal_throttles(snapshot_us, now_us);
+    }
+}
+
+fn handle_gate_margin_query_response_at(
+    client_query_id: i64,
+    snapshot: GateAvailableMarginSnapshot,
+    now_us: i64,
+) {
+    let snapshot_us = {
+        let mut state = GATE_UNIFIED_CAPACITY_POLL.lock();
+        if state.available_query_id != Some(client_query_id) {
+            return;
+        }
+        state.available_query_id = None;
+        // If Gate omits refresh_time, request start is a conservative time bound.
+        snapshot.timestamp_us.unwrap_or(state.last_query_sent_us)
+    };
+    apply_gate_margin_snapshot_at(snapshot.available, snapshot_us, now_us, None, false);
+}
+
 /// Applies Bitget unified-account risk to the account-wide ArbOpen gate.
 pub fn apply_bitget_unified_account_risk(msg: &BasicAccountRiskMsg) {
     if bitget_unified_capacity_poll_enabled() {
@@ -339,6 +424,14 @@ fn apply_unified_account_risk_at(venue: CapacityVenue, msg: &BasicAccountRiskMsg
 fn drive_capacity_poll(venue: CapacityVenue, now_us: i64) {
     let (available_query_id, max_borrowable_query_id) = {
         let mut state = capacity_poll_state(venue).lock();
+        // REST remains the startup/reconnect fallback when WS is unavailable.
+        if venue == CapacityVenue::GateUnified
+            && state.last_gate_ws_snapshot_us > 0
+            && now_us.saturating_sub(state.last_gate_ws_snapshot_us)
+                < GATE_MARGIN_SNAPSHOT_MAX_AGE_US
+        {
+            return;
+        }
         if state.last_query_sent_us > 0
             && now_us.saturating_sub(state.last_query_sent_us) < venue.poll_interval_us()
         {
@@ -455,12 +548,11 @@ pub fn handle_account_open_block_query_response(
         }
         QueryRequestType::GateUnifiedUsdtAvailableSnapshot => {
             match parse_gate_unified_available_margin(body) {
-                Some(value) => {
-                    update_capacity_snapshot(
-                        CapacityVenue::GateUnified,
-                        req_type,
+                Some(snapshot) => {
+                    handle_gate_margin_query_response_at(
                         client_query_id,
-                        value,
+                        snapshot,
+                        get_timestamp_us(),
                     );
                 }
                 None => warn!(
@@ -890,7 +982,7 @@ fn parse_okex_unified_max_loan(body: &Bytes) -> Option<f64> {
     best
 }
 
-fn parse_gate_unified_available_margin(body: &Bytes) -> Option<f64> {
+fn parse_gate_unified_available_margin(body: &Bytes) -> Option<GateAvailableMarginSnapshot> {
     let text = trim_body(body);
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     // Gate exposes account-wide headroom for multi-currency/portfolio mode.
@@ -901,11 +993,19 @@ fn parse_gate_unified_available_margin(body: &Bytes) -> Option<f64> {
         "single_currency" => value.get("balances")?.get("USDT")?.get("available_margin"),
         _ => return None,
     };
-    let margin = parse_json_f64(margin).filter(|margin| margin.is_finite())?;
-    if value.get("locked").and_then(|locked| locked.as_bool()) == Some(true) {
-        return Some(0.0);
-    }
-    Some(margin)
+    let available = parse_json_f64(margin).filter(|margin| margin.is_finite())?;
+    let timestamp_us = match value.get("refresh_time") {
+        Some(timestamp) => Some(timestamp.as_i64()?.checked_mul(1_000)?),
+        None => None,
+    };
+    Some(GateAvailableMarginSnapshot {
+        available: if value.get("locked").and_then(|locked| locked.as_bool()) == Some(true) {
+            0.0
+        } else {
+            available
+        },
+        timestamp_us,
+    })
 }
 
 fn okex_response_ok(value: &serde_json::Value) -> bool {
@@ -996,7 +1096,7 @@ mod tests {
 
     fn seed_single_poll_state(venue: CapacityVenue, available_query_id: i64) {
         *capacity_poll_state(venue).lock() = CapacityPollState {
-            last_query_sent_us: 3_000_000,
+            last_query_sent_us: get_timestamp_us().saturating_sub(1_000),
             available_query_id: Some(available_query_id),
             max_borrowable_query_id: None,
             last_usdt_available: None,
@@ -1352,27 +1452,228 @@ mod tests {
                 r#"{{"mode":"{mode}","locked":false,"total_available_margin":"3626.739382948874","balances":{{"USDT":{{"available":"5289.018742226709","available_margin":"0"}}}}}}"#
             ));
             assert_eq!(
-                parse_gate_unified_available_margin(&body),
+                parse_gate_unified_available_margin(&body).map(|snapshot| snapshot.available),
                 Some(3626.739382948874)
             );
         }
         assert_eq!(
             parse_gate_unified_available_margin(&Bytes::from_static(
                 br#"{"mode":"single_currency","total_available_margin":"0","balances":{"USDT":{"available":"5289","available_margin":"2500"}}}"#,
-            )),
+            )).map(|snapshot| snapshot.available),
             Some(2500.0)
         );
         assert_eq!(
             parse_gate_unified_available_margin(&Bytes::from_static(
                 br#"{"mode":"multi_currency","locked":true,"total_available_margin":"3000"}"#,
-            )),
+            ))
+            .map(|snapshot| snapshot.available),
             Some(0.0)
         );
         assert_eq!(
             parse_gate_unified_available_margin(&Bytes::from_static(
                 br#"{"mode":"multi_currency","total_available_margin":-50}"#,
-            )),
+            ))
+            .map(|snapshot| snapshot.available),
             Some(-50.0)
+        );
+    }
+
+    #[test]
+    fn gate_ws_margin_controls_capacity_and_recovers_both_rejection_locks() {
+        use crate::pre_trade::signal_throttle::{
+            check_account_signal_throttle, check_signal_throttle, register_signal_throttle,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        };
+        use order_common::{trade_error_code::gate, Side};
+        use runtime_common::exchange::Exchange;
+
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        register_signal_throttle(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW,
+        );
+        let error_us =
+            check_account_signal_throttle().unwrap().until_us - GATE_SIGNAL_THROTTLE_TTL_US;
+        let now_us = error_us + 2_000_000;
+        apply_gate_margin_snapshot_at(1_999.0, error_us - 1_000, now_us, Some(8.9), true);
+        assert!(check_account_open_block().is_some());
+        // A snapshot predating the rejection must not recover its throttle.
+        apply_gate_margin_snapshot_at(3_496.19, error_us - 500, now_us, Some(8.9), true);
+        assert!(check_account_signal_throttle().is_some());
+        assert!(check_signal_throttle("ETHUSDT", Side::Buy).is_some());
+        apply_gate_margin_snapshot_at(2_000.0, error_us + 500_000, now_us, Some(8.9), true);
+        assert!(check_account_open_block().is_some());
+        assert!(check_account_signal_throttle().is_some());
+
+        let mut risk = BasicAccountRiskMsg::create(
+            (error_us + 1_000_000) / 1_000,
+            19_806.24,
+            19_806.24,
+            718.0,
+            2_914.0,
+            8.9,
+            0.0,
+            0.0,
+        );
+        risk.available_margin_usd = 3_496.19;
+        let decoded = BasicAccountRiskMsg::from_bytes(&risk.to_bytes()).unwrap();
+        apply_gate_margin_snapshot_at(
+            decoded.available_margin_usd,
+            decoded.timestamp * 1_000,
+            now_us,
+            Some(decoded.margin_ratio),
+            true,
+        );
+        assert!(check_account_open_block().is_none());
+        assert!(check_account_signal_throttle().is_none());
+        assert!(check_signal_throttle("ETHUSDT", Side::Buy).is_none());
+        let snapshot =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .unwrap();
+        assert_eq!(snapshot.usdt_max_available_margin, 3_496.19);
+        assert_eq!(snapshot.max_borrowable, 0.0);
+        assert_eq!(snapshot.margin_ratio, Some(8.9));
+    }
+
+    #[test]
+    fn gate_invalid_stale_or_future_ws_margin_cannot_unlock() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        let now_us = 100_000_000;
+        apply_gate_margin_snapshot_at(-50.0, now_us - 1_000, now_us, None, true);
+        for (available, timestamp_us) in [
+            (f64::NAN, now_us),
+            (f64::INFINITY, now_us),
+            (3_000.0, 0),
+            (3_000.0, now_us - GATE_MARGIN_SNAPSHOT_MAX_AGE_US - 1),
+            (3_000.0, now_us + 1),
+            (3_000.0, now_us - 2_000),
+        ] {
+            apply_gate_margin_snapshot_at(available, timestamp_us, now_us, None, true);
+            assert!(check_account_open_block().is_some());
+            assert_eq!(
+                latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                    .unwrap()
+                    .usdt_max_available_margin,
+                -50.0
+            );
+        }
+        let mut other_risk =
+            BasicAccountRiskMsg::create(100_000, 20_000.0, 20_000.0, 100.0, 100.0, 20.0, 0.0, 0.0);
+        other_risk.available_margin_usd = 20_000.0;
+        apply_gate_unified_account_risk(BasicAccountScope::BybitUnified, &other_risk);
+        assert!(check_account_open_block().is_some());
+    }
+
+    #[test]
+    fn gate_late_rest_response_cannot_replace_newer_ws_margin() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        seed_single_poll_state(CapacityVenue::GateUnified, -19);
+        GATE_UNIFIED_CAPACITY_POLL.lock().last_query_sent_us = 8_000_000;
+        apply_gate_margin_snapshot_at(1_500.0, 9_000_000, 10_000_000, Some(8.0), true);
+        handle_gate_margin_query_response_at(
+            -19,
+            GateAvailableMarginSnapshot {
+                available: 5_000.0,
+                timestamp_us: Some(8_500_000),
+            },
+            11_000_000,
+        );
+        assert!(check_account_open_block().is_some());
+        assert_eq!(
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .unwrap()
+                .usdt_max_available_margin,
+            1_500.0
+        );
+        // A fresh REST fallback can recover after WS stops updating.
+        GATE_UNIFIED_CAPACITY_POLL.lock().available_query_id = Some(-20);
+        handle_gate_margin_query_response_at(
+            -20,
+            GateAvailableMarginSnapshot {
+                available: 3_000.0,
+                timestamp_us: Some(11_000_000),
+            },
+            12_000_000,
+        );
+        assert!(check_account_open_block().is_none());
+        apply_gate_margin_snapshot_at(1_000.0, 9_000_000, 12_000_000, None, true);
+        assert_eq!(
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::GateUnified)
+                .unwrap()
+                .usdt_max_available_margin,
+            3_000.0
+        );
+    }
+
+    #[test]
+    fn gate_ws_updates_keep_rest_as_fallback() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        apply_gate_margin_snapshot_at(3_000.0, 9_000_000, 10_000_000, None, true);
+        drive_capacity_poll(CapacityVenue::GateUnified, 11_000_000);
+        let state = GATE_UNIFIED_CAPACITY_POLL.lock();
+        assert!(state.available_query_id.is_none());
+        assert_eq!(state.last_query_sent_us, 0);
+    }
+
+    #[test]
+    fn gate_rest_without_refresh_time_uses_request_start_for_recovery() {
+        use crate::pre_trade::signal_throttle::{
+            check_account_signal_throttle, check_signal_throttle, register_signal_throttle,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        };
+        use order_common::{trade_error_code::gate, Side};
+        use runtime_common::exchange::Exchange;
+
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        register_signal_throttle(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::INITIAL_MARGIN_TOO_LOW,
+        );
+        let error_us =
+            check_account_signal_throttle().unwrap().until_us - GATE_SIGNAL_THROTTLE_TTL_US;
+        for (query_id, request_us) in [(-31, error_us - 1_000), (-32, error_us + 1_000)] {
+            *GATE_UNIFIED_CAPACITY_POLL.lock() = CapacityPollState {
+                last_query_sent_us: request_us,
+                available_query_id: Some(query_id),
+                ..CapacityPollState::default()
+            };
+            handle_gate_margin_query_response_at(
+                query_id,
+                GateAvailableMarginSnapshot {
+                    available: 3_000.0,
+                    timestamp_us: None,
+                },
+                error_us + 2_000,
+            );
+            assert_eq!(
+                check_account_signal_throttle().is_some(),
+                request_us < error_us
+            );
+            assert_eq!(
+                check_signal_throttle("ETHUSDT", Side::Buy).is_some(),
+                request_us < error_us
+            );
+        }
+    }
+
+    #[test]
+    fn gate_rest_parser_retains_exchange_refresh_time() {
+        let body = Bytes::from_static(br#"{"mode":"multi_currency","total_available_margin":"3496.18508","refresh_time":1791125187300}"#);
+        assert_eq!(
+            parse_gate_unified_available_margin(&body),
+            Some(GateAvailableMarginSnapshot {
+                available: 3_496.18508,
+                timestamp_us: Some(1_791_125_187_300_000),
+            })
         );
     }
 

@@ -1542,6 +1542,8 @@ pub struct BasicAccountRiskMsg {
     pub margin_ratio: f64,
     pub borrowed_usd: f64,
     pub notional_usd: f64,
+    /// Exchange-reported opening margin headroom; NaN when unavailable.
+    pub available_margin_usd: f64,
 }
 
 impl BasicAccountRiskMsg {
@@ -1581,11 +1583,12 @@ impl BasicAccountRiskMsg {
             margin_ratio,
             borrowed_usd,
             notional_usd,
+            available_margin_usd: f64::NAN,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 8 + 8 * 7;
+        let total_size = 4 + 8 + 8 * 8;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
         buf.put_i64_le(self.timestamp);
@@ -1596,11 +1599,12 @@ impl BasicAccountRiskMsg {
         buf.put_f64_le(self.margin_ratio);
         buf.put_f64_le(self.borrowed_usd);
         buf.put_f64_le(self.notional_usd);
+        buf.put_f64_le(self.available_margin_usd);
         buf.freeze()
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        const MIN_SIZE: usize = 4 + 8 + 8 * 7;
+        const MIN_SIZE: usize = 4 + 8 + 8 * 8;
         if data.len() < MIN_SIZE {
             anyhow::bail!("account risk msg too short: {}", data.len());
         }
@@ -1621,6 +1625,7 @@ impl BasicAccountRiskMsg {
             margin_ratio: cursor.get_f64_le(),
             borrowed_usd: cursor.get_f64_le(),
             notional_usd: cursor.get_f64_le(),
+            available_margin_usd: cursor.get_f64_le(),
         })
     }
 }
@@ -1846,6 +1851,21 @@ mod tests {
         assert!((msg.adj_equity_usd - 100.0).abs() < 1e-12);
         assert!((msg.margin_ratio - 5.0).abs() < 1e-12);
         assert!((msg.notional_usd - 200.0).abs() < 1e-12);
+        assert!(msg.available_margin_usd.is_nan());
+    }
+
+    #[test]
+    fn account_risk_margin_headroom_survives_ipc_and_rejects_truncation() {
+        let mut msg = BasicAccountRiskMsg::create(123, 100.0, 99.0, 20.0, 40.0, 5.0, 3.0, 200.0);
+        for available in [3_496.19, 0.0, -50.0] {
+            msg.available_margin_usd = available;
+            let payload = msg.to_bytes();
+            let decoded =
+                BasicAccountRiskMsg::from_bytes(&payload).expect("complete risk snapshot");
+            assert_eq!(decoded.available_margin_usd, available);
+            assert_eq!(decoded.actual_equity_usd, 99.0);
+            assert!(BasicAccountRiskMsg::from_bytes(&payload[..payload.len() - 1]).is_err());
+        }
     }
 
     #[test]

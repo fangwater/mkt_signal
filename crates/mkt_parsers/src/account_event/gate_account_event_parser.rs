@@ -296,7 +296,8 @@ impl GateAccountEventParser {
             .as_array()
             .and_then(|arr| arr.first())
             .unwrap_or(raw_result);
-        let timestamp_s = parse_i64_str_or_num(result.get("t"))
+        let refresh_time_s = parse_i64_str_or_num(result.get("t"));
+        let timestamp_s = refresh_time_s
             .or_else(|| parse_i64_str_or_num(json_value.get("time")))
             .unwrap_or(0);
         let timestamp = timestamp_s.saturating_mul(1_000);
@@ -319,7 +320,7 @@ impl GateAccountEventParser {
             0.0
         };
 
-        let msg = BasicAccountRiskMsg::create(
+        let mut msg = BasicAccountRiskMsg::create(
             timestamp,
             equity,
             equity,
@@ -329,6 +330,13 @@ impl GateAccountEventParser {
             liabilities,
             0.0,
         );
+        // Recovery needs the snapshot refresh time, not the transport timestamp.
+        // `unified.assets.a` is total_available_margin, not USDT wallet balance.
+        msg.available_margin_usd = refresh_time_s
+            .filter(|timestamp| *timestamp > 0)
+            .and_then(|_| parse_f64_str_or_num(result.get("a")))
+            .filter(|margin| margin.is_finite())
+            .unwrap_or(f64::NAN);
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::AccountRisk,
             BasicAccountScope::GateUnified,
@@ -1501,6 +1509,84 @@ mod tests {
         assert!((risk.maintenance_margin_usd - (675_222.27 / 0.1856)).abs() < 1e-6);
         assert!((risk.initial_margin_usd - (675_222.27 / 0.2010)).abs() < 1e-6);
         assert!((risk.borrowed_usd - 1_293_939.74).abs() < 1e-9);
+        assert_eq!(risk.available_margin_usd, -1_432_719.62);
+    }
+
+    #[test]
+    fn unified_assets_margin_uses_exchange_headroom_and_preserves_equity() {
+        let parser = GateAccountEventParser::new();
+        for available in [serde_json::json!("3496.19"), serde_json::json!(-50.0)] {
+            let sink = TestAccountEventSink::new();
+            let payload = serde_json::json!({
+                "time": 1791125187,
+                "channel": "unified.assets",
+                "event": "update",
+                "result": [{"t": 1791125187, "a": available, "b": "6412.73",
+                    "e": "19806.24", "r": "220.56", "R": "892.84"}]
+            });
+            assert_eq!(
+                parser
+                    .parse_with_report(Bytes::from(payload.to_string()), &sink)
+                    .emitted,
+                1
+            );
+            let wrapped = sink.recv().unwrap();
+            let (_, scope, body) = split_basic_account_event(&wrapped).unwrap();
+            let risk = BasicAccountRiskMsg::from_bytes(body).unwrap();
+            assert_eq!(scope, BasicAccountScope::GateUnified);
+            assert_eq!(risk.actual_equity_usd, 19_806.24);
+            assert_eq!(risk.adj_equity_usd, 19_806.24);
+            assert_eq!(
+                risk.available_margin_usd,
+                parse_f64_str_or_num(Some(&available)).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn unified_assets_invalid_margin_remains_unavailable() {
+        let parser = GateAccountEventParser::new();
+        for available in [
+            serde_json::Value::Null,
+            serde_json::json!("NaN"),
+            serde_json::json!("inf"),
+        ] {
+            let sink = TestAccountEventSink::new();
+            let payload = serde_json::json!({"channel": "unified.assets", "event": "update",
+                "result": {"t": 1791125187, "a": available, "e": "19806.24"}});
+            parser.parse_with_report(Bytes::from(payload.to_string()), &sink);
+            let wrapped = sink.recv().unwrap();
+            let (_, _, body) = split_basic_account_event(&wrapped).unwrap();
+            assert!(BasicAccountRiskMsg::from_bytes(body)
+                .unwrap()
+                .available_margin_usd
+                .is_nan());
+        }
+    }
+
+    #[test]
+    fn unified_assets_margin_requires_snapshot_refresh_time() {
+        let parser = GateAccountEventParser::new();
+        for refresh_time in [
+            None,
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!(-1)),
+            Some(serde_json::json!("invalid")),
+        ] {
+            let sink = TestAccountEventSink::new();
+            let mut result = serde_json::json!({"a": "3496.19", "e": "19806.24"});
+            if let Some(refresh_time) = refresh_time {
+                result["t"] = refresh_time;
+            }
+            let payload = serde_json::json!({"channel": "unified.assets", "event": "update",
+                "time": 1791125187, "result": result});
+            parser.parse_with_report(Bytes::from(payload.to_string()), &sink);
+            let wrapped = sink.recv().unwrap();
+            let (_, _, body) = split_basic_account_event(&wrapped).unwrap();
+            let risk = BasicAccountRiskMsg::from_bytes(body).unwrap();
+            assert!(risk.available_margin_usd.is_nan());
+            assert_eq!(risk.actual_equity_usd, 19_806.24);
+        }
     }
 
     #[test]

@@ -661,8 +661,13 @@ impl PreTrade {
         let arb_startup_net_log_interval = std::time::Duration::from_secs(30);
         let mut next_arb_startup_net_log = std::time::Instant::now() + arb_startup_net_log_interval;
         let account_open_block_poll_interval = std::time::Duration::from_secs(60);
-        let mut next_account_open_block_poll =
-            std::time::Instant::now() + account_open_block_poll_interval;
+        let gate_unified = MonitorChannel::instance().open_venue() == TradingVenue::GateMargin
+            && MonitorChannel::instance().hedge_venue() == TradingVenue::GateFutures;
+        let mut next_account_open_block_poll = if gate_unified {
+            std::time::Instant::now()
+        } else {
+            std::time::Instant::now() + account_open_block_poll_interval
+        };
         let mut next_param_refresh = Instant::now();
         let fast_poll = enable_ipc_fast_poll();
         let fast_poll_budgets = FastPollDispatchBudgets::from_env();
