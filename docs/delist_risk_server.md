@@ -508,7 +508,10 @@ DELIST_SG_REDIS_SSH_HOST=sg
 DELIST_SG_REDIS_TUNNEL_PORT=16379
 ```
 
-`start_delist_risk_server.sh` owns a PM2 SSH tunnel from JP loopback port
+`start_delist_risk_server.sh` removes the previous app before creating the
+tunnel: PM2 `--namespace` deletion also selects other processes in that
+namespace, so app cleanup after tunnel creation would immediately delete the
+new tunnel. The script owns a PM2 SSH tunnel from JP loopback port
 `16379` to SG loopback port `6379`. The SSH connection uses the existing `sg`
 control-plane target; the source data remains on SG and is never exposed to the
 public network.

@@ -53,6 +53,20 @@ port_in_use() {
   return 1
 }
 
+stop_existing_app() {
+  npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  for _ in {1..10}; do
+    if ! port_in_use "$PORT"; then
+      break
+    fi
+    sleep 1
+  done
+  if port_in_use "$PORT"; then
+    echo "[ERROR] port ${PORT} is still in use; aborting" >&2
+    exit 1
+  fi
+}
+
 ARGS=(
   --bind "$BIND"
   --book "$BOOK_PATH"
@@ -98,6 +112,9 @@ if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
     echo "[ERROR] ssh is required for the SG Redis tunnel" >&2
     exit 1
   fi
+  # PM2 --namespace selects the whole namespace: delete the old app before
+  # creating its tunnel, or the later app cleanup deletes the new tunnel too.
+  stop_existing_app
   npx pm2 delete "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
   npx pm2 start "$SSH_BIN" --name "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" --interpreter none -- \
     -NT \
@@ -121,6 +138,8 @@ if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
   fi
   echo "[INFO] SG Redis tunnel ready: 127.0.0.1:${SG_TUNNEL_PORT} -> ${SG_SSH_HOST}:127.0.0.1:6379"
   ARGS+=(--sg-redis "${DELIST_SG_REDIS_URL}")
+else
+  stop_existing_app
 fi
 if [[ "${DELIST_SKIP_LLM:-0}" == "1" ]]; then
   ARGS+=(--skip-llm)
@@ -146,18 +165,6 @@ fi
 
 if [[ -z "${BINANCE_API_KEY:-}" || -z "${BINANCE_API_SECRET:-}" ]]; then
   unset BINANCE_API_KEY BINANCE_API_SECRET
-fi
-
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-for _ in {1..10}; do
-  if ! port_in_use "$PORT"; then
-    break
-  fi
-  sleep 1
-done
-if port_in_use "$PORT"; then
-  echo "[ERROR] port ${PORT} is still in use; aborting" >&2
-  exit 1
 fi
 
 echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} bind=${BIND}"
