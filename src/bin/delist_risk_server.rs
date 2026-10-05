@@ -540,7 +540,10 @@ async fn query_accounts(
     State(state): State<AppState>,
     Query(params): Query<RiskParams>,
 ) -> impl IntoResponse {
+    let latest_llm = state.status.read().await.llm_latest_by_exchange();
     let book = state.book.read().await;
+    let latest_announcements =
+        mkt_signal::common::delist_accounts::latest_announcement_views(&book, latest_llm);
     let mut risk = book.query(&to_query(&params, state.default_days));
     let listings = state.listings.read().await.clone();
     listings.decorate(&mut risk);
@@ -579,7 +582,7 @@ async fn query_accounts(
         redis,
         summary: summarize(&accounts),
         accounts,
-        llm: state.status.read().await.llm_latest(),
+        latest_announcements,
     })
 }
 

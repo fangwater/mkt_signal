@@ -255,12 +255,18 @@ impl StatusBook {
             .get(&(exchange.to_string(), announcement_id.to_string()))
     }
 
-    /// Most recent LLM extraction attempt across all announcements.
-    pub fn llm_latest(&self) -> Option<LlmRunStatus> {
-        self.llm
-            .values()
-            .max_by_key(|row| row.last_attempt_ms)
-            .cloned()
+    /// Most recent LLM extraction attempt for each exchange, including failures.
+    pub fn llm_latest_by_exchange(&self) -> BTreeMap<String, LlmRunStatus> {
+        let mut latest: BTreeMap<String, LlmRunStatus> = BTreeMap::new();
+        for row in self.llm.values() {
+            let previous = latest
+                .entry(row.exchange.clone())
+                .or_insert_with(|| row.clone());
+            if row.last_attempt_ms > previous.last_attempt_ms {
+                *previous = row.clone();
+            }
+        }
+        latest
     }
 }
 
@@ -1297,6 +1303,33 @@ fn sanitize_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_analysis_is_selected_per_exchange_including_failed_attempts() {
+        let mut book = StatusBook::default();
+        let row = |exchange: &str, id: &str, checked_ms, ok| LlmRunStatus {
+            exchange: exchange.into(),
+            announcement_id: id.into(),
+            title: id.into(),
+            input_fingerprint: None,
+            ok,
+            last_attempt_ms: checked_ms,
+            last_success_ms: ok.then_some(checked_ms),
+            last_error: (!ok).then_some("timeout".into()),
+        };
+        book.replace_llm(vec![
+            row("gate", "a", 100, true),
+            row("gate", "b", 300, false),
+            row("bybit", "a", 250, true),
+            row("bybit", "b", 200, true),
+        ]);
+        let latest = book.llm_latest_by_exchange();
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest["gate"].announcement_id, "b");
+        assert!(!latest["gate"].ok);
+        assert_eq!(latest["bybit"].announcement_id, "a");
+        assert!(latest["bybit"].ok);
+    }
 
     #[test]
     fn extraction_reuses_success_across_restart_and_retries_changed_content() {

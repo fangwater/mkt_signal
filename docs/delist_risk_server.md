@@ -264,6 +264,21 @@ pair is no longer present or tradable at that venue; it is a risk hit even when
 the service has no matching delist announcement.
 
 The HTML board at `/delist/` uses this endpoint. Style matches crypto NAV manager.
+`latest_announcements` contains the latest LLM analysis attempt for each exchange:
+title, source URL, publication and check timestamps, success/failure state, last
+successful analysis time, and the stored structured `actions`. Selection uses
+analysis time, not publication order. These actions are independent of `/risk`
+filters and retain elapsed deadlines and events beyond its horizon. An empty
+successful extraction means no lifecycle actions were extracted; a failed
+attempt is shown separately and any retained actions are labelled with their
+last successful analysis time.
+
+Each exchange displays this announcement above its collapsible account table.
+The board shows human-readable action/market labels, assets/pairs, UTC deadlines,
+analysis and publication times, and a link to the original article. Announcements
+remain visible when account rows are collapsed. Rendering reuses persisted
+extractions and never requests additional LLM analysis.
+
 Strategies whose exchange or strategy kind has no delist control rule remain
 visible with `tone=uncovered`. If a NAV refresh fails, the board retains the
 last successful catalog, `/status` marks `nav_strategies` failed, and automatic

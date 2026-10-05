@@ -73,9 +73,7 @@
       .exchange-list { margin-top: 20px; }
       .exchange { border-bottom: 1px solid var(--line); background: var(--surface); }
       .exchange:first-child { border-top: 1px solid var(--line); }
-      .exchange > summary { min-height: 68px; padding: 0 18px; display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(170px, 1fr) auto 18px; align-items: center; gap: 18px; list-style: none; cursor: pointer; }
-      .exchange > summary::-webkit-details-marker { display: none; }
-      .exchange > summary:hover { background: var(--surface-hover); }
+      .exchange__header { min-height: 68px; padding: 12px 18px; display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(170px, 1fr) auto; align-items: center; gap: 18px; }
       .exchange__identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
       .exchange__name { font-size: 15px; font-weight: 650; }
       .exchange__site { color: var(--quiet); font-size: 11px; }
@@ -84,8 +82,32 @@
       .exchange__counts--risk strong { color: var(--danger); }
       .exchange__status { justify-self: end; }
       .chevron { width: 8px; height: 8px; border-right: 1.5px solid var(--quiet); border-bottom: 1.5px solid var(--quiet); transform: rotate(45deg); transition: transform 140ms ease; }
-      .exchange[open] .chevron { transform: rotate(225deg); }
+      .exchange__accounts[open] .chevron { transform: rotate(225deg); }
+      .exchange__accounts > summary { padding: 10px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; list-style: none; cursor: pointer; }
+      .exchange__accounts > summary::-webkit-details-marker { display: none; }
+      .exchange__accounts > summary:hover { background: var(--surface-hover); }
       .exchange__body { border-top: 1px solid var(--line); }
+      .announcement { margin: 0 18px 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 5px; background: #fafbfd; }
+      .announcement__heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+      .announcement__label { color: var(--muted); font-size: 11px; font-weight: 650; }
+      .announcement__meta { color: var(--quiet); font-size: 11px; font-variant-numeric: tabular-nums; }
+      .announcement__title { margin: 8px 0 0; color: var(--ink); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+      .announcement__title a { color: inherit; text-decoration: none; }
+      .announcement__title a:hover { text-decoration: underline; }
+      .announcement__source { margin-left: 8px; color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
+      .announcement__result { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+      .announcement__result--error { color: var(--danger); }
+      .announcement__times { margin-top: 6px; color: var(--quiet); font-size: 11px; }
+      .announcement-actions { width: 100%; margin-top: 10px; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+      .announcement-actions th { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); color: var(--quiet); font-size: 11px; font-weight: 500; text-align: left; }
+      .announcement-actions td { padding: 9px 10px 9px 0; border-bottom: 1px solid #edf0f3; vertical-align: top; overflow-wrap: anywhere; }
+      .announcement-actions tr:last-child td { border-bottom: 0; }
+      .announcement-actions__action { color: var(--ink); font-weight: 600; }
+      .announcement-actions__assets { color: var(--ink); font-size: 11px; }
+      .announcement-actions__assets small { display: block; margin-top: 3px; color: var(--quiet); font: inherit; }
+      .announcement-actions__note { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; }
+      .announcement-actions__time { font-variant-numeric: tabular-nums; }
+      .announcement-actions__status { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
       .account-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
       .account-table th { padding: 8px 18px; border-bottom: 1px solid var(--line); background: #fafbfd; color: var(--quiet); font-size: 10px; font-weight: 650; letter-spacing: 0; text-align: left; text-transform: uppercase; }
       .account-table th:last-child, .account-table td:last-child { text-align: right; }
@@ -133,8 +155,16 @@
         .metric { min-height: 58px; padding: 10px 12px; }
         .metric:nth-child(3) { border-top: 1px solid var(--line); border-left: 0; }
         .metric:nth-child(4) { border-top: 1px solid var(--line); }
-        .exchange > summary { min-height: 62px; padding: 0 12px; grid-template-columns: minmax(120px, 1fr) auto 14px; gap: 10px; }
+        .exchange__header { min-height: 62px; padding: 12px; grid-template-columns: minmax(100px, 1fr) auto; gap: 10px; }
         .exchange__counts { display: none; }
+        .exchange__accounts > summary { padding: 10px 12px; }
+        .announcement { margin: 0 12px 12px; padding: 12px; }
+        .announcement-actions thead { display: none; }
+        .announcement-actions, .announcement-actions tbody, .announcement-actions tr, .announcement-actions td { display: block; width: 100%; }
+        .announcement-actions tr { padding: 10px 0; border-top: 1px solid var(--line); }
+        .announcement-actions td { padding: 3px 0; border: 0; }
+        .announcement-actions td[data-label]::before { content: attr(data-label) "："; color: var(--quiet); }
+        .announcement-actions__assets small { display: inline; margin-left: 6px; }
         .account-table thead { display: none; }
         .account-table, .account-table tbody, .account-table tr, .account-table td { display: block; width: 100%; }
         .account-table tr { padding: 11px 12px; border-bottom: 1px solid #edf0f3; }
@@ -163,7 +193,7 @@
     </header>
     <main class="page">
       <section class="overview" aria-labelledby="page-title">
-        <div><h1 id="page-title">下架风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p><p class="as-of" id="llm-check"></p></div>
+        <div><h1 id="page-title">下架风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p></div>
         <div class="filters" id="filters" aria-label="策略类型筛选"></div>
       </section>
       <section class="metrics" id="metrics" aria-label="风险摘要"></section>
@@ -177,6 +207,7 @@
       const TONES = { ok: '正常', risk: '需处理', error: 'Redis 未连接', uncovered: '风险源待接入' };
       let filter = 'all';
       let payload = null;
+      const exchangeOpen = new Map();
       let flattenPayload = null;
       let flattenByKey = new Map();
       let positionStatusByKey = new Map();
@@ -214,10 +245,41 @@
           .map(([label, value, tone]) => `<div class="metric ${tone ? `metric--${tone}` : ''}"><span>${label}</span><strong>${value}</strong></div>`).join('');
       }
       const VENUES = {
-        'binance-margin': 'Binance Margin', 'binance-futures': 'Binance Futures',
-        'bitget-margin': 'Bitget Margin', 'bitget-futures': 'Bitget Futures',
-        'gate-margin': 'Gate Margin', 'gate-futures': 'Gate Futures',
+        'binance-margin': 'Binance 现货／杠杆', 'binance-futures': 'Binance U 本位合约', 'binance-coin-futures': 'Binance 币本位合约',
+        'bitget-margin': 'Bitget 现货／杠杆', 'bitget-futures': 'Bitget U 本位合约', 'bitget-coin-futures': 'Bitget 币本位合约',
+        'gate-margin': 'Gate 现货／杠杆', 'gate-futures': 'Gate U 本位合约', 'gate-coin-futures': 'Gate 币本位合约',
+        'bybit-margin': 'Bybit 现货／杠杆／借贷', 'bybit-futures': 'Bybit U 本位合约',
       };
+      function announcementBlock(exchange) {
+        const item = (payload.latest_announcements || {})[exchange];
+        if (!item) return '<article class="announcement"><span class="announcement__label">最近分析公告</span><p class="announcement__result">暂无公告分析记录</p></article>';
+        const title = escapeHtml(item.title || '公告标题暂不可用');
+        const source = /^https?:\/\//i.test(item.url || '')
+          ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${title}<span class="announcement__source">查看原文 ↗</span></a>`
+          : title;
+        const when = (ms) => formatTime(ms).replace('更新于 ', '');
+        const published = item.published_ms > 0 ? `发布于 ${escapeHtml(when(item.published_ms))} · ` : '';
+        const actions = item.actions || [];
+        const failure = !item.ok
+          ? `<p class="announcement__result announcement__result--error">本次分析失败${item.last_success_ms ? `；以下为该公告上次成功结果（${escapeHtml(when(item.last_success_ms))}）` : '，暂无法确认公告事项'}。</p>`
+          : '';
+        const rows = actions.map((action) => {
+          const labels = { delist: '下架', disable_open: '停止开仓', disable_loan: '停止借贷', disable_margin: '停止杠杆／抵押支持' };
+          const assets = (action.assets || []).map(escapeHtml).join('、');
+          const symbols = (action.symbols || []).map(escapeHtml).join('、');
+          const target = Date.parse(action.utc || '');
+          const deadline = Number.isFinite(target)
+            ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(target))
+            : '时间待确认';
+          const remaining = remainingTime(action.utc);
+          const progress = Number.isFinite(target) ? remaining ? `${remaining}到期` : '已过公告截止时间' : '截止时间未明确';
+          return `<tr><td><span class="announcement-actions__action">${escapeHtml(labels[action.action] || action.action)}</span>${action.note ? `<span class="announcement-actions__note">${escapeHtml(action.note)}</span>` : ''}</td><td data-label="市场">${escapeHtml(VENUES[action.venue] || action.venue)}</td><td data-label="标的" class="announcement-actions__assets symbol">${assets || symbols || '未指定'}${assets && symbols ? `<small>交易对：${symbols}</small>` : ''}</td><td data-label="截止" class="announcement-actions__time">${escapeHtml(deadline)}<span class="announcement-actions__status">${escapeHtml(progress)}</span></td></tr>`;
+        }).join('');
+        const result = rows
+          ? `<table class="announcement-actions"><thead><tr><th style="width:35%">公告事项</th><th style="width:22%">市场</th><th style="width:23%">资产／交易对</th><th style="width:20%">截止时间（UTC）</th></tr></thead><tbody>${rows}</tbody></table>`
+          : item.ok || item.last_success_ms ? '<p class="announcement__result">未提取到下架、停止开仓、停止杠杆或借贷事项。</p>' : '';
+        return `<article class="announcement"><div class="announcement__heading"><span class="announcement__label">最近分析公告</span><span class="announcement__meta">${item.ok ? '分析于' : '尝试分析于'} ${escapeHtml(when(item.checked_ms))}</span></div><h2 class="announcement__title">${source}</h2><div class="announcement__times">${published}截止时间均为 UTC</div>${failure}${result}</article>`;
+      }
       function remainingTime(utc) {
         const target = Date.parse(utc || '');
         if (!Number.isFinite(target)) return null;
@@ -342,8 +404,9 @@
         const label = riskN || unimmrN
           ? [riskN ? `${riskN} 个风险标的` : '', unimmrN ? `${unimmrN} 个 UniMMR 为空` : ''].filter(Boolean).join(' · ')
           : errorN ? `${errorN} 个连接异常` : TONES[tone];
-        const source = accounts.some((account) => account.host === 'sg') ? 'SG Redis' : 'JP Redis';
-        return `<details class="exchange" ${riskN || errorN || unimmrN ? 'open' : ''}><summary><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${source}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span></summary><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:31%">盘子</th><th style="width:13%">策略</th><th style="width:10%">标的</th><th style="width:25%">交易范围</th><th style="width:8%">风险</th><th style="width:13%">状态</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></details>`;
+        const source = [...new Set(accounts.map((account) => account.host.toUpperCase()))].join(' / ') + ' Redis';
+        const open = exchangeOpen.has(exchange) ? exchangeOpen.get(exchange) : riskN || errorN || unimmrN;
+        return `<section class="exchange" data-exchange="${escapeHtml(exchange)}"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${escapeHtml(source)}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span></div>${announcementBlock(exchange)}<details class="exchange__accounts" ${open ? 'open' : ''}><summary><span>账户与持仓风险 · ${accounts.length} 个盘子</span><span class="chevron" aria-hidden="true"></span></summary><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:31%">盘子</th><th style="width:13%">策略</th><th style="width:10%">标的</th><th style="width:25%">交易范围</th><th style="width:8%">风险</th><th style="width:13%">状态</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></details></section>`;
       }
       function renderList(accounts) {
         const root = document.getElementById('exchange-list');
@@ -352,22 +415,14 @@
         accounts.forEach((account) => { if (!groups.has(account.exchange)) groups.set(account.exchange, []); groups.get(account.exchange).push(account); });
         const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0) + (item.unimmr_empty ? 50 : 0), 0);
         root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
+        root.querySelectorAll('.exchange__accounts').forEach((details) => details.addEventListener('toggle', () => exchangeOpen.set(details.closest('.exchange').dataset.exchange, details.open)));
         root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
-      }
-      function renderLlmCheck() {
-        const el = document.getElementById('llm-check');
-        const llm = payload && payload.llm;
-        if (!llm) { el.textContent = ''; return; }
-        const when = formatTime(llm.last_attempt_ms).replace('更新于 ', '');
-        const status = llm.ok ? '' : ' · <span style="color:var(--danger)">检查失败</span>';
-        el.innerHTML = `LLM 最后检查 ${escapeHtml(when)} · ${escapeHtml(llm.exchange)}/${escapeHtml(llm.announcement_id)}${status}`;
       }
       function render() {
         if (!payload) return;
         renderFilters();
         renderMetrics(payload.summary);
         document.getElementById('as-of').textContent = formatTime(payload.as_of_ms);
-        renderLlmCheck();
         renderList((payload.accounts || []).filter((account) => filter === 'all' || account.kind === filter));
       }
       async function load() {

@@ -6,7 +6,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::common::delist_risk::{normalize_symbol, RiskEventView, RiskQueryResponse};
+use crate::common::delist_risk::{
+    normalize_symbol, RiskBook, RiskEvent, RiskEventView, RiskQueryResponse,
+};
+use crate::common::delist_store::LlmRunStatus;
 use crate::common::exchange_info::ListingIndex;
 
 const FR_LISTS: [&str; 5] = [
@@ -151,9 +154,88 @@ pub struct AccountRiskResponse {
     pub redis: BTreeMap<String, bool>,
     pub summary: BTreeMap<String, usize>,
     pub accounts: Vec<AccountRiskView>,
-    /// Most recent LLM extraction attempt (`last_attempt_ms` is the check time).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm: Option<crate::common::delist_store::LlmRunStatus>,
+    /// Latest analysed announcement per exchange, independent of risk-query filters.
+    pub latest_announcements: BTreeMap<String, LatestAnnouncementView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LatestAnnouncementView {
+    pub title: String,
+    pub url: String,
+    pub published_ms: i64,
+    pub checked_ms: i64,
+    pub ok: bool,
+    pub last_success_ms: Option<i64>,
+    pub error: Option<String>,
+    pub actions: Vec<RiskEvent>,
+}
+
+pub fn latest_announcement_views(
+    book: &RiskBook,
+    statuses: BTreeMap<String, LlmRunStatus>,
+) -> BTreeMap<String, LatestAnnouncementView> {
+    statuses
+        .into_iter()
+        .map(|(exchange, status)| {
+            let meta = book
+                .announcements
+                .iter()
+                .find(|item| item.exchange == exchange && item.id == status.announcement_id);
+            // Keep all actions, including elapsed deadlines and those beyond the risk horizon.
+            let mut actions: Vec<RiskEvent> = book
+                .events
+                .iter()
+                .filter(|event| {
+                    event.source == "llm_extract"
+                        && event.exchange == exchange
+                        && event.announcement_id == status.announcement_id
+                        && status.last_success_ms.is_some()
+                })
+                .cloned()
+                .collect();
+            actions.sort_by(|left, right| {
+                left.utc_ms
+                    .cmp(&right.utc_ms)
+                    .then_with(|| left.venue.cmp(&right.venue))
+                    .then_with(|| left.action.cmp(&right.action))
+            });
+            let first = actions.first();
+            let url = meta
+                .map(|item| item.url.as_str())
+                .filter(|url| !url.is_empty())
+                .or_else(|| {
+                    first
+                        .map(|event| event.url.as_str())
+                        .filter(|url| !url.is_empty())
+                })
+                .or_else(|| {
+                    status
+                        .announcement_id
+                        .starts_with("https://")
+                        .then_some(status.announcement_id.as_str())
+                })
+                .unwrap_or_default()
+                .to_string();
+            let view = LatestAnnouncementView {
+                title: if status.title.is_empty() {
+                    meta.map(|item| item.title.clone()).unwrap_or_default()
+                } else {
+                    status.title
+                },
+                url,
+                published_ms: meta
+                    .map(|item| item.published_ms)
+                    .or_else(|| first.map(|event| event.published_ms))
+                    .unwrap_or_default(),
+                checked_ms: status.last_attempt_ms,
+                ok: status.ok,
+                last_success_ms: status.last_success_ms,
+                error: status.last_error,
+                actions,
+            };
+            (exchange, view)
+        })
+        .collect()
 }
 
 /// Marker returned inside the error chain when NAV rejects the session.
@@ -704,8 +786,123 @@ fn to_map(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::announcement_llm::{LlmAction, LlmExtractInput};
     use crate::common::delist_risk::RiskEventView;
     use axum::{routing::get, Json, Router};
+
+    #[test]
+    fn latest_announcement_keeps_elapsed_and_distant_actions_with_exact_source_identity() {
+        let mut book = RiskBook::default();
+        let input = LlmExtractInput {
+            exchange: "bybit".into(),
+            id: "zil".into(),
+            title: "ZIL lending and collateral discontinuation".into(),
+            url: "https://announcements.bybit.com/en-US/article/zil/".into(),
+            published_ms: 1,
+            body: String::new(),
+        };
+        let action = |kind: &str, utc: &str| LlmAction {
+            action: kind.into(),
+            exchange: "bybit".into(),
+            venue: "bybit-margin".into(),
+            utc: utc.into(),
+            assets: vec!["ZIL".into()],
+            symbols: vec![],
+            note: String::new(),
+        };
+        book.ingest_llm(
+            &input,
+            true,
+            &[
+                action("disable_margin", "2099-09-07T08:00:00Z"),
+                action("disable_loan", "2020-09-02T08:00:00Z"),
+            ],
+        );
+        let mut other_exchange = book.events[0].clone();
+        other_exchange.exchange = "gate".into();
+        let mut official = book.events[0].clone();
+        official.source = "official".into();
+        book.events.extend([other_exchange, official]);
+        // Neither extracted action belongs to the default current-risk window.
+        assert_eq!(
+            book.query(&crate::common::delist_risk::RiskQuery {
+                days: Some(30),
+                ..Default::default()
+            })
+            .count,
+            0
+        );
+        let mut statuses = crate::common::delist_store::StatusBook::default();
+        statuses.mark_llm(
+            "bybit",
+            "zil",
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        let item = &latest["bybit"];
+        assert_eq!(item.title, input.title);
+        assert_eq!(item.url, input.url);
+        assert_eq!(item.published_ms, 1);
+        assert_eq!(item.actions.len(), 2);
+        assert_eq!(item.actions[0].action, "disable_loan");
+        assert_eq!(item.actions[1].action, "disable_margin");
+
+        statuses.mark_llm(
+            "bybit",
+            "zil",
+            &input.title,
+            false,
+            Some("timeout"),
+            input.fingerprint(),
+        );
+        let failed = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(!failed["bybit"].ok);
+        assert_eq!(failed["bybit"].last_success_ms, item.last_success_ms);
+        assert_eq!(failed["bybit"].actions, item.actions);
+    }
+
+    #[test]
+    fn latest_announcement_distinguishes_empty_success_from_failed_first_analysis() {
+        let mut book = RiskBook::default();
+        let input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "unrelated".into(),
+            title: "Other announcement".into(),
+            url: "https://www.gate.io/article/unrelated".into(),
+            published_ms: 1,
+            body: String::new(),
+        };
+        book.ingest_llm(&input, false, &[]);
+        let mut statuses = crate::common::delist_store::StatusBook::default();
+        statuses.mark_llm(
+            "gate",
+            &input.id,
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(latest["gate"].ok);
+        assert!(latest["gate"].actions.is_empty());
+        assert!(latest["gate"].last_success_ms.is_some());
+
+        statuses.mark_llm(
+            "bybit",
+            "failed",
+            "Failed article",
+            false,
+            Some("timeout"),
+            "hash".into(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(!latest["bybit"].ok);
+        assert!(latest["bybit"].actions.is_empty());
+        assert!(latest["bybit"].last_success_ms.is_none());
+    }
 
     #[test]
     fn bybit_requires_complete_catalog_and_matches_only_affected_leg() {
