@@ -53,6 +53,14 @@ Bybit's two elapsed ZIL deadlines, and three manual page refreshes; all four
 exchanges' analysis timestamps remained unchanged. Service and SG tunnel are
 online with no supervisor restarts; PostgreSQL and both Redis sites are healthy.
 
+At 00:44 UTC, the existing enabled NAV strategy `gate_fr_arb03` was missing
+from the monitor because the `delist` service user lacked its strategy read
+grant. The single grant was added to `nav_user_strategy_grants`; the next
+60-second catalog refresh picked it up without restarting either service.
+`/accounts` now contains fourteen accounts, including all three Gate FR
+accounts. `gate_fr_arb03` loads 45 online symbols and 45 UniMMR close symbols,
+has healthy Redis/catalog coverage, and currently has no risk hits.
+
 All three SG Bybit accounts load their Redis universes and have catalog
 coverage (3, 13, and 6 symbols). Twelve recent Bybit announcements have successful
 persisted extractions. The 2026-10-05 UTC snapshot contains all eleven catalogs
@@ -255,6 +263,11 @@ list. It reads `slug`, display alias, host, strategy kind, and exchange from
 `/nav-api/strategies`; a strategy added to NAV appears here after the next
 catalog refresh. The NAV `delist` user must also have a strategy grant for the
 new slug; otherwise NAV omits it from the authenticated response and `/accounts`.
+For a newly registered monitored account, include the `delist` user's strategy
+read grant in onboarding and verify that exact slug through `/delist/accounts`
+after the next 60-second refresh. A successful `nav_strategies` source status
+only confirms a successful authenticated fetch, not access to every enabled
+NAV strategy.
 
 The response field `nav_accounts_current` is `true` only after the latest NAV
 catalog request succeeds. It is independent from the per-site `redis` health
