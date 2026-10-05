@@ -81,11 +81,7 @@
       .exchange__counts strong { color: var(--ink); font-size: 15px; font-weight: 650; }
       .exchange__counts--risk strong { color: var(--danger); }
       .exchange__status { justify-self: end; }
-      .chevron { width: 8px; height: 8px; border-right: 1.5px solid var(--quiet); border-bottom: 1.5px solid var(--quiet); transform: rotate(45deg); transition: transform 140ms ease; }
-      .exchange__accounts[open] .chevron { transform: rotate(225deg); }
-      .exchange__accounts > summary { padding: 10px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; list-style: none; cursor: pointer; }
-      .exchange__accounts > summary::-webkit-details-marker { display: none; }
-      .exchange__accounts > summary:hover { background: var(--surface-hover); }
+      .exchange__account-heading { padding: 10px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
       .exchange__body { border-top: 1px solid var(--line); }
       .announcement { margin: 0 18px 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 5px; background: #fafbfd; }
       .announcement__heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
@@ -118,6 +114,9 @@
       .account-links { display: inline-flex; gap: 8px; margin-top: 4px; }
       .account-links a { color: var(--muted); font-size: 11px; text-decoration: none; border-bottom: 1px solid var(--line-strong); }
       .account-links a:hover { color: var(--ink); border-color: var(--ink); }
+      .config-link { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 12px; text-decoration: none; white-space: nowrap; }
+      .config-link:hover { border-color: var(--muted); background: var(--surface-hover); }
+      .config-link:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
       .account-venues { color: var(--quiet); font-size: 11px; }
       .account-value { color: var(--ink); font-variant-numeric: tabular-nums; }
       .account-value--risk { color: var(--danger); font-weight: 650; }
@@ -157,7 +156,7 @@
         .metric:nth-child(4) { border-top: 1px solid var(--line); }
         .exchange__header { min-height: 62px; padding: 12px; grid-template-columns: minmax(100px, 1fr) auto; gap: 10px; }
         .exchange__counts { display: none; }
-        .exchange__accounts > summary { padding: 10px 12px; }
+        .exchange__account-heading { padding: 10px 12px; }
         .announcement { margin: 0 12px 12px; padding: 12px; }
         .announcement-actions thead { display: none; }
         .announcement-actions, .announcement-actions tbody, .announcement-actions tr, .announcement-actions td { display: block; width: 100%; }
@@ -173,7 +172,7 @@
         .account-table td:nth-child(2)::before { content: "策略："; color: var(--quiet); }
         .account-table td:nth-child(3)::before { content: "标的："; color: var(--quiet); }
         .account-table td:nth-child(4) { float: right; }
-        .account-table td:last-child { text-align: right; }
+        .account-table td:last-child { display: block; clear: both; margin-top: 8px; text-align: left; }
         .hit-row { padding-top: 0 !important; }
         .hit-row td { display: block; padding: 0; background: transparent; }
         .hit { align-items: flex-start; flex-wrap: wrap; }
@@ -207,7 +206,6 @@
       const TONES = { ok: '正常', risk: '需处理', error: 'Redis 未连接', uncovered: '风险源待接入' };
       let filter = 'all';
       let payload = null;
-      const exchangeOpen = new Map();
       let flattenPayload = null;
       let flattenByKey = new Map();
       let positionStatusByKey = new Map();
@@ -383,18 +381,18 @@
         const unimmrN = account.kind === 'funding_rate' && account.unimmr_close_n != null ? account.unimmr_close_n : null;
         const unimmrCell = unimmrN != null ? `<div class="account-venues">UniMMR <span class="${unimmrN ? '' : 'account-value--risk'}">${unimmrN}</span> 候选</div>` : '';
         const unimmrChip = account.unimmr_empty ? ' <span class="chip chip--risk">UniMMR为空</span>' : '';
-        const links = [
-          account.viz_url ? `<a href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener">看板</a>` : '',
-          account.config_url ? `<a href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener">配置</a>` : '',
-        ].filter(Boolean).join('');
+        const links = account.viz_url ? `<a href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener noreferrer">看板</a>` : '';
         const linksHtml = links ? `<span class="account-links">${links}</span>` : '';
-        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code>${linksHtml}</td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td></tr>`;
+        const configLink = account.config_url
+          ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener noreferrer" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
+          : '<span class="account-venues">暂无配置入口</span>';
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code>${linksHtml}</td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td>${configLink}</td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
           return `<div class="hit ${positionStatus && positionStatus.closed ? 'hit--closed' : ''}"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`;
         }).join('');
-        return `${row}<tr class="hit-row"><td colspan="6"><div class="hit-list">${hits}</div></td></tr>`;
+        return `${row}<tr class="hit-row"><td colspan="7"><div class="hit-list">${hits}</div></td></tr>`;
       }
       function exchangeBlock(exchange, accounts) {
         const riskN = accounts.reduce((sum, account) => sum + (account.risk_n || 0), 0);
@@ -405,8 +403,7 @@
           ? [riskN ? `${riskN} 个风险标的` : '', unimmrN ? `${unimmrN} 个 UniMMR 为空` : ''].filter(Boolean).join(' · ')
           : errorN ? `${errorN} 个连接异常` : TONES[tone];
         const source = [...new Set(accounts.map((account) => account.host.toUpperCase()))].join(' / ') + ' Redis';
-        const open = exchangeOpen.has(exchange) ? exchangeOpen.get(exchange) : riskN || errorN || unimmrN;
-        return `<section class="exchange" data-exchange="${escapeHtml(exchange)}"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${escapeHtml(source)}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span></div>${announcementBlock(exchange)}<details class="exchange__accounts" ${open ? 'open' : ''}><summary><span>账户与持仓风险 · ${accounts.length} 个盘子</span><span class="chevron" aria-hidden="true"></span></summary><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:31%">盘子</th><th style="width:13%">策略</th><th style="width:10%">标的</th><th style="width:25%">交易范围</th><th style="width:8%">风险</th><th style="width:13%">状态</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></details></section>`;
+        return `<section class="exchange" data-exchange="${escapeHtml(exchange)}"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${escapeHtml(source)}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span></div>${announcementBlock(exchange)}<div class="exchange__account-heading">账户与持仓风险 · ${accounts.length} 个盘子</div><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:26%">盘子</th><th style="width:12%">策略</th><th style="width:10%">标的</th><th style="width:22%">交易范围</th><th style="width:6%">风险</th><th style="width:10%">状态</th><th style="width:14%">配置入口</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></section>`;
       }
       function renderList(accounts) {
         const root = document.getElementById('exchange-list');
@@ -415,7 +412,6 @@
         accounts.forEach((account) => { if (!groups.has(account.exchange)) groups.set(account.exchange, []); groups.get(account.exchange).push(account); });
         const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0) + (item.unimmr_empty ? 50 : 0), 0);
         root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
-        root.querySelectorAll('.exchange__accounts').forEach((details) => details.addEventListener('toggle', () => exchangeOpen.set(details.closest('.exchange').dataset.exchange, details.open)));
         root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
       }
       function render() {

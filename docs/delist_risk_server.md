@@ -45,7 +45,7 @@ Verified on 2026-10-05 UTC in `/home/ubuntu/delist_risk_server` on
 `74060ee3` are published. Artifact SHA-256:
 `f4aa67a530c6ddf762bd4c9ef35d0afe105c250a9a33a45753270d24bc21864f`.
 Frontend SHA-256:
-`d02e54ef5ad7c003491d97d682dba988d3a869c7485dd4e08c5cac878c993d54`.
+`a46907afcb255d42e0e30cfed8518cfb7c777bbbc481154c6eb2db7ffad7d7ac`.
 
 The board shows each exchange's latest analysed announcement above its account
 table. Live verification at 00:33 UTC covered desktop, 390px and 320px layouts,
@@ -294,11 +294,13 @@ successful extraction means no lifecycle actions were extracted; a failed
 attempt is shown separately and any retained actions are labelled with their
 last successful analysis time.
 
-Each exchange displays this announcement above its collapsible account table.
+Each exchange displays this announcement above its always-visible account table.
 The board shows human-readable action/market labels, assets/pairs, UTC deadlines,
-analysis and publication times, and a link to the original article. Announcements
-remain visible when account rows are collapsed. Rendering reuses persisted
-extractions and never requests additional LLM analysis.
+analysis and publication times, and a link to the original article. Every account
+has a dedicated **进入配置** link in the **配置入口** column, using the authoritative
+NAV `config_url` (including SG URLs and the Exec Manager account page). Account
+rows remain expanded through refreshes and strategy filters. Rendering reuses
+persisted extractions and never requests additional LLM analysis.
 
 Strategies whose exchange or strategy kind has no delist control rule remain
 visible with `tone=uncovered`. If a NAV refresh fails, the board retains the
