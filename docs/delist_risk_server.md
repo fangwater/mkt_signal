@@ -41,9 +41,17 @@ No API token. Do not put secrets in query strings.
 ## Current JP deployment
 
 Verified on 2026-10-05 UTC in `/home/ubuntu/delist_risk_server` on
-`jp-meta-elvpn`: the Rust release from `9fd5e175` and the launch-script fix from
+`jp-meta-elvpn`: the Rust release from `1ce9c3f3` and the launch-script fix from
 `74060ee3` are published. Artifact SHA-256:
-`41b78bc04711c32925f659167f5fcc998a6d0406fa3a6b3c49781157822638e7`.
+`f4aa67a530c6ddf762bd4c9ef35d0afe105c250a9a33a45753270d24bc21864f`.
+Frontend SHA-256:
+`d02e54ef5ad7c003491d97d682dba988d3a869c7485dd4e08c5cac878c993d54`.
+
+The board shows each exchange's latest analysed announcement above its account
+table. Live verification at 00:33 UTC covered desktop, 390px and 320px layouts,
+Bybit's two elapsed ZIL deadlines, and three manual page refreshes; all four
+exchanges' analysis timestamps remained unchanged. Service and SG tunnel are
+online with no supervisor restarts; PostgreSQL and both Redis sites are healthy.
 
 All three SG Bybit accounts load their Redis universes and have catalog
 coverage (3, 13, and 6 symbols). Twelve recent Bybit announcements have successful
