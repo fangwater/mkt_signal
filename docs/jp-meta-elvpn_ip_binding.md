@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-04 15:11 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-05 13:41 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -48,9 +48,15 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.46.90` | `52.69.209.108` | 已使用 | 现场 socket：`ipc_bridge`、各 `spread_pbs`、`spread_bbo_zmq_pub`（未写入 `trade_engine.toml`） |
 | `172.31.46.91` | `54.199.82.56` | 已使用 | 少量 `spread_pbs` |
 | `172.31.46.92` | `52.192.54.88` | 已使用 | `rclone mount` |
-| `172.31.46.93` | `18.181.48.65` | 已使用 | 少量未归类 socket |
+| `172.31.46.93` | `18.181.48.65` | 已使用 / 非交易 | CTA Manager 1 分钟 K 线 REST 缓存；少量 `ipc_bridge` socket |
 
-`ens42` 没有策略 `local_ips` 引用；行情进程因默认路由/建连落在这块网上。要改作交易 source IP 前先占表。
+`ens42` 没有策略 `local_ips` 引用；行情和 IPC 连接已使用这块网卡。
+2026-10-05 部署 CTA Manager 分钟 K 线缓存：`[kline].local_ip = "172.31.46.93"`，
+`public_ip = "18.181.48.65"`，请求 Binance USDⓈ-M `/fapi/v1/klines?interval=1m`。
+通过 IMDSv2 与绑定私网地址的外部请求核验映射；检查全部 24 份现场
+`trade_engine.toml` 后确认 `.93` 未用于下单。Manager 排除所有交易私网地址和
+`ens41` 的 7 个交易公网地址；`0.0.0.0` 交易绑定按默认路由 `.228` 处理。
+`.93` 保留给非交易请求；不要同时用作交易 source IP。此次未修改任何交易配置。
 
 本机 `ip -br addr`（2026-08-16）：
 
