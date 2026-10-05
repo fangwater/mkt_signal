@@ -143,6 +143,22 @@ pub fn env_urls(spec: &AccountSpec) -> (Option<String>, Option<String>) {
             viz = Some(format!("{base}/{ns}/{}/", spec.slug));
         }
     }
+    // JP Manager exposes Binance Exec Viz under its existing /exec_tradeNN gateway.
+    if viz.is_none()
+        && spec.kind == "cta"
+        && spec.site == RedisSite::Jp
+        && config
+            .as_deref()
+            .is_some_and(|url| url.starts_with("/manager/account/"))
+    {
+        if let Some(instance) = spec
+            .slug
+            .strip_prefix("binance_exec_trade")
+            .filter(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            viz = Some(format!("/exec_trade{instance}/"));
+        }
+    }
     (viz, config)
 }
 

@@ -111,9 +111,7 @@
       .account-table tbody tr:last-child td { border-bottom: 0; }
       .account-name { color: var(--ink); font-size: 13px; font-weight: 600; }
       .account-slug { display: block; margin-top: 2px; color: var(--quiet); font-size: 10px; }
-      .account-links { display: inline-flex; gap: 8px; margin-top: 4px; }
-      .account-links a { color: var(--muted); font-size: 11px; text-decoration: none; border-bottom: 1px solid var(--line-strong); }
-      .account-links a:hover { color: var(--ink); border-color: var(--ink); }
+      .account-nav { display: inline-flex; align-items: center; gap: 8px; }
       .config-link { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 12px; text-decoration: none; white-space: nowrap; }
       .config-link:hover { border-color: var(--muted); background: var(--surface-hover); }
       .config-link:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
@@ -173,6 +171,7 @@
         .account-table td:nth-child(3)::before { content: "标的："; color: var(--quiet); }
         .account-table td:nth-child(4) { float: right; }
         .account-table td:last-child { display: block; clear: both; margin-top: 8px; text-align: left; }
+        .account-nav { display: flex; justify-content: flex-start; }
         .hit-row { padding-top: 0 !important; }
         .hit-row td { display: block; padding: 0; background: transparent; }
         .hit { align-items: flex-start; flex-wrap: wrap; }
@@ -381,12 +380,13 @@
         const unimmrN = account.kind === 'funding_rate' && account.unimmr_close_n != null ? account.unimmr_close_n : null;
         const unimmrCell = unimmrN != null ? `<div class="account-venues">UniMMR <span class="${unimmrN ? '' : 'account-value--risk'}">${unimmrN}</span> 候选</div>` : '';
         const unimmrChip = account.unimmr_empty ? ' <span class="chip chip--risk">UniMMR为空</span>' : '';
-        const links = account.viz_url ? `<a href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener noreferrer">看板</a>` : '';
-        const linksHtml = links ? `<span class="account-links">${links}</span>` : '';
+        const vizLink = account.viz_url
+          ? `<a class="config-link viz-link" href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener noreferrer" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的 Viz 看板">进入看板 <span aria-hidden="true">↗</span></a>`
+          : '<span class="account-venues">暂无看板</span>';
         const configLink = account.config_url
           ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener noreferrer" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无配置入口</span>';
-        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code>${linksHtml}</td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td>${configLink}</td></tr>`;
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td><span class="account-nav">${vizLink}${configLink}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
@@ -403,7 +403,7 @@
           ? [riskN ? `${riskN} 个风险标的` : '', unimmrN ? `${unimmrN} 个 UniMMR 为空` : ''].filter(Boolean).join(' · ')
           : errorN ? `${errorN} 个连接异常` : TONES[tone];
         const source = [...new Set(accounts.map((account) => account.host.toUpperCase()))].join(' / ') + ' Redis';
-        return `<section class="exchange" data-exchange="${escapeHtml(exchange)}"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${escapeHtml(source)}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span></div>${announcementBlock(exchange)}<div class="exchange__account-heading">账户与持仓风险 · ${accounts.length} 个盘子</div><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:26%">盘子</th><th style="width:12%">策略</th><th style="width:10%">标的</th><th style="width:22%">交易范围</th><th style="width:6%">风险</th><th style="width:10%">状态</th><th style="width:14%">配置入口</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></section>`;
+        return `<section class="exchange" data-exchange="${escapeHtml(exchange)}"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${escapeHtml(source)}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span></div>${announcementBlock(exchange)}<div class="exchange__account-heading">账户与持仓风险 · ${accounts.length} 个盘子</div><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:23%">盘子</th><th style="width:9%">策略</th><th style="width:9%">标的</th><th style="width:16%">交易范围</th><th style="width:5%">风险</th><th style="width:8%">状态</th><th style="width:30%">导航</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></section>`;
       }
       function renderList(accounts) {
         const root = document.getElementById('exchange-list');

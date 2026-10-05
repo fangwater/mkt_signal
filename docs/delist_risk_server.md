@@ -297,8 +297,10 @@ last successful analysis time.
 Each exchange displays this announcement above its always-visible account table.
 The board shows human-readable action/market labels, assets/pairs, UTC deadlines,
 analysis and publication times, and a link to the original article. Every account
-has a dedicated **进入配置** link in the **配置入口** column, using the authoritative
-NAV `config_url` (including SG URLs and the Exec Manager account page). Account
+has side-by-side **进入看板** (Viz) and **进入配置** links in the **导航** column.
+Configuration uses the authoritative NAV `config_url`, including SG URLs and
+the Exec Manager account page. JP Binance Exec Viz uses the existing
+`/exec_tradeNN/` Manager gateway and requires a Manager session. Account
 rows remain expanded through refreshes and strategy filters. Rendering reuses
 persisted extractions and never requests additional LLM analysis.
 
