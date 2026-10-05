@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-04 UTC
+最后更新：2026-10-05 UTC
 
 Public HTTP service for upcoming delist / margin / loan / futures-off risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -37,6 +37,21 @@ http://127.0.0.1:8787/healthz
 ```
 
 No API token. Do not put secrets in query strings.
+
+## Current JP deployment
+
+Verified on 2026-10-05 UTC in `/home/ubuntu/delist_risk_server` on
+`jp-meta-elvpn`: the Rust release from `9fd5e175` and the launch-script fix from
+`74060ee3` are published. Artifact SHA-256:
+`41b78bc04711c32925f659167f5fcc998a6d0406fa3a6b3c49781157822638e7`.
+
+All three SG Bybit accounts load their Redis universes and have catalog
+coverage (3, 13, and 6 symbols). Twelve recent Bybit announcements have successful
+persisted extractions. The 2026-10-05 UTC snapshot contains all eleven catalogs
+and 13,442 symbols. After the corrected launch, Gate connects once and reuses
+previous successful extractions; the repeated `101657` announcement generated
+no new model call during verification. The service retains CPU affinity 0–5
+and its existing default network route.
 
 ## Cadence
 

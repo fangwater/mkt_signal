@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-04 UTC
+最后更新：2026-10-05 UTC
 
 ## 状态
 
