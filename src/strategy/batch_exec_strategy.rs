@@ -1262,6 +1262,7 @@ impl BatchExecStrategy {
             from_key_len: 0,
             from_key,
             signal_bbo,
+            fill_liquidity: persist_common::FillLiquidity::Unknown,
         };
         record.refresh_lengths();
         info!(

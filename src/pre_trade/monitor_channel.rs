@@ -7206,6 +7206,10 @@ where
         TradeUpdate::is_maker(self.inner)
     }
 
+    fn factual_is_maker(&self) -> Option<bool> {
+        TradeUpdate::factual_is_maker(self.inner)
+    }
+
     fn trading_venue(&self) -> TradingVenue {
         TradeUpdate::trading_venue(self.inner)
     }
@@ -7642,6 +7646,9 @@ fn build_binance_external_uniform_order(
         )
         .into_bytes(),
         signal_bbo: None,
+        fill_liquidity: persist_common::FillLiquidity::from_is_maker(
+            order_common::TradeUpdate::factual_is_maker(update),
+        ),
     };
     record.refresh_lengths();
     Some(record)
@@ -7698,6 +7705,9 @@ fn build_hyperliquid_external_uniform_order(
         )
         .into_bytes(),
         signal_bbo: None,
+        fill_liquidity: persist_common::FillLiquidity::from_is_maker(
+            order_common::TradeUpdate::factual_is_maker(update),
+        ),
     };
     record.refresh_lengths();
     Some(record)
@@ -8958,6 +8968,18 @@ mod tests {
 
         assert_eq!(order_common::OrderUpdate::symbol(&normalized), "BTCUSDT");
         assert!(matches!(normalized.symbol, Cow::Borrowed("BTCUSDT")));
+        assert_eq!(TradeUpdate::factual_is_maker(&normalized), Some(false));
+        let mut maker = update.clone();
+        maker.is_maker = 1;
+        assert_eq!(
+            TradeUpdate::factual_is_maker(&NormalizedUpdate::new(&maker)),
+            Some(true)
+        );
+        maker.is_maker = 255;
+        assert_eq!(
+            TradeUpdate::factual_is_maker(&NormalizedUpdate::new(&maker)),
+            None
+        );
     }
 
     #[test]
@@ -9094,6 +9116,12 @@ mod tests {
             normalized.symbol,
             Cow::Owned(ref symbol) if symbol == "BTCUSDT"
         ));
+        // Gate order-channel is_maker is inferred from TIF/lifecycle, not a fill fact.
+        let mut inferred_maker = update.clone();
+        inferred_maker.is_maker = 1;
+        let inferred = NormalizedUpdate::new(&inferred_maker);
+        assert!(TradeUpdate::is_maker(&inferred));
+        assert_eq!(TradeUpdate::factual_is_maker(&inferred), None);
     }
 
     struct TestMmOpenStrategy {

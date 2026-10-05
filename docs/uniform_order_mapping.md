@@ -48,26 +48,28 @@
 | `venue` | 交易所编码（`u8`，对齐 `TradingVenue`）。 |
 | `ttype` | 订单类型编码（`u8`，对齐 `OrderType`）。 |
 | `side` | 买卖方向编码（`u8`，对齐 `Side`）。 |
-| `price` | 下单价格。 |
+| `price` | 成交回报路径优先使用回报成交价，其余路径采用订单价或查询价。 |
 | `price_offset` | 价格偏移（来自信号上下文，不做反推）。 |
 | `amount_init` | 初始下单数量。 |
 | `amount_update` | 本次增量数量（由累计成交量差分得到）。 |
 | `status` | 订单状态编码（`u8`，对齐 `OrderStatus`）。 |
 | `from_key` | 来源规则字节（尾部不定长 `u32 + bytes`）。 |
 | `signal_bbo` | 决策时冻结的结构化 BBO，可分别包含 open/hedge 腿。 |
+| `fill_liquidity` | 本次增量成交的交易所角色：`Unknown=0`、`Maker=1`、`Taker=2`。 |
 
 ## 统一编码约束
 
 - 不使用 `String` 作为持久化记录字段，文本用 bytes。
 - `venue/ttype/side/status` 均为 `u8` 枚举编码。
 - `from_key` 以 `from_key_len(u32) + from_key(bytes)` 存放，不再包含 `open_bid/open_ask/hedge_bid/hedge_ask`。
-- pre-trade IPC 在 `from_key` 后固定写入 83 字节 `signal_bbo`。
-- `persist_manager` 入库时将事件盘口插到 `signal_bbo` 前，RocksDB 尾部布局为 `bbo_spread_len(u16) + bbo_spread(bytes) + signal_bbo(83 bytes)`。
+- 当前 pre-trade IPC 在 `from_key` 后固定写入 `signal_bbo(83 bytes) + fill_liquidity(u8)`，只有一个当前写入格式。
+- `persist_manager` 入库时将事件盘口插到整个 84 字节尾段前，RocksDB 尾部布局为 `bbo_spread_len(u16) + bbo_spread(bytes) + signal_bbo(83 bytes) + fill_liquidity(u8)`。
 - `signal_bbo` 使用固定二进制布局，不包含 version 或 magic：
   - `presence(u8)`：bit 0 表示 open，bit 1 表示 hedge。
   - open/hedge 各占 41 字节：`venue(u8) + ts(i64) + bid_price(f64) + bid_qty(f64) + ask_price(f64) + ask_qty(f64)`。
   - 整数和浮点数均使用 little-endian。
 - 历史 RocksDB 记录若没有 83 字节尾部，`signal_bbo` 直接解析为 `None`；不会从旧 `from_key` 或 `bbo_spread` 重建。
+- 历史记录缺少 `fill_liquidity` 时读为字段缺失，区别于新记录明确的 `Unknown`。新的 IPC 不接受缺字段或非法角色；升级 Exec 发布者和 persist_manager 必须协调完成，旧读取者不能读取新持久化尾段。
 - `bbo_spread` 是 10 个逗号分隔数字：`open_tp,open_bid,open_bid_qty,open_ask,open_ask_qty,hedge_tp,hedge_bid,hedge_bid_qty,hedge_ask,hedge_ask_qty`。
 - `bbo_spread` 的查询索引使用 uniform order 的 `update_ts`；NEW 对应挂单回报时间，TRADE 对应成交更新时间。
 - 因此 `signal_bbo` 表示决策时盘口，`bbo_spread` 表示订单事件时盘口，两者不互相替代。
@@ -83,6 +85,20 @@
 | hedge | `signal_hedge_venue`, `signal_hedge_ts`, `signal_hedge_bid_price`, `signal_hedge_bid_qty`, `signal_hedge_ask_price`, `signal_hedge_ask_qty` |
 
 旧 Parquet 完全没有这 12 列时，回灌保持历史记录布局；新 Parquet 必须完整包含 12 列。单腿的 6 列必须同时为 null 或同时有值。
+
+`fill_liquidity` 另导出为可空字符串列：`maker`、`taker`、`unknown`。历史字段缺失导出 null；回灌保留 null 与明确 unknown 的区别，不从订单类型补造事实角色。
+
+## 成交流动性规则
+
+- 交易所成交回报具有明确角色时写入 Maker/Taker；Binance 完整成交消息和 Hyperliquid userFills 透传原始标记。
+- Binance basic 消息原 `is_maker` 字节保留 `0=taker, 1=maker`，缺字段使用 `255=unknown`，不再把缺失默认为事实 Taker。原生 WebSocket、FIX 转换及 LTP 订单补报保留这个区别；旧布尔接口只把 1 当作 Maker，uniform 使用可空事实接口。
+- 查询成交、当前 OKX/Gate 订单适配器的 `is_maker` 由订单类型或生命周期推断，不是交易所事实。当前 Bitget/Bybit 完整订单消息把角色缺失与 Taker 都写成 0，无法证明事实来源。这些适配器的 `factual_is_maker` 返回缺失，uniform 写 Unknown；Hyperliquid 订单状态消息亦无事实角色。
+- 订单状态、查询补成交、撤单补成交拿不到事实角色时写 Unknown。没有正增量成交时写 Unknown，状态、成交价及增量数量保持原有逻辑。
+- 内部对敲没有交易所角色，写 Unknown；分析仍由 INTERNAL_CROSS 类型识别，费用为零。手工强平修复没有事实角色时也写 Unknown。
+- 分析优先逐条使用 uniform 的角色，不以同一订单回报的汇总索引覆盖它。同一订单可以有 Maker 与 Taker 两类成交。
+- 新 Unknown 明确列为 Unclassified，不按 LIMIT 反推 Maker；费用仍为按配置费率估算，Unclassified 使用 Taker 费率。只有历史字段缺失时沿用旧回报关联及订单类型回退。
+
+上述角色字段在本地源码中实现，尚未部署实盘。同步完整 uniform 即可携带新增的成交角色；历史真实身份不会由该变更自动补齐。
 
 ## signal_bbo 槽位规则
 

@@ -534,6 +534,7 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
 /// - from_key_len: u32
 /// - from_key: [u8; from_key_len]
 /// - signal_bbo: [u8; 83]
+/// - fill_liquidity: u8 (0=unknown, 1=maker, 2=taker)
 fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
 
@@ -579,8 +580,71 @@ fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
     buf.put_slice(&record.from_key);
 
     buf.put_slice(&SignalBbo::encode_optional(record.signal_bbo));
+    buf.put_u8(record.fill_liquidity as u8);
 
     buf.freeze()
 }
 
-// NOTE: persist-channel unit tests removed per repo usage (requires IceOryx runtime/namespace).
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use crate::strategy::uniform_order_helper::build_uniform_order_record;
+    use bytes::Buf;
+    use order_common::{Order, OrderStatus, OrderType, Side};
+    use persist_common::FillLiquidity;
+
+    // Exercise only the offline codec; never initialize Iceoryx publishers.
+    #[test]
+    fn uniform_wire_keeps_incremental_qty_and_appends_fill_role_after_signal_bbo() {
+        let order = Order::new(
+            TradingVenue::BinanceFutures,
+            42,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            10.0,
+            100.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        for (quantity, role, expected_role) in [
+            (2.0, FillLiquidity::Maker, FillLiquidity::Maker),
+            (2.0, FillLiquidity::Taker, FillLiquidity::Taker),
+            (2.0, FillLiquidity::Unknown, FillLiquidity::Unknown),
+            (0.0, FillLiquidity::Maker, FillLiquidity::Unknown),
+        ] {
+            let record = build_uniform_order_record(
+                &order,
+                10,
+                20,
+                OrderStatus::Canceled,
+                15,
+                b"batch_exec:alpha".to_vec(),
+                None,
+                101.0,
+                0.0,
+                quantity,
+                role,
+            );
+            let mut wire = serialize_uniform_order(&record);
+            wire.advance(8);
+            let symbol_len = wire.get_u16_le() as usize;
+            assert_eq!(&wire[..symbol_len], b"BTCUSDT");
+            wire.advance(symbol_len + 7 * 8 + 3);
+            assert_eq!(wire.get_f64_le(), 101.0);
+            assert_eq!(wire.get_f64_le(), 0.0);
+            assert_eq!(wire.get_f64_le(), 10.0);
+            assert_eq!(wire.get_f64_le(), quantity);
+            assert_eq!(wire.get_u8(), OrderStatus::Canceled.to_u8());
+            let from_key_len = wire.get_u32_le() as usize;
+            assert_eq!(&wire[..from_key_len], b"batch_exec:alpha");
+            wire.advance(from_key_len);
+            assert_eq!(&wire[..83], &SignalBbo::encode_optional(None));
+            wire.advance(83);
+            assert_eq!(wire.get_u8(), expected_role as u8);
+            assert!(!wire.has_remaining());
+        }
+    }
+}

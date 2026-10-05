@@ -3,7 +3,7 @@ use log::warn;
 use order_common::OrderStatus;
 use order_common::{Order, OrderManager};
 use order_common::{OrderUpdate, TradeUpdate};
-use persist_common::{SignalBbo, SignalBboLeg, UnifiedOrderRecord};
+use persist_common::{FillLiquidity, SignalBbo, SignalBboLeg, UnifiedOrderRecord};
 use signal_common::common::TradingLeg;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +77,7 @@ pub fn build_uniform_order_record(
     price: f64,
     price_offset: f64,
     amount_update: f64,
+    fill_liquidity: FillLiquidity,
 ) -> UnifiedOrderRecord {
     let mut record = UnifiedOrderRecord {
         symbol_len: 0,
@@ -99,6 +100,11 @@ pub fn build_uniform_order_record(
         from_key_len: 0,
         from_key,
         signal_bbo,
+        fill_liquidity: if amount_update > 0.0 {
+            fill_liquidity
+        } else {
+            FillLiquidity::Unknown
+        },
     };
     record.refresh_lengths();
     record
@@ -115,6 +121,7 @@ pub fn publish_uniform_order_event(
     price_override: Option<f64>,
     price_offset: f64,
     amount_update: f64,
+    fill_liquidity: FillLiquidity,
 ) {
     let create_ts = match (order.timestamp.create_t > 0, event_kind) {
         (true, _) => order.timestamp.create_t,
@@ -140,6 +147,7 @@ pub fn publish_uniform_order_event(
         price,
         price_offset,
         amount_update,
+        fill_liquidity,
     );
 
     PersistChannel::with(|ch| ch.publish_uniform_order(&record));
@@ -173,6 +181,7 @@ pub fn publish_uniform_new_order(
         None,
         ctx.price_offset,
         amount_update,
+        FillLiquidity::Unknown,
     );
 }
 
@@ -204,6 +213,7 @@ pub fn publish_uniform_terminal_order(
         None,
         ctx.price_offset,
         amount_update,
+        FillLiquidity::Unknown,
     );
 }
 
@@ -240,6 +250,7 @@ pub fn publish_uniform_trade_order(
         Some(trade.price()),
         ctx.price_offset,
         amount_update,
+        FillLiquidity::from_is_maker(trade.factual_is_maker()),
     );
 }
 
@@ -276,6 +287,7 @@ pub fn publish_uniform_trade_order_from_order_update(
         None,
         ctx.price_offset,
         amount_update,
+        FillLiquidity::Unknown,
     );
 }
 

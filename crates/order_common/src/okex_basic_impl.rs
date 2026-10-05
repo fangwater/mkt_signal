@@ -226,6 +226,8 @@ mod tests {
         assert_eq!(OrderUpdate::amendment_succeeded(&update), Some(true));
         assert_eq!(OrderUpdate::price(&update), 70_100.0);
         assert_eq!(TradeUpdate::price(&update), 70_000.0);
+        assert!(TradeUpdate::is_maker(&update));
+        assert_eq!(TradeUpdate::factual_is_maker(&update), None);
     }
 
     #[test]

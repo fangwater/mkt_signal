@@ -206,6 +206,14 @@ impl TradeUpdate for HyperliquidBasicFillMsg {
         self.is_maker != 0
     }
 
+    fn factual_is_maker(&self) -> Option<bool> {
+        match self.is_maker {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
     fn trading_venue(&self) -> TradingVenue {
         trading_venue(self.venue)
     }

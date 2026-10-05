@@ -1,5 +1,43 @@
 pub const SIGNAL_BBO_LEG_BINARY_LEN: usize = 1 + 8 + 8 * 4;
 pub const SIGNAL_BBO_BINARY_LEN: usize = 1 + SIGNAL_BBO_LEG_BINARY_LEN * 2;
+pub const UNIFORM_ORDER_TAIL_BINARY_LEN: usize = SIGNAL_BBO_BINARY_LEN + 1;
+
+/// Exchange-reported role of this incremental fill. Unknown is never Maker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FillLiquidity {
+    #[default]
+    Unknown = 0,
+    Maker = 1,
+    Taker = 2,
+}
+
+impl FillLiquidity {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Unknown),
+            1 => Some(Self::Maker),
+            2 => Some(Self::Taker),
+            _ => None,
+        }
+    }
+
+    pub fn from_is_maker(value: Option<bool>) -> Self {
+        match value {
+            Some(true) => Self::Maker,
+            Some(false) => Self::Taker,
+            None => Self::Unknown,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Maker => "maker",
+            Self::Taker => "taker",
+        }
+    }
+}
 
 /// `ttype` for synthetic fills booked by the internal position cross between
 /// BatchExec strategies sharing one account position. No exchange order exists
@@ -210,6 +248,8 @@ pub struct UnifiedOrderRecord {
     /// Decision-time BBO. Current producers populate it; historical records may
     /// omit the fixed binary tail and decode to None.
     pub signal_bbo: Option<SignalBbo>,
+    /// Factual role for this fill; order/query-only and non-fill records are Unknown.
+    pub fill_liquidity: FillLiquidity,
 }
 
 impl UnifiedOrderRecord {

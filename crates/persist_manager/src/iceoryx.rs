@@ -6,7 +6,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
 use crate::runtime_common::{build_service_name, SIGNAL_PAYLOAD};
-use persist_common::{OrderQueuePositionRecord, SIGNAL_BBO_BINARY_LEN};
+use persist_common::{FillLiquidity, OrderQueuePositionRecord, SIGNAL_BBO_BINARY_LEN};
 
 const NODE_PREFIX: &str = "persist_record_";
 
@@ -195,6 +195,7 @@ fn uniform_order_used_len(payload: &[u8]) -> Option<usize> {
         return None;
     }
     cursor.advance(SIGNAL_BBO_BINARY_LEN);
+    FillLiquidity::from_u8(read_u8(&mut cursor)?)?;
 
     Some(payload.len().saturating_sub(cursor.remaining()))
 }
@@ -326,6 +327,7 @@ mod tests {
         buf.put_u8(0);
         buf.put_u32_le(0);
         buf.put_slice(&[0; SIGNAL_BBO_BINARY_LEN]);
+        buf.put_u8(FillLiquidity::Taker as u8);
         buf.to_vec()
     }
 
@@ -343,6 +345,14 @@ mod tests {
     fn uniform_trim_rejects_missing_signal_bbo_bytes() {
         let mut payload = uniform_payload();
         payload.pop();
+        assert!(trim_uniform_order_payload(&payload).is_none());
+    }
+
+    #[test]
+    fn uniform_trim_rejects_invalid_fill_role() {
+        let mut payload = uniform_payload();
+        *payload.last_mut().unwrap() = 3;
+        payload.extend_from_slice(&[0; 32]);
         assert!(trim_uniform_order_payload(&payload).is_none());
     }
 }

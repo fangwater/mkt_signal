@@ -228,3 +228,38 @@ impl TradeUpdate for OrderQueryTradeUpdate {
         self.order_status
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_inference_cannot_be_persisted_as_factual_maker() {
+        let order = Order::new(
+            TradingVenue::BinanceFutures,
+            42,
+            crate::OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            2.0,
+            100.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+        for tif in [TimeInForce::GTC, TimeInForce::GTX] {
+            let update = OrderQueryTradeUpdate::new(
+                &order,
+                7,
+                1000,
+                1.0,
+                Some(100.0),
+                Some(OrderStatus::PartiallyFilled),
+                tif,
+            );
+            assert!(update.is_maker());
+            assert_eq!(update.factual_is_maker(), None);
+        }
+    }
+}

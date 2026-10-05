@@ -6,7 +6,7 @@ use bytes::{BufMut, BytesMut};
 use clap::Parser;
 use log::info;
 use order_common::{ExecutionType, OrderStatus, OrderType, Side, TimeInForce, TradingVenue};
-use persist_common::{SignalBbo, SignalBboLeg, SIGNAL_BBO_BINARY_LEN};
+use persist_common::{FillLiquidity, SignalBbo, SignalBboLeg, SIGNAL_BBO_BINARY_LEN};
 use persist_manager::sync::center_source_cf_name;
 use persist_manager::RocksDbStore;
 use polars::prelude::*;
@@ -414,6 +414,7 @@ struct UniformColumns<'a> {
     from_key: &'a StringChunked,
     from_key_hex: &'a StringChunked,
     signal_bbo: Option<SignalBboColumns<'a>>,
+    fill_liquidity: Option<&'a StringChunked>,
     bbo_spread: &'a StringChunked,
 }
 
@@ -441,6 +442,11 @@ impl<'a> UniformColumns<'a> {
             from_key: str_col(df, "from_key")?,
             from_key_hex: str_col(df, "from_key_hex")?,
             signal_bbo: SignalBboColumns::new_optional(df)?,
+            fill_liquidity: if df.column("fill_liquidity").is_ok() {
+                Some(str_col(df, "fill_liquidity")?)
+            } else {
+                None
+            },
             bbo_spread: str_col(df, "bbo_spread")?,
         })
     }
@@ -643,7 +649,20 @@ fn encode_uniform_order_row(cols: &UniformColumns<'_>, row: usize) -> Result<(Ve
         .map(|columns| columns.value(row))
         .transpose()?;
 
-    let signal_bbo_len = usize::from(cols.signal_bbo.is_some()) * SIGNAL_BBO_BINARY_LEN;
+    let fill_liquidity = cols
+        .fill_liquidity
+        .and_then(|column| column.get(row))
+        .map(|value| match value {
+            "unknown" => Ok(FillLiquidity::Unknown),
+            "maker" => Ok(FillLiquidity::Maker),
+            "taker" => Ok(FillLiquidity::Taker),
+            _ => Err(anyhow!("invalid fill_liquidity: {value}")),
+        })
+        .transpose()?;
+
+    let signal_bbo_len = usize::from(cols.signal_bbo.is_some() || fill_liquidity.is_some())
+        * SIGNAL_BBO_BINARY_LEN
+        + usize::from(fill_liquidity.is_some());
     let mut buf = BytesMut::with_capacity(
         160 + symbol.len() + from_key.len() + bbo_spread.len() + signal_bbo_len,
     );
@@ -681,8 +700,11 @@ fn encode_uniform_order_row(cols: &UniformColumns<'_>, row: usize) -> Result<(Ve
     buf.put_slice(&from_key);
     buf.put_u16_le(bbo_spread.len() as u16);
     buf.put_slice(bbo_spread.as_bytes());
-    if cols.signal_bbo.is_some() {
+    if cols.signal_bbo.is_some() || fill_liquidity.is_some() {
         buf.put_slice(&SignalBbo::encode_optional(signal_bbo.flatten()));
+    }
+    if let Some(role) = fill_liquidity {
+        buf.put_u8(role as u8);
     }
     Ok((key, buf.to_vec()))
 }
@@ -934,4 +956,84 @@ fn parse_execution_type_code(raw: &str) -> Result<u8> {
         ExecutionType::Expired => 5,
         ExecutionType::TradePrevention => 6,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use persist_manager::parquet::{build_uniform_orders_df, RangeFilter};
+
+    fn uniform_payload(role: Option<FillLiquidity>) -> Vec<u8> {
+        let mut buf = BytesMut::new();
+        buf.put_i64_le(1000);
+        buf.put_u16_le(7);
+        buf.put_slice(b"BTCUSDT");
+        for value in 10..=16 {
+            buf.put_i64_le(value);
+        }
+        buf.put_u8(TradingVenue::BinanceFutures.to_u8());
+        buf.put_u8(OrderType::Limit.to_u8());
+        buf.put_u8(Side::Buy.to_u8());
+        for value in [100.0, 0.0, 10.0, 2.0] {
+            buf.put_f64_le(value);
+        }
+        buf.put_u8(OrderStatus::Canceled.to_u8());
+        buf.put_u32_le(16);
+        buf.put_slice(b"batch_exec:alpha");
+        buf.put_u16_le(0);
+        buf.put_slice(&SignalBbo::encode_optional(None));
+        if let Some(role) = role {
+            buf.put_u8(role as u8);
+        }
+        buf.to_vec()
+    }
+
+    #[test]
+    fn parquet_roundtrip_keeps_unknown_distinct_from_absent_and_preserves_canceled_fill() {
+        let entries: Vec<_> = [
+            None,
+            Some(FillLiquidity::Unknown),
+            Some(FillLiquidity::Maker),
+            Some(FillLiquidity::Taker),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, role)| {
+            (
+                (1000 + index).to_string().into_bytes(),
+                uniform_payload(role),
+            )
+        })
+        .collect();
+        let df = build_uniform_orders_df(entries.clone(), &RangeFilter::all()).unwrap();
+        let columns = UniformColumns::new(&df).unwrap();
+        let restored: Vec<_> = (0..df.height())
+            .map(|row| encode_uniform_order_row(&columns, row).unwrap())
+            .collect();
+        assert_eq!(restored, entries);
+        let roundtrip = build_uniform_orders_df(restored, &RangeFilter::all()).unwrap();
+        assert_eq!(roundtrip.height(), 4);
+        assert_eq!(
+            roundtrip.column("fill_liquidity").unwrap(),
+            df.column("fill_liquidity").unwrap()
+        );
+        assert_eq!(
+            roundtrip.column("amount_update").unwrap(),
+            df.column("amount_update").unwrap()
+        );
+
+        let mut historical = df.slice(0, 1);
+        let _ = historical.drop_in_place("fill_liquidity").unwrap();
+        let restored =
+            encode_uniform_order_row(&UniformColumns::new(&historical).unwrap(), 0).unwrap();
+        assert_eq!(restored, entries[0]);
+        let mut invalid = df;
+        invalid
+            .replace(
+                "fill_liquidity",
+                Series::new("fill_liquidity".into(), ["bad"; 4]),
+            )
+            .unwrap();
+        assert!(encode_uniform_order_row(&UniformColumns::new(&invalid).unwrap(), 0).is_err());
+    }
 }

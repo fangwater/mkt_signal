@@ -192,6 +192,8 @@ pub fn parse_order_push(
             "AMEND_FAILED" => -1,
             _ => BinanceBasicOrderMsg::AMEND_RESULT_NONE,
         };
+        // This lifecycle supplement carries no exchange fill role.
+        msg.set_reported_fill_role(None);
         return Ok(Some(wrap(
             BasicAccountEventType::OrderUpdate,
             BasicAccountScope::BinanceUnified,
@@ -515,6 +517,8 @@ mod tests {
         assert_eq!(order.venue, BinanceBasicOrderMsg::VENUE_UM);
         assert_eq!(order.cumulative_filled_quantity, 1.0);
         assert_eq!(order.execution_type, ExecutionType::Trade.to_u8());
+        assert_eq!(order.is_maker, BinanceBasicOrderMsg::IS_MAKER_UNKNOWN);
+        assert_eq!(order_common::TradeUpdate::factual_is_maker(&order), None);
         for (state, code) in [
             ("OPEN", 2),
             ("PARTIALLY_FILLED", 3),

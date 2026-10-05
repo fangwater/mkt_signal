@@ -936,7 +936,7 @@ impl FixErEvent {
         } else {
             0
         };
-        Some(BinanceBasicOrderMsg::create(
+        let mut msg = BinanceBasicOrderMsg::create(
             BinanceBasicOrderMsg::VENUE_MARGIN,
             self.transact_time_ms,
             self.transact_time_ms,
@@ -959,7 +959,9 @@ impl FixErEvent {
             self.commission,
             0.0,
             self.commission_asset.clone(),
-        ))
+        );
+        msg.set_reported_fill_role(self.is_maker);
+        Some(msg)
     }
 }
 
@@ -1980,6 +1982,11 @@ mod tests {
         assert_eq!(event.exec_id, "144");
         assert_eq!(event.trade_id, "1965177634");
         assert_eq!(event.exec_type_am, 5);
+        assert_eq!(event.is_maker, None);
+        let order = event.to_std_spot_order_msg().unwrap();
+        assert_eq!(order.is_maker, BinanceBasicOrderMsg::IS_MAKER_UNKNOWN);
+        assert!(!order_common::TradeUpdate::is_maker(&order));
+        assert_eq!(order_common::TradeUpdate::factual_is_maker(&order), None);
     }
 
     #[test]

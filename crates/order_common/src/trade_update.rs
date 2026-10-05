@@ -42,6 +42,12 @@ pub trait TradeUpdate {
     /// 是否为做市商成交 (true=maker, false=taker)
     fn is_maker(&self) -> bool;
 
+    /// Only an explicit exchange fill role is factual. Query/order adapters
+    /// that infer is_maker from order type retain the default Unknown.
+    fn factual_is_maker(&self) -> Option<bool> {
+        None
+    }
+
     /// 获取交易标的类型（交易所和市场类型）
     fn trading_venue(&self) -> TradingVenue;
 

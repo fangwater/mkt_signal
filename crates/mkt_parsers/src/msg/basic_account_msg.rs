@@ -624,6 +624,7 @@ pub struct BinanceBasicOrderMsg {
     pub execution_type: u8,
     /// 1..=6: OrderStatus
     pub order_status: u8,
+    /// 0=taker, 1=maker, 255=role not reported (including order/query supplements).
     pub is_maker: u8,
     /// 0=ordinary, 1=liquidation, 2=adl, 3=settlement, 4=delivery
     pub external_order_kind: u8,
@@ -651,6 +652,11 @@ impl BinanceBasicOrderMsg {
     pub const EXTERNAL_SETTLEMENT: u8 = 3;
     pub const EXTERNAL_DELIVERY: u8 = 4;
     pub const AMEND_RESULT_NONE: i8 = i8::MIN;
+    pub const IS_MAKER_UNKNOWN: u8 = u8::MAX;
+
+    pub fn set_reported_fill_role(&mut self, is_maker: Option<bool>) {
+        self.is_maker = is_maker.map(u8::from).unwrap_or(Self::IS_MAKER_UNKNOWN);
+    }
 
     pub fn external_order_label(&self) -> Option<&'static str> {
         match self.external_order_kind {

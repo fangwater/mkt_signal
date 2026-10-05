@@ -6,7 +6,10 @@ use polars::prelude::*;
 
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderType, Side};
-use persist_common::{OrderQueuePositionRecord, SignalBbo, SIGNAL_BBO_BINARY_LEN};
+use persist_common::{
+    FillLiquidity, OrderQueuePositionRecord, SignalBbo, SIGNAL_BBO_BINARY_LEN,
+    UNIFORM_ORDER_TAIL_BINARY_LEN,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RangeFilter {
@@ -353,6 +356,7 @@ pub fn build_uniform_orders_df_with_options(
     let mut status_col = Vec::with_capacity(entries.len());
     let mut from_key_col = Vec::with_capacity(entries.len());
     let mut from_key_hex_col = Vec::with_capacity(entries.len());
+    let mut fill_liquidity_col = Vec::with_capacity(entries.len());
     let mut signal_open_venue_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
     let mut signal_open_ts_col = Vec::with_capacity(entries.len());
     let mut signal_open_bid_price_col = Vec::with_capacity(entries.len());
@@ -421,6 +425,7 @@ pub fn build_uniform_orders_df_with_options(
             from_key,
             from_key_hex,
             signal_bbo,
+            fill_liquidity,
             bbo_spread,
         } = record;
 
@@ -445,6 +450,7 @@ pub fn build_uniform_orders_df_with_options(
         status_col.push(status);
         from_key_col.push(from_key);
         from_key_hex_col.push(from_key_hex);
+        fill_liquidity_col.push(fill_liquidity.map(FillLiquidity::as_str));
         let signal_open = signal_bbo.and_then(|value| value.open);
         signal_open_venue_col.push(signal_open.map(|leg| venue_name(leg.venue)));
         signal_open_ts_col.push(signal_open.map(|leg| leg.ts));
@@ -489,6 +495,7 @@ pub fn build_uniform_orders_df_with_options(
         Series::new("status".into(), status_col),
         Series::new("from_key".into(), from_key_col),
         Series::new("from_key_hex".into(), from_key_hex_col),
+        Series::new("fill_liquidity".into(), fill_liquidity_col),
         Series::new("bbo_spread".into(), bbo_spread_col),
         Series::new("signal_open_venue".into(), signal_open_venue_col.as_slice()),
         Series::new("signal_open_ts".into(), signal_open_ts_col.as_slice()),
@@ -626,6 +633,7 @@ struct DecodedUniformOrderRecord {
     from_key: String,
     from_key_hex: String,
     signal_bbo: Option<SignalBbo>,
+    fill_liquidity: Option<FillLiquidity>,
     bbo_spread: String,
 }
 
@@ -742,8 +750,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     let update_ts = read_i64(&mut cursor, "uniform order update_ts")?;
     let signal_ts = read_i64(&mut cursor, "uniform order signal_ts")?;
 
-    // 强制按 v2 layout 解码（含 submit_ts/local_ts/mkt_ts）。
-    // v1 残留记录会在下游字段读取时报错，由调用方 drop。
+    // The current base layout includes submit_ts/local_ts/mkt_ts.
     let submit_ts = read_i64(&mut cursor, "uniform order submit_ts")?;
     let local_ts = read_i64(&mut cursor, "uniform order local_ts")?;
     let mkt_ts = read_i64(&mut cursor, "uniform order mkt_ts")?;
@@ -780,14 +787,27 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
     };
 
     let signal_bbo = if cursor.has_remaining() {
-        if cursor.remaining() != SIGNAL_BBO_BINARY_LEN {
+        if !matches!(
+            cursor.remaining(),
+            SIGNAL_BBO_BINARY_LEN | UNIFORM_ORDER_TAIL_BINARY_LEN
+        ) {
             return Err(anyhow!(
-                "uniform order signal_bbo must be {SIGNAL_BBO_BINARY_LEN} bytes, got {}",
+                "uniform order tail must contain signal_bbo and optional fill_liquidity, got {} bytes",
                 cursor.remaining()
             ));
         }
         let bytes = cursor.copy_to_bytes(SIGNAL_BBO_BINARY_LEN);
         SignalBbo::decode_optional(bytes.as_ref()).map_err(|err| anyhow!(err))?
+    } else {
+        None
+    };
+
+    let fill_liquidity = if cursor.has_remaining() {
+        let code = read_u8(&mut cursor, "uniform order fill_liquidity")?;
+        Some(
+            FillLiquidity::from_u8(code)
+                .ok_or_else(|| anyhow!("invalid fill_liquidity: {code}"))?,
+        )
     } else {
         None
     };
@@ -833,6 +853,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
         from_key,
         from_key_hex,
         signal_bbo,
+        fill_liquidity,
         bbo_spread,
     })
 }
@@ -1113,7 +1134,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(df.height(), 1);
-        assert_eq!(df.width(), 28);
+        assert_eq!(df.width(), 29);
         assert!(df.column("signal_open_venue").is_ok());
         for column in [
             "signal_hedge_venue",
@@ -1125,5 +1146,38 @@ mod tests {
         ] {
             assert!(df.column(column).is_err(), "{column} should be omitted");
         }
+    }
+
+    #[test]
+    fn uniform_export_preserves_each_fill_role_and_historical_absence() {
+        let mut entries = vec![(b"1000".to_vec(), uniform_payload(None))];
+        for (offset, role) in [
+            FillLiquidity::Unknown,
+            FillLiquidity::Maker,
+            FillLiquidity::Taker,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut payload = uniform_payload(Some(None));
+            payload.push(role as u8);
+            let decoded = decode_uniform_order_record(&payload).unwrap();
+            assert_eq!(decoded.fill_liquidity, Some(role));
+            assert_eq!(decoded.amount_update, 1.0);
+            entries.push(((1001 + offset).to_string().into_bytes(), payload));
+        }
+        let df = build_uniform_orders_df(entries, &RangeFilter::all()).unwrap();
+        assert_eq!(df.height(), 4);
+        let roles = df.column("fill_liquidity").unwrap().str().unwrap();
+        assert_eq!(roles.get(0), None);
+        assert_eq!(roles.get(1), Some("unknown"));
+        assert_eq!(roles.get(2), Some("maker"));
+        assert_eq!(roles.get(3), Some("taker"));
+
+        let mut invalid = uniform_payload(Some(None));
+        invalid.push(3);
+        assert!(decode_uniform_order_record(&invalid).is_err());
+        invalid.push(0);
+        assert!(decode_uniform_order_record(&invalid).is_err());
     }
 }

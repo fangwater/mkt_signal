@@ -11,8 +11,8 @@ pub use order_queue_position::{
     OrderQueuePositionRecord, ORDER_QUEUE_POSITION_MAX_BYTES, ORDER_QUEUE_POSITION_MSG_BYTES,
 };
 pub use unified_order::{
-    SignalBbo, SignalBboLeg, UnifiedOrderRecord, SIGNAL_BBO_BINARY_LEN,
-    UNIFORM_ORDER_TYPE_INTERNAL_CROSS,
+    FillLiquidity, SignalBbo, SignalBboLeg, UnifiedOrderRecord, SIGNAL_BBO_BINARY_LEN,
+    UNIFORM_ORDER_TAIL_BINARY_LEN, UNIFORM_ORDER_TYPE_INTERNAL_CROSS,
 };
 
 pub const TRADE_UPDATE_RECORD_CHANNEL: &str = "trade_update_record";

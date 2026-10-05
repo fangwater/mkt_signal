@@ -91,7 +91,8 @@ impl BinanceBasicAccountEventParser {
 
         let side_str = lazy_string(json, "S");
         let side = order_codes::side_to_u8_default_buy(&side_str);
-        let is_maker = lazy_bool(json, "m");
+        let reported_is_maker = json.get("m").and_then(|value| value.as_bool());
+        let is_maker = reported_is_maker.unwrap_or(false);
 
         let price = lazy_f64(json, "p");
         let quantity = lazy_f64(json, "q");
@@ -115,7 +116,7 @@ impl BinanceBasicAccountEventParser {
             0.0
         };
 
-        let msg = BinanceBasicOrderMsg::create(
+        let mut msg = BinanceBasicOrderMsg::create(
             BinanceBasicOrderMsg::VENUE_MARGIN,
             event_time,
             transaction_time,
@@ -139,6 +140,7 @@ impl BinanceBasicAccountEventParser {
             0.0,
             commission_asset,
         );
+        msg.set_reported_fill_role(reported_is_maker);
 
         debug!(
             "parser: executionReport parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
@@ -203,7 +205,8 @@ impl BinanceBasicAccountEventParser {
 
         let side_str = lazy_string(&o, "S");
         let side = order_codes::side_to_u8_default_buy(&side_str);
-        let is_maker = lazy_bool(&o, "m");
+        let reported_is_maker = o.get("m").and_then(|value| value.as_bool());
+        let is_maker = reported_is_maker.unwrap_or(false);
 
         let price = lazy_f64(&o, "p");
         let quantity = lazy_f64(&o, "q");
@@ -253,6 +256,7 @@ impl BinanceBasicAccountEventParser {
             commission_asset,
         );
         msg.external_order_kind = external_order_kind;
+        msg.set_reported_fill_role(reported_is_maker);
 
         debug!(
             "parser: orderTradeUpdate parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
@@ -586,6 +590,51 @@ mod tests {
         split_basic_account_event, BasicAccountEventType, BasicAccountScope, BasicPositionMsg,
         BasicTradeLiteMsg, BasicUmUnrealizedMsg,
     };
+
+    #[test]
+    fn missing_fill_role_stays_unknown_in_spot_and_futures_wire_messages() {
+        for scope in [
+            BasicAccountScope::BinanceStdSpot,
+            BasicAccountScope::BinanceStdUm,
+        ] {
+            for role in [None, Some(false), Some(true)] {
+                let order = serde_json::json!({
+                    "s":"BTCUSDT", "c":"42", "i":7, "t":9, "S":"BUY", "o":"LIMIT",
+                    "f":"GTC", "x":"TRADE", "X":"PARTIALLY_FILLED", "p":"100", "q":"2",
+                    "l":"1", "z":"1", "L":"100", "ap":"100", "Z":"100", "n":"0", "N":"USDT"
+                });
+                let mut input = if scope == BasicAccountScope::BinanceStdSpot {
+                    let mut input = order.clone();
+                    input["e"] = serde_json::json!("executionReport");
+                    input["E"] = serde_json::json!(1000);
+                    input["T"] = serde_json::json!(1000);
+                    input
+                } else {
+                    serde_json::json!({"e":"ORDER_TRADE_UPDATE", "E":1000, "T":1000, "o":order})
+                };
+                let order = if scope == BasicAccountScope::BinanceStdSpot {
+                    &mut input
+                } else {
+                    &mut input["o"]
+                };
+                if let Some(role) = role {
+                    order["m"] = serde_json::json!(role);
+                }
+                let parser = BinanceBasicAccountEventParser::new(true, scope);
+                let sink = TestAccountEventSink::new();
+                assert_eq!(parser.parse(Bytes::from(input.to_string()), &sink), 1);
+                let wrapped = sink.recv().unwrap();
+                let (_, _, wire) = split_basic_account_event(&wrapped).unwrap();
+                let msg = BinanceBasicOrderMsg::from_bytes(wire).unwrap();
+                assert_eq!(
+                    msg.is_maker,
+                    role.map(u8::from)
+                        .unwrap_or(BinanceBasicOrderMsg::IS_MAKER_UNKNOWN)
+                );
+                assert_eq!(msg.cumulative_filled_quantity, 1.0);
+            }
+        }
+    }
 
     #[test]
     fn account_update_emits_scope_and_unrealized_pnl() {
