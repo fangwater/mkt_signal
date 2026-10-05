@@ -41,17 +41,20 @@ No API token. Do not put secrets in query strings.
 ## Current JP deployment
 
 Verified on 2026-10-05 UTC in `/home/ubuntu/delist_risk_server` on
-`jp-meta-elvpn`: the Rust release from `1ce9c3f3` and the launch-script fix from
+`jp-meta-elvpn`: the Rust release from `a69dcd84` and the launch-script fix from
 `74060ee3` are published. Artifact SHA-256:
-`f4aa67a530c6ddf762bd4c9ef35d0afe105c250a9a33a45753270d24bc21864f`.
+`e5d655dd78433a1510ef484b8184c5b4bc1d06a0e8009c0346599df65e61d862`.
 Frontend SHA-256:
-`a46907afcb255d42e0e30cfed8518cfb7c777bbbc481154c6eb2db7ffad7d7ac`.
+`f7159a48b03e02aa9a77e6f4d458b7fd8056a07792f14e648a2ebdf7e11311d9`.
 
 The board shows each exchange's latest analysed announcement above its account
-table. Live verification at 00:33 UTC covered desktop, 390px and 320px layouts,
-Bybit's two elapsed ZIL deadlines, and three manual page refreshes; all four
-exchanges' analysis timestamps remained unchanged. Service and SG tunnel are
-online with no supervisor restarts; PostgreSQL and both Redis sites are healthy.
+table. All fourteen account rows stay expanded and display **进入看板** and
+**进入配置** side by side. Live verification covered 1365px, 800px, 390px and
+320px layouts, exact Viz/config destinations, and page refreshes and filters.
+Thirteen public Viz entries return HTTP 200; Binance Exec's `/exec_trade01/`
+requires an existing Manager session and its upstream page/health both return
+HTTP 200. Service and SG tunnel are online with no supervisor restarts;
+PostgreSQL and both Redis sites are healthy.
 
 At 00:44 UTC, the existing enabled NAV strategy `gate_fr_arb03` was missing
 from the monitor because the `delist` service user lacked its strategy read
