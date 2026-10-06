@@ -212,10 +212,10 @@ fn role_stream_policy(
     if is_hyperliquid_venue(venue) {
         return (true, true);
     }
-    let market_only = (venue == TradingVenue::BinanceFutures
+    let market_only = (is_binance_futures_venue(venue)
         && binance_futures_role == BinanceFuturesRole::Market)
         || (is_bybit_venue(venue) && bybit_role == BybitRole::Market);
-    let bookticker_only = (venue == TradingVenue::BinanceFutures
+    let bookticker_only = (is_binance_futures_venue(venue)
         && binance_futures_role == BinanceFuturesRole::BookTicker)
         || (is_bybit_venue(venue) && bybit_role == BybitRole::BookTicker);
     (!market_only, !bookticker_only)
@@ -227,6 +227,13 @@ fn is_binance_venue(venue: TradingVenue) -> bool {
         TradingVenue::BinanceMargin
             | TradingVenue::BinanceFutures
             | TradingVenue::BinanceCoinFutures
+    )
+}
+
+fn is_binance_futures_venue(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
     )
 }
 
@@ -577,7 +584,7 @@ impl SpreadPbsApp {
             BinanceSpotTransport::WsSbe
         };
         let publish_roots = self.publish_roots.clone();
-        let binance_futures_role = if venue == TradingVenue::BinanceFutures {
+        let binance_futures_role = if is_binance_futures_venue(venue) {
             self.binance_futures_role
         } else {
             BinanceFuturesRole::Full
@@ -670,8 +677,8 @@ impl SpreadPbsApp {
             ENV_ENABLE_DERIVATIVES,
             self.config.data_types.enable_derivatives,
         );
-        let is_binance_futures_market_role = venue == TradingVenue::BinanceFutures
-            && binance_futures_role == BinanceFuturesRole::Market;
+        let is_binance_futures_market_role =
+            is_binance_futures_venue(venue) && binance_futures_role == BinanceFuturesRole::Market;
         let (bbo_enabled, replacement_enabled) = role_stream_policy(
             venue,
             binance_futures_role,
@@ -3866,34 +3873,22 @@ mod tests {
     }
 
     #[test]
-    fn binance_bookticker_role_keeps_bbo_and_disables_replacement_streams() {
-        assert_eq!(
-            role_stream_policy(
-                TradingVenue::BinanceFutures,
-                BinanceFuturesRole::Full,
-                BybitRole::Full,
-                MarketDataProvider::Native,
-            ),
-            (true, true)
-        );
-        assert_eq!(
-            role_stream_policy(
-                TradingVenue::BinanceFutures,
-                BinanceFuturesRole::Market,
-                BybitRole::Full,
-                MarketDataProvider::Native,
-            ),
-            (false, true)
-        );
-        assert_eq!(
-            role_stream_policy(
-                TradingVenue::BinanceFutures,
-                BinanceFuturesRole::BookTicker,
-                BybitRole::Full,
-                MarketDataProvider::Native,
-            ),
-            (true, false)
-        );
+    fn binance_futures_roles_apply_to_linear_and_inverse_markets_without_duplicate_publishers() {
+        for venue in [
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
+        ] {
+            for (role, expected) in [
+                (BinanceFuturesRole::Full, (true, true)),
+                (BinanceFuturesRole::Market, (false, true)),
+                (BinanceFuturesRole::BookTicker, (true, false)),
+            ] {
+                assert_eq!(
+                    role_stream_policy(venue, role, BybitRole::Full, MarketDataProvider::Native),
+                    expected,
+                );
+            }
+        }
     }
 
     #[test]

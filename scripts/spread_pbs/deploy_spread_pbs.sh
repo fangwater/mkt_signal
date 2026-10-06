@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="spread_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 每个 exchange 的 margin/futures 为默认单边 venue；inverse venue 必须显式部署。
+# Binance futures 同时覆盖 USD-M / COIN-M；Bitget inverse venue 必须显式部署。
 # HK el-cc-okx-srv01 的 OKEX venue 会写入 SPREAD_PBS_CORE 覆盖到 12/14。
 KNOWN_VENUES=(
   "binance-margin"

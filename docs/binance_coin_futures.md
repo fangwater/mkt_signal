@@ -54,19 +54,25 @@ spread_pbs/binance-coin-futures/ask_bid_spread
 dat_pbs/binance-coin-futures/derivatives
 ```
 
-`spread_pbs --venue binance-futures` discovers all active USDT and USDC
-perpetuals for the full, market and bookticker roles, without requiring matching
-spot pairs. COIN-M uses its own `--venue binance-coin-futures` process and
-discovers active USD perpetuals only. `binance-both` combines spot and USD-M;
-it does not start COIN-M. Missing that separate process leaves coin-margined
-targets without BBO, trades or mark prices. `SPREAD_PBS_SYMBOLS=BTCUSD` selects
-the wire subscription `BTCUSD_PERP` in the COIN-M process.
+`spread_pbs --venue binance-futures` covers active USDT, USDC and USD perpetuals
+in one process, without requiring matching spot pairs. Internally it connects
+USD-M through FAPI/FStream and COIN-M through DAPI/DStream, sharing the configured
+source IPs and core. The full, market and bookticker roles apply to both markets,
+so split market/bookticker deployments do not duplicate each other's IPC
+publishers. `binance-both` also adds spot to these two futures markets.
+
+IPC services keep their native `binance-futures` and `binance-coin-futures`
+names so Exec receives the correct market and contract quantity semantics.
+`SPREAD_PBS_SYMBOLS=BTCUSD` selects the wire subscription `BTCUSD_PERP`; a filter
+containing only USDT/USDC or only USD starts the matching futures market. Stop
+any standalone COIN-M publisher before starting a combined futures deployment.
+The RapidX public provider covers USD-M only; COIN-M requires native feeds.
 
 Examples:
 
 ```bash
 dat_pbs --venue binance-coin-futures
-spread_pbs --venue binance-coin-futures
+spread_pbs --venue binance-futures --core "$SPREAD_PBS_CORE"
 pre_trade --open-venue binance-margin --hedge-venue binance-coin-futures
 exec-pre-trade --venue binance-coin-futures
 ```

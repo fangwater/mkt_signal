@@ -19,6 +19,7 @@ Behavior:
     必须在当前部署目录的 env.sh 中显式设置 SPREAD_PBS_CORE=<core>。
     Hyperliquid 使用单进程，stream 策略由 spread_pbs 内部决定。
   - binance-futures 可通过 SPREAD_PBS_BINANCE_FUTURES_ROLE=split|market|bookticker 选择进程角色。
+    每个角色同时覆盖 USDT、USDC、USD 永续，内部连接 USD-M 和 COIN-M 两套行情。
     角色只选择数据流；所有角色复用统一的双路 WS 和错峰重连机制。
   - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
     Bybit-both 默认拆成 market/bookticker 两个进程，避免 JSON market 流和 BBO 流互相抢 CPU。
@@ -275,7 +276,13 @@ find_running_pids() {
 check_conflicting_spread_pbs_processes() {
   local exchange=""
   local conflict_venues=()
-  if [[ "$venue" =~ ^([a-z0-9]+)-both$ ]]; then
+  if [[ "$venue" == "binance-both" ]]; then
+    conflict_venues=("binance-margin" "binance-futures" "binance-coin-futures")
+  elif [[ "$venue" == "binance-futures" ]]; then
+    conflict_venues=("binance-both" "binance-coin-futures")
+  elif [[ "$venue" == "binance-coin-futures" ]]; then
+    conflict_venues=("binance-both" "binance-futures")
+  elif [[ "$venue" =~ ^([a-z0-9]+)-both$ ]]; then
     exchange="${BASH_REMATCH[1]}"
     conflict_venues=("${exchange}-margin" "${exchange}-futures")
   elif [[ "$venue" =~ ^([a-z0-9]+)-(margin|futures)$ ]]; then
@@ -551,6 +558,7 @@ JSON
 fi
 
 echo "[INFO] Restarting ${name} (venue=${venue}, core=${CORE})"
+check_conflicting_spread_pbs_processes
 if [[ "$venue" == "binance-futures" ]]; then
   "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
   "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
@@ -561,7 +569,6 @@ elif [[ "$venue" == "bybit-both" ]]; then
 else
   "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
 fi
-check_conflicting_spread_pbs_processes
 
 mapfile -t leaked_pids < <(find_running_pids || true)
 if [[ ${#leaked_pids[@]} -gt 0 ]]; then

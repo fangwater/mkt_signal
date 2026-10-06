@@ -14,7 +14,7 @@ use runtime_common::affinity::pin_to_core;
 #[command(name = "spread_pbs")]
 #[command(about = "Dedicated high-speed askbidspread publisher (pinned core).")]
 struct Args {
-    /// Trading venue. Also accepts <exchange>-both.
+    /// Trading venue. binance-futures covers USDT/USDC/USD perpetuals; also accepts <exchange>-both.
     #[arg(short, long, value_parser = parse_venue_selection)]
     venue: SpreadVenueSelection,
 
@@ -68,7 +68,14 @@ async fn main() -> Result<()> {
     } else {
         SpreadPbsPublishRoots::production()
     };
-    let configs = load_selected_configs(&config_str, &args.venue).await?;
+    let raw_symbols = std::env::var("SPREAD_PBS_SYMBOLS").ok();
+    let configs = load_selected_configs(
+        &config_str,
+        &args.venue,
+        args.market_data_provider,
+        raw_symbols.as_deref(),
+    )
+    .await?;
 
     // current_thread runtime + spawn_local 需要 LocalSet 上下文
     let local = tokio::task::LocalSet::new();
@@ -96,11 +103,69 @@ enum SpreadVenueSelection {
 impl SpreadVenueSelection {
     fn venues(self) -> Vec<TradingVenue> {
         match self {
+            Self::Single(TradingVenue::BinanceFutures) => vec![
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceCoinFutures,
+            ],
             Self::Single(venue) => vec![venue],
+            Self::Both {
+                exchange: "binance",
+                margin,
+                futures,
+            } => vec![margin, futures, TradingVenue::BinanceCoinFutures],
             Self::Both {
                 margin, futures, ..
             } => vec![margin, futures],
         }
+    }
+
+    fn venues_for_run(
+        self,
+        provider: MarketDataProvider,
+        raw_symbols: Option<&str>,
+    ) -> Result<Vec<TradingVenue>> {
+        let mut venues = self.venues();
+        if !matches!(
+            self,
+            Self::Single(TradingVenue::BinanceFutures)
+                | Self::Both {
+                    exchange: "binance",
+                    ..
+                }
+        ) {
+            return Ok(venues);
+        }
+        // RapidX exposes USD-M public feeds, but has no COIN-M adapter.
+        if provider == MarketDataProvider::RapidX {
+            venues.retain(|venue| *venue != TradingVenue::BinanceCoinFutures);
+        }
+        let wanted: Vec<String> = raw_symbols
+            .unwrap_or_default()
+            .split(',')
+            .map(runtime_common::symbol_util::normalize_symbol_for_internal)
+            .filter(|symbol| !symbol.is_empty())
+            .collect();
+        if !wanted.is_empty() {
+            venues.retain(|venue| {
+                wanted.iter().any(|symbol| match venue {
+                    TradingVenue::BinanceFutures => {
+                        symbol.ends_with("USDT") || symbol.ends_with("USDC")
+                    }
+                    TradingVenue::BinanceCoinFutures => symbol.ends_with("USD"),
+                    TradingVenue::BinanceMargin => symbol.ends_with("USDT"),
+                    _ => true,
+                })
+            });
+        }
+        if venues.is_empty() {
+            bail!(
+                "{} has no markets for SPREAD_PBS_SYMBOLS={:?} with provider {}",
+                self.label(),
+                raw_symbols.unwrap_or_default(),
+                provider.as_str(),
+            );
+        }
+        Ok(venues)
     }
 
     fn label(self) -> String {
@@ -144,9 +209,11 @@ fn validate_role_selection(
 ) -> Result<()> {
     if role != BinanceFuturesRole::Full {
         match selection {
-            SpreadVenueSelection::Single(TradingVenue::BinanceFutures) => {}
+            SpreadVenueSelection::Single(
+                TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures,
+            ) => {}
             _ => bail!(
-                "--binance-futures-role={} only supports --venue binance-futures",
+                "--binance-futures-role={} only supports --venue binance-futures/binance-coin-futures",
                 role.as_str()
             ),
         }
@@ -228,9 +295,11 @@ fn single_venue_from_slug(slug: &str) -> Option<TradingVenue> {
 async fn load_selected_configs(
     config_path: &str,
     selection: &SpreadVenueSelection,
+    provider: MarketDataProvider,
+    raw_symbols: Option<&str>,
 ) -> Result<Vec<Config>> {
     let mut configs = Vec::new();
-    for venue in selection.venues() {
+    for venue in selection.venues_for_run(provider, raw_symbols)? {
         configs.push(Config::load_config(config_path, venue).await?);
     }
     Ok(configs)
@@ -254,7 +323,10 @@ async fn run_selected(
     for config in configs {
         let venue_slug = config.venue.data_pub_slug();
         let rx = shutdown_rx.clone();
-        let role = if config.venue == TradingVenue::BinanceFutures {
+        let role = if matches!(
+            config.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             binance_futures_role
         } else {
             BinanceFuturesRole::Full
@@ -406,6 +478,80 @@ mod tests {
             }
         ));
         assert_eq!(selection.label(), "binance-both");
+        assert_eq!(
+            selection.venues(),
+            [
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceCoinFutures,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn binance_futures_loads_both_markets_from_one_config() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/mkt_cfg.yaml");
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        let configs = load_selected_configs(
+            config_path.to_str().unwrap(),
+            &selection,
+            MarketDataProvider::Native,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].venue, TradingVenue::BinanceFutures);
+        assert_eq!(configs[1].venue, TradingVenue::BinanceCoinFutures);
+        assert_eq!(configs[0].primary_local_ip, configs[1].primary_local_ip);
+        assert_eq!(configs[0].secondary_local_ip, configs[1].secondary_local_ip);
+        assert_eq!(
+            configs[0].restart_duration_secs,
+            configs[1].restart_duration_secs
+        );
+    }
+
+    #[test]
+    fn binance_futures_symbol_filter_selects_markets_by_perpetual_quote() {
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        let both = vec![
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
+        ];
+        for (filter, expected) in [
+            (None, both.clone()),
+            (Some(" , "), both.clone()),
+            (Some("BTCUSDT,BTCUSDC,BTCUSD"), both),
+            (Some("BTCUSDT,BTCUSDC"), vec![TradingVenue::BinanceFutures]),
+            (
+                Some("btcusd,BTCUSD_PERP"),
+                vec![TradingVenue::BinanceCoinFutures],
+            ),
+        ] {
+            assert_eq!(
+                selection
+                    .venues_for_run(MarketDataProvider::Native, filter)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(selection
+            .venues_for_run(MarketDataProvider::Native, Some("INVALID"))
+            .is_err());
+    }
+
+    #[test]
+    fn rapidx_binance_futures_uses_only_supported_linear_market() {
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        assert_eq!(
+            selection
+                .venues_for_run(MarketDataProvider::RapidX, Some("BTCUSDC"))
+                .unwrap(),
+            [TradingVenue::BinanceFutures]
+        );
+        assert!(selection
+            .venues_for_run(MarketDataProvider::RapidX, Some("BTCUSD"))
+            .is_err());
     }
 
     #[test]
@@ -437,10 +583,13 @@ mod tests {
 
     #[test]
     fn validates_binance_futures_split_roles() {
-        let selection = parse_venue_selection("binance-futures").unwrap();
-        validate_role_selection(&selection, BinanceFuturesRole::Market, BybitRole::Full).unwrap();
-        validate_role_selection(&selection, BinanceFuturesRole::BookTicker, BybitRole::Full)
-            .unwrap();
+        for venue in ["binance-futures", "binance-coin-futures"] {
+            let selection = parse_venue_selection(venue).unwrap();
+            validate_role_selection(&selection, BinanceFuturesRole::Market, BybitRole::Full)
+                .unwrap();
+            validate_role_selection(&selection, BinanceFuturesRole::BookTicker, BybitRole::Full)
+                .unwrap();
+        }
 
         let both = parse_venue_selection("binance-both").unwrap();
         assert!(

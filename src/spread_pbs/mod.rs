@@ -1,6 +1,7 @@
 //! spread_pbs：独立的 askbidspread 高速发布进程。
 //!
-//! - 单 venue 单进程，`current_thread` runtime + sched_setaffinity 绑核
+//! - 单进程可覆盖多个 venue，`current_thread` runtime + sched_setaffinity 绑核
+//! - Binance futures 入口同时连接 USD-M / COIN-M，按合约类型保留各自的 IPC 服务
 //! - 双路 ws（primary/secondary）按 per-venue seq 字段去重
 //! - IceOryx 服务名 `spread_pbs/<venue>/ask_bid_spread`，与 dat_pbs 完全独立
 //!
