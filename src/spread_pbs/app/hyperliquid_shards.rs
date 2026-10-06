@@ -124,7 +124,7 @@ pub(super) async fn run(
             }
             _ = rolling.tick() => {
                 let refresh = async {
-                    let refreshed = apply_symbol_filter(get_symbols_for_role(config, BinanceFuturesRole::Full).await?, config.venue.data_pub_slug());
+                    let refreshed = apply_symbol_filter(get_symbols_for_venue(config).await?, config.venue.data_pub_slug());
                     if refreshed.is_empty() { bail!("Hyperliquid shard refresh returned no symbols"); }
                     let requests = build_market_subscribe(&ctx.adapter, &refreshed, true, ctx.trade_publisher.is_some(), ctx.incremental_publisher.is_some(), ctx.derivatives_publisher.is_some());
                     if requests.is_empty() { bail!("Hyperliquid shard subscription build failed"); }

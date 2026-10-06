@@ -302,17 +302,9 @@ impl Config {
     pub async fn get_all_binance_futures_symbols() -> Result<Vec<String>> {
         Self::with_retry("get_all_binance_futures_symbols", || async {
             let info = Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;
-            let mut symbols = Self::filter_binance_usdt_trading_futures_symbols(
-                &info.symbols,
-                BINANCE_CONTRACT_PERPETUAL,
-            );
-            let tradifi_symbols = Self::filter_binance_usdt_trading_futures_symbols(
-                &info.symbols,
-                BINANCE_CONTRACT_TRADIFI_PERPETUAL,
-            );
-            Self::extend_unique_symbols(&mut symbols, tradifi_symbols);
+            let symbols = Self::filter_binance_usdm_trading_futures_symbols(&info.symbols);
             info!(
-                "Binance futures all-market USDT-denominated symbol count {}",
+                "Binance futures all-market USDT/USDC perpetual symbol count {}",
                 symbols.len()
             );
             Ok(symbols)
@@ -377,7 +369,22 @@ impl Config {
             .iter()
             .filter(|symbol| symbol.status == "TRADING")
             .filter(|symbol| symbol.quote_asset == "USD")
-            .filter(|symbol| symbol.contract_type.as_deref().is_some())
+            .filter(|symbol| symbol.contract_type.as_deref() == Some(BINANCE_CONTRACT_PERPETUAL))
+            .map(|symbol| symbol.symbol.clone())
+            .collect()
+    }
+
+    fn filter_binance_usdm_trading_futures_symbols(symbols: &[BinanceSymbolInfo]) -> Vec<String> {
+        symbols
+            .iter()
+            .filter(|symbol| matches!(symbol.quote_asset.as_str(), "USDT" | "USDC"))
+            .filter(|symbol| symbol.status == "TRADING")
+            .filter(|symbol| {
+                matches!(
+                    symbol.contract_type.as_deref(),
+                    Some(BINANCE_CONTRACT_PERPETUAL | BINANCE_CONTRACT_TRADIFI_PERPETUAL)
+                )
+            })
             .map(|symbol| symbol.symbol.clone())
             .collect()
     }
@@ -1368,7 +1375,61 @@ mod tests {
     }
 
     #[test]
-    fn filter_binance_coin_futures_keeps_perpetual_and_delivery_contracts() {
+    fn usd_m_discovery_and_subscriptions_include_usdc_without_spot_pairs() {
+        use crate::spread_pbs::{binance::BinanceAdapter, VenueAdapter};
+        let symbols = vec![
+            binance_symbol(
+                "BTCUSDT",
+                "TRADING",
+                "USDT",
+                Some(BINANCE_CONTRACT_PERPETUAL),
+            ),
+            binance_symbol(
+                "BTCUSDC",
+                "TRADING",
+                "USDC",
+                Some(BINANCE_CONTRACT_PERPETUAL),
+            ),
+            binance_symbol(
+                "AAPLUSDC",
+                "TRADING",
+                "USDC",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol(
+                "ETHUSDC",
+                "SETTLING",
+                "USDC",
+                Some(BINANCE_CONTRACT_PERPETUAL),
+            ),
+            binance_symbol("ETHUSDT_261225", "TRADING", "USDT", Some("CURRENT_QUARTER")),
+            binance_symbol(
+                "BTCUSD_PERP",
+                "TRADING",
+                "USD",
+                Some(BINANCE_CONTRACT_PERPETUAL),
+            ),
+        ];
+        let selected = Config::filter_binance_usdm_trading_futures_symbols(&symbols);
+        assert_eq!(selected, ["BTCUSDT", "BTCUSDC", "AAPLUSDC"]);
+        let adapter = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        assert_eq!(
+            adapter.build_subscribe(&selected)[0]["params"][1],
+            "btcusdc@bookTicker"
+        );
+        assert_eq!(
+            adapter.build_trade_subscribe(&selected)[0]["params"][1],
+            "btcusdc@trade"
+        );
+        assert_eq!(
+            adapter.build_incremental_subscribe(&selected)[0]["params"][1],
+            "btcusdc@depth@0ms"
+        );
+    }
+
+    #[test]
+    fn filter_binance_coin_futures_keeps_only_active_perpetual_contracts() {
+        use crate::spread_pbs::{binance::BinanceAdapter, VenueAdapter};
         let symbols = vec![
             binance_symbol("BTCUSD_PERP", "TRADING", "USD", Some("PERPETUAL")),
             binance_symbol("ETHUSD_260925", "TRADING", "USD", Some("CURRENT_QUARTER")),
@@ -1377,7 +1438,22 @@ mod tests {
         ];
         assert_eq!(
             Config::filter_binance_coin_trading_futures_symbols(&symbols),
-            vec!["BTCUSD_PERP".to_string(), "ETHUSD_260925".to_string()]
+            vec!["BTCUSD_PERP".to_string()]
+        );
+        let selected = Config::filter_binance_coin_trading_futures_symbols(&symbols);
+        let adapter = BinanceAdapter::new(TradingVenue::BinanceCoinFutures);
+        assert_eq!(adapter.ws_url(), "wss://dstream.binance.com/ws");
+        assert_eq!(
+            adapter.build_subscribe(&selected)[0]["params"][0],
+            "btcusd_perp@bookTicker"
+        );
+        assert_eq!(
+            adapter.build_trade_subscribe(&selected)[0]["params"][0],
+            "btcusd_perp@trade"
+        );
+        assert_eq!(
+            adapter.build_incremental_subscribe(&selected)[0]["params"][0],
+            "btcusd_perp@depth@100ms"
         );
     }
 }

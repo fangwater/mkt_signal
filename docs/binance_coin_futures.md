@@ -54,6 +54,14 @@ spread_pbs/binance-coin-futures/ask_bid_spread
 dat_pbs/binance-coin-futures/derivatives
 ```
 
+`spread_pbs --venue binance-futures` discovers all active USDT and USDC
+perpetuals for the full, market and bookticker roles, without requiring matching
+spot pairs. COIN-M uses its own `--venue binance-coin-futures` process and
+discovers active USD perpetuals only. `binance-both` combines spot and USD-M;
+it does not start COIN-M. Missing that separate process leaves coin-margined
+targets without BBO, trades or mark prices. `SPREAD_PBS_SYMBOLS=BTCUSD` selects
+the wire subscription `BTCUSD_PERP` in the COIN-M process.
+
 Examples:
 
 ```bash

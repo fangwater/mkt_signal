@@ -334,15 +334,26 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
     }
 }
 
-fn apply_symbol_filter(mut symbols: Vec<String>, venue_slug: &str) -> Vec<String> {
+fn apply_symbol_filter(symbols: Vec<String>, venue_slug: &str) -> Vec<String> {
     let Ok(raw) = env::var(ENV_SYMBOLS) else {
         return symbols;
     };
-    let wanted: HashSet<String> = raw
-        .split(',')
-        .map(|s| s.trim().to_ascii_uppercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    apply_symbol_filter_from_raw(symbols, venue_slug, &raw)
+}
+
+fn apply_symbol_filter_from_raw(
+    mut symbols: Vec<String>,
+    venue_slug: &str,
+    raw: &str,
+) -> Vec<String> {
+    let key = |symbol: &str| {
+        if venue_slug == "binance-coin-futures" {
+            runtime_common::symbol_util::normalize_symbol_for_internal(symbol)
+        } else {
+            symbol.trim().to_ascii_uppercase()
+        }
+    };
+    let wanted: HashSet<String> = raw.split(',').map(key).filter(|s| !s.is_empty()).collect();
     if wanted.is_empty() {
         log::warn!(
             "spread_pbs[{}] ignoring empty {}={:?}; keeping {} symbols",
@@ -354,7 +365,7 @@ fn apply_symbol_filter(mut symbols: Vec<String>, venue_slug: &str) -> Vec<String
         return symbols;
     }
     let before = symbols.len();
-    symbols.retain(|symbol| wanted.contains(&symbol.to_ascii_uppercase()));
+    symbols.retain(|symbol| wanted.contains(&key(symbol)));
     log::info!(
         "spread_pbs[{}] {} filter applied: requested={} before={} after={} raw={:?}",
         venue_slug,
@@ -367,24 +378,14 @@ fn apply_symbol_filter(mut symbols: Vec<String>, venue_slug: &str) -> Vec<String
     symbols
 }
 
-async fn get_symbols_for_role(
-    config: &Config,
-    binance_futures_role: BinanceFuturesRole,
-) -> Result<Vec<String>> {
+async fn get_symbols_for_venue(config: &Config) -> Result<Vec<String>> {
     if is_hyperliquid_venue(config.venue) {
         crate::spread_pbs::hyperliquid::refresh_symbols(config.venue).await
-    } else if uses_all_binance_futures_symbols(config.venue, binance_futures_role) {
+    } else if config.venue == TradingVenue::BinanceFutures {
         Config::get_all_binance_futures_symbols().await
     } else {
         config.get_symbols().await
     }
-}
-
-fn uses_all_binance_futures_symbols(
-    venue: TradingVenue,
-    binance_futures_role: BinanceFuturesRole,
-) -> bool {
-    venue == TradingVenue::BinanceFutures && binance_futures_role == BinanceFuturesRole::BookTicker
 }
 
 async fn wait_for_symbols_for_role(
@@ -394,7 +395,7 @@ async fn wait_for_symbols_for_role(
     let mut backoff = Duration::from_secs(2);
     let cap = Duration::from_secs(30);
     loop {
-        match get_symbols_for_role(config, binance_futures_role).await {
+        match get_symbols_for_venue(config).await {
             Ok(symbols) if !symbols.is_empty() => return symbols,
             Ok(_) => log::error!(
                 "spread_pbs[{}] symbol lookup returned empty for role={}; retry in {:?}",
@@ -1232,7 +1233,6 @@ impl SpreadPbsApp {
                                             venue_slug,
                                             primary,
                                             &self.config,
-                                            binance_futures_role,
                                             &ctx,
                                             &mut current_symbols,
                                             &funding_symbols_tx,
@@ -1251,7 +1251,6 @@ impl SpreadPbsApp {
                                         venue_slug,
                                         secondary,
                                         &self.config,
-                                        binance_futures_role,
                                         &ctx,
                                         &mut current_symbols,
                                         &funding_symbols_tx,
@@ -1276,7 +1275,6 @@ impl SpreadPbsApp {
                             venue_slug,
                             primary,
                             &self.config,
-                            binance_futures_role,
                             &ctx,
                             &mut current_symbols,
                             &funding_symbols_tx,
@@ -1290,7 +1288,6 @@ impl SpreadPbsApp {
                             venue_slug,
                             secondary,
                             &self.config,
-                            binance_futures_role,
                             &ctx,
                             &mut current_symbols,
                             &funding_symbols_tx,
@@ -1925,7 +1922,6 @@ async fn restart_leg(
     venue_slug: &'static str,
     leg: &mut WsLeg,
     config: &Config,
-    binance_futures_role: BinanceFuturesRole,
     ctx: &LegCtx,
     current_symbols: &mut HashSet<String>,
     funding_symbols_tx: &watch::Sender<Vec<String>>,
@@ -1933,7 +1929,7 @@ async fn restart_leg(
     log::info!("spread_pbs[{}] leg={} restart begin", venue_slug, leg.label);
 
     // 先拉新 symbol；失败/空一律保留旧 leg，不重启。
-    let new_symbols = match get_symbols_for_role(config, binance_futures_role).await {
+    let new_symbols = match get_symbols_for_venue(config).await {
         Ok(v) if !v.is_empty() => apply_symbol_filter(v, venue_slug),
         Ok(_) => {
             log::error!(
@@ -3815,6 +3811,21 @@ fn should_drop_bbo_fields(slot: &SymbolSlot, ts_us: i64, seq_id: i64, reset_seq:
 mod tests {
     use super::*;
 
+    #[test]
+    fn coin_symbol_filter_accepts_usd_targets_and_retains_wire_subscriptions() {
+        let symbols = vec!["BTCUSD_PERP".into(), "ETHUSD_PERP".into()];
+        for requested in ["btcusd", "BTCUSD_PERP", "BTCUSDPERP"] {
+            assert_eq!(
+                apply_symbol_filter_from_raw(symbols.clone(), "binance-coin-futures", requested),
+                ["BTCUSD_PERP"]
+            );
+        }
+        assert!(
+            apply_symbol_filter_from_raw(symbols, "binance-coin-futures", "BTCUSDC,BTCUSDT")
+                .is_empty()
+        );
+    }
+
     fn test_state(now_us: i64) -> SharedState {
         SharedState {
             symbol_state: SymbolSeqState::with_symbols(&[]),
@@ -3883,14 +3894,6 @@ mod tests {
             ),
             (true, false)
         );
-        assert!(uses_all_binance_futures_symbols(
-            TradingVenue::BinanceFutures,
-            BinanceFuturesRole::BookTicker,
-        ));
-        assert!(!uses_all_binance_futures_symbols(
-            TradingVenue::BinanceFutures,
-            BinanceFuturesRole::Market,
-        ));
     }
 
     #[test]
