@@ -18,10 +18,9 @@ The Exec Config API selects this namespace with
 parameter for GET/DELETE. Requests without that field continue to address
 `batch_exec`.
 
-Chase is available only for `binance-futures` and `okex-futures`. Both native
-exchange backends and the RapidX/LTP backend use in-place amend. Binance
-COIN-M is deliberately rejected because this execution path has no supported
-modify contract for it.
+Chase supports `binance-futures`, `binance-coin-futures` and `okex-futures`.
+Native COIN-M uses signed REST amendments in STANDARD and UNIFIED modes.
+RapidX/LTP supports USD-M and OKX. See [COIN-M quantity semantics](binance_coin_futures.md).
 
 For native Binance USD-M execution, both CTA Manager and `exec-pre-trade`
 require the exchange account to use Standard API mode with Multi-Assets Mode

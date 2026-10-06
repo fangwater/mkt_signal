@@ -2993,14 +2993,14 @@ mod tests {
                 "BTCUSD_PERP",
                 TradingVenue::BinanceCoinFutures,
             ),
-            "BTCUSDPERP"
+            "BTCUSD"
         );
         assert_eq!(
             RateFetcher::normalize_symbol_for_lookup(
                 "BTCUSDPERP",
                 TradingVenue::BinanceCoinFutures,
             ),
-            "BTCUSDPERP"
+            "BTCUSD"
         );
         assert_eq!(
             RateFetcher::base_asset_from_symbol("BTCUSD_PERP"),

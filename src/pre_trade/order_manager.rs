@@ -922,19 +922,30 @@ impl PreTradeOrderRequestExt for Order {
             ));
         }
         match self.venue {
-            TradingVenue::BinanceFutures => {
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
                 let quantity_qv = ResolvedOrderQuantities::from_order(self)
                     .require_quantity_qv(self, "binance modify")?;
-                let req_type = match self.require_binance_account_mode() {
-                    BinanceAccountMode::Standard => {
+                let req_type = match (self.venue, self.require_binance_account_mode()) {
+                    (TradingVenue::BinanceCoinFutures, BinanceAccountMode::Standard) => {
+                        trade_engine::trade_request::TradeRequestType::BinanceModifyCmOrder
+                    }
+                    (TradingVenue::BinanceCoinFutures, BinanceAccountMode::Unified) => {
+                        trade_engine::trade_request::TradeRequestType::BinancePmModifyCmOrder
+                    }
+                    (_, BinanceAccountMode::Standard) => {
                         trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
                     }
-                    BinanceAccountMode::Unified => {
+                    (_, BinanceAccountMode::Unified) => {
                         trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
                     }
                 };
+                let symbol = if self.venue == TradingVenue::BinanceCoinFutures {
+                    binance_coin_futures_symbol(&self.symbol)
+                } else {
+                    self.symbol.clone()
+                };
                 BinanceModifyOrderParams::with_price(
-                    &self.symbol,
+                    &symbol,
                     self.side,
                     quantity_qv,
                     price_qv,
@@ -943,7 +954,7 @@ impl PreTradeOrderRequestExt for Order {
                     None,
                 )
                 .request_bytes(req_type, get_timestamp_us(), self.client_order_id)
-                .ok_or_else(|| "failed to build Binance UM modify request".to_string())
+                .ok_or_else(|| "failed to build Binance futures modify request".to_string())
             }
             TradingVenue::OkexFutures => OkexModifyOrderRequest::create_um(
                 get_timestamp_us(),
@@ -1796,6 +1807,48 @@ mod tests {
     }
 
     #[test]
+    fn coin_modify_preserves_contract_quantity_and_wire_symbol() {
+        for (mode, kind) in [
+            (
+                BinanceAccountMode::Standard,
+                TradeRequestType::BinanceModifyCmOrder,
+            ),
+            (
+                BinanceAccountMode::Unified,
+                TradeRequestType::BinancePmModifyCmOrder,
+            ),
+        ] {
+            let mut order = Order::new(
+                TradingVenue::BinanceCoinFutures,
+                42,
+                OrderType::Limit,
+                "BTCUSD".to_string(),
+                Side::Sell,
+                5.0,
+                50000.0,
+                false,
+                100.0 / 50000.0,
+                Some(mode),
+                true,
+            );
+            order.set_exchange_order_id(9988);
+            let price = QuantizedValue::from_decimal(50001.5).unwrap();
+            let bytes = order.get_order_modify_bytes(price).unwrap();
+            let request = TradeRequestMsg::parse(&bytes).unwrap();
+            let params = BinanceModifyOrderParams::from_bytes(&request.params).unwrap();
+            assert_eq!(request.req_type, kind);
+            assert_eq!(params.symbol, "BTCUSD_PERP");
+            assert_eq!(
+                params.quantity_qv,
+                QuantizedValue::from_decimal(5.0).unwrap()
+            );
+            assert_eq!(params.price_qv, price);
+            assert_eq!(params.order_id, 9988);
+            assert_eq!(params.orig_client_order_id, 42);
+        }
+    }
+
+    #[test]
     fn binance_explicit_modify_uses_supplied_quantized_price() {
         let order = Order::new(
             TradingVenue::BinanceFutures,
@@ -1951,7 +2004,7 @@ mod tests {
                 TradingVenue::BinanceCoinFutures,
                 401,
                 OrderType::Limit,
-                "BTCUSDPERP".to_string(),
+                "BTCUSD".to_string(),
                 Side::Buy,
                 2.0,
                 64_000.0,

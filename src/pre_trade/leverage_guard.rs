@@ -1743,7 +1743,7 @@ mod tests {
             "HNT_USDT"
         );
         assert_eq!(
-            symbol_for_venue("BTCUSDPERP", TradingVenue::BinanceCoinFutures),
+            symbol_for_venue("BTCUSD", TradingVenue::BinanceCoinFutures),
             "BTCUSD_PERP"
         );
     }

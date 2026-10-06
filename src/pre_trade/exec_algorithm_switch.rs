@@ -41,6 +41,8 @@ pub struct ExecAlgorithmSwitch {
     pub updated_at_us: i64,
     #[serde(default)]
     pub positions: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub inverse_notionals: BTreeMap<String, f64>,
 }
 
 impl ExecAlgorithmSwitch {
@@ -55,7 +57,9 @@ impl ExecAlgorithmSwitch {
         if self.updated_at_us < self.requested_at_us {
             anyhow::bail!("Exec algorithm switch timestamp moved backwards: {strategy_name}");
         }
-        if self.state == ExecSwitchState::Requested && !self.positions.is_empty() {
+        if self.state == ExecSwitchState::Requested
+            && (!self.positions.is_empty() || !self.inverse_notionals.is_empty())
+        {
             anyhow::bail!(
                 "requested Exec algorithm switch must not contain positions: {strategy_name}"
             );
@@ -72,6 +76,53 @@ impl ExecAlgorithmSwitch {
                 );
             }
         }
+        for (symbol, notional) in &self.inverse_notionals {
+            anyhow::ensure!(
+                notional.is_finite() && self.positions.contains_key(symbol),
+                "invalid inverse switch allocation: strategy={strategy_name} symbol={symbol}"
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn valued_positions(
+        &self,
+        venue: order_common::TradingVenue,
+    ) -> Result<BTreeMap<String, f64>> {
+        self.positions
+            .iter()
+            .map(|(symbol, qty)| {
+                let qty = if venue.is_inverse_futures() {
+                    let notional = self
+                        .inverse_notionals
+                        .get(symbol)
+                        .with_context(|| format!("missing inverse switch face: symbol={symbol}"))?;
+                    super::exec_position_ledger::inverse_notional_to_base(venue, symbol, *notional)
+                        .with_context(|| format!("missing inverse switch mark: symbol={symbol}"))?
+                } else {
+                    *qty
+                };
+                Ok((symbol.clone(), qty))
+            })
+            .collect()
+    }
+
+    pub(super) fn capture_inverse_positions(
+        &mut self,
+        venue: order_common::TradingVenue,
+    ) -> Result<()> {
+        self.inverse_notionals = if venue.is_inverse_futures() {
+            self.positions
+                .iter()
+                .map(|(symbol, qty)| {
+                    super::exec_position_ledger::inverse_base_to_notional(venue, symbol, *qty)
+                        .map(|face| (symbol.clone(), face))
+                        .map_err(anyhow::Error::msg)
+                })
+                .collect::<Result<_>>()?
+        } else {
+            BTreeMap::new()
+        };
         Ok(())
     }
 
@@ -126,6 +177,7 @@ mod tests {
             requested_at_us: 10,
             updated_at_us: 20,
             positions: BTreeMap::from([("BTCUSDT".to_string(), 0.25)]),
+            inverse_notionals: BTreeMap::new(),
         };
         switch.validate("alpha").unwrap();
 

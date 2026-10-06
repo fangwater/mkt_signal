@@ -44,6 +44,8 @@ impl BatchExecRedisValue {
             anyhow::bail!("updated_at_us must be positive when present");
         }
         for (symbol, target) in &self.targets {
+            super::symbol_util::validate_exec_perpetual_symbol(symbol)
+                .map_err(anyhow::Error::msg)?;
             if normalize_symbol_for_internal(symbol).is_empty() {
                 anyhow::bail!("target symbol must not be empty");
             }
@@ -71,6 +73,8 @@ impl BatchExecRedisValue {
     fn normalized_symbol_overrides(&self) -> Result<BTreeMap<String, BatchExecConfigOverride>> {
         let mut normalized = BTreeMap::new();
         for (raw_symbol, override_config) in &self.symbol_overrides {
+            super::symbol_util::validate_exec_perpetual_symbol(raw_symbol)
+                .map_err(anyhow::Error::msg)?;
             let symbol = normalize_symbol_for_internal(raw_symbol);
             if symbol.is_empty() {
                 anyhow::bail!("symbol override must not be empty");
@@ -746,8 +750,8 @@ impl BatchExecConfigReloader {
             .filter(|(_, switch)| {
                 switch.to_family == ExecFamily::BatchExec && switch.state == ExecSwitchState::Ready
             })
-            .map(|(name, switch)| (name.clone(), switch.positions.clone()))
-            .collect::<BTreeMap<_, _>>();
+            .map(|(name, switch)| Ok((name.clone(), switch.valued_positions(self.venue)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
         if incoming.is_empty() {
             return Ok(incoming);
         }
@@ -758,8 +762,8 @@ impl BatchExecConfigReloader {
         let mut changed = false;
         for (strategy_name, positions) in &incoming {
             for (symbol, qty) in positions {
-                if ledger.get(strategy_name, symbol) != Some(*qty) {
-                    ledger.set(strategy_name, symbol, *qty);
+                if ledger.get_for_venue(self.venue, strategy_name, symbol) != Some(*qty) {
+                    ledger.set_for_venue(self.venue, strategy_name, symbol, *qty)?;
                     changed = true;
                 }
             }
@@ -1196,8 +1200,16 @@ impl BatchExecConfigReloader {
             if exec.exec_venue() != self.venue {
                 continue;
             }
+            if self.venue.is_inverse_futures()
+                && crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                    .inverse_position_mark_price(self.venue, exec.exec_symbol())
+                    .is_none()
+            {
+                continue;
+            }
             let virtual_position = exec.virtual_position_qty();
-            let persisted_position = ledger.get(exec.strategy_name(), exec.exec_symbol());
+            let persisted_position =
+                ledger.get_for_venue(self.venue, exec.strategy_name(), exec.exec_symbol());
             candidates.push(PositionAllocationCandidate {
                 strategy_id,
                 strategy_name: exec.strategy_name().to_string(),
@@ -1641,14 +1653,20 @@ impl BatchExecConfigReloader {
             if settling_symbols.contains(&candidate.symbol) || candidate.missing_position {
                 continue;
             }
-            next_ledger.set(
+            next_ledger.set_for_venue(
+                self.venue,
                 &candidate.strategy_name,
                 &candidate.symbol,
                 candidate.position_qty,
-            );
+            )?;
         }
         for plan in &plans {
-            next_ledger.set(&plan.strategy_name, &plan.symbol, plan.position_qty);
+            next_ledger.set_for_venue(
+                self.venue,
+                &plan.strategy_name,
+                &plan.symbol,
+                plan.position_qty,
+            )?;
         }
 
         if !plans.is_empty() {
@@ -1660,10 +1678,10 @@ impl BatchExecConfigReloader {
         }
 
         // A changed allocation is durable before any suspended strategy can submit again.
-        let positions_changed = self
-            .position_ledger
-            .as_ref()
-            .is_none_or(|current| current.positions != next_ledger.positions);
+        let positions_changed = self.position_ledger.as_ref().is_none_or(|current| {
+            current.positions != next_ledger.positions
+                || current.inverse_notionals != next_ledger.inverse_notionals
+        });
         if positions_changed {
             next_ledger.updated_at_us = now_ts;
             let save_result = self
@@ -1819,6 +1837,7 @@ impl BatchExecConfigReloader {
             switch.state = ExecSwitchState::Ready;
             switch.updated_at_us = get_timestamp_us().max(switch.requested_at_us);
             switch.positions = positions;
+            switch.capture_inverse_positions(self.venue)?;
             switch.validate(&strategy_name)?;
             let source_names_key = active_names_key(switch.from_family);
             let destination_names_key = active_names_key(switch.to_family);
@@ -2054,7 +2073,9 @@ impl BatchExecConfigReloader {
                     && self
                         .position_ledger
                         .as_ref()
-                        .and_then(|ledger| ledger.get(&strategy_name, &symbol))
+                        .and_then(|ledger| {
+                            ledger.get_for_venue(self.venue, &strategy_name, &symbol)
+                        })
                         .is_none()
                 {
                     let until = get_timestamp_us().saturating_add(NEW_TARGET_SETTLE_US);
@@ -2102,10 +2123,10 @@ impl BatchExecConfigReloader {
                         });
                         if switching_out {
                             if exec.virtual_position_qty().is_none() {
-                                if let Some(position_qty) = self
-                                    .position_ledger
-                                    .as_ref()
-                                    .and_then(|ledger| ledger.get(&strategy_name, &symbol))
+                                if let Some(position_qty) =
+                                    self.position_ledger.as_ref().and_then(|ledger| {
+                                        ledger.get_for_venue(self.venue, &strategy_name, &symbol)
+                                    })
                                 {
                                     exec.apply_position_allocation(
                                         position_qty,
@@ -2327,6 +2348,29 @@ mod tests {
         assert_eq!(value.config.orders_per_batch, 3);
         assert_eq!(value.config.max_batch, 20);
         assert_eq!(value.updated_at_us, None);
+    }
+
+    #[test]
+    fn perpetual_targets_keep_quote_suffixes_and_reject_delivery() {
+        let mut value = BatchExecRedisValue {
+            config: BatchExecConfig::default(),
+            targets: serde_json::from_value(
+                serde_json::json!({"BTCUSD": 0.01, "BTCUSDC": 0.02, "BTCUSDT": 0.03}),
+            )
+            .unwrap(),
+            symbol_overrides: BTreeMap::new(),
+            updated_at_us: None,
+        };
+        value.validate().unwrap();
+        assert_eq!(value.normalized_targets().unwrap()["BTCUSD"].qty, 0.01);
+        value.targets.insert(
+            "BTCUSD_261225".into(),
+            BatchExecTarget {
+                qty: 0.01,
+                signal: 0,
+            },
+        );
+        assert!(value.validate().is_err());
     }
 
     #[test]

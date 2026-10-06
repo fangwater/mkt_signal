@@ -617,7 +617,11 @@ pub fn parse_utc_ms(raw: &str) -> Option<i64> {
 }
 
 pub fn normalize_symbol(raw: &str) -> String {
-    raw.trim().to_ascii_uppercase().replace(['/', '-', '_'], "")
+    let mut symbol = raw.trim().to_ascii_uppercase().replace(['/', '-', '_'], "");
+    if symbol.ends_with("USDPERP") {
+        symbol.truncate(symbol.len() - "PERP".len());
+    }
+    symbol
 }
 
 fn looks_like_pair(token: &str) -> bool {

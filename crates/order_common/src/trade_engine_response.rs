@@ -106,6 +106,8 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BinanceStdModifyUMOrder
                 | TradeRequestType::BinanceStdBatchModifyUMOrders
                 | TradeRequestType::BinanceWsModifyUMOrder
+                | TradeRequestType::BinanceModifyCmOrder
+                | TradeRequestType::BinancePmModifyCmOrder
                 | TradeRequestType::OkexModifyUMOrder,
             ) => TradeRequestKind::Modify,
             _ => TradeRequestKind::Other,

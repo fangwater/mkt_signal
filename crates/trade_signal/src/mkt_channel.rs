@@ -83,11 +83,20 @@ fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
         && !symbol
             .bytes()
             .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
-        && !symbol.ends_with("SWAP");
+        && !symbol.ends_with("SWAP")
+        && !symbol.ends_with("USDPERP");
     if already_canonical {
         Cow::Borrowed(symbol)
     } else {
         Cow::Owned(normalize_symbol_key(symbol))
+    }
+}
+
+fn derivative_price_symbol_key(symbol: &str, venue: TradingVenue) -> String {
+    if venue == TradingVenue::BinanceCoinFutures {
+        normalize_symbol_key(symbol)
+    } else {
+        normalize_symbol_for_premium_pair(symbol)
     }
 }
 
@@ -733,7 +742,7 @@ impl MktChannel {
     /// - `venue`: 交易场所
     pub fn get_mark_price(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
         // premium 专用规范化（USD≡USDT，只看前缀），存取双方一致
-        let symbol_key = normalize_symbol_for_premium_pair(symbol);
+        let symbol_key = derivative_price_symbol_key(symbol, venue);
 
         Self::with_inner(|inner| {
             let mark_prices_map = inner.mark_prices.borrow();
@@ -744,7 +753,7 @@ impl MktChannel {
 
     /// 查询 Index Price（只返回最新值）
     pub fn get_index_price(&self, symbol: &str, venue: TradingVenue) -> Option<f64> {
-        let symbol_key = normalize_symbol_for_premium_pair(symbol);
+        let symbol_key = derivative_price_symbol_key(symbol, venue);
 
         Self::with_inner(|inner| {
             let index_prices_map = inner.index_prices.borrow();
@@ -1194,7 +1203,7 @@ impl MktChannel {
                                     // 零拷贝解析
                                     let symbol_raw = MarkPriceMsg::get_symbol(payload);
                                     // premium 配对：USD≡USDT，统一前缀，让 BTCUSDT/BTCUSD 落到同一 key
-                                    let symbol = normalize_symbol_for_premium_pair(symbol_raw);
+                                    let symbol = derivative_price_symbol_key(symbol_raw, feed_venue);
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
                                     stats_mark_msgs += 1;
 
@@ -1206,7 +1215,7 @@ impl MktChannel {
                                 }
                                 MktMsgType::IndexPrice => {
                                     let symbol_raw = IndexPriceMsg::get_symbol(payload);
-                                    let symbol = normalize_symbol_for_premium_pair(symbol_raw);
+                                    let symbol = derivative_price_symbol_key(symbol_raw, feed_venue);
                                     let index_price = IndexPriceMsg::get_index_price(payload);
 
                                     let mut index_prices_map = index_prices.borrow_mut();
@@ -1343,12 +1352,47 @@ mod tests {
     }
 
     #[test]
+    fn coin_wire_bbo_updates_the_usd_target_key() {
+        let venue = TradingVenue::BinanceCoinFutures;
+        let quotes = Rc::new(RefCell::new(HashMap::from([(venue, HashMap::new())])));
+        let mut dirty = HashMap::new();
+        let mut total = 0;
+        let mut unique = HashSet::new();
+        let mut last = String::new();
+        let msg = AskBidSpreadMsg::create("BTCUSD_PERP".into(), 100, 49_999.0, 2.0, 50_001.0, 3.0);
+        process_askbid_payload(
+            &msg.to_bytes(),
+            venue,
+            &quotes,
+            &mut dirty,
+            &mut total,
+            &mut unique,
+            &mut last,
+        );
+        let quotes = quotes.borrow();
+        assert_eq!(quotes[&venue]["BTCUSD"].bid, 49_999.0);
+        assert!(!quotes[&venue].contains_key("BTCUSDT"));
+        assert!(!quotes[&venue].contains_key("BTCUSDC"));
+        assert_eq!(dirty.get("BTCUSD"), Some(&100));
+    }
+
+    #[test]
     fn canonical_market_symbol_is_borrowed() {
         assert!(matches!(
             normalize_symbol_key_cow("BTCUSDT"),
             Cow::Borrowed("BTCUSDT")
         ));
         assert_eq!(normalize_symbol_key_cow("btc-usdt-swap"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key_cow("BTCUSD_PERP"), "BTCUSD");
+        assert_eq!(normalize_symbol_key_cow("BTCUSDPERP"), "BTCUSD");
+        assert_eq!(
+            derivative_price_symbol_key("BTCUSD_PERP", TradingVenue::BinanceCoinFutures),
+            "BTCUSD"
+        );
+        assert_eq!(
+            derivative_price_symbol_key("BTCUSD", TradingVenue::BinanceCoinFutures),
+            "BTCUSD"
+        );
     }
 
     #[test]

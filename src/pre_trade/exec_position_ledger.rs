@@ -256,6 +256,8 @@ pub(super) struct ExecPositionLedger {
     version: u32,
     pub(super) updated_at_us: i64,
     pub(super) positions: BTreeMap<String, BTreeMap<String, f64>>,
+    #[serde(default)]
+    pub(super) inverse_notionals: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 impl ExecPositionLedger {
@@ -264,6 +266,7 @@ impl ExecPositionLedger {
             version: POSITION_LEDGER_VERSION,
             updated_at_us: 0,
             positions: BTreeMap::new(),
+            inverse_notionals: BTreeMap::new(),
         }
     }
 
@@ -301,6 +304,14 @@ impl ExecPositionLedger {
                 }
             }
         }
+        for (name, notionals) in &self.inverse_notionals {
+            for (symbol, notional) in notionals {
+                anyhow::ensure!(
+                    notional.is_finite() && self.get(name, symbol).is_some(),
+                    "invalid inverse allocation notional: strategy_name={name} symbol={symbol}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -318,9 +329,73 @@ impl ExecPositionLedger {
             .insert(symbol.to_string(), qty);
     }
 
+    pub(super) fn get_for_venue(
+        &self,
+        venue: TradingVenue,
+        strategy_name: &str,
+        symbol: &str,
+    ) -> Option<f64> {
+        if !venue.is_inverse_futures() {
+            return self.get(strategy_name, symbol);
+        }
+        let notional = self.inverse_notionals.get(strategy_name)?.get(symbol)?;
+        inverse_notional_to_base(venue, symbol, *notional)
+    }
+
+    pub(super) fn set_for_venue(
+        &mut self,
+        venue: TradingVenue,
+        strategy_name: &str,
+        symbol: &str,
+        qty: f64,
+    ) -> Result<()> {
+        if venue.is_inverse_futures() {
+            let notional =
+                inverse_base_to_notional(venue, symbol, qty).map_err(anyhow::Error::msg)?;
+            self.inverse_notionals
+                .entry(strategy_name.to_string())
+                .or_default()
+                .insert(symbol.to_string(), notional);
+        }
+        self.set(strategy_name, symbol, qty);
+        Ok(())
+    }
+
     pub(super) fn remove_strategy(&mut self, strategy_name: &str) {
         self.positions.remove(strategy_name);
+        self.inverse_notionals.remove(strategy_name);
     }
+}
+
+pub(crate) fn inverse_notional_to_base(
+    venue: TradingVenue,
+    symbol: &str,
+    notional: f64,
+) -> Option<f64> {
+    if notional == 0.0 {
+        return Some(0.0);
+    }
+    let price = MonitorChannel::instance().inverse_position_mark_price(venue, symbol)?;
+    let qty = notional / price;
+    qty.is_finite().then_some(qty)
+}
+
+pub(crate) fn inverse_base_to_notional(
+    venue: TradingVenue,
+    symbol: &str,
+    qty: f64,
+) -> Result<f64, String> {
+    if qty == 0.0 {
+        return Ok(0.0);
+    }
+    let price = MonitorChannel::instance()
+        .inverse_position_mark_price(venue, symbol)
+        .ok_or_else(|| format!("missing inverse position mark: venue={venue:?} symbol={symbol}"))?;
+    let notional = qty * price;
+    if !notional.is_finite() {
+        return Err(format!("inverse position notional overflow: {symbol}"));
+    }
+    Ok(notional)
 }
 
 pub(super) async fn other_family_positions(
@@ -387,7 +462,24 @@ pub(super) fn current_family_positions(
             live_positions.push((name.to_string(), symbol.to_string(), qty));
         }
     }
-    sum_family_positions(ledger.positions.clone(), live_positions, family, switches)
+    let positions = ledger
+        .positions
+        .iter()
+        .map(|(name, positions)| {
+            (
+                name.clone(),
+                positions
+                    .keys()
+                    .filter_map(|symbol| {
+                        ledger
+                            .get_for_venue(venue, name, symbol)
+                            .map(|qty| (symbol.clone(), qty))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    sum_family_positions(positions, live_positions, family, switches)
 }
 
 fn sum_family_positions(
@@ -508,6 +600,7 @@ mod tests {
         let switches = BTreeMap::from([(
             "rbf_big".to_string(),
             ExecAlgorithmSwitch {
+                inverse_notionals: BTreeMap::new(),
                 from_family: ExecFamily::BatchExec,
                 to_family: ExecFamily::ChaseExec,
                 state: ExecSwitchState::Ready,
@@ -529,6 +622,7 @@ mod tests {
         let ledger = ExecPositionLedger {
             version: POSITION_LEDGER_VERSION,
             updated_at_us: 20,
+            inverse_notionals: BTreeMap::new(),
             positions: BTreeMap::from([
                 ("rbf_big".into(), BTreeMap::from([("SOLUSDT".into(), -7.0)])),
                 (
@@ -573,6 +667,7 @@ mod tests {
         let ledger = ExecPositionLedger {
             version: POSITION_LEDGER_VERSION,
             updated_at_us: 10,
+            inverse_notionals: BTreeMap::new(),
             positions: BTreeMap::from([
                 (
                     "CTA_TOP_V1".into(),
@@ -584,6 +679,7 @@ mod tests {
         let requested = BTreeMap::from([(
             "rbf_big".into(),
             ExecAlgorithmSwitch {
+                inverse_notionals: BTreeMap::new(),
                 from_family: ExecFamily::BatchExec,
                 to_family: ExecFamily::ChaseExec,
                 state: ExecSwitchState::Requested,

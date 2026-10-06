@@ -204,6 +204,7 @@ fn arb_amount_u_override_key(
 fn is_internal_symbol_key(symbol: &str) -> bool {
     !symbol.is_empty()
         && !symbol.ends_with("SWAP")
+        && !symbol.ends_with("USDPERP")
         && symbol
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())

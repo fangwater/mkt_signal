@@ -53,6 +53,8 @@ struct ChaseChildMeta {
     side: Side,
     order_base_qty: f64,
     accounted_fill_base_qty: f64,
+    accounted_fill_notional: f64,
+    qty_multiplier: f64,
     target_generation: i64,
     is_taker: bool,
     /// We cancelled this maker after `expires_at_us`; the confirmed remainder
@@ -259,6 +261,8 @@ pub struct ChaseExecStrategy {
     config: ChaseExecConfig,
     source_updated_at_us: i64,
     virtual_position_qty: Option<f64>,
+    inverse_position_notional: Option<f64>,
+    inverse_reference_price: Option<f64>,
     position_allocation_ready: bool,
     last_position_fill_at_us: i64,
     active_target: Option<ActiveTarget>,
@@ -293,6 +297,8 @@ impl ChaseExecStrategy {
             config,
             source_updated_at_us: 0,
             virtual_position_qty: None,
+            inverse_position_notional: None,
+            inverse_reference_price: None,
             position_allocation_ready: false,
             last_position_fill_at_us: 0,
             active_target: None,
@@ -336,11 +342,52 @@ impl ChaseExecStrategy {
     }
 
     pub fn virtual_position_qty(&self) -> Option<f64> {
-        self.virtual_position_qty
+        if self.exec_venue.is_inverse_futures() {
+            let notional = self.inverse_position_notional?;
+            crate::pre_trade::exec_position_ledger::inverse_notional_to_base(
+                self.exec_venue,
+                &self.symbol,
+                notional,
+            )
+        } else {
+            self.virtual_position_qty
+        }
+    }
+
+    fn revalue_inverse_orders(&mut self, price: f64) {
+        if let Some(previous) = self.inverse_reference_price {
+            let ratio = previous / price;
+            self.taker_pending_base_qty *= ratio;
+            for meta in self
+                .children
+                .values_mut()
+                .chain(self.orphaned_children.values_mut())
+            {
+                meta.order_base_qty *= ratio;
+                meta.accounted_fill_base_qty *= ratio;
+                meta.qty_multiplier *= ratio;
+            }
+        }
+        self.inverse_reference_price = Some(price);
+    }
+
+    fn book_inverse_fill(&mut self, side: Side, notional: f64) {
+        if !self.exec_venue.is_inverse_futures() {
+            return;
+        }
+        if let Some(position) = self.inverse_position_notional.as_mut() {
+            *position += signed_qty_from_side(side, notional);
+            if position.abs() <= QTY_EPS {
+                *position = 0.0;
+            }
+            if notional > 0.0 {
+                self.last_position_fill_at_us = get_timestamp_us();
+            }
+        }
     }
 
     pub fn position_allocation_ready(&self) -> bool {
-        self.position_allocation_ready && self.virtual_position_qty.is_some()
+        self.position_allocation_ready && self.virtual_position_qty().is_some()
     }
 
     pub fn has_execution_in_flight(&self) -> bool {
@@ -395,8 +442,20 @@ impl ChaseExecStrategy {
         if self.has_execution_in_flight() {
             return Err("cannot apply position allocation with orders in flight".to_string());
         }
-        let previous = self.virtual_position_qty;
+        let inverse_notional = if self.exec_venue.is_inverse_futures() {
+            Some(
+                crate::pre_trade::exec_position_ledger::inverse_base_to_notional(
+                    self.exec_venue,
+                    &self.symbol,
+                    position_qty,
+                )?,
+            )
+        } else {
+            None
+        };
+        let previous = self.virtual_position_qty();
         self.virtual_position_qty = Some(position_qty);
+        self.inverse_position_notional = inverse_notional;
         self.position_allocation_ready = true;
         self.completion_reason = None;
         info!(
@@ -432,7 +491,7 @@ impl ChaseExecStrategy {
         }
         if !self.position_allocation_ready()
             || self.current_from_key().is_none()
-            || self.virtual_position_qty.is_none()
+            || self.virtual_position_qty().is_none()
         {
             return Err("internal cross requires an applied target and position".to_string());
         }
@@ -502,11 +561,15 @@ impl ChaseExecStrategy {
         if !venue_qty.is_finite() || venue_qty <= 0.0 {
             return Err(format!("internal cross invalid venue qty={venue_qty}"));
         }
+        let valued_position = self.virtual_position_qty();
         let Some(virtual_position) = self.virtual_position_qty.as_mut() else {
             return Err("internal cross requires a virtual position".to_string());
         };
-        *virtual_position += signed_base_qty;
+        *virtual_position = valued_position.unwrap_or(*virtual_position) + signed_base_qty;
         let virtual_position_qty = *virtual_position;
+        if let Some(notional) = self.inverse_position_notional.as_mut() {
+            *notional += signed_base_qty * mid;
+        }
         self.last_position_fill_at_us = now_ts;
         self.completion_reason = None;
         let side = if signed_base_qty > 0.0 {
@@ -598,6 +661,9 @@ impl ChaseExecStrategy {
 
     fn mark_price(&self) -> Option<f64> {
         let monitor = MonitorChannel::instance();
+        if self.exec_venue.is_inverse_futures() {
+            return monitor.inverse_position_mark_price(self.exec_venue, &self.symbol);
+        }
         let exchange = monitor.try_mark_price_exchange()?;
         let price_symbol = mark_price_lookup_symbol(&self.symbol, exchange);
         monitor
@@ -747,7 +813,9 @@ impl ChaseExecStrategy {
             return;
         }
         let pending = self.pending_target.take().expect("checked above");
-        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let position_qty = self
+            .virtual_position_qty()
+            .expect("allocation checked above");
         self.taker_pending_base_qty = 0.0;
         info!(
             "ChaseExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} signal={} allocated_position_qty={:.8} generation={}",
@@ -775,6 +843,12 @@ impl ChaseExecStrategy {
     }
 
     fn load_order_limits(&self, reference_price: f64) -> Result<ChaseOrderLimits, String> {
+        let reference_price = if self.exec_venue.is_inverse_futures() {
+            self.inverse_reference_price
+                .ok_or_else(|| "missing inverse allocation mark".to_string())?
+        } else {
+            reference_price
+        };
         let table = MonitorChannel::instance()
             .try_venue_min_qty_table(self.exec_venue)
             .ok_or_else(|| format!("missing min qty table venue={:?}", self.exec_venue))?;
@@ -801,8 +875,19 @@ impl ChaseExecStrategy {
         Ok(ChaseOrderLimits {
             price_tick,
             qty_step: table.step_size(&symbol_key).unwrap_or(0.0),
-            min_qty: table.min_qty(&symbol_key).unwrap_or(0.0),
-            min_notional: table.min_notional(&symbol_key).unwrap_or(0.0),
+            min_qty: if let Some(face) = inverse_contract_size {
+                table
+                    .min_qty(&symbol_key)
+                    .unwrap_or(0.0)
+                    .max(table.min_notional(&symbol_key).unwrap_or(0.0) / face)
+            } else {
+                table.min_qty(&symbol_key).unwrap_or(0.0)
+            },
+            min_notional: if inverse_contract_size.is_some() {
+                0.0
+            } else {
+                table.min_notional(&symbol_key).unwrap_or(0.0)
+            },
             qty_multiplier,
             inverse_contract_size,
         })
@@ -838,7 +923,9 @@ impl ChaseExecStrategy {
         let Some(target_qty) = self.active_target.as_ref().map(|target| target.target.qty) else {
             return;
         };
-        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let position_qty = self
+            .virtual_position_qty()
+            .expect("allocation checked above");
         let remaining_qty = target_qty - position_qty;
         let committed_qty = self.live_order_signed_qty();
 
@@ -1022,7 +1109,9 @@ impl ChaseExecStrategy {
             drop(order);
             let params = PreTradeParamsLoader::instance();
             let modify_exchange = match self.exec_venue {
-                TradingVenue::BinanceFutures => RuntimeExchange::Binance,
+                TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
+                    RuntimeExchange::Binance
+                }
                 TradingVenue::OkexFutures => RuntimeExchange::Okex,
                 _ => {
                     warn!(
@@ -1151,6 +1240,9 @@ impl ChaseExecStrategy {
     /// Fill-water-level release. Taker-committed remainder drains first; maker
     /// batches then refill the configured number of open batch-equivalents.
     fn maybe_release(&mut self, now_ts: i64) {
+        if self.exec_venue.is_inverse_futures() && self.mark_price().is_none() {
+            return;
+        }
         if self.pending_target.is_some()
             || !self.orphaned_children.is_empty()
             || !MonitorChannel::instance().exec_position_snapshot_ready()
@@ -1199,7 +1291,16 @@ impl ChaseExecStrategy {
             return;
         };
 
-        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let position_qty = self.virtual_position_qty().unwrap_or(0.0);
+        let release_side = if self.exec_venue.is_inverse_futures() {
+            if target_qty >= position_qty {
+                Side::Buy
+            } else {
+                Side::Sell
+            }
+        } else {
+            release_side
+        };
         let side_sign = signed_qty_from_side(release_side, 1.0);
         let remaining_base = (target_qty - position_qty) * side_sign;
         if remaining_base <= QTY_EPS {
@@ -1214,10 +1315,10 @@ impl ChaseExecStrategy {
             return;
         }
         let side = release_side;
-        let reference_price = match side {
+        let reference_price = self.inverse_reference_price.unwrap_or_else(|| match side {
             Side::Buy => quote.bid,
             Side::Sell => quote.ask,
-        };
+        });
         let limits = match self.load_order_limits(reference_price) {
             Ok(limits) => limits,
             Err(err) => {
@@ -1238,7 +1339,10 @@ impl ChaseExecStrategy {
                 return;
             }
         };
-        let minimum_base_qty = match minimum_executable_base_qty(maker_price, limits) {
+        let minimum_base_qty = match minimum_executable_base_qty(
+            self.inverse_reference_price.unwrap_or(maker_price),
+            limits,
+        ) {
             Ok(qty) => qty,
             Err(err) => {
                 warn!(
@@ -1289,7 +1393,9 @@ impl ChaseExecStrategy {
             taker_qty = uncommitted_base;
         }
         if taker_qty > QTY_EPS {
-            let qty_multiplier = match limits.qty_multiplier_at(reference_price) {
+            let qty_multiplier = match limits
+                .qty_multiplier_at(self.inverse_reference_price.unwrap_or(reference_price))
+            {
                 Ok(multiplier) => multiplier,
                 Err(err) => {
                     warn!(
@@ -1347,27 +1453,31 @@ impl ChaseExecStrategy {
             );
             return;
         };
+        let quantity_price = self.inverse_reference_price.unwrap_or(reference_price);
         let release_usdt = maker_release_usdt(
             effective_batch_usdt,
             self.config.max_open_batches,
-            open_unfilled_base * reference_price,
-            maker_capacity_base * reference_price,
+            open_unfilled_base * quantity_price,
+            maker_capacity_base * quantity_price,
         );
         if release_usdt <= 0.0 {
             return;
         }
-        let qty_multiplier = match limits.qty_multiplier_at(maker_price) {
-            Ok(multiplier) => multiplier,
-            Err(err) => {
-                warn!(
-                    "ChaseExecStrategy: strategy_id={} symbol={} invalid maker multiplier: {}",
-                    self.strategy_id, self.symbol, err
-                );
-                return;
-            }
-        };
-        let qty_venue =
-            align_child_qty_floor(release_usdt / maker_price / qty_multiplier, limits.qty_step);
+        let qty_multiplier =
+            match limits.qty_multiplier_at(self.inverse_reference_price.unwrap_or(maker_price)) {
+                Ok(multiplier) => multiplier,
+                Err(err) => {
+                    warn!(
+                        "ChaseExecStrategy: strategy_id={} symbol={} invalid maker multiplier: {}",
+                        self.strategy_id, self.symbol, err
+                    );
+                    return;
+                }
+            };
+        let qty_venue = align_child_qty_floor(
+            release_usdt / self.inverse_reference_price.unwrap_or(maker_price) / qty_multiplier,
+            limits.qty_step,
+        );
         let qty_base = qty_venue * qty_multiplier;
         if qty_base + QTY_EPS < minimum_base_qty {
             return;
@@ -1456,6 +1566,8 @@ impl ChaseExecStrategy {
                 side,
                 order_base_qty: qty_base,
                 accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier,
                 target_generation: generation,
                 is_taker,
                 maker_expired: false,
@@ -1666,14 +1778,20 @@ impl ChaseExecStrategy {
             return;
         }
         let Some((side, delta_base_qty)) = self.children.get_mut(&client_order_id).map(|meta| {
-            let next_accounted =
-                (meta.accounted_fill_base_qty + delta_base_at_fill).min(meta.order_base_qty);
+            let progress = if self.exec_venue.is_inverse_futures() {
+                delta_venue_qty * meta.qty_multiplier
+            } else {
+                delta_base_at_fill
+            };
+            let next_accounted = (meta.accounted_fill_base_qty + progress).min(meta.order_base_qty);
             let delta_base_qty = next_accounted - meta.accounted_fill_base_qty;
             meta.accounted_fill_base_qty = next_accounted;
+            meta.accounted_fill_notional += delta_base_at_fill * fill_price;
             (meta.side, delta_base_qty)
         }) else {
             return;
         };
+        self.book_inverse_fill(side, delta_base_at_fill * fill_price);
         self.apply_fill_delta(client_order_id, side, delta_base_qty);
     }
 
@@ -1683,7 +1801,9 @@ impl ChaseExecStrategy {
         }
         let signed_fill_qty = signed_qty_from_side(side, delta_base_qty);
         if let Some(position_qty) = self.virtual_position_qty.as_mut() {
-            *position_qty += signed_fill_qty;
+            if !self.exec_venue.is_inverse_futures() {
+                *position_qty += signed_fill_qty;
+            }
             self.last_position_fill_at_us = get_timestamp_us();
         } else {
             warn!(
@@ -1961,7 +2081,7 @@ impl ChaseExecStrategy {
     pub fn snapshot(&self, _now_ts: i64) -> ChaseExecSnapshot {
         let account_position_qty =
             MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let position_qty = self.virtual_position_qty().unwrap_or(0.0);
         let live_order_qty = self.live_order_signed_qty();
         let target_qty = self.target_qty();
         let taker_pending_qty = self
@@ -2155,6 +2275,17 @@ impl Strategy for ChaseExecStrategy {
             );
             return false;
         }
+        if self.exec_venue.is_inverse_futures()
+            && (!terminal.price.is_finite()
+                || terminal.price <= 0.0
+                || !(terminal.filled_base_qty * terminal.price).is_finite())
+        {
+            warn!(
+                "inverse orphan terminal has invalid fill price: order_id={}",
+                terminal.client_order_id
+            );
+            return false;
+        }
         if !terminal.filled_base_qty.is_finite() || terminal.filled_base_qty < 0.0 {
             warn!(
                 "ChaseExecStrategy: strategy_id={} reject invalid orphan terminal fill order_id={} filled_base_qty={}",
@@ -2168,8 +2299,18 @@ impl Strategy for ChaseExecStrategy {
             .remove(&terminal.client_order_id)
             .expect("orphan metadata checked above");
         let previous_accounted = meta.accounted_fill_base_qty;
-        let next_accounted = terminal
-            .filled_base_qty
+        if self.exec_venue.is_inverse_futures() {
+            let delta_notional =
+                (terminal.filled_base_qty * terminal.price - meta.accounted_fill_notional).max(0.0);
+            self.book_inverse_fill(terminal.side, delta_notional);
+            meta.accounted_fill_notional += delta_notional;
+        }
+        let terminal_progress = if self.exec_venue.is_inverse_futures() {
+            meta.accounted_fill_notional / self.inverse_reference_price.unwrap_or(terminal.price)
+        } else {
+            terminal.filled_base_qty
+        };
+        let next_accounted = terminal_progress
             .max(previous_accounted)
             .min(meta.order_base_qty);
         meta.accounted_fill_base_qty = next_accounted;
@@ -2346,6 +2487,11 @@ impl Strategy for ChaseExecStrategy {
         } else {
             get_timestamp_us()
         };
+        if self.exec_venue.is_inverse_futures() {
+            if let Some(price) = self.mark_price() {
+                self.revalue_inverse_orders(price);
+            }
+        }
         self.handle_order_query_watchdogs();
         self.cancel_children_when_target_no_longer_needs_them();
         self.handle_child_timeouts(now_ts);
@@ -2394,6 +2540,8 @@ mod tests {
             side,
             order_base_qty,
             accounted_fill_base_qty,
+            accounted_fill_notional: 0.0,
+            qty_multiplier: 1.0,
             target_generation: generation,
             is_taker: false,
             maker_expired: false,
@@ -2725,6 +2873,41 @@ mod tests {
 
         assert!(!strategy.position_allocation_ready());
         assert_eq!(strategy.taker_pending_base_qty, 0.0);
+    }
+
+    #[test]
+    fn inverse_orphan_fill_finishes_contracts_at_a_different_price_without_dust() {
+        let mut strategy = ChaseExecStrategy::new(
+            1,
+            "coin",
+            "BTCUSD",
+            TradingVenue::BinanceCoinFutures,
+            config(),
+        );
+        strategy.apply_position_allocation(0.0, 1).unwrap();
+        strategy.revalue_inverse_orders(50000.0);
+        let id = strategy.next_order_id();
+        let mut meta = maker_child_meta(Side::Buy, 0.002, 0.0, 7);
+        meta.qty_multiplier = 0.002;
+        meta.maker_expired = true;
+        strategy.orphaned_children.insert(id, meta);
+        strategy.revalue_inverse_orders(60000.0);
+        assert!((strategy.orphaned_children[&id].order_base_qty - 100.0 / 60000.0).abs() < QTY_EPS);
+        let terminal = ExecOrphanTerminal {
+            client_order_id: id,
+            source_kind: OrphanSourceKind::Hedge,
+            terminal_ts: 42,
+            side: Side::Buy,
+            order_base_qty: 100.0 / 60000.0,
+            filled_base_qty: 100.0 / 60000.0,
+            price: 60000.0,
+        };
+        assert!(strategy.apply_exec_orphan_terminal(&terminal));
+        assert_eq!(strategy.inverse_position_notional, Some(100.0));
+        assert!(strategy.taker_pending_base_qty < QTY_EPS);
+        assert!(!strategy.apply_exec_orphan_terminal(&terminal));
+        strategy.book_inverse_fill(Side::Sell, 100.0);
+        assert_eq!(strategy.virtual_position_qty(), Some(0.0));
     }
 
     #[test]

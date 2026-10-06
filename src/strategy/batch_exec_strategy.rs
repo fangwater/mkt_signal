@@ -413,6 +413,8 @@ struct ChildOrderMeta {
     level_index: u32,
     order_base_qty: f64,
     accounted_fill_base_qty: f64,
+    accounted_fill_notional: f64,
+    qty_multiplier: f64,
     signal_ts: i64,
     price_offset: f64,
     from_key: Vec<u8>,
@@ -500,6 +502,22 @@ struct BatchOrderLimits {
     min_notional: f64,
     qty_multiplier: f64,
     inverse_contract_size: Option<f64>,
+}
+
+// Base quantities for inverse execution are valued at the same mark as the
+// position ledger. Contract face value is independent of the maker limit price.
+#[derive(Clone, Copy)]
+struct ChildQtyMultiplier {
+    value: f64,
+    notional_price: Option<f64>,
+}
+impl From<f64> for ChildQtyMultiplier {
+    fn from(value: f64) -> Self {
+        Self {
+            value,
+            notional_price: None,
+        }
+    }
 }
 
 impl BatchOrderLimits {
@@ -694,8 +712,10 @@ fn build_child_order_plans(
     qty_step: f64,
     min_qty: f64,
     min_notional: f64,
-    qty_multiplier: f64,
+    qty_multiplier: impl Into<ChildQtyMultiplier>,
 ) -> Result<Vec<BatchChildOrderPlan>, String> {
+    let conversion = qty_multiplier.into();
+    let qty_multiplier = conversion.value;
     if !bid.is_finite()
         || !ask.is_finite()
         || bid <= 0.0
@@ -732,14 +752,15 @@ fn build_child_order_plans(
         if !sizing_price.is_finite() || sizing_price <= 0.0 {
             return Err("invalid sizing price".to_string());
         }
+        let quantity_price = conversion.notional_price.unwrap_or(sizing_price);
         let hand_usdt = if use_taker {
-            unplanned_base_qty * sizing_price
+            unplanned_base_qty * quantity_price
         } else {
             config
                 .single_order_usdt
-                .min(unplanned_base_qty * sizing_price)
+                .min(unplanned_base_qty * quantity_price)
         };
-        let raw_base_qty = (hand_usdt / sizing_price).min(unplanned_base_qty);
+        let raw_base_qty = (hand_usdt / quantity_price).min(unplanned_base_qty);
         let raw_venue_qty = raw_base_qty / qty_multiplier;
         let qty_venue = align_child_qty_floor(raw_venue_qty, qty_step);
         let qty_base = qty_venue * qty_multiplier;
@@ -791,8 +812,10 @@ fn rebuild_child_order_plans_at_preserved_levels(
     qty_step: f64,
     min_qty: f64,
     min_notional: f64,
-    qty_multiplier: f64,
+    qty_multiplier: impl Into<ChildQtyMultiplier>,
 ) -> Result<Vec<BatchChildOrderPlan>, String> {
+    let conversion = qty_multiplier.into();
+    let qty_multiplier = conversion.value;
     if !bid.is_finite()
         || !ask.is_finite()
         || bid <= 0.0
@@ -850,6 +873,8 @@ pub struct BatchExecStrategy {
     config_transition_pov_started_at_us: Option<i64>,
     source_updated_at_us: i64,
     virtual_position_qty: Option<f64>,
+    inverse_position_notional: Option<f64>,
+    inverse_reference_price: Option<f64>,
     position_allocation_ready: bool,
     last_position_fill_at_us: i64,
     active_target: Option<ActiveTarget>,
@@ -888,6 +913,8 @@ impl BatchExecStrategy {
             config_transition_pov_started_at_us: None,
             source_updated_at_us: 0,
             virtual_position_qty: None,
+            inverse_position_notional: None,
+            inverse_reference_price: None,
             position_allocation_ready: false,
             last_position_fill_at_us: 0,
             active_target: None,
@@ -968,6 +995,15 @@ impl BatchExecStrategy {
         {
             return;
         }
+        let (base_qty, price) = if self.exec_venue.is_inverse_futures() {
+            let Some(mark) = self.mark_price() else {
+                return;
+            };
+            self.revalue_inverse_orders(mark, now_us);
+            (base_qty * price / mark, mark)
+        } else {
+            (base_qty, price)
+        };
         let reserved = self.pov_reserved_qty();
         self.pov_state.observe(
             &self.config.pov,
@@ -1011,6 +1047,9 @@ impl BatchExecStrategy {
 
     fn mark_price(&self) -> Option<f64> {
         let monitor = MonitorChannel::instance();
+        if self.exec_venue.is_inverse_futures() {
+            return monitor.inverse_position_mark_price(self.exec_venue, &self.symbol);
+        }
         let exchange = monitor.try_mark_price_exchange()?;
         let price_symbol = mark_price_lookup_symbol(&self.symbol, exchange);
         monitor
@@ -1036,11 +1075,63 @@ impl BatchExecStrategy {
     }
 
     pub fn virtual_position_qty(&self) -> Option<f64> {
-        self.virtual_position_qty
+        if self.exec_venue.is_inverse_futures() {
+            let notional = self.inverse_position_notional?;
+            crate::pre_trade::exec_position_ledger::inverse_notional_to_base(
+                self.exec_venue,
+                &self.symbol,
+                notional,
+            )
+        } else {
+            self.virtual_position_qty
+        }
+    }
+
+    fn revalue_inverse_orders(&mut self, price: f64, now_ts: i64) {
+        if let Some(previous) = self.inverse_reference_price {
+            let ratio = previous / price;
+            self.pov_state.market_base_qty *= ratio;
+            self.pov_state.filled_base_qty *= ratio;
+            self.pov_state.credit_base_qty *= ratio;
+            for batch in self.batches.values_mut() {
+                batch.remaining_base_qty *= ratio;
+                for qty in batch.remaining_qty_by_level.values_mut() {
+                    *qty *= ratio;
+                }
+            }
+            for meta in self
+                .child_orders
+                .values_mut()
+                .chain(self.orphaned_child_orders.values_mut())
+            {
+                meta.order_base_qty *= ratio;
+                meta.accounted_fill_base_qty *= ratio;
+                meta.qty_multiplier *= ratio;
+            }
+        }
+        self.inverse_reference_price = Some(price);
+        if self.completion_reason == Some(BatchExecCompletionReason::ExchangeMinimum) {
+            self.next_batch_at_us = now_ts;
+        }
+    }
+
+    fn book_inverse_fill(&mut self, side: Side, notional: f64) {
+        if !self.exec_venue.is_inverse_futures() {
+            return;
+        }
+        if let Some(position) = self.inverse_position_notional.as_mut() {
+            *position += signed_qty_from_side(side, notional);
+            if position.abs() <= QTY_EPS {
+                *position = 0.0;
+            }
+            if notional > 0.0 {
+                self.last_position_fill_at_us = get_timestamp_us();
+            }
+        }
     }
 
     pub fn position_allocation_ready(&self) -> bool {
-        self.position_allocation_ready && self.virtual_position_qty.is_some()
+        self.position_allocation_ready && self.virtual_position_qty().is_some()
     }
 
     pub fn has_execution_in_flight(&self) -> bool {
@@ -1100,8 +1191,20 @@ impl BatchExecStrategy {
         if self.has_execution_in_flight() {
             return Err("cannot apply position allocation with orders in flight".to_string());
         }
-        let previous = self.virtual_position_qty;
+        let inverse_notional = if self.exec_venue.is_inverse_futures() {
+            Some(
+                crate::pre_trade::exec_position_ledger::inverse_base_to_notional(
+                    self.exec_venue,
+                    &self.symbol,
+                    position_qty,
+                )?,
+            )
+        } else {
+            None
+        };
+        let previous = self.virtual_position_qty();
         self.virtual_position_qty = Some(position_qty);
+        self.inverse_position_notional = inverse_notional;
         self.position_allocation_ready = true;
         self.next_batch_at_us = now_ts;
         self.completion_reason = None;
@@ -1142,7 +1245,7 @@ impl BatchExecStrategy {
         }
         if !self.position_allocation_ready()
             || self.current_from_key().is_none()
-            || self.virtual_position_qty.is_none()
+            || self.virtual_position_qty().is_none()
         {
             return Err("internal cross requires an applied target and position".to_string());
         }
@@ -1213,11 +1316,15 @@ impl BatchExecStrategy {
         if !venue_qty.is_finite() || venue_qty <= 0.0 {
             return Err(format!("internal cross invalid venue qty={venue_qty}"));
         }
+        let valued_position = self.virtual_position_qty();
         let Some(virtual_position) = self.virtual_position_qty.as_mut() else {
             return Err("internal cross requires a virtual position".to_string());
         };
-        *virtual_position += signed_base_qty;
+        *virtual_position = valued_position.unwrap_or(*virtual_position) + signed_base_qty;
         let virtual_position_qty = *virtual_position;
+        if let Some(notional) = self.inverse_position_notional.as_mut() {
+            *notional += signed_base_qty * mid;
+        }
         self.last_position_fill_at_us = now_ts;
         // A terminal state can park scheduling at i64::MAX. The cross changes
         // the remaining gap, so wake the strategy to recompute that state.
@@ -1295,7 +1402,7 @@ impl BatchExecStrategy {
     pub fn snapshot(&self, now_ts: i64) -> BatchExecSnapshot {
         let account_position_qty =
             MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let position_qty = self.virtual_position_qty().unwrap_or(0.0);
         let effective_position_qty = position_qty;
         let target_qty = self.target_qty();
         let live_order_qty = self.live_order_signed_qty();
@@ -1474,7 +1581,7 @@ impl BatchExecStrategy {
     }
 
     fn unallocated_qty_for_target(&self, target_qty: f64) -> f64 {
-        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let position_qty = self.virtual_position_qty().unwrap_or(0.0);
         target_qty - position_qty - self.committed_batch_signed_qty()
     }
 
@@ -1647,7 +1754,9 @@ impl BatchExecStrategy {
         }
         self.batches.clear();
         let pending = self.pending_target.take().expect("checked above");
-        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let position_qty = self
+            .virtual_position_qty()
+            .expect("allocation checked above");
         info!(
             "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} signal={} allocated_position_qty={:.8} generation={}",
             self.strategy_id,
@@ -1670,6 +1779,9 @@ impl BatchExecStrategy {
     }
 
     fn maybe_start_or_requote_batch(&mut self, now_ts: i64) {
+        if self.exec_venue.is_inverse_futures() && self.mark_price().is_none() {
+            return;
+        }
         if self.config_transition_in_progress
             || self.pending_target.is_some()
             || !self.orphaned_child_orders.is_empty()
@@ -1745,10 +1857,10 @@ impl BatchExecStrategy {
         } else {
             Side::Sell
         };
-        let reference_price = match side {
+        let reference_price = self.inverse_reference_price.unwrap_or_else(|| match side {
             Side::Buy => quote.bid,
             Side::Sell => quote.ask,
-        };
+        });
         let limits = match self.load_order_limits(reference_price) {
             Ok(limits) => limits,
             Err(err) => {
@@ -1776,7 +1888,10 @@ impl BatchExecStrategy {
                 return;
             }
         };
-        let minimum_base_qty = match minimum_executable_base_qty(minimum_order_price, limits) {
+        let minimum_base_qty = match minimum_executable_base_qty(
+            self.inverse_reference_price.unwrap_or(minimum_order_price),
+            limits,
+        ) {
             Ok(qty) => qty,
             Err(err) => {
                 warn!(
@@ -1884,7 +1999,7 @@ impl BatchExecStrategy {
                 &self.config.pov,
                 self.pov_reserved_qty(),
                 desired_batch_base_qty,
-                quote.ask,
+                self.inverse_reference_price.unwrap_or(quote.ask),
                 minimum_base_qty,
             ) else {
                 return;
@@ -1930,6 +2045,12 @@ impl BatchExecStrategy {
     }
 
     fn load_order_limits(&self, reference_price: f64) -> Result<BatchOrderLimits, String> {
+        let reference_price = if self.exec_venue.is_inverse_futures() {
+            self.inverse_reference_price
+                .ok_or_else(|| "missing inverse allocation mark".to_string())?
+        } else {
+            reference_price
+        };
         let table = MonitorChannel::instance()
             .try_venue_min_qty_table(self.exec_venue)
             .ok_or_else(|| format!("missing min qty table venue={:?}", self.exec_venue))?;
@@ -1956,8 +2077,19 @@ impl BatchExecStrategy {
         Ok(BatchOrderLimits {
             price_tick,
             qty_step: table.step_size(&symbol_key).unwrap_or(0.0),
-            min_qty: table.min_qty(&symbol_key).unwrap_or(0.0),
-            min_notional: table.min_notional(&symbol_key).unwrap_or(0.0),
+            min_qty: if let Some(face) = inverse_contract_size {
+                table
+                    .min_qty(&symbol_key)
+                    .unwrap_or(0.0)
+                    .max(table.min_notional(&symbol_key).unwrap_or(0.0) / face)
+            } else {
+                table.min_qty(&symbol_key).unwrap_or(0.0)
+            },
+            min_notional: if inverse_contract_size.is_some() {
+                0.0
+            } else {
+                table.min_notional(&symbol_key).unwrap_or(0.0)
+            },
             qty_multiplier,
             inverse_contract_size,
         })
@@ -1978,13 +2110,17 @@ impl BatchExecStrategy {
     ) -> Result<Vec<BatchChildOrderPlan>, String> {
         let limits = self.load_order_limits((bid + ask) * 0.5)?;
 
+        let conversion = ChildQtyMultiplier {
+            value: limits.qty_multiplier,
+            notional_price: self.inverse_reference_price,
+        };
         let effective_config = self.effective_config();
         let use_taker = should_use_taker(
             &effective_config,
             batch.maker_requotes,
             self.active_target_signal(),
         );
-        let mut plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
+        let plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
             rebuild_child_order_plans_at_preserved_levels(
                 &effective_config,
                 batch.side,
@@ -1995,7 +2131,7 @@ impl BatchExecStrategy {
                 limits.qty_step,
                 limits.min_qty,
                 limits.min_notional,
-                limits.qty_multiplier,
+                conversion,
             )?
         } else {
             build_child_order_plans(
@@ -2010,29 +2146,9 @@ impl BatchExecStrategy {
                 limits.qty_step,
                 limits.min_qty,
                 limits.min_notional,
-                limits.qty_multiplier,
+                conversion,
             )?
         };
-        if limits.inverse_contract_size.is_some() {
-            for plan in &mut plans {
-                let target_base_qty = plan.qty_base;
-                let multiplier = limits.qty_multiplier_at(plan.sizing_price)?;
-                let qty_venue =
-                    align_child_qty_floor(target_base_qty / multiplier, limits.qty_step);
-                plan.qty_venue = qty_venue;
-                plan.qty_base = qty_venue * multiplier;
-                plan.qty_multiplier = multiplier;
-            }
-            plans.retain(|plan| {
-                plan.qty_base > QTY_EPS
-                    && child_order_meets_exchange_minimums(
-                        plan,
-                        limits.min_qty,
-                        limits.min_notional,
-                        plan.qty_multiplier,
-                    )
-            });
-        }
         Ok(plans)
     }
 
@@ -2180,6 +2296,8 @@ impl BatchExecStrategy {
                     level_index: plan.level_index,
                     order_base_qty: plan.qty_base,
                     accounted_fill_base_qty: 0.0,
+                    accounted_fill_notional: 0.0,
+                    qty_multiplier,
                     signal_ts: now_ts,
                     signal_bbo,
                     price_offset,
@@ -2390,7 +2508,9 @@ impl BatchExecStrategy {
         let Some(target_qty) = self.active_target.as_ref().map(|target| target.target.qty) else {
             return;
         };
-        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let position_qty = self
+            .virtual_position_qty()
+            .expect("allocation checked above");
         let remaining_qty = target_qty - position_qty;
         let committed_qty = self.committed_batch_signed_qty();
 
@@ -2440,15 +2560,24 @@ impl BatchExecStrategy {
         }
         let Some((batch_seq, level_index, delta_base_qty)) =
             self.child_orders.get_mut(&client_order_id).map(|meta| {
+                let progress = if self.exec_venue.is_inverse_futures() {
+                    delta_venue_qty * meta.qty_multiplier
+                } else {
+                    delta_base_at_fill
+                };
                 let next_accounted =
-                    (meta.accounted_fill_base_qty + delta_base_at_fill).min(meta.order_base_qty);
+                    (meta.accounted_fill_base_qty + progress).min(meta.order_base_qty);
                 let delta_base_qty = next_accounted - meta.accounted_fill_base_qty;
                 meta.accounted_fill_base_qty = next_accounted;
+                meta.accounted_fill_notional += delta_base_at_fill * fill_price;
                 (meta.batch_seq, meta.level_index, delta_base_qty)
             })
         else {
             return;
         };
+        if let Some(side) = self.batches.get(&batch_seq).map(|batch| batch.side) {
+            self.book_inverse_fill(side, delta_base_at_fill * fill_price);
+        }
         self.apply_fill_delta(client_order_id, batch_seq, level_index, delta_base_qty);
     }
 
@@ -2477,7 +2606,9 @@ impl BatchExecStrategy {
         }
         let signed_fill_qty = signed_qty_from_side(batch.side, delta_base_qty);
         if let Some(position_qty) = self.virtual_position_qty.as_mut() {
-            *position_qty += signed_fill_qty;
+            if !self.exec_venue.is_inverse_futures() {
+                *position_qty += signed_fill_qty;
+            }
             self.last_position_fill_at_us = get_timestamp_us();
         } else {
             warn!(
@@ -2865,6 +2996,17 @@ impl Strategy for BatchExecStrategy {
             );
             return false;
         }
+        if self.exec_venue.is_inverse_futures()
+            && (!terminal.price.is_finite()
+                || terminal.price <= 0.0
+                || !(terminal.filled_base_qty * terminal.price).is_finite())
+        {
+            warn!(
+                "inverse orphan terminal has invalid fill price: order_id={}",
+                terminal.client_order_id
+            );
+            return false;
+        }
         if !terminal.filled_base_qty.is_finite() || terminal.filled_base_qty < 0.0 {
             warn!(
                 "BatchExecStrategy: strategy_id={} reject invalid orphan terminal fill order_id={} filled_base_qty={}",
@@ -2878,8 +3020,18 @@ impl Strategy for BatchExecStrategy {
             .remove(&terminal.client_order_id)
             .expect("orphan metadata checked above");
         let previous_accounted = meta.accounted_fill_base_qty;
-        let next_accounted = terminal
-            .filled_base_qty
+        if self.exec_venue.is_inverse_futures() {
+            let delta_notional =
+                (terminal.filled_base_qty * terminal.price - meta.accounted_fill_notional).max(0.0);
+            self.book_inverse_fill(terminal.side, delta_notional);
+            meta.accounted_fill_notional += delta_notional;
+        }
+        let terminal_progress = if self.exec_venue.is_inverse_futures() {
+            meta.accounted_fill_notional / self.inverse_reference_price.unwrap_or(terminal.price)
+        } else {
+            terminal.filled_base_qty
+        };
+        let next_accounted = terminal_progress
             .max(previous_accounted)
             .min(meta.order_base_qty);
         meta.accounted_fill_base_qty = next_accounted;
@@ -2982,6 +3134,11 @@ impl Strategy for BatchExecStrategy {
         } else {
             get_timestamp_us()
         };
+        if self.exec_venue.is_inverse_futures() {
+            if let Some(price) = self.mark_price() {
+                self.revalue_inverse_orders(price, now_ts);
+            }
+        }
         self.handle_order_query_watchdogs();
         self.cancel_batches_when_target_no_longer_needs_them();
         self.handle_batch_timeouts(now_ts);
@@ -3278,6 +3435,71 @@ mod tests {
     }
 
     #[test]
+    fn inverse_plans_use_mark_for_contract_face_and_close_the_last_contract() {
+        let conversion = ChildQtyMultiplier {
+            value: 100.0 / 50000.0,
+            notional_price: Some(50000.0),
+        };
+        for side in [Side::Buy, Side::Sell] {
+            let plans = build_child_order_plans(
+                &config(),
+                side,
+                0.002,
+                0,
+                0,
+                49900.0,
+                50100.0,
+                0.1,
+                1.0,
+                1.0,
+                0.0,
+                conversion,
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].qty_venue, 1.0);
+            assert!((plans[0].qty_base - 0.002).abs() < QTY_EPS);
+            let dust = build_child_order_plans(
+                &config(),
+                side,
+                0.0019,
+                0,
+                0,
+                49900.0,
+                50100.0,
+                0.1,
+                1.0,
+                1.0,
+                0.0,
+                conversion,
+            )
+            .unwrap();
+            assert!(dust.is_empty());
+        }
+    }
+
+    #[test]
+    fn inverse_position_conserves_face_and_minimum_is_rechecked_after_price_change() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "coin",
+            "BTCUSD",
+            TradingVenue::BinanceCoinFutures,
+            config(),
+        );
+        strategy.apply_position_allocation(0.0, 1).unwrap();
+        strategy.book_inverse_fill(Side::Buy, 100.0);
+        strategy.revalue_inverse_orders(50000.0, 2);
+        strategy.completion_reason = Some(BatchExecCompletionReason::ExchangeMinimum);
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.revalue_inverse_orders(60000.0, 3);
+        assert_eq!(strategy.inverse_position_notional, Some(100.0));
+        assert_eq!(strategy.next_batch_at_us, 3);
+        strategy.book_inverse_fill(Side::Sell, 100.0);
+        assert_eq!(strategy.virtual_position_qty(), Some(0.0));
+    }
+
+    #[test]
     fn coin_inverse_minimum_uses_contract_size_over_price() {
         let limits = BatchOrderLimits {
             price_tick: 0.1,
@@ -3416,6 +3638,8 @@ mod tests {
                 level_index: 0,
                 order_base_qty: 1.0,
                 accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier: 1.0,
                 signal_ts: 1,
                 signal_bbo: None,
                 price_offset: 0.0,
@@ -3486,6 +3710,8 @@ mod tests {
                     level_index: 0,
                     order_base_qty: 1.0,
                     accounted_fill_base_qty: 0.0,
+                    accounted_fill_notional: 0.0,
+                    qty_multiplier: 1.0,
                     signal_ts: 1,
                     signal_bbo: None,
                     price_offset: 0.0,
@@ -3544,6 +3770,8 @@ mod tests {
                 level_index: 0,
                 order_base_qty: 1.0,
                 accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier: 1.0,
                 signal_ts: 1,
                 signal_bbo: None,
                 price_offset: 0.0,
@@ -3593,6 +3821,8 @@ mod tests {
                 level_index: 0,
                 order_base_qty: 1.0,
                 accounted_fill_base_qty: 0.0,
+                accounted_fill_notional: 0.0,
+                qty_multiplier: 1.0,
                 signal_ts: 1,
                 signal_bbo: None,
                 price_offset: 0.0,
@@ -3830,6 +4060,8 @@ mod tests {
                     level_index: *level_index,
                     order_base_qty: *order_base_qty,
                     accounted_fill_base_qty: *accounted_fill_base_qty,
+                    accounted_fill_notional: 0.0,
+                    qty_multiplier: 1.0,
                     signal_ts: 1,
                     signal_bbo: None,
                     price_offset: f64::from(*level_index),

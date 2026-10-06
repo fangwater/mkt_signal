@@ -257,16 +257,19 @@ pub fn normalize_symbol_for_internal(symbol: &str) -> String {
     if out.ends_with("SWAP") {
         out.truncate(out.len().saturating_sub("SWAP".len()));
     }
+    if out.ends_with("USDPERP") {
+        out.truncate(out.len() - "PERP".len());
+    }
     out
 }
 
 /// Restore Binance COIN-M symbols after internal normalization removes separators.
 ///
-/// Examples: BTCUSDPERP -> BTCUSD_PERP, ETHUSD260925 -> ETHUSD_260925.
+/// Examples: BTCUSD -> BTCUSD_PERP, ETHUSD260925 -> ETHUSD_260925.
 pub fn binance_coin_futures_symbol(symbol: &str) -> String {
     let normalized = normalize_symbol_for_internal(symbol);
-    if let Some(prefix) = normalized.strip_suffix("PERP") {
-        return format!("{prefix}_PERP");
+    if normalized.ends_with("USD") && normalized.len() > "USD".len() {
+        return format!("{normalized}_PERP");
     }
     if normalized.len() > 6 {
         let split_at = normalized.len() - 6;
@@ -551,6 +554,14 @@ mod tests {
 
     #[test]
     fn test_normalize_symbol_for_binance_coin_futures() {
+        assert_eq!(normalize_symbol_for_internal("btcUSD_perp"), "BTCUSD");
+        assert_eq!(normalize_symbol_for_internal("BTCUSDPERP"), "BTCUSD");
+        assert_eq!(normalize_symbol_for_internal("BTCUSDC"), "BTCUSDC");
+        assert_eq!(normalize_symbol_for_internal("BTCUSDT"), "BTCUSDT");
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSD", TradingVenue::BinanceCoinFutures),
+            "BTCUSD_PERP"
+        );
         assert_eq!(
             normalize_symbol_for_venue("BTCUSD_PERP", TradingVenue::BinanceCoinFutures),
             "BTCUSD_PERP"

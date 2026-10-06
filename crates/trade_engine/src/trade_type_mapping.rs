@@ -23,9 +23,11 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceStdUmToMainTransfer
             | TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => false,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => false,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
@@ -85,13 +87,13 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => "/sapi/v1/asset/transfer",
-            TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCancelCmOrder => {
-                "/dapi/v1/order"
-            }
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder => "/dapi/v1/order",
             TradeRequestType::BinanceCmSetLeverage => "/dapi/v1/leverage",
-            TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCancelCmOrder => {
-                "/papi/v1/cm/order"
-            }
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder => "/papi/v1/cm/order",
             TradeRequestType::BinancePmCmSetLeverage => "/papi/v1/cm/leverage",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
@@ -159,6 +161,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceStdUmToMainTransfer => "POST",
             TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCmSetLeverage => "POST",
             TradeRequestType::BinanceCancelCmOrder => "DELETE",
+            TradeRequestType::BinanceModifyCmOrder | TradeRequestType::BinancePmModifyCmOrder => {
+                "PUT"
+            }
             TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCmSetLeverage => {
                 "POST"
             }
@@ -229,9 +234,11 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceStdUmToMainTransfer => 900,
             TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => 1,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => 1,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
@@ -299,9 +306,11 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceStdUmToMainTransfer => true,
             TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => true,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
@@ -369,9 +378,11 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceStdUmToMainTransfer => true,
             TradeRequestType::BinanceNewCmOrder
             | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceModifyCmOrder
             | TradeRequestType::BinanceCmSetLeverage => true,
             TradeRequestType::BinancePmNewCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
             | TradeRequestType::BinancePmCmSetLeverage => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
@@ -450,6 +461,24 @@ mod tests {
             assert!(TradeTypeMapping::requires_signature(req_type));
             assert!(TradeTypeMapping::requires_api_key(req_type));
             assert!(!TradeTypeMapping::counts_toward_order_limit(req_type));
+        }
+    }
+
+    #[test]
+    fn coin_modify_uses_signed_put_for_standard_and_portfolio_margin() {
+        for (kind, path) in [
+            (TradeRequestType::BinanceModifyCmOrder, "/dapi/v1/order"),
+            (
+                TradeRequestType::BinancePmModifyCmOrder,
+                "/papi/v1/cm/order",
+            ),
+        ] {
+            assert_eq!(TradeTypeMapping::get_endpoint(kind), path);
+            assert_eq!(TradeTypeMapping::get_method(kind), "PUT");
+            assert!(!TradeTypeMapping::is_websocket(kind));
+            assert!(TradeTypeMapping::requires_signature(kind));
+            assert!(TradeTypeMapping::requires_api_key(kind));
+            assert_eq!(TradeTypeMapping::get_weight(kind), 1);
         }
     }
 

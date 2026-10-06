@@ -32,9 +32,10 @@ base exposure is price-dependent:
 base_qty = contracts * contractSize / price
 ```
 
-`contractSize` is loaded from DAPI `exchangeInfo`. Order sizing uses the order
-price, fills use the execution price, and account positions use the current
-COIN-M mark price. A missing contract size or non-positive price rejects the
+`contractSize` comes from DAPI `exchangeInfo`. General order sizing uses the
+order price, fills use the execution price, and account positions use the current
+COIN-M mark price. Exec target sizing uses that same mark as its position ledger;
+changing a maker limit price preserves the native contract count. A missing contract size or non-positive price rejects the
 conversion instead of falling back to a linear multiplier.
 
 For standard-account intra trading, the account monitor polls DAPI balances
@@ -65,3 +66,50 @@ exec-pre-trade --venue binance-coin-futures
 The Exec startup gate queries and cancels all existing COIN-M orders before
 starting. `scripts/binance_cancel_all_std_cm_orders.py` and the unified cancel
 script are dry-run unless `--execute` is provided.
+
+## Exec and CTA Manager
+
+Configure the Exec environment and its Manager source with
+`venue = "binance-coin-futures"`. Keep its namespace, Redis prefix and account
+separate from a USD-M deployment. The deploy/publish/start/stop wrappers accept
+this venue. Existing accounts are not switched by submitting a new symbol.
+Manager remains the sole owner of rule refresh; Exec consumes its complete
+current cache, including `contractSize`, tradable status and quantity filters.
+
+A Manager position-strategy request can contain:
+
+```json
+{
+  "strategy_name": "coin_btc",
+  "targets": {"BTCUSD": {"qty": 0.01, "signal": 0}}
+}
+```
+
+Exec and Manager targets identify perpetual contracts by their quote suffix:
+`BTCUSDT` is USDT-margined, `BTCUSDC` is USDC-margined, and `BTCUSD` is
+coin-margined. USD-M sources accept USDT/USDC; COIN-M sources accept USD.
+Quantity remains base coin: this means 0.01 BTC, before binding shares. The
+current internal key is `BTCUSD`; only exchange requests restore `BTCUSD_PERP`.
+Wire-name aliases normalize to the same key and duplicates are errors. Delivery
+contracts are rejected by the target API. USD is the quote currency, while
+collateral and settlement are in the underlying coin.
+
+At a 50,000 USD mark and 100 USD BTC contract size, 0.01 BTC corresponds to five
+contracts. Exec rounds in contract units using the venue step and minimum;
+requests below the minimum are held. The allocated position and outstanding
+orders conserve USD face value when the mark changes and are displayed as
+face value / current mark. The target remains the requested coin quantity, so
+price changes can change the executable gap. A zero target closes the allocated
+contract count. Batch/POV-to-Chase switches transfer the conserved face value.
+
+Native Batch, POV and Chase work in STANDARD and UNIFIED modes. Chase uses
+signed PUT `/dapi/v1/order` or `/papi/v1/cm/order` for in-place amendments.
+RapidX/LTP COIN-M execution remains unsupported. The existing `_usdt` parameter
+names are retained; for COIN-M their notional budgets and tolerances are USD.
+Missing valid mark/contract data blocks quantity conversion.
+
+Manager restores wire symbols for leverage and commission APIs and computes
+factual inverse trade PnL by matching USD face, rather than fill-time coin
+quantity. Its reported USD PnL is coin PnL converted at the close/mark; it excludes
+collateral revaluation and account-ledger flows. Minute-kline theoretical NAV
+and the USDT/BFUSD live-equity widget remain USD-M only.

@@ -1759,6 +1759,8 @@ impl BinanceModifyOrderParams {
             TradeRequestType::BinanceModifyUMOrder
                 | TradeRequestType::BinanceStdModifyUMOrder
                 | TradeRequestType::BinanceWsModifyUMOrder
+                | TradeRequestType::BinanceModifyCmOrder
+                | TradeRequestType::BinancePmModifyCmOrder
         )
     }
 

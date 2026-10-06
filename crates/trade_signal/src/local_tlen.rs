@@ -1155,7 +1155,8 @@ pub(crate) fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
         && !symbol
             .bytes()
             .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
-        && !symbol.ends_with("SWAP");
+        && !symbol.ends_with("SWAP")
+        && !symbol.ends_with("USDPERP");
     if already_canonical {
         Cow::Borrowed(symbol)
     } else {

@@ -102,6 +102,20 @@ def order_parameters(config):
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_coin_symbols_normalize_without_changing_base_qty(self):
+        targets = MODULE.normalize_targets({"btcUSD_perp": {"qty": 0.01, "signal": 1}})
+        self.assertEqual(targets, {"BTCUSD": {"qty": 0.01, "signal": 1}})
+        self.assertEqual(MODULE.normalize_symbol("BTCUSD"), "BTCUSD")
+        self.assertEqual(MODULE.normalize_symbol("BTCUSDC"), "BTCUSDC")
+        self.assertEqual(MODULE.normalize_symbol("BTCUSDT"), "BTCUSDT")
+        with self.assertRaises(ValueError):
+            MODULE.normalize_targets({"BTCUSD_PERP": 0.01, "BTCUSD": 0.02})
+        with self.assertRaises(ValueError):
+            MODULE.normalize_symbol("BTC_USDT")
+        for symbol in ("ETHUSD_261225", "ETHUSD261225"):
+            with self.assertRaises(ValueError):
+                MODULE.normalize_symbol(symbol)
+
     def test_pov_parameters_and_symbol_override_roundtrip(self):
         config = MODULE.normalize_exec_config({
             **MODULE.DEFAULT_CONFIG,

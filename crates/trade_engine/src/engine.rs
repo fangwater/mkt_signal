@@ -920,6 +920,8 @@ fn binance_modify_transport_error_body(req_type: TradeRequestType, message: &str
         TradeRequestType::BinanceModifyUMOrder
             | TradeRequestType::BinanceStdModifyUMOrder
             | TradeRequestType::BinanceStdBatchModifyUMOrders
+            | TradeRequestType::BinanceModifyCmOrder
+            | TradeRequestType::BinancePmModifyCmOrder
     ) {
         batch_modify_protocol_error_body(message)
     } else {
@@ -937,9 +939,10 @@ fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
         | TradeRequestType::BinanceCancelMarginOrder
         | TradeRequestType::BinanceCancelCmOrder
         | TradeRequestType::BinancePmCancelCmOrder => binance_cancel_order_rest_pairs(msg),
-        TradeRequestType::BinanceModifyUMOrder | TradeRequestType::BinanceStdModifyUMOrder => {
-            binance_modify_order_rest_pairs(msg)
-        }
+        TradeRequestType::BinanceModifyUMOrder
+        | TradeRequestType::BinanceStdModifyUMOrder
+        | TradeRequestType::BinanceModifyCmOrder
+        | TradeRequestType::BinancePmModifyCmOrder => binance_modify_order_rest_pairs(msg),
         TradeRequestType::BinanceStdBatchModifyUMOrders => {
             binance_batch_modify_order_rest_pairs(msg)
         }
@@ -4600,6 +4603,30 @@ mod tests {
             client_order_id,
             None,
         )
+    }
+
+    #[test]
+    fn coin_modify_rest_serializes_native_symbol_and_contract_count() {
+        for kind in [
+            TradeRequestType::BinanceModifyCmOrder,
+            TradeRequestType::BinancePmModifyCmOrder,
+        ] {
+            let params = BinanceModifyOrderParams::with_price(
+                "BTCUSD_PERP",
+                Side::Buy,
+                QuantizedValue::from_decimal(5.0).unwrap(),
+                QuantizedValue::from_decimal(50000.5).unwrap(),
+                1042,
+                42,
+                None,
+            );
+            let bytes = params.request_bytes(kind, 1, 42).unwrap();
+            let msg = TradeRequestMsg::parse(&bytes).unwrap();
+            let pairs = trade_request_rest_pairs(&msg).unwrap();
+            assert!(pairs.contains(&("symbol".to_string(), "BTCUSD_PERP".to_string())));
+            assert!(pairs.contains(&("quantity".to_string(), "5".to_string())));
+            assert!(pairs.contains(&("price".to_string(), "50000.5".to_string())));
+        }
     }
 
     #[test]

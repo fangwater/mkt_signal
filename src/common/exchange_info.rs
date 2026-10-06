@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].market_type, "coin_futures");
         assert_eq!(rows[0].symbol, "BTCUSD_PERP");
-        assert_eq!(rows[0].normalized_symbol, "BTCUSDPERP");
+        assert_eq!(rows[0].normalized_symbol, "BTCUSD");
         assert_eq!(rows[1].market_type, "spot");
         assert_eq!(rows[1].symbol, "BTC_USDT");
         assert_eq!(rows[1].normalized_symbol, "BTCUSDT");

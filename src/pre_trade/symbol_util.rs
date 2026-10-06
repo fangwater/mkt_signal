@@ -9,6 +9,22 @@ pub fn is_exposure_exempt_asset(asset: &str) -> bool {
         || asset.eq_ignore_ascii_case("BFUSD")
 }
 
+/// Exec accepts perpetual targets; delivery contracts must not enter its ledger.
+pub fn validate_exec_perpetual_symbol(symbol: &str) -> Result<(), String> {
+    let normalized = runtime_common::symbol_util::normalize_symbol_for_internal(symbol);
+    if normalized.len() > 9
+        && normalized
+            .get(normalized.len() - 6..)
+            .is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        && normalized
+            .get(..normalized.len() - 6)
+            .is_some_and(|root| root.ends_with("USD"))
+    {
+        return Err(format!("only perpetual contracts are supported: {symbol}"));
+    }
+    Ok(())
+}
+
 /// 从 symbol / inst_id 中提取基础资产（如 BTCUSDT -> BTC，BTC-USDT-SWAP -> BTC）
 pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
     let upper = symbol_like.to_uppercase();

@@ -31,6 +31,8 @@ pub enum TradeRequestType {
     BinanceStdModifyUMOrder = 4027,             // Standard UM REST single-order modify
     BinanceStdBatchModifyUMOrders = 4028,       // Standard UM REST batch modify (max 5)
     BinanceWsModifyUMOrder = 4029,              // Standard UM WebSocket order.modify
+    BinanceModifyCmOrder = 4030,                // Standard COIN-M REST order modify
+    BinancePmModifyCmOrder = 4031,              // Portfolio Margin COIN-M REST order modify
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -89,6 +91,8 @@ impl TryFrom<u32> for TradeRequestType {
             4027 => Ok(TradeRequestType::BinanceStdModifyUMOrder),
             4028 => Ok(TradeRequestType::BinanceStdBatchModifyUMOrders),
             4029 => Ok(TradeRequestType::BinanceWsModifyUMOrder),
+            4030 => Ok(TradeRequestType::BinanceModifyCmOrder),
+            4031 => Ok(TradeRequestType::BinancePmModifyCmOrder),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),

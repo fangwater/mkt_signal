@@ -114,6 +114,11 @@ def validate_strategy_name(raw: Any) -> str:
 
 def normalize_symbol(raw: Any) -> str:
     symbol = str(raw or "").strip().upper()
+    # Perpetual targets use USD / USDC / USDT; Binance's PERP suffix is wire-only.
+    if re.fullmatch(r"[A-Z0-9]+USD_?PERP", symbol):
+        symbol = re.sub(r"_?PERP$", "", symbol)
+    if re.fullmatch(r".+USD_?[0-9]{6}", symbol):
+        raise ValueError(f"only perpetual contracts are supported: {raw}")
     if not symbol or not all(char.isalnum() for char in symbol):
         raise ValueError(f"invalid symbol: {raw}")
     return symbol
@@ -484,8 +489,8 @@ class ExecConfigStore:
         self.venue = str(venue).strip()
         if not self.env_name or not self.venue:
             raise ValueError("env_name and venue are required")
-        if self.venue not in ("binance-futures", "okex-futures"):
-            raise ValueError("venue must be binance-futures or okex-futures")
+        if self.venue not in ("binance-futures", "binance-coin-futures", "okex-futures"):
+            raise ValueError("venue must be binance-futures, binance-coin-futures or okex-futures")
         self.prefix = f"{self.env_name}:{self.venue}:batch_exec:"
         self.index_key = f"{self.prefix}strategy_names"
         self.removed_index_key = f"{self.prefix}removed_strategy_names"

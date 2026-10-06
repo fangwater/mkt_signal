@@ -4207,6 +4207,18 @@ impl MonitorChannel {
         Self::try_with_inner(|inner| inner.price_table.clone())
     }
 
+    /// Use the same contract mark as the physical inverse-position snapshot.
+    pub fn inverse_position_mark_price(&self, venue: TradingVenue, symbol: &str) -> Option<f64> {
+        Self::try_with_inner(|inner| {
+            inner
+                .price_table
+                .borrow()
+                .mark_price(&min_qty_symbol_key(venue, symbol))
+                .filter(|price| price.is_finite() && *price > 0.0)
+        })
+        .flatten()
+    }
+
     pub fn mark_price_for_symbol(&self, symbol: &str) -> Option<f64> {
         Self::with_inner(|inner| {
             let base_asset = extract_base_asset_key(symbol)?;
@@ -7071,6 +7083,7 @@ where
 fn is_internal_symbol_key(symbol: &str) -> bool {
     !symbol.is_empty()
         && !symbol.ends_with("SWAP")
+        && !symbol.ends_with("USDPERP")
         && symbol
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
@@ -10969,6 +10982,102 @@ mod tests {
             (price_bumped - 1.1308).abs() < 1e-9,
             "price_bumped={price_bumped}"
         );
+    }
+
+    #[test]
+    fn coin_exec_restart_and_algorithm_handoff_preserve_face_when_the_mark_changes() {
+        use crate::pre_trade::exec_algorithm_switch::ExecAlgorithmSwitch;
+        use crate::pre_trade::exec_position_ledger::ExecPositionLedger;
+        use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecStrategy};
+        use crate::strategy::chase_exec::ChaseExecConfig;
+        use crate::strategy::chase_exec_strategy::ChaseExecStrategy;
+        let mut coin_table = VenueMinQtyTable::new(TradingVenue::BinanceCoinFutures);
+        coin_table.set_entry_for_test(MinQtyEntry {
+            symbol: "BTCUSD_PERP".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USD".to_string(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: Some(5.0),
+        });
+        coin_table.set_contract_multiplier_for_test("BTCUSD_PERP", 100.0);
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::BinanceCoinFutures, Rc::new(coin_table));
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceCoinFutures,
+            arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            hyperliquid_account_mode: None,
+            open_leg: LegMgr::Margin {
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance))),
+            },
+            hedge_leg: LegMgr::Futures {
+                exchange: Exchange::Binance,
+                um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+                min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+            },
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| *mc.borrow_mut() = Some(inner));
+
+        let prices = MonitorChannel::instance().price_table();
+        prices
+            .borrow_mut()
+            .update_mark_price("BTCUSD_PERP", 50000.0, 1);
+        prices.borrow_mut().update_mark_price("BTCUSDT", 70000.0, 1);
+        let venue = TradingVenue::BinanceCoinFutures;
+        let mut ledger = ExecPositionLedger::empty();
+        ledger
+            .set_for_venue(venue, "coin", "BTCUSD", 0.004)
+            .unwrap();
+        let restored: ExecPositionLedger =
+            serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
+        restored.validate().unwrap();
+        let mut batch =
+            BatchExecStrategy::new(1, "coin", "BTCUSD", venue, BatchExecConfig::default());
+        batch.apply_position_allocation(0.004, 1).unwrap();
+        let mut switch: ExecAlgorithmSwitch = serde_json::from_value(serde_json::json!({
+            "from_family": "batch_exec", "to_family": "chase_exec", "state": "ready",
+            "requested_at_us": 1, "updated_at_us": 2, "positions": {"BTCUSD": 0.004}
+        }))
+        .unwrap();
+        switch.capture_inverse_positions(venue).unwrap();
+        assert_eq!(switch.inverse_notionals["BTCUSD"], 200.0);
+        prices
+            .borrow_mut()
+            .update_mark_price("BTCUSD_PERP", 60000.0, 3);
+        let expected = 200.0 / 60000.0;
+        assert!(
+            (restored.get_for_venue(venue, "coin", "BTCUSD").unwrap() - expected).abs() < 1e-12
+        );
+        assert!((batch.virtual_position_qty().unwrap() - expected).abs() < 1e-12);
+        let switched = switch.valued_positions(venue).unwrap();
+        let mut chase =
+            ChaseExecStrategy::new(2, "coin", "BTCUSD", venue, ChaseExecConfig::default());
+        chase
+            .apply_position_allocation(switched["BTCUSD"], 3)
+            .unwrap();
+        prices
+            .borrow_mut()
+            .update_mark_price("BTCUSD_PERP", 40000.0, 4);
+        assert!((chase.virtual_position_qty().unwrap() - 0.005).abs() < 1e-12);
+        MONITOR_CHANNEL.with(|mc| *mc.borrow_mut() = None);
     }
 
     #[test]

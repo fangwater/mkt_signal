@@ -180,6 +180,9 @@ fn price_symbol_key(symbol: &str) -> String {
     let upper = symbol.trim().to_ascii_uppercase();
     let normalized = upper.replace(['-', '_', '/'], "");
     let is_coin_perpetual = normalized.ends_with("USDPERP");
+    if is_coin_perpetual {
+        return normalized[..normalized.len() - "PERP".len()].to_string();
+    }
     let is_bitget_coin_futures = normalized
         .strip_suffix("CM")
         .is_some_and(|root| root.ends_with("USD") && root.len() > "USD".len());
@@ -190,7 +193,7 @@ fn price_symbol_key(symbol: &str) -> String {
         && normalized
             .get(..normalized.len() - 6)
             .is_some_and(|root| root.ends_with("USD"));
-    if is_coin_perpetual || is_coin_delivery || is_bitget_coin_futures {
+    if is_coin_delivery || is_bitget_coin_futures {
         normalized
     } else {
         upper
@@ -213,7 +216,10 @@ mod tests {
         table.update_mark_price("BTCUSD_PERP", 50_000.0, 123);
         assert_eq!(table.mark_price("BTCUSD_PERP"), Some(50_000.0));
         assert_eq!(table.mark_price("BTCUSDPERP"), Some(50_000.0));
-        assert_eq!(table.get("BTCUSD_PERP").unwrap().symbol, "BTCUSDPERP");
+        assert_eq!(table.mark_price("BTCUSD"), Some(50_000.0));
+        assert_eq!(table.mark_price("BTCUSDT"), None);
+        assert_eq!(table.mark_price("BTCUSDC"), None);
+        assert_eq!(table.get("BTCUSD_PERP").unwrap().symbol, "BTCUSD");
     }
 
     #[test]
