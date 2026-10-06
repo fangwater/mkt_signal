@@ -160,10 +160,14 @@ impl SnapshotQueryConfig {
         }
     }
 
-    pub fn new_exec(venue: TradingVenue, binance_account_mode: Option<BinanceAccountMode>) -> Self {
+    pub fn new_exec(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        binance_account_mode: Option<BinanceAccountMode>,
+    ) -> Self {
         Self {
-            open_venue: venue,
-            hedge_venue: venue,
+            open_venue,
+            hedge_venue,
             binance_account_mode,
             include_binance_spot_snapshot: false,
         }
@@ -1305,6 +1309,7 @@ mod tests {
     fn exec_snapshot_skips_binance_spot_but_intra_keeps_it() {
         let exec = SnapshotQueryConfig::new_exec(
             TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
             Some(BinanceAccountMode::Standard),
         );
         assert!(!exec.include_binance_spot_snapshot);

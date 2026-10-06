@@ -166,6 +166,9 @@ fn coin_futures_enabled(configured_venues: &[String]) -> bool {
     configured_venues
         .iter()
         .any(|value| value.contains("binance-coin-futures"))
+        || ["EXEC_VENUE", "EXEC_START_VENUE"]
+            .into_iter()
+            .any(|name| std::env::var(name).as_deref() == Ok("binance-futures"))
 }
 
 /// 构造最终的用户数据 WS URL。

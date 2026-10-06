@@ -221,6 +221,17 @@ fn exchange_scoped_total_equity_scope(
 
     match open_exchange {
         Exchange::Binance => {
+            // A combined perpetual Exec still uses the exchange-valued USD-M
+            // wallet in STANDARD, and the whole portfolio in UNIFIED.
+            if [open_venue, hedge_venue].contains(&TradingVenue::BinanceFutures)
+                && [open_venue, hedge_venue].contains(&TradingVenue::BinanceCoinFutures)
+            {
+                return Some(scope_for_venue(
+                    TradingVenue::BinanceFutures,
+                    binance_account_mode,
+                    None,
+                ));
+            }
             let open_scope = scope_for_venue(open_venue, binance_account_mode, None);
             let hedge_scope = scope_for_venue(hedge_venue, binance_account_mode, None);
             (open_scope == hedge_scope).then_some(open_scope)
@@ -347,6 +358,8 @@ thread_local! {
     static BASIC_STATE_LAST_REFRESH_US: Cell<i64> = const { Cell::new(0) };
     static PENDING_RISK_CHECKS: RefCell<PendingRiskChecks> = RefCell::new(PendingRiskChecks::default());
     static EXEC_POSITION_SNAPSHOT_READY: Cell<bool> = const { Cell::new(false) };
+    static EXEC_POSITION_SNAPSHOT_VENUES: RefCell<HashSet<TradingVenue>> = RefCell::new(HashSet::new());
+    static EXEC_RUNTIME_MODE: Cell<bool> = const { Cell::new(false) };
     static HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS: Cell<i64> = const { Cell::new(0) };
     static HYPERLIQUID_FACT_STREAM_READY: Cell<bool> = const { Cell::new(false) };
 }
@@ -389,7 +402,7 @@ impl LegMgr {
 
 struct MonitorStateListeners {
     account_listeners: Vec<BasicAccountListener>,
-    derivatives_listener: DerivativesPriceListener,
+    derivatives_listeners: Vec<DerivativesPriceListener>,
 }
 
 impl MonitorStateListeners {
@@ -408,12 +421,18 @@ impl MonitorStateListeners {
             raw_remaining = raw_remaining.saturating_sub(listener_raw_received);
             has_message |= listener_has_message;
         }
-        if consumed_tokens < token_limit && raw_remaining > 0 {
-            let (listener_has_message, listener_weight, listener_raw_received) = self
-                .derivatives_listener
-                .drain_pending_limit(token_limit - consumed_tokens, raw_remaining);
+        let listener_count = self.derivatives_listeners.len();
+        for (index, listener) in self.derivatives_listeners.iter_mut().enumerate() {
+            if consumed_tokens >= token_limit || raw_remaining == 0 {
+                break;
+            }
+            let (listener_has_message, listener_weight, listener_raw_received) = listener
+                .drain_pending_limit(
+                    (token_limit - consumed_tokens).div_ceil(listener_count - index),
+                    raw_remaining.div_ceil(listener_count - index),
+                );
             consumed_tokens += listener_weight;
-            let _ = listener_raw_received;
+            raw_remaining = raw_remaining.saturating_sub(listener_raw_received);
             has_message |= listener_has_message;
         }
         (has_message, consumed_tokens)
@@ -2502,7 +2521,7 @@ impl BasicAccountListener {
                         let e_ts = msg.timestamp.max(0).saturating_mul(1000);
                         if self.open_venue == self.hedge_venue {
                             MonitorChannel::queue_mm_position_risk_check(&symbol, e_ts);
-                        } else {
+                        } else if !EXEC_RUNTIME_MODE.with(Cell::get) {
                             MonitorChannel::queue_arb_position_risk_check(&symbol, e_ts);
                         }
                     }
@@ -4823,6 +4842,14 @@ impl MonitorChannel {
         venue: TradingVenue,
         signed_base_qty: f64,
     ) -> Result<(), String> {
+        if EXEC_RUNTIME_MODE.with(Cell::get)
+            && PreTradeParamsLoader::instance().exec_max_position_imbalance_ratio() > 0.0
+            && !self.exec_position_snapshot_ready()
+        {
+            return Err(
+                "Exec account position snapshots are not complete for all markets".to_string(),
+            );
+        }
         let Some(projection) =
             self.exec_position_imbalance_projection(symbol, venue, signed_base_qty)?
         else {
@@ -5109,14 +5136,31 @@ impl MonitorChannel {
         //
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿属于同一交易所时，
         // 切换到对应 venue 的 mark/index price。所有交易所均直连 dat_pbs。
-        let node_name = DEFAULT_NODE_PRE_TRADE_DERIVATIVES.to_string();
-        let direct_service =
-            Self::derivatives_service_for_mark_price_source(open_venue, hedge_venue, arb_mode);
+        let direct_services = if [open_venue, hedge_venue].contains(&TradingVenue::BinanceFutures)
+            && [open_venue, hedge_venue].contains(&TradingVenue::BinanceCoinFutures)
+        {
+            vec![
+                BINANCE_DIRECT_DERIVATIVES_SERVICE,
+                BINANCE_COIN_DERIVATIVES_SERVICE,
+            ]
+        } else {
+            vec![Self::derivatives_service_for_mark_price_source(
+                open_venue,
+                hedge_venue,
+                arb_mode,
+            )]
+        };
         let proxy_enabled = std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1");
-        let service_name =
-            Self::mark_price_service_with_proxy(direct_service, proxy_enabled).to_string();
-        let derivatives_listener =
-            DerivativesPriceListener::new(price_table.clone(), node_name, service_name)?;
+        let mut derivatives_listeners = Vec::new();
+        for (index, direct_service) in direct_services.into_iter().enumerate() {
+            let service_name =
+                Self::mark_price_service_with_proxy(direct_service, proxy_enabled).to_string();
+            derivatives_listeners.push(DerivativesPriceListener::new(
+                price_table.clone(),
+                format!("{DEFAULT_NODE_PRE_TRADE_DERIVATIVES}_{index}"),
+                service_name,
+            )?);
+        }
 
         // 创建内部实例并保存到 thread-local
         let inner = MonitorChannelInner {
@@ -5137,11 +5181,15 @@ impl MonitorChannel {
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
-            arb_startup_net_gate: ArbStartupNetGate::new(open_venue != hedge_venue),
+            arb_startup_net_gate: ArbStartupNetGate::new(
+                open_venue != hedge_venue && refresh_order_rules_from_venue,
+            ),
         };
 
         Self::clear_basic_state_runtime_cache();
         EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow_mut().clear());
+        EXEC_RUNTIME_MODE.with(|exec| exec.set(!refresh_order_rules_from_venue));
         HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS.with(|deadline| deadline.set(0));
         HYPERLIQUID_FACT_STREAM_READY.with(|ready| ready.set(false));
         MONITOR_CHANNEL.with(|mc| {
@@ -5151,7 +5199,7 @@ impl MonitorChannel {
         MONITOR_STATE_LISTENERS.with(|listeners| {
             *listeners.borrow_mut() = Some(MonitorStateListeners {
                 account_listeners,
-                derivatives_listener,
+                derivatives_listeners,
             });
         });
 
@@ -5740,6 +5788,10 @@ impl MonitorChannel {
             *scope_equity_usdt.entry(*scope).or_insert(0.0) += *upl;
         }
         if let Some((scope, actual_equity_usd)) = account_risk_equity_override {
+            if scope == BasicAccountScope::BinanceUnified {
+                // Portfolio equity already includes COIN-M unrealized PnL.
+                scope_equity_usdt.remove(&BasicAccountScope::BinanceUnifiedCm);
+            }
             scope_equity_usdt.insert(scope, actual_equity_usd);
         }
 
@@ -6937,7 +6989,10 @@ impl MonitorChannel {
         Self::with_inner(|inner| Self::get_position_qty_inner(inner, symbol, venue))
     }
 
-    pub fn mark_exec_position_snapshot_ready(&self, source: &'static str) {
+    pub fn mark_exec_position_snapshot_ready(&self, venue: TradingVenue, source: &'static str) {
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| {
+            venues.borrow_mut().insert(venue);
+        });
         let changed = EXEC_POSITION_SNAPSHOT_READY.with(|ready| {
             let changed = !ready.get();
             ready.set(true);
@@ -6961,7 +7016,7 @@ impl MonitorChannel {
         };
         HYPERLIQUID_EXEC_SNAPSHOT_VALID_UNTIL_MS.with(|value| value.set(deadline));
         if deadline > get_timestamp_us() / 1_000 {
-            self.mark_exec_position_snapshot_ready(source);
+            self.mark_exec_position_snapshot_ready(self.open_venue(), source);
         } else {
             let changed = EXEC_POSITION_SNAPSHOT_READY.with(|ready| {
                 let changed = ready.get();
@@ -6978,6 +7033,17 @@ impl MonitorChannel {
         let ready = EXEC_POSITION_SNAPSHOT_READY.with(Cell::get);
         if !ready {
             return false;
+        }
+        if EXEC_RUNTIME_MODE.with(Cell::get) {
+            let all_ready = Self::with_inner(|inner| {
+                EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| {
+                    let venues = venues.borrow();
+                    venues.contains(&inner.open_venue) && venues.contains(&inner.hedge_venue)
+                })
+            });
+            if !all_ready {
+                return false;
+            }
         }
         let hyperliquid_exec = Self::try_with_inner(|inner| {
             exchange_from_venue(inner.open_venue) == Exchange::Hyperliquid
@@ -6997,6 +7063,14 @@ impl MonitorChannel {
         } else {
             EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
             false
+        }
+    }
+
+    pub fn exec_position_snapshot_ready_for_venue(&self, venue: TradingVenue) -> bool {
+        if EXEC_RUNTIME_MODE.with(Cell::get) {
+            EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow().contains(&venue))
+        } else {
+            self.exec_position_snapshot_ready()
         }
     }
 
@@ -7857,6 +7931,26 @@ mod tests {
             None,
             false,
         )
+    }
+
+    #[test]
+    fn mixed_exec_position_readiness_is_scoped_to_each_market() {
+        EXEC_RUNTIME_MODE.with(|mode| mode.set(true));
+        EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow_mut().clear());
+        let monitor = MonitorChannel::instance();
+        monitor.mark_exec_position_snapshot_ready(TradingVenue::BinanceFutures, "test_um_snapshot");
+        assert!(monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceFutures));
+        assert!(!monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceCoinFutures));
+        monitor.mark_exec_position_snapshot_ready(
+            TradingVenue::BinanceCoinFutures,
+            "test_cm_empty_snapshot",
+        );
+        assert!(monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceCoinFutures));
+        assert!(monitor.exec_position_snapshot_ready_for_venue(TradingVenue::BinanceFutures));
+        EXEC_RUNTIME_MODE.with(|mode| mode.set(false));
+        EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
+        EXEC_POSITION_SNAPSHOT_VENUES.with(|venues| venues.borrow_mut().clear());
     }
 
     #[test]
@@ -8823,7 +8917,7 @@ mod tests {
             BasicAccountScope::BinanceStdUm,
             Rc::new(RefCell::new(usdt_mgr)),
         )]);
-        let inner = MonitorChannelInner {
+        let mut inner = MonitorChannelInner {
             open_venue: TradingVenue::BinanceFutures,
             hedge_venue: TradingVenue::BinanceFutures,
             arb_mode: ArbMode::CrossArb,
@@ -8852,6 +8946,20 @@ mod tests {
         };
 
         let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
+        inner.hedge_venue = TradingVenue::BinanceCoinFutures;
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
+
+        let state = MonitorChannel::compute_basic_state_price_update_from_parts(
+            &inner,
+            &inner.price_table.borrow(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::from([(BasicAccountScope::BinanceUnified, 10_000.0)]),
+            &HashMap::from([(BasicAccountScope::BinanceUnifiedCm, 500.0)]),
+            Some((BasicAccountScope::BinanceUnified, 98_765.43)),
+        );
         assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
     }
 

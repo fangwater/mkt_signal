@@ -1341,7 +1341,7 @@ impl ChaseExecConfigReloader {
     ) -> Result<usize> {
         self.load_position_ledger().await?;
         if !crate::pre_trade::monitor_channel::MonitorChannel::instance()
-            .exec_position_snapshot_ready()
+            .exec_position_snapshot_ready_for_venue(self.venue)
         {
             return Ok(0);
         }
@@ -1575,7 +1575,7 @@ impl ChaseExecConfigReloader {
         switches: &BTreeMap<String, ExecAlgorithmSwitch>,
     ) -> Result<usize> {
         if !crate::pre_trade::monitor_channel::MonitorChannel::instance()
-            .exec_position_snapshot_ready()
+            .exec_position_snapshot_ready_for_venue(self.venue)
         {
             return Ok(0);
         }
@@ -2014,7 +2014,7 @@ impl ChaseExecConfigReloader {
             Self::begin_removal_reallocation(strategy_mgr, self.venue);
             let now_ts = get_timestamp_us();
             if crate::pre_trade::monitor_channel::MonitorChannel::instance()
-                .exec_position_snapshot_ready()
+                .exec_position_snapshot_ready_for_venue(self.venue)
                 && Self::all_chase_exec_reconciliation_settled(strategy_mgr, self.venue, now_ts)
             {
                 let close_symbols = self.pending_removal_symbols(strategy_mgr);

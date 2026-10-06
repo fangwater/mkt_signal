@@ -472,13 +472,41 @@ def decode_stored_exec_config(
     return normalize_config(decoded, execution_family)
 
 
+def exec_markets(venue: str) -> List[str]:
+    if venue not in ("binance-futures", "binance-coin-futures"):
+        return [venue]
+
+    def backend(raw: str) -> str:
+        value = raw.strip().lower()
+        if value in ("", "native", "exchange", "direct"):
+            return "native"
+        if value in ("ltp", "rapidx", "liquidity", "liquiditytech"):
+            return "ltp"
+        raise ValueError(f"invalid execution backend: {value}")
+
+    selected = backend(os.environ.get("TRADE_ENGINE_EXEC_BACKEND", ""))
+    mapping = os.environ.get("TRADE_ENGINE_EXEC_BACKEND_MAP", "")
+    if "\n" in mapping or "\r" in mapping:
+        raise ValueError("execution backend map must not contain newlines")
+    overrides = {}
+    for entry in mapping.split(","):
+        if not entry.strip():
+            continue
+        key, separator, value = entry.partition("=")
+        key = key.strip().lower()
+        if not separator or key not in ("*", "binance", "okex", "bybit", "bitget", "gate", "hyperliquid"):
+            raise ValueError("invalid execution backend mapping")
+        if key in overrides:
+            raise ValueError(f"duplicate execution backend mapping: {key}")
+        overrides[key] = backend(value)
+    selected = overrides.get("binance", overrides.get("*", selected))
+    if venue == "binance-coin-futures" and selected != "native":
+        raise ValueError("COIN-M execution requires the native Binance backend")
+    return [venue, "binance-coin-futures"] if venue == "binance-futures" and selected == "native" else [venue]
+
+
 class ExecConfigStore:
-    def __init__(
-        self,
-        redis_url: str,
-        env_name: str,
-        venue: str,
-    ) -> None:
+    def __init__(self, redis_url: str, env_name: str, venue: str) -> None:
         try:
             import redis  # type: ignore
         except ImportError as exc:
@@ -491,187 +519,170 @@ class ExecConfigStore:
             raise ValueError("env_name and venue are required")
         if self.venue not in ("binance-futures", "binance-coin-futures", "okex-futures"):
             raise ValueError("venue must be binance-futures, binance-coin-futures or okex-futures")
-        self.prefix = f"{self.env_name}:{self.venue}:batch_exec:"
+        self.markets = exec_markets(self.venue)
+        self.prefix = self.family_prefix()
         self.index_key = f"{self.prefix}strategy_names"
         self.removed_index_key = f"{self.prefix}removed_strategy_names"
         self._save_lock = threading.Lock()
 
-    def family_prefix(self, execution_family: str = "batch_exec") -> str:
+    def family_prefix(self, execution_family: str = "batch_exec", venue: Optional[str] = None) -> str:
         family = normalize_execution_family(execution_family)
-        return f"{self.env_name}:{self.venue}:{family}:"
+        return f"{self.env_name}:{venue or self.venue}:{family}:"
 
-    def key(
-        self, strategy_name: str, execution_family: str = "batch_exec"
-    ) -> str:
-        return (
-            f"{self.family_prefix(execution_family)}"
-            f"{validate_strategy_name(strategy_name)}"
-        )
+    def key(self, strategy_name: str, execution_family: str = "batch_exec", venue: Optional[str] = None) -> str:
+        return f"{self.family_prefix(execution_family, venue)}{validate_strategy_name(strategy_name)}"
+
+    def _scopes(self, name: str, family: str):
+        return [(
+            venue,
+            f"{self.family_prefix(family, venue)}strategy_names",
+            f"{self.family_prefix(family, venue)}removed_strategy_names",
+            self.key(name, family, venue),
+        ) for venue in self.markets]
+
+    def _symbol_market(self, symbol: str) -> str:
+        if self.venue == "okex-futures":
+            return self.venue
+        if symbol.endswith(("USDT", "USDC")):
+            selected = "binance-futures"
+        elif symbol.endswith("USD"):
+            selected = "binance-coin-futures"
+        else:
+            raise ValueError(f"Binance perpetual symbol must end with USDT, USDC or USD: {symbol}")
+        if selected not in self.markets:
+            raise ValueError(f"account execution backend does not support {selected}: {symbol}")
+        return selected
+
+    @staticmethod
+    def _merge(configs, family):
+        if not configs:
+            return None
+        fields = CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
+        merged = dict(configs[0])
+        merged["targets"] = {}
+        overrides = {}
+        for config in configs:
+            if any(config[field] != merged[field] for field in fields):
+                raise ValueError("strategy order parameters differ between Binance markets; republish from Manager")
+            for field, destination in (("targets", merged["targets"]), ("symbol_overrides", overrides)):
+                values = config.get(field, {})
+                if destination.keys() & values.keys():
+                    raise ValueError(f"duplicate {field} between Binance markets")
+                destination.update(values)
+        if overrides:
+            merged["symbol_overrides"] = overrides
+        else:
+            merged.pop("symbol_overrides", None)
+        versions = [config["updated_at_us"] for config in configs if config.get("updated_at_us") is not None]
+        if versions:
+            merged["updated_at_us"] = max(versions)
+        return merged
+
+    def _names(self, field: str, family: str) -> List[str]:
+        names = set()
+        for venue in self.markets:
+            names.update(decode_strategy_names(
+                self.client.get(f"{self.family_prefix(family, venue)}{field}"), field
+            ))
+        return sorted(names)
 
     def list_strategy_names(self, execution_family: str = "batch_exec") -> List[str]:
-        index_key = f"{self.family_prefix(execution_family)}strategy_names"
-        return decode_strategy_names(self.client.get(index_key), "strategy index")
+        return self._names("strategy_names", execution_family)
 
-    def load(
-        self, strategy_name: str, execution_family: str = "batch_exec"
-    ) -> Optional[Dict[str, Any]]:
-        return decode_stored_exec_config(
-            self.client.get(self.key(strategy_name, execution_family)),
-            execution_family,
-        )
+    def list_removed_strategy_names(self, execution_family: str = "batch_exec") -> List[str]:
+        return self._names("removed_strategy_names", execution_family)
 
-    def list_removed_strategy_names(
-        self, execution_family: str = "batch_exec"
-    ) -> List[str]:
-        removed_key = f"{self.family_prefix(execution_family)}removed_strategy_names"
-        return decode_strategy_names(
-            self.client.get(removed_key), "removed strategy index"
-        )
+    def load(self, strategy_name: str, execution_family: str = "batch_exec") -> Optional[Dict[str, Any]]:
+        configs = [decode_stored_exec_config(
+            self.client.get(self.key(strategy_name, execution_family, venue)), execution_family
+        ) for venue in self.markets]
+        return self._merge([config for config in configs if config is not None], execution_family)
 
-    def save(
-        self,
-        strategy_name: str,
-        config: Any,
-        execution_family: str = "batch_exec",
-    ) -> Dict[str, Any]:
+    def save(self, strategy_name: str, config: Any, execution_family: str = "batch_exec") -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
         family = normalize_execution_family(execution_family)
         normalized = normalize_config(config, family)
-        prefix = self.family_prefix(family)
-        index_key = f"{prefix}strategy_names"
-        config_key = self.key(name, family)
-        fields = (
-            CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
-        )
+        routed = {symbol: self._symbol_market(symbol) for symbol in (
+            normalized["targets"].keys() | normalized.get("symbol_overrides", {}).keys()
+        )}
+        fields = CHASE_ORDER_PARAMETER_FIELDS if family == "chase_exec" else ORDER_PARAMETER_FIELDS
         with self._save_lock:
             if name in self.list_removed_strategy_names(family):
                 raise ValueError(f"strategy removal already requested: {name}")
-            strategy_names = self.list_strategy_names(family)
-            current = self.load(name, family) if name in strategy_names else None
+            current = self.load(name, family) if name in self.list_strategy_names(family) else None
             if current is not None:
-                # Existing strategy publishers own targets; the Config page owns order params.
                 for field in fields:
                     normalized[field] = current[field]
-            # Receipt time is authoritative even when a publisher repeats an unchanged target map.
-            next_version = time.time_ns() // 1_000
-            if current is not None and current.get("updated_at_us") is not None:
-                next_version = max(next_version, current["updated_at_us"] + 1)
-            normalized["updated_at_us"] = next_version
-            self.client.set(
-                config_key,
-                json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
-            )
-            if name not in strategy_names:
-                strategy_names.append(name)
-                self.client.set(
-                    index_key,
-                    json.dumps(sorted(strategy_names), ensure_ascii=False, separators=(",", ":")),
-                )
+            normalized["updated_at_us"] = max(time.time_ns() // 1_000, (current or {}).get("updated_at_us", 0) + 1)
+            with self.client.pipeline() as pipeline:
+                pipeline.multi()
+                for venue, index_key, _, config_key in self._scopes(name, family):
+                    scoped = dict(normalized)
+                    scoped["targets"] = {symbol: value for symbol, value in normalized["targets"].items() if routed[symbol] == venue}
+                    overrides = {symbol: value for symbol, value in normalized.get("symbol_overrides", {}).items() if routed[symbol] == venue}
+                    scoped.pop("symbol_overrides", None)
+                    if overrides:
+                        scoped["symbol_overrides"] = overrides
+                    names = decode_strategy_names(self.client.get(index_key), "strategy index")
+                    pipeline.set(config_key, json.dumps(scoped, ensure_ascii=False, separators=(",", ":")))
+                    pipeline.set(index_key, json.dumps(sorted(set(names) | {name}), separators=(",", ":")))
+                pipeline.execute()
         return normalized
 
-    def save_order_parameters(
-        self,
-        strategy_name: str,
-        order_parameters: Any,
-        expected_updated_at_us: Any,
-        execution_family: str = "batch_exec",
-    ) -> Dict[str, Any]:
+    def save_order_parameters(self, strategy_name: str, order_parameters: Any, expected_updated_at_us: Any, execution_family: str = "batch_exec") -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
         family = normalize_execution_family(execution_family)
-        normalized_parameters = normalize_order_parameters(order_parameters, family)
-        expected_version = normalize_expected_updated_at_us(expected_updated_at_us)
-        prefix = self.family_prefix(family)
-        index_key = f"{prefix}strategy_names"
-        removed_key = f"{prefix}removed_strategy_names"
-        config_key = self.key(name, family)
+        parameters = normalize_order_parameters(order_parameters, family)
+        expected = normalize_expected_updated_at_us(expected_updated_at_us)
+        scopes = self._scopes(name, family)
         with self._save_lock:
             try:
                 with self.client.pipeline() as pipeline:
-                    pipeline.watch(
-                        index_key,
-                        removed_key,
-                        config_key,
-                    )
-                    strategy_names = decode_strategy_names(
-                        pipeline.get(index_key), "strategy index"
-                    )
-                    removed_names = decode_strategy_names(
-                        pipeline.get(removed_key),
-                        "removed strategy index",
-                    )
-                    current = decode_stored_exec_config(
-                        pipeline.get(config_key), family
-                    )
-
-                    if name in removed_names:
-                        raise ValueError(f"strategy removal already requested: {name}")
-                    if name not in strategy_names:
+                    pipeline.watch(*(key for _, index, removed, config in scopes for key in (index, removed, config)))
+                    active = []
+                    for _, index_key, removed_key, config_key in scopes:
+                        if name in decode_strategy_names(pipeline.get(removed_key), "removed strategy index"):
+                            raise ValueError(f"strategy removal already requested: {name}")
+                        if name not in decode_strategy_names(pipeline.get(index_key), "strategy index"):
+                            continue
+                        current = decode_stored_exec_config(pipeline.get(config_key), family)
+                        if current is None:
+                            raise ValueError(f"strategy config is missing: {name}")
+                        active.append((config_key, current))
+                    if not active:
                         raise ValueError(f"strategy is not active: {name}")
-                    if current is None:
-                        raise ValueError(f"strategy config is missing: {name}")
-                    current_version = current.get("updated_at_us")
-                    if current_version != expected_version:
-                        raise ConfigVersionConflict(
-                            "strategy config changed after it was loaded; reload before saving"
-                        )
-
-                    updated = dict(current)
-                    updated.update(normalized_parameters)
-                    next_version = time.time_ns() // 1_000
-                    if current_version is not None:
-                        next_version = max(next_version, current_version + 1)
-                    updated["updated_at_us"] = next_version
+                    current = self._merge([config for _, config in active], family)
+                    if current.get("updated_at_us") != expected:
+                        raise ConfigVersionConflict("strategy config changed after it was loaded; reload before saving")
+                    next_version = max(time.time_ns() // 1_000, expected + 1)
+                    updated_configs = []
                     pipeline.multi()
-                    pipeline.set(
-                        config_key,
-                        json.dumps(
-                            updated,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    )
+                    for config_key, config in active:
+                        updated = {**config, **parameters, "updated_at_us": next_version}
+                        updated_configs.append(updated)
+                        pipeline.set(config_key, json.dumps(updated, ensure_ascii=False, separators=(",", ":")))
                     pipeline.execute()
             except self._watch_error as exc:
-                raise ConfigVersionConflict(
-                    "strategy config changed while it was being saved; reload before saving"
-                ) from exc
-        return updated
+                raise ConfigVersionConflict("strategy config changed while it was being saved; reload before saving") from exc
+        return self._merge(updated_configs, family)
 
-    def remove(
-        self, strategy_name: str, execution_family: str = "batch_exec"
-    ) -> bool:
+    def remove(self, strategy_name: str, execution_family: str = "batch_exec") -> bool:
         name = validate_strategy_name(strategy_name)
         family = normalize_execution_family(execution_family)
-        prefix = self.family_prefix(family)
-        index_key = f"{prefix}strategy_names"
-        removed_key = f"{prefix}removed_strategy_names"
-        config_key = self.key(name, family)
+        found = False
         with self._save_lock:
-            strategy_names = self.list_strategy_names(family)
-            removed_names = self.list_removed_strategy_names(family)
-            if (
-                name not in strategy_names
-                and name not in removed_names
-                and self.client.get(config_key) is None
-            ):
-                return False
-            if name not in removed_names:
-                removed_names.append(name)
-                self.client.set(
-                    removed_key,
-                    json.dumps(
-                        sorted(removed_names),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                )
-            if name in strategy_names:
-                strategy_names.remove(name)
-                self.client.set(
-                    index_key,
-                    json.dumps(strategy_names, ensure_ascii=False, separators=(",", ":")),
-                )
-        return True
+            with self.client.pipeline() as pipeline:
+                pipeline.multi()
+                for _, index_key, removed_key, config_key in self._scopes(name, family):
+                    names = decode_strategy_names(self.client.get(index_key), "strategy index")
+                    removed = decode_strategy_names(self.client.get(removed_key), "removed strategy index")
+                    if name not in names and name not in removed and self.client.get(config_key) is None:
+                        continue
+                    found = True
+                    pipeline.set(removed_key, json.dumps(sorted(set(removed) | {name}), separators=(",", ":")))
+                    pipeline.set(index_key, json.dumps([existing for existing in names if existing != name], separators=(",", ":")))
+                pipeline.execute()
+        return found
 
 
 INDEX_HTML = r"""<!doctype html>

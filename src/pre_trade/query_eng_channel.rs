@@ -769,23 +769,25 @@ impl QueryEngChannel {
                                                 .initializes_venue(account_scope, open_venue)
                                         {
                                             mc.mark_exec_position_snapshot_ready(
+                                                open_venue,
                                                 "query_snapshot_complete",
                                             );
                                         }
                                         continue;
                                     }
-                                    if open_venue == hedge_venue
-                                        && req_type.is_some_and(|req_type| {
+                                    for venue in [open_venue, hedge_venue] {
+                                        if req_type.is_some_and(|req_type| {
                                             snapshot_initializes_exec_venue(
                                                 req_type,
-                                                open_venue,
+                                                venue,
                                                 binance_is_standard,
                                             )
-                                        })
-                                    {
-                                        mc.mark_exec_position_snapshot_ready(
-                                            "query_snapshot_complete",
-                                        );
+                                        }) {
+                                            mc.mark_exec_position_snapshot_ready(
+                                                venue,
+                                                "query_snapshot_complete",
+                                            );
+                                        }
                                     }
                                     continue;
                                 }
@@ -876,18 +878,19 @@ impl QueryEngChannel {
                                             "positions snapshot returned empty list; cleared pre_trade UM state exchange={} req_type={:?}",
                                             exchange, req_type
                                         );
-                                        if open_venue == hedge_venue
-                                            && req_type.is_some_and(|req_type| {
+                                        for venue in [open_venue, hedge_venue] {
+                                            if req_type.is_some_and(|req_type| {
                                                 snapshot_initializes_exec_venue(
                                                     req_type,
-                                                    open_venue,
+                                                    venue,
                                                     binance_is_standard,
                                                 )
-                                            })
-                                        {
-                                            mc.mark_exec_position_snapshot_ready(
-                                                "query_positions_empty",
-                                            );
+                                            }) {
+                                                mc.mark_exec_position_snapshot_ready(
+                                                    venue,
+                                                    "query_positions_empty",
+                                                );
+                                            }
                                         }
                                     }
                                     continue;

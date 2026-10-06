@@ -22,14 +22,12 @@ Chase supports `binance-futures`, `binance-coin-futures` and `okex-futures`.
 Native COIN-M uses signed REST amendments in STANDARD and UNIFIED modes.
 RapidX/LTP supports USD-M and OKX. See [COIN-M quantity semantics](binance_coin_futures.md).
 
-For native Binance USD-M execution, both CTA Manager and `exec-pre-trade`
-require the exchange account to use Standard API mode with Multi-Assets Mode
-enabled. Manager checks the live `/fapi/v1/accountConfig` response before any
-non-zero target publish. `exec-pre-trade` repeats the same fail-closed check on
-startup through the primary order local IP, so a direct process start cannot
-execute previously stored targets while the account is in Single-Asset Mode.
-Zero-target Manager publishes remain allowed so stopping a strategy is never
-blocked by the account-mode gate.
+Native Binance Exec configured as `binance-futures` routes USDT/USDC targets to
+USD-M and USD targets to COIN-M in the same account. STANDARD accounts require
+Multi-Assets Mode; Manager checks `/fapi/v1/accountConfig` before a non-zero
+publish and Exec checks it on startup through the primary order source IP.
+UNIFIED accounts use Portfolio Margin UM/CM endpoints. Zero-target publishes
+remain allowed by the account-mode gate.
 
 Republish existing strategies from Manager before reloading Exec. The strict
 parser rejects the removed `single_order_usdt`, `max_open_usdt`,

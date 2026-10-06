@@ -68,7 +68,7 @@ use trade_signal::ArbMode;
 #[command(name = env!("CARGO_BIN_NAME"))]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// Single execution venue. Required by exec-pre-trade.
+    /// Execution venue. Native binance-futures also routes USD perpetuals to COIN-M.
     #[arg(long, value_enum)]
     venue: Option<ExecVenue>,
 
@@ -104,6 +104,17 @@ enum ExecVenue {
 
 const FR_STARTUP_STABILITY_DELAY: Duration = Duration::from_secs(3);
 type HmacSha256 = Hmac<Sha256>;
+
+fn exec_runtime_venues(venue: TradingVenue, rapidx_binance: bool) -> Vec<TradingVenue> {
+    if venue == TradingVenue::BinanceFutures && !rapidx_binance {
+        vec![
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
+        ]
+    } else {
+        vec![venue]
+    }
+}
 
 #[derive(Debug, Clone)]
 struct FrStartupContext {
@@ -705,6 +716,16 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
+    let exec_venues = if exec_pre_trade {
+        exec_runtime_venues(open_venue, rapidx_binance)
+    } else {
+        vec![open_venue]
+    };
+    let hedge_venue = if exec_pre_trade {
+        *exec_venues.last().expect("Exec always has a venue")
+    } else {
+        hedge_venue
+    };
     if arb_mode == ArbMode::CtaSpecial {
         anyhow::ensure!(
             open_venue == TradingVenue::BinanceFutures
@@ -808,11 +829,11 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
-    if exec_pre_trade && open_venue == TradingVenue::BinanceFutures && !rapidx_binance {
-        anyhow::ensure!(
-            binance_account_mode == Some(BinanceAccountMode::Standard),
-            "Binance USD-M Exec requires BINANCE_ACCOUNT_MODE=STANDARD with Multi-Assets Mode enabled"
-        );
+    if exec_pre_trade
+        && open_venue == TradingVenue::BinanceFutures
+        && !rapidx_binance
+        && binance_account_mode == Some(BinanceAccountMode::Standard)
+    {
         let (raw_ip, source) = load_primary_local_ip_from_trade_engine_sync()
             .context("load Binance REST local IP for the Exec account-mode startup gate")?;
         let local_ip = raw_ip
@@ -832,7 +853,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     let startup_cancel_gate = startup_cancel_gate_name(exec_pre_trade, arb_mode);
     if let Some(gate_name) = startup_cancel_gate {
-        cancel_all_orders_on_startup(open_venue, binance_account_mode, gate_name).await?;
+        for venue in &exec_venues {
+            cancel_all_orders_on_startup(*venue, binance_account_mode, gate_name).await?;
+        }
     }
     let local = tokio::task::LocalSet::new();
     local
@@ -1001,11 +1024,14 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 });
             }
             if exec_pre_trade {
-                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, open_venue)?;
-                mkt_signal::pre_trade::exec_volume_channel::start(open_venue);
+                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
+                for venue in &exec_venues {
+                    mkt_signal::pre_trade::exec_volume_channel::start(*venue);
+                }
                 info!(
-                    "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
-                    open_venue.data_pub_slug()
+                    "exec-pre-trade BBO subscribers initialized: open={} hedge={}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
                 );
             } else if matches!(
                 arb_mode,
@@ -1057,56 +1083,58 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             UnimmrForceClose::initialize(arb_mode, binance_account_mode);
 
             if exec_pre_trade {
-                let mut batch_redis = RedisSettings::default();
-                batch_redis.prefix = Some(prefix.clone());
-                let mut market_rules = ManagerMarketRulesReloader::connect(
-                    batch_redis.clone(),
-                    open_venue,
-                )
-                .await?;
-                if !market_rules.reload().await? {
-                    warn!(
-                        "Manager market-rules cache is not available yet; symbols remain blocked until Manager publishes it"
+                let position_lock = Rc::new(tokio::sync::Mutex::new(()));
+                for venue in &exec_venues {
+                    let mut batch_redis = RedisSettings::default();
+                    batch_redis.prefix = Some(exec_redis_prefix(dir_prefix.as_deref(), *venue));
+                    let mut market_rules = ManagerMarketRulesReloader::connect(
+                        batch_redis.clone(),
+                        *venue,
+                    )
+                    .await?;
+                    if !market_rules.reload().await? {
+                        warn!(
+                            "Manager market-rules cache is not available yet; symbols remain blocked until Manager publishes it"
+                        );
+                    }
+                    market_rules.spawn(Duration::from_millis(args.config_reload_ms.max(100)));
+                    let mut reloader = BatchExecConfigReloader::connect(
+                        batch_redis.clone(),
+                        *venue,
+                        binance_account_mode,
+                    )
+                    .await?;
+                    reloader.reload(&strategy_mgr).await?;
+                    let mut chase_reloader = ChaseExecConfigReloader::connect(
+                        batch_redis,
+                        *venue,
+                        binance_account_mode,
+                    )
+                    .await?;
+                    chase_reloader.reload(&strategy_mgr).await?;
+                    mkt_signal::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
+                        &strategy_mgr,
+                        *venue,
+                    );
+                    reloader.spawn(
+                        strategy_mgr.clone(),
+                        Duration::from_millis(args.config_reload_ms.max(100)),
+                        position_lock.clone(),
+                    );
+                    info!(
+                        "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations leverage_init_key=batch_exec_state:leverage_initialized default_leverage=5",
+                        args.config_reload_ms.max(100)
+                    );
+                    chase_reloader.spawn(
+                        strategy_mgr.clone(),
+                        Duration::from_millis(args.config_reload_ms.max(100)),
+                        position_lock.clone(),
+                    );
+                    info!(
+                        "ChaseExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=chase_exec:strategy_names position_ledger_key=chase_exec_state:position_allocations leverage_init_key=chase_exec_state:leverage_initialized default_leverage=5",
+                        args.config_reload_ms.max(100)
                     );
                 }
-                market_rules.spawn(Duration::from_millis(args.config_reload_ms.max(100)));
-                let mut reloader = BatchExecConfigReloader::connect(
-                    batch_redis.clone(),
-                    open_venue,
-                    binance_account_mode,
-                )
-                .await?;
-                let position_lock = Rc::new(tokio::sync::Mutex::new(()));
-                reloader.reload(&strategy_mgr).await?;
-                let mut chase_reloader = ChaseExecConfigReloader::connect(
-                    batch_redis,
-                    open_venue,
-                    binance_account_mode,
-                )
-                .await?;
-                chase_reloader.reload(&strategy_mgr).await?;
-                mkt_signal::pre_trade::exec_position_ledger::cross_family_unexecuted_targets(
-                    &strategy_mgr,
-                    open_venue,
-                );
-                reloader.spawn(
-                    strategy_mgr.clone(),
-                    Duration::from_millis(args.config_reload_ms.max(100)),
-                    position_lock.clone(),
-                );
-                info!(
-                    "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations leverage_init_key=batch_exec_state:leverage_initialized default_leverage=5",
-                    args.config_reload_ms.max(100)
-                );
-                chase_reloader.spawn(
-                    strategy_mgr.clone(),
-                    Duration::from_millis(args.config_reload_ms.max(100)),
-                    position_lock,
-                );
-                info!(
-                    "ChaseExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=chase_exec:strategy_names position_ledger_key=chase_exec_state:position_allocations leverage_init_key=chase_exec_state:leverage_initialized default_leverage=5",
-                    args.config_reload_ms.max(100)
-                );
             }
 
             // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
@@ -1382,7 +1410,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
 
             // 7.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
             let snapshot_query = if exec_pre_trade {
-                SnapshotQueryConfig::new_exec(open_venue, binance_account_mode)
+                SnapshotQueryConfig::new_exec(open_venue, hedge_venue, binance_account_mode)
             } else {
                 SnapshotQueryConfig::new(open_venue, hedge_venue, binance_account_mode)
             };
@@ -1469,6 +1497,29 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_binance_exec_owns_both_markets_and_rapidx_stays_linear() {
+        assert_eq!(
+            exec_runtime_venues(TradingVenue::BinanceFutures, false),
+            vec![
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceCoinFutures
+            ]
+        );
+        assert_eq!(
+            exec_runtime_venues(TradingVenue::BinanceFutures, true),
+            vec![TradingVenue::BinanceFutures]
+        );
+        assert_eq!(
+            exec_runtime_venues(TradingVenue::BinanceCoinFutures, false),
+            vec![TradingVenue::BinanceCoinFutures]
+        );
+        assert_eq!(
+            exec_runtime_venues(TradingVenue::OkexFutures, false),
+            vec![TradingVenue::OkexFutures]
+        );
+    }
 
     #[test]
     fn infer_arb_mode_uses_dir_namespace_before_venue_shape() {

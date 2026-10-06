@@ -109,7 +109,7 @@ pub fn cross_family_unexecuted_targets(
     strategy_mgr: &Rc<RefCell<StrategyManager>>,
     venue: TradingVenue,
 ) -> usize {
-    if !MonitorChannel::instance().exec_position_snapshot_ready() {
+    if !MonitorChannel::instance().exec_position_snapshot_ready_for_venue(venue) {
         return 0;
     }
     let now_ts = get_timestamp_us();

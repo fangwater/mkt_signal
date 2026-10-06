@@ -136,7 +136,7 @@ fi
 if [[ "$EXEC_BACKEND" == "native" ]]; then
 case "$VENUE" in
   binance-futures)
-    for file in binance_cancel_all_std_um_ws_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
+    for file in binance_cancel_all_std_um_ws_orders.py binance_cancel_all_std_cm_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
       [[ -f "${SCRIPT_DIR}/${file}" ]] || { echo "[ERROR] missing startup cancel dependency: scripts/${file}" >&2; exit 1; }
     done
     ;;

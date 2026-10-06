@@ -20,7 +20,8 @@ endpoint overrides are `BINANCE_DAPI_URL` and `BINANCE_PAPI_URL`.
 
 The account monitor enables COIN-M when any of `OPEN_VENUE`, `HEDGE_VENUE`,
 `EXEC_VENUE`, `EXEC_START_VENUE`, or `VENUE` is
-`binance-coin-futures`. `BINANCE_ENABLE_COIN_FUTURES=1` is available for
+`binance-coin-futures`. A native Exec with `EXEC_VENUE=binance-futures` or
+`EXEC_START_VENUE=binance-futures` also enables COIN-M. `BINANCE_ENABLE_COIN_FUTURES=1` is available for
 standalone monitor deployments that do not expose a venue variable.
 
 ## Quantity semantics
@@ -83,10 +84,21 @@ script are dry-run unless `--execute` is provided.
 
 ## Exec and CTA Manager
 
-Configure the Exec environment and its Manager source with
-`venue = "binance-coin-futures"`. Keep its namespace, Redis prefix and account
-separate from a USD-M deployment. The deploy/publish/start/stop wrappers accept
-this venue. Existing accounts are not switched by submitting a new symbol.
+A native Binance Exec and Manager source configured with
+`venue = "binance-futures"` manage USDT, USDC and USD perpetuals in the same
+account and process. Target suffixes route USDT/USDC to USD-M and USD to COIN-M.
+STANDARD accounts retain the USD-M Multi-Assets startup requirement; UNIFIED
+accounts use Portfolio Margin UM/CM endpoints. No exchange account mode is
+changed automatically. `venue = "binance-coin-futures"` remains available for
+COIN-M-only environments. The deploy/publish/start/stop wrappers accept both.
+
+Manager publishes both market scopes in one Redis transaction with one receipt
+timestamp. It retains the existing per-market rule caches and position ledgers;
+Exec loads both, subscribes to both BBO/volume/mark feeds, and requires the
+matching position snapshot before reconciling each market. The Config API shows
+one strategy with the merged targets; parameter updates and strategy removal
+apply to both scopes. Native combined Exec startup cancels open orders in both
+markets before execution begins.
 Manager remains the sole owner of rule refresh; Exec consumes its complete
 current cache, including `contractSize`, tradable status and quantity filters.
 
@@ -101,7 +113,8 @@ A Manager position-strategy request can contain:
 
 Exec and Manager targets identify perpetual contracts by their quote suffix:
 `BTCUSDT` is USDT-margined, `BTCUSDC` is USDC-margined, and `BTCUSD` is
-coin-margined. USD-M sources accept USDT/USDC; COIN-M sources accept USD.
+coin-margined. Native `binance-futures` sources accept all three suffixes;
+COIN-M-only sources accept USD.
 Quantity remains base coin: this means 0.01 BTC, before binding shares. The
 current internal key is `BTCUSD`; only exchange requests restore `BTCUSD_PERP`.
 Wire-name aliases normalize to the same key and duplicates are errors. Delivery
