@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::TryFrom;
 
+/// Canonical venue component for spread_pbs market-data IPC, including test/proxy roots.
+pub fn market_data_pub_slug(venue_slug: &str) -> &str {
+    match venue_slug {
+        "binance-coin-futures" => "binance-futures",
+        other => other,
+    }
+}
+
 /// Trading venue across exchange and market type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
 #[repr(u8)]
@@ -70,6 +78,36 @@ impl TradingVenue {
         Self::from_u8(value)
             .map(|venue| format!("{:?}", venue))
             .unwrap_or_else(|| format!("Unknown({})", value))
+    }
+
+    /// Binance USD-M and COIN-M share the same public market-data services.
+    pub fn market_data_pub_slug(&self) -> &'static str {
+        market_data_pub_slug(self.data_pub_slug())
+    }
+
+    /// Recover the native market from an uppercase symbol on a combined Binance feed.
+    /// Quantities remain in the source market's units (COIN-M contract counts).
+    pub fn market_data_venue_for_symbol(self, symbol: &str) -> Self {
+        match self {
+            Self::BinanceFutures | Self::BinanceCoinFutures => {
+                let delivery_root = symbol.len().checked_sub(6).and_then(|end| {
+                    let date = symbol.get(end..)?;
+                    date.bytes()
+                        .all(|b| b.is_ascii_digit())
+                        .then(|| symbol[..end].trim_end_matches('_'))
+                });
+                if symbol.ends_with("USD")
+                    || symbol.ends_with("USD_PERP")
+                    || symbol.ends_with("USDPERP")
+                    || delivery_root.is_some_and(|root| root.ends_with("USD"))
+                {
+                    Self::BinanceCoinFutures
+                } else {
+                    Self::BinanceFutures
+                }
+            }
+            _ => self,
+        }
     }
 
     pub fn to_u8(self) -> u8 {
@@ -464,6 +502,46 @@ fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_binance_market_data_retains_native_contract_identity() {
+        for source in [
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
+        ] {
+            assert_eq!(source.market_data_pub_slug(), "binance-futures");
+            for symbol in ["BTCUSDT", "BTCUSDC", "BTCUSDT_261225"] {
+                assert_eq!(
+                    source.market_data_venue_for_symbol(symbol),
+                    TradingVenue::BinanceFutures
+                );
+            }
+            for symbol in [
+                "BTCUSD",
+                "BTCUSD_PERP",
+                "BTCUSDPERP",
+                "ETHUSD_261225",
+                "ETHUSD261225",
+            ] {
+                assert_eq!(
+                    source.market_data_venue_for_symbol(symbol),
+                    TradingVenue::BinanceCoinFutures
+                );
+            }
+        }
+        assert_eq!(
+            TradingVenue::BinanceCoinFutures.data_pub_slug(),
+            "binance-coin-futures"
+        );
+        assert_eq!(
+            TradingVenue::BitgetCoinFutures.market_data_pub_slug(),
+            "bitget-coin-futures"
+        );
+        assert_eq!(
+            TradingVenue::BinanceMargin.market_data_venue_for_symbol("BTCUSDC"),
+            TradingVenue::BinanceMargin
+        );
+    }
 
     #[test]
     fn test_extract_assets_from_symbol() {

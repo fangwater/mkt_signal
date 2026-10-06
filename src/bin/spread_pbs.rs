@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
-use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
+use mkt_signal::spread_pbs::publisher::{SpreadPbsPublishRoots, SpreadPbsPublisherPool};
 use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, MarketDataProvider, SpreadPbsApp};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
@@ -320,6 +320,7 @@ async fn run_selected(
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = FuturesUnordered::new();
+    let publishers = SpreadPbsPublisherPool::default();
     for config in configs {
         let venue_slug = config.venue.data_pub_slug();
         let rx = shutdown_rx.clone();
@@ -345,7 +346,8 @@ async fn run_selected(
             role,
             bybit_role,
         )
-        .with_market_data_provider(market_data_provider);
+        .with_market_data_provider(market_data_provider)
+        .with_publishers(publishers.clone());
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)
         }));

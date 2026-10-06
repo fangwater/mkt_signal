@@ -1,4 +1,4 @@
-//! Exec consumes the same venue-native public trade stream as factor publishers.
+//! Exec consumes public trades, routing combined Binance feeds by symbol.
 use crate::common::trade_msg_parser::parse_trade;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use anyhow::Result;
@@ -8,7 +8,7 @@ use iceoryx2::service::ipc;
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -39,14 +39,23 @@ fn subscribe(venue: TradingVenue) -> Result<Subscriber<ipc::Service, [u8; 128], 
     let service = node
         .service_builder(&ServiceName::new(&format!(
             "dat_pbs/{}/trade",
-            venue.data_pub_slug()
+            venue.market_data_pub_slug()
         ))?)
         .publish_subscribe::<[u8; 128]>()
         .open()?;
     Ok(service.subscriber_builder().buffer_size(8192).create()?)
 }
 
-pub fn start(venue: TradingVenue) {
+pub fn start(venues: &[TradingVenue]) {
+    let mut services = HashSet::new();
+    for &venue in venues {
+        if services.insert(venue.market_data_pub_slug()) {
+            start_feed(venue, venues.to_vec());
+        }
+    }
+}
+
+fn start_feed(venue: TradingVenue, venues: Vec<TradingVenue>) {
     tokio::task::spawn_local(async move {
         let mut cursors: HashMap<String, TradeCursor> = HashMap::new();
         loop {
@@ -60,7 +69,7 @@ pub fn start(venue: TradingVenue) {
             };
             log::info!(
                 "Exec POV subscribed to dat_pbs/{}/trade",
-                venue.data_pub_slug()
+                venue.market_data_pub_slug()
             );
             let mut failed = false;
             while !failed {
@@ -77,6 +86,10 @@ pub fn start(venue: TradingVenue) {
                     let Some(trade) = parse_trade(sample.payload(), venue) else {
                         continue;
                     };
+                    let venue = venue.market_data_venue_for_symbol(&trade.symbol);
+                    if !venues.contains(&venue) {
+                        continue;
+                    }
                     let now_us = get_timestamp_us();
                     if trade.timestamp_us > now_us || trade.timestamp_us < now_us - 60_000_000 {
                         continue;

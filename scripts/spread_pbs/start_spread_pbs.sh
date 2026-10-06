@@ -20,6 +20,7 @@ Behavior:
     Hyperliquid 使用单进程，stream 策略由 spread_pbs 内部决定。
   - binance-futures 可通过 SPREAD_PBS_BINANCE_FUTURES_ROLE=split|market|bookticker 选择进程角色。
     每个角色同时覆盖 USDT、USDC、USD 永续，内部连接 USD-M 和 COIN-M 两套行情。
+    三类合约的 BBO/trade/incremental/derivatives IPC 统一使用 binance-futures 路径。
     角色只选择数据流；所有角色复用统一的双路 WS 和错峰重连机制。
   - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
     Bybit-both 默认拆成 market/bookticker 两个进程，避免 JSON market 流和 BBO 流互相抢 CPU。

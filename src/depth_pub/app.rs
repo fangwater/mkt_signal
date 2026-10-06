@@ -470,7 +470,10 @@ impl DepthPubApp {
         node: &Node<ipc::Service>,
         venue: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>> {
-        let service_name = format!("dat_pbs/{}/incremental", venue);
+        let service_name = format!(
+            "dat_pbs/{}/incremental",
+            runtime_common::symbol_util::market_data_pub_slug(venue)
+        );
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; INC_MAX_BYTES]>()
@@ -560,6 +563,10 @@ impl DepthPubApp {
             Ok(s) => s.to_string(),
             Err(_) => return,
         };
+
+        if self.venue.market_data_venue_for_symbol(&symbol) != self.venue {
+            return;
+        }
 
         // 解析 update_id 和 timestamp
         let mut offset = 8 + symbol_len;

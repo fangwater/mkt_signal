@@ -855,7 +855,7 @@ fn spawn_public_trade_listener(venue: TradingVenue) {
     tokio::task::spawn_local(async move {
         let result: Result<()> = async move {
             let venue_slug = venue.data_pub_slug();
-            let service_name = format!("dat_pbs/{venue_slug}/trade");
+            let service_name = format!("dat_pbs/{}/trade", venue.market_data_pub_slug());
             let node_name = format!(
                 "trade_signal_queue_position_{}_trade",
                 venue_slug.replace('-', "_")
@@ -989,6 +989,9 @@ fn process_public_trade_payload(venue: TradingVenue, payload: &[u8]) {
     let Some(trade) = parse_public_trade(payload) else {
         return;
     };
+    if venue.market_data_venue_for_symbol(trade.symbol) != venue {
+        return;
+    }
     let symbol = super::local_tlen::normalize_symbol_key_cow(trade.symbol);
     if !tracks_symbol(symbol.as_ref()) {
         return;

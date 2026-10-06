@@ -142,6 +142,7 @@ pub fn bbo_service_name(service_root: &str, venue: &str) -> Result<String> {
         "venue must be one path component: {}",
         venue
     );
+    let venue = runtime_common::symbol_util::market_data_pub_slug(venue);
     Ok(format!("{root}/{venue}/ask_bid_spread"))
 }
 
@@ -164,6 +165,7 @@ pub fn derivatives_service_name(service_root: &str, venue: &str) -> Result<Strin
         "venue must be one path component: {}",
         venue
     );
+    let venue = runtime_common::symbol_util::market_data_pub_slug(venue);
     Ok(format!("{root}/{venue}/derivatives"))
 }
 
@@ -179,6 +181,7 @@ fn topic(prefix: &str, venue: &str) -> Result<String> {
         "venue must be one path component: {}",
         venue
     );
+    let venue = runtime_common::symbol_util::market_data_pub_slug(venue);
     Ok(format!("{prefix}/{venue}"))
 }
 
@@ -270,6 +273,22 @@ mod tests {
 
     #[test]
     fn builds_default_route_names() {
+        assert_eq!(
+            bbo_topic("binance-coin-futures").unwrap(),
+            "spread_bbo/binance-futures"
+        );
+        assert_eq!(
+            derivatives_topic("binance-coin-futures").unwrap(),
+            "spread_derivatives/binance-futures"
+        );
+        assert_eq!(
+            bbo_service_name("spread_pbs_test", "binance-coin-futures").unwrap(),
+            "spread_pbs_test/binance-futures/ask_bid_spread"
+        );
+        assert_eq!(
+            derivatives_service_name("dat_pbs", "binance-coin-futures").unwrap(),
+            "dat_pbs/binance-futures/derivatives"
+        );
         assert_eq!(
             bbo_service_name("spread_pbs", "binance-futures").unwrap(),
             "spread_pbs/binance-futures/ask_bid_spread"

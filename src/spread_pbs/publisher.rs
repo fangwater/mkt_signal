@@ -7,7 +7,9 @@ use iceoryx2::service::builder::publish_subscribe::{
 use iceoryx2::service::ipc;
 use iceoryx2::service::port_factory::publish_subscribe::PortFactory;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
+use runtime_common::symbol_util::market_data_pub_slug;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use mkt_parsers::msg::mkt_msg::{Level, MktMsgType};
 
@@ -1052,10 +1054,125 @@ fn write_liquidation_payload_with_prefix(
 /// `max_subscribers = 64` 与 `max_publishers = 1` 与 plan 约定一致，
 /// 与 dat_pbs 的同名 channel 完全独立。
 pub struct SpreadPublisher {
-    publisher: Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>,
+    publisher: Rc<Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>>,
     service_name: String,
     bbo_prefix_by_symbol: RefCell<FastHashMap<String, BboPayloadPrefix>>,
     bbo_prefix_by_index: RefCell<Vec<Option<BboPayloadPrefix>>>,
+}
+
+/// One publisher per IPC service, shared by all market tasks in this process.
+/// Symbol-slot caches stay with each task because USD-M and COIN-M reuse slot IDs.
+#[derive(Clone, Default)]
+pub struct SpreadPbsPublisherPool {
+    small: SharedPublisherPool<128>,
+    incremental: SharedPublisherPool<INCREMENTAL_PAYLOAD_BYTES>,
+}
+
+#[derive(Clone, Default)]
+struct SharedPublisherPool<const N: usize> {
+    publishers: Rc<RefCell<FastHashMap<String, Rc<Publisher<ipc::Service, [u8; N], ()>>>>>,
+    node_config: Option<iceoryx2::config::Config>,
+}
+
+impl<const N: usize> SharedPublisherPool<N> {
+    fn publisher_for(
+        &self,
+        venue_slug: &str,
+        root: &str,
+        channel: &str,
+    ) -> Result<(Rc<Publisher<ipc::Service, [u8; N], ()>>, String)> {
+        let venue_slug = market_data_pub_slug(venue_slug);
+        let name = service_name(root, venue_slug, channel)?;
+        let mut publishers = self.publishers.borrow_mut();
+        if !publishers.contains_key(&name) {
+            let bbo = channel == "ask_bid_spread";
+            let node_name = publisher_node_name(
+                if bbo {
+                    DEFAULT_SPREAD_SERVICE_ROOT
+                } else {
+                    DEFAULT_DAT_SERVICE_ROOT
+                },
+                "spread_pbs",
+                root,
+                venue_slug,
+                if bbo { "" } else { channel },
+            )?;
+            let mut builder = NodeBuilder::new().name(&NodeName::new(&node_name)?);
+            if let Some(config) = &self.node_config {
+                builder = builder.config(config);
+            }
+            let node = builder.create::<ipc::Service>()?;
+            let service = open_or_create_pubsub::<[u8; N]>(
+                &node,
+                &name,
+                if channel == "derivatives" {
+                    50
+                } else {
+                    HISTORY_SIZE
+                },
+                if channel == "incremental" { 10 } else { 64 },
+            )?;
+            publishers.insert(name.clone(), Rc::new(service.publisher_builder().create()?));
+            log::info!(
+                "spread_pbs publisher ready: service={} max_publishers=1 payload={}B",
+                name,
+                N
+            );
+        }
+        Ok((publishers[&name].clone(), name))
+    }
+}
+
+impl SpreadPbsPublisherPool {
+    pub fn bbo_for(&self, venue_slug: &str, root: &str) -> Result<SpreadPublisher> {
+        let (publisher, service_name) =
+            self.small
+                .publisher_for(venue_slug, root, "ask_bid_spread")?;
+        Ok(SpreadPublisher {
+            publisher,
+            service_name,
+            bbo_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            bbo_prefix_by_index: RefCell::new(Vec::new()),
+        })
+    }
+    pub fn trade_for(&self, venue_slug: &str, root: &str) -> Result<SpreadTradePublisher> {
+        let (publisher, service_name) = self.small.publisher_for(venue_slug, root, "trade")?;
+        Ok(SpreadTradePublisher {
+            publisher,
+            service_name,
+            trade_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            trade_prefix_by_index: RefCell::new(Vec::new()),
+        })
+    }
+    pub fn incremental_for(
+        &self,
+        venue_slug: &str,
+        root: &str,
+    ) -> Result<SpreadIncrementalPublisher> {
+        let (publisher, service_name) =
+            self.incremental
+                .publisher_for(venue_slug, root, "incremental")?;
+        Ok(SpreadIncrementalPublisher {
+            publisher,
+            service_name,
+            incremental_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            incremental_prefix_by_index: RefCell::new(Vec::new()),
+        })
+    }
+    pub fn derivatives_for(
+        &self,
+        venue_slug: &str,
+        root: &str,
+    ) -> Result<SpreadDerivativesPublisher> {
+        let (publisher, service_name) =
+            self.small.publisher_for(venue_slug, root, "derivatives")?;
+        Ok(SpreadDerivativesPublisher {
+            publisher,
+            service_name,
+            derivatives_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            derivatives_prefix_by_index: RefCell::new(Vec::new()),
+        })
+    }
 }
 
 /// spread_pbs 直接替代旧 `dat_pbs/<venue>/trade` 的 publisher。
@@ -1063,7 +1180,7 @@ pub struct SpreadPublisher {
 /// 使用 open_or_create，允许进程重启/中途替换复用已存在 service；`max_publishers=1`
 /// 仍然避免两个活跃 publisher 同时写同一通道。
 pub struct SpreadTradePublisher {
-    publisher: Publisher<ipc::Service, [u8; TRADE_PAYLOAD_BYTES], ()>,
+    publisher: Rc<Publisher<ipc::Service, [u8; TRADE_PAYLOAD_BYTES], ()>>,
     service_name: String,
     trade_prefix_by_symbol: RefCell<FastHashMap<String, TradePayloadPrefix>>,
     trade_prefix_by_index: RefCell<Vec<Option<TradePayloadPrefix>>>,
@@ -1073,7 +1190,7 @@ pub struct SpreadTradePublisher {
 ///
 /// 与 trade replacement 一样 open_or_create；同名活跃 publisher 由 max_publishers 限制。
 pub struct SpreadIncrementalPublisher {
-    publisher: Publisher<ipc::Service, [u8; INCREMENTAL_PAYLOAD_BYTES], ()>,
+    publisher: Rc<Publisher<ipc::Service, [u8; INCREMENTAL_PAYLOAD_BYTES], ()>>,
     service_name: String,
     incremental_prefix_by_symbol: RefCell<FastHashMap<String, IncrementalPayloadPrefix>>,
     incremental_prefix_by_index: RefCell<Vec<Option<IncrementalPayloadPrefix>>>,
@@ -1081,7 +1198,7 @@ pub struct SpreadIncrementalPublisher {
 
 /// spread_pbs 直接替代旧 `dat_pbs/<venue>/derivatives` 的 publisher。
 pub struct SpreadDerivativesPublisher {
-    publisher: Publisher<ipc::Service, [u8; DERIVATIVES_PAYLOAD_BYTES], ()>,
+    publisher: Rc<Publisher<ipc::Service, [u8; DERIVATIVES_PAYLOAD_BYTES], ()>>,
     service_name: String,
     derivatives_prefix_by_symbol: RefCell<FastHashMap<String, DerivativesPayloadPrefixes>>,
     derivatives_prefix_by_index: RefCell<Vec<Option<DerivativesPayloadPrefixes>>>,
@@ -1095,39 +1212,7 @@ impl SpreadPublisher {
 
     /// Same BBO payload, but published under a caller-selected service root.
     pub fn new_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
-        let service_name = service_name(service_root, venue_slug, "ask_bid_spread")?;
-        let node_name = publisher_node_name(
-            DEFAULT_SPREAD_SERVICE_ROOT,
-            "spread_pbs",
-            service_root,
-            venue_slug,
-            "",
-        )?;
-
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service = open_or_create_pubsub::<[u8; SPREAD_PAYLOAD_BYTES]>(
-            &node,
-            &service_name,
-            HISTORY_SIZE,
-            64,
-        )?;
-
-        let publisher = service.publisher_builder().create()?;
-
-        log::info!(
-            "spread_pbs publisher ready: service={} max_subscribers=64 payload={}B",
-            service_name,
-            SPREAD_PAYLOAD_BYTES
-        );
-        Ok(Self {
-            publisher,
-            service_name,
-            bbo_prefix_by_symbol: RefCell::new(fast_hash_map()),
-            bbo_prefix_by_index: RefCell::new(Vec::new()),
-        })
+        SpreadPbsPublisherPool::default().bbo_for(venue_slug, service_root)
     }
 
     pub fn service_name(&self) -> &str {
@@ -1249,39 +1334,7 @@ impl SpreadTradePublisher {
     }
 
     pub fn new_open_or_create_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
-        let service_name = service_name(service_root, venue_slug, "trade")?;
-        let node_name = publisher_node_name(
-            DEFAULT_DAT_SERVICE_ROOT,
-            "spread_pbs",
-            service_root,
-            venue_slug,
-            "trade",
-        )?;
-
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service = open_or_create_pubsub::<[u8; TRADE_PAYLOAD_BYTES]>(
-            &node,
-            &service_name,
-            HISTORY_SIZE,
-            64,
-        )?;
-
-        let publisher = service.publisher_builder().create()?;
-
-        log::info!(
-            "spread_pbs trade publisher ready: service={} mode=open-or-create max_publishers=1 max_subscribers=64 payload={}B",
-            service_name,
-            TRADE_PAYLOAD_BYTES
-        );
-        Ok(Self {
-            publisher,
-            service_name,
-            trade_prefix_by_symbol: RefCell::new(fast_hash_map()),
-            trade_prefix_by_index: RefCell::new(Vec::new()),
-        })
+        SpreadPbsPublisherPool::default().trade_for(venue_slug, service_root)
     }
 
     pub fn service_name(&self) -> &str {
@@ -1364,39 +1417,7 @@ impl SpreadIncrementalPublisher {
     }
 
     pub fn new_open_or_create_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
-        let service_name = service_name(service_root, venue_slug, "incremental")?;
-        let node_name = publisher_node_name(
-            DEFAULT_DAT_SERVICE_ROOT,
-            "spread_pbs",
-            service_root,
-            venue_slug,
-            "incremental",
-        )?;
-
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service = open_or_create_pubsub::<[u8; INCREMENTAL_PAYLOAD_BYTES]>(
-            &node,
-            &service_name,
-            HISTORY_SIZE,
-            10,
-        )?;
-
-        let publisher = service.publisher_builder().create()?;
-
-        log::info!(
-            "spread_pbs incremental publisher ready: service={} mode=open-or-create max_publishers=1 max_subscribers=10 payload={}B",
-            service_name,
-            INCREMENTAL_PAYLOAD_BYTES
-        );
-        Ok(Self {
-            publisher,
-            service_name,
-            incremental_prefix_by_symbol: RefCell::new(fast_hash_map()),
-            incremental_prefix_by_index: RefCell::new(Vec::new()),
-        })
+        SpreadPbsPublisherPool::default().incremental_for(venue_slug, service_root)
     }
 
     pub fn service_name(&self) -> &str {
@@ -1670,35 +1691,7 @@ impl SpreadDerivativesPublisher {
     }
 
     pub fn new_open_or_create_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
-        let service_name = service_name(service_root, venue_slug, "derivatives")?;
-        let node_name = publisher_node_name(
-            DEFAULT_DAT_SERVICE_ROOT,
-            "spread_pbs",
-            service_root,
-            venue_slug,
-            "derivatives",
-        )?;
-
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service =
-            open_or_create_pubsub::<[u8; DERIVATIVES_PAYLOAD_BYTES]>(&node, &service_name, 50, 64)?;
-
-        let publisher = service.publisher_builder().create()?;
-
-        log::info!(
-            "spread_pbs derivatives publisher ready: service={} mode=open-or-create max_publishers=1 max_subscribers=64 payload={}B",
-            service_name,
-            DERIVATIVES_PAYLOAD_BYTES
-        );
-        Ok(Self {
-            publisher,
-            service_name,
-            derivatives_prefix_by_symbol: RefCell::new(fast_hash_map()),
-            derivatives_prefix_by_index: RefCell::new(Vec::new()),
-        })
+        SpreadPbsPublisherPool::default().derivatives_for(venue_slug, service_root)
     }
 
     pub fn service_name(&self) -> &str {
@@ -2072,6 +2065,189 @@ mod tests {
         AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg,
         TradeMsg,
     };
+
+    #[test]
+    fn combined_binance_streams_share_ipc_without_sharing_symbol_slots() {
+        let root = format!(
+            "bbo_merge_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(&root);
+        std::fs::create_dir(&directory).unwrap();
+        let mut config = iceoryx2::config::Config::default();
+        config.global.set_root_path(
+            &iceoryx2::prelude::Path::new(directory.as_os_str().as_encoded_bytes()).unwrap(),
+        );
+        let mut pool = SpreadPbsPublisherPool::default();
+        pool.small.node_config = Some(config.clone());
+        pool.incremental.node_config = Some(config.clone());
+        // COIN-M may finish metadata loading before USD-M.
+        let coin = pool.bbo_for("binance-coin-futures", &root).unwrap();
+        let linear = pool.bbo_for("binance-futures", &root).unwrap();
+        assert!(Rc::ptr_eq(&coin.publisher, &linear.publisher));
+        assert_eq!(
+            coin.service_name(),
+            format!("{root}/binance-futures/ask_bid_spread")
+        );
+        coin.seed_symbols(&["BTCUSD_PERP".into()]).unwrap();
+        linear
+            .seed_symbols(&["BTCUSDT".into(), "BTCUSDC".into()])
+            .unwrap();
+
+        let node = NodeBuilder::new()
+            .config(&config)
+            .create::<ipc::Service>()
+            .unwrap();
+        let service = node
+            .service_builder(&ServiceName::new(linear.service_name()).unwrap())
+            .publish_subscribe::<[u8; SPREAD_PAYLOAD_BYTES]>()
+            .open()
+            .unwrap();
+        let subscriber = service.subscriber_builder().create().unwrap();
+        let cases = [
+            (&linear, 0, "BTCUSDT", 1.0),
+            (&coin, 0, "BTCUSD_PERP", 100.0),
+            (&linear, 1, "BTCUSDC", 2.0),
+            // A newly listed coin symbol must not overwrite USD-M slot 1.
+            (&coin, 1, "ETHUSD_PERP", 200.0),
+            (&linear, 1, "BTCUSDC", 3.0),
+        ];
+        for (publisher, slot, symbol, amount) in cases {
+            publisher
+                .publish_bbo_for_slot(slot, symbol, 123, 50_000.0, amount, 50_001.0, amount + 1.0)
+                .unwrap();
+        }
+        for (_, _, symbol, amount) in cases {
+            let sample = subscriber.receive().unwrap().expect("combined BBO message");
+            assert_eq!(AskBidSpreadMsg::get_symbol(sample.payload()), symbol);
+            assert_eq!(AskBidSpreadMsg::get_bid_amount(sample.payload()), amount);
+            assert_eq!(AskBidSpreadMsg::get_timestamp(sample.payload()), 123);
+        }
+        assert!(subscriber.receive().unwrap().is_none());
+        {
+            let linear_trade = pool.trade_for("binance-futures", &root).unwrap();
+            let coin_trade = pool.trade_for("binance-coin-futures", &root).unwrap();
+            let linear_inc = pool.incremental_for("binance-futures", &root).unwrap();
+            let coin_inc = pool.incremental_for("binance-coin-futures", &root).unwrap();
+            let linear_drv = pool.derivatives_for("binance-futures", &root).unwrap();
+            let coin_drv = pool.derivatives_for("binance-coin-futures", &root).unwrap();
+            assert!(Rc::ptr_eq(&linear_trade.publisher, &coin_trade.publisher));
+            assert!(Rc::ptr_eq(&linear_inc.publisher, &coin_inc.publisher));
+            assert!(Rc::ptr_eq(&linear_drv.publisher, &coin_drv.publisher));
+            assert_eq!(
+                linear_trade.service_name(),
+                format!("{root}/binance-futures/trade")
+            );
+            assert_eq!(
+                linear_inc.service_name(),
+                format!("{root}/binance-futures/incremental")
+            );
+            assert_eq!(
+                linear_drv.service_name(),
+                format!("{root}/binance-futures/derivatives")
+            );
+            let trade_service = node
+                .service_builder(&ServiceName::new(linear_trade.service_name()).unwrap())
+                .publish_subscribe::<[u8; TRADE_PAYLOAD_BYTES]>()
+                .open()
+                .unwrap();
+            let trades = trade_service.subscriber_builder().create().unwrap();
+            let inc_service = node
+                .service_builder(&ServiceName::new(linear_inc.service_name()).unwrap())
+                .publish_subscribe::<[u8; INCREMENTAL_PAYLOAD_BYTES]>()
+                .open()
+                .unwrap();
+            let increments = inc_service.subscriber_builder().create().unwrap();
+            let drv_service = node
+                .service_builder(&ServiceName::new(linear_drv.service_name()).unwrap())
+                .publish_subscribe::<[u8; DERIVATIVES_PAYLOAD_BYTES]>()
+                .open()
+                .unwrap();
+            let derivatives = drv_service.subscriber_builder().create().unwrap();
+            let streams = [
+                (&linear_trade, &linear_inc, &linear_drv),
+                (&coin_trade, &coin_inc, &coin_drv),
+            ];
+            // Same source slot numbers, interleaved USD-M and COIN-M traffic.
+            for (source, slot, symbol, amount) in [
+                (0, 0, "BTCUSDT", 1.0),
+                (1, 0, "BTCUSD_PERP", 100.0),
+                (0, 1, "BTCUSDC", 2.0),
+                (1, 1, "ETHUSD_PERP", 200.0),
+                (0, 1, "BTCUSDC", 3.0),
+            ] {
+                let (trade, inc, drv) = streams[source];
+                trade
+                    .publish_trade_for_slot(slot, symbol, 10, 123, 'B', 50_000.0, amount)
+                    .unwrap();
+                let expected =
+                    TradeMsg::create(symbol.into(), 10, 123, 'B', 50_000.0, amount).to_bytes();
+                assert_eq!(
+                    &trades.receive().unwrap().unwrap().payload()[..expected.len()],
+                    &expected[..]
+                );
+
+                let bids = [Level::from_values(50_000.0, amount)];
+                let asks = [Level::from_values(50_001.0, amount + 1.0)];
+                inc.publish_chunk_for_slot(
+                    slot, symbol, 10, 11, 123, false, &bids, 0, 1, &asks, 0, 1, 0, 1,
+                )
+                .unwrap();
+                let mut expected = IncMsg::create(symbol.into(), 10, 11, 123, false, 1, 1);
+                expected.set_is_last(true);
+                expected.set_bid_level(0, bids[0]);
+                expected.set_ask_level(0, asks[0]);
+                let expected = expected.to_bytes();
+                assert_eq!(
+                    &increments.receive().unwrap().unwrap().payload()[..expected.len()],
+                    &expected[..]
+                );
+
+                assert_eq!(
+                    drv.publish_mark_price_bundle_for_slot(
+                        slot,
+                        symbol,
+                        Some(50_000.0),
+                        Some(49_999.0),
+                        Some(0.0001),
+                        Some(456),
+                        123
+                    )
+                    .unwrap(),
+                    3
+                );
+                for expected in [
+                    MarkPriceMsg::create(symbol.into(), 50_000.0, 123).to_bytes(),
+                    IndexPriceMsg::create(symbol.into(), 49_999.0, 123).to_bytes(),
+                    FundingRateMsg::create(symbol.into(), 0.0001, 456, 123).to_bytes(),
+                ] {
+                    assert_eq!(
+                        &derivatives.receive().unwrap().unwrap().payload()[..expected.len()],
+                        &expected[..]
+                    );
+                }
+            }
+            assert!(trades.receive().unwrap().is_none());
+            assert!(increments.receive().unwrap().is_none());
+            assert!(derivatives.receive().unwrap().is_none());
+        }
+        // Another deployment still cannot write to the same service.
+        let mut other = SpreadPbsPublisherPool::default();
+        other.small.node_config = Some(config);
+        assert!(other.bbo_for("binance-coin-futures", &root).is_err());
+        drop(subscriber);
+        drop(service);
+        drop(node);
+        drop(linear);
+        drop(coin);
+        drop(pool);
+        drop(other);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn direct_bbo_writer_matches_ask_bid_spread_msg_bytes() {

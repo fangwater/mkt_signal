@@ -47,12 +47,13 @@ below 10%. `BINANCE_CM_WALLET_POLL_INTERVAL_SECS` can override the interval.
 ## Runtime
 
 Public market data uses DAPI `exchangeInfo` and DStream for depth, BBO, trades,
-klines, mark prices, funding rates and liquidations. The normal venue-local
-services are therefore:
+klines, mark prices, funding rates and liquidations. All Binance perpetual markets share these services:
 
 ```text
-spread_pbs/binance-coin-futures/ask_bid_spread
-dat_pbs/binance-coin-futures/derivatives
+spread_pbs/binance-futures/ask_bid_spread
+dat_pbs/binance-futures/trade
+dat_pbs/binance-futures/incremental
+dat_pbs/binance-futures/derivatives
 ```
 
 `spread_pbs --venue binance-futures` covers active USDT, USDC and USD perpetuals
@@ -62,8 +63,16 @@ source IPs and core. The full, market and bookticker roles apply to both markets
 so split market/bookticker deployments do not duplicate each other's IPC
 publishers. `binance-both` also adds spot to these two futures markets.
 
-IPC services keep their native `binance-futures` and `binance-coin-futures`
-names so Exec receives the correct market and contract quantity semantics.
+USDT, USDC and USD contracts share the `binance-futures` venue component for
+BBO, trade, incremental and derivatives IPC, including COIN-M-only runs.
+Each data type still has its own service and unchanged payload format. Wire symbols
+remain `BTCUSDT`, `BTCUSDC` and `BTCUSD_PERP`; COIN-M amounts remain contract counts.
+USD-M/COIN-M tasks share one publisher per service with independent symbol-slot
+caches. Exec consumes each combined service once and routes messages back to the
+native market by symbol before applying contract-size conversions. Market-specific
+consumers filter out the other market. Proxy/test roots use the same combined names.
+Update publishers and consumers together when deploying; the former
+`binance-coin-futures` market-data IPC services are no longer published by spread_pbs.
 `SPREAD_PBS_SYMBOLS=BTCUSD` selects the wire subscription `BTCUSD_PERP`; a filter
 containing only USDT/USDC or only USD starts the matching futures market. Stop
 any standalone COIN-M publisher before starting a combined futures deployment.
@@ -94,7 +103,7 @@ COIN-M-only environments. The deploy/publish/start/stop wrappers accept both.
 
 Manager publishes both market scopes in one Redis transaction with one receipt
 timestamp. It retains the existing per-market rule caches and position ledgers;
-Exec loads both, subscribes to both BBO/volume/mark feeds, and requires the
+Exec loads both, subscribes to the combined BBO/trade/mark feeds, and requires the
 matching position snapshot before reconciling each market. The Config API shows
 one strategy with the merged targets; parameter updates and strategy removal
 apply to both scopes. Native combined Exec startup cancels open orders in both

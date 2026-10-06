@@ -79,7 +79,6 @@ const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
 const BINANCE_PROXY_DERIVATIVES_SERVICE: &str = "dat_pbs_proxy/binance-futures/derivatives";
-const BINANCE_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-coin-futures/derivatives";
 const BITGET_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-coin-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
@@ -4577,7 +4576,7 @@ impl MonitorChannel {
         if open_venue == TradingVenue::BinanceCoinFutures
             || hedge_venue == TradingVenue::BinanceCoinFutures
         {
-            return BINANCE_COIN_DERIVATIVES_SERVICE;
+            return BINANCE_DIRECT_DERIVATIVES_SERVICE;
         }
         if open_venue == TradingVenue::BitgetCoinFutures
             || hedge_venue == TradingVenue::BitgetCoinFutures
@@ -5136,20 +5135,11 @@ impl MonitorChannel {
         //
         // 约定：默认使用 Binance Futures 的衍生品指标；当 open/hedge 两腿属于同一交易所时，
         // 切换到对应 venue 的 mark/index price。所有交易所均直连 dat_pbs。
-        let direct_services = if [open_venue, hedge_venue].contains(&TradingVenue::BinanceFutures)
-            && [open_venue, hedge_venue].contains(&TradingVenue::BinanceCoinFutures)
-        {
-            vec![
-                BINANCE_DIRECT_DERIVATIVES_SERVICE,
-                BINANCE_COIN_DERIVATIVES_SERVICE,
-            ]
-        } else {
-            vec![Self::derivatives_service_for_mark_price_source(
-                open_venue,
-                hedge_venue,
-                arb_mode,
-            )]
-        };
+        let direct_services = [Self::derivatives_service_for_mark_price_source(
+            open_venue,
+            hedge_venue,
+            arb_mode,
+        )];
         let proxy_enabled = std::env::var("BINANCE_FUTURES_IPC_PROXY").as_deref() == Ok("1");
         let mut derivatives_listeners = Vec::new();
         for (index, direct_service) in direct_services.into_iter().enumerate() {

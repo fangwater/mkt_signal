@@ -710,6 +710,14 @@ fn process_quote_msg(
     config: &Arc<RwLock<RollingConfig>>,
 ) {
     let raw_symbol = AskBidSpreadMsg::get_symbol(msg).to_uppercase();
+    if matches!(venue_topic, "binance-futures" | "binance-coin-futures")
+        && order_common::TradingVenue::BinanceFutures
+            .market_data_venue_for_symbol(&raw_symbol)
+            .data_pub_slug()
+            != venue_topic
+    {
+        return;
+    }
     let symbol = normalize_symbol_for_pairing(&raw_symbol, venue_topic);
     if should_skip_symbol(&raw_symbol) {
         return;
@@ -739,6 +747,20 @@ fn process_derivatives_msg(
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
+    let raw_symbol = match get_msg_type(msg) {
+        MktMsgType::FundingRate => FundingRateMsg::get_symbol(msg),
+        MktMsgType::MarkPrice => MarkPriceMsg::get_symbol(msg),
+        MktMsgType::IndexPrice => IndexPriceMsg::get_symbol(msg),
+        _ => return,
+    };
+    if matches!(venue_topic, "binance-futures" | "binance-coin-futures")
+        && order_common::TradingVenue::BinanceFutures
+            .market_data_venue_for_symbol(raw_symbol)
+            .data_pub_slug()
+            != venue_topic
+    {
+        return;
+    }
     match get_msg_type(msg) {
         MktMsgType::FundingRate => process_funding_msg(
             msg,

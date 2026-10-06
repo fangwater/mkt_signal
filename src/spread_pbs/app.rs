@@ -31,7 +31,7 @@ use crate::spread_pbs::okex_derivatives::{
 };
 use crate::spread_pbs::publisher::{
     PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadPbsPublishRoots,
-    SpreadPublisher, SpreadTradePublisher,
+    SpreadPbsPublisherPool, SpreadPublisher, SpreadTradePublisher,
 };
 use crate::spread_pbs::ws::{
     run_public_ws, run_public_ws_with_ack_policy, FrameHandler, RollingRestartSpec, WsLoopParams,
@@ -121,6 +121,7 @@ impl BybitRole {
 
 pub struct SpreadPbsApp {
     config: Config,
+    publishers: SpreadPbsPublisherPool,
     publish_roots: SpreadPbsPublishRoots,
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
@@ -503,6 +504,7 @@ impl SpreadPbsApp {
     pub fn new(config: Config) -> Self {
         Self {
             config,
+            publishers: SpreadPbsPublisherPool::default(),
             publish_roots: SpreadPbsPublishRoots::production(),
             binance_futures_role: BinanceFuturesRole::Full,
             bybit_role: BybitRole::Full,
@@ -513,6 +515,7 @@ impl SpreadPbsApp {
     pub fn new_with_publish_roots(config: Config, publish_roots: SpreadPbsPublishRoots) -> Self {
         Self {
             config,
+            publishers: SpreadPbsPublisherPool::default(),
             publish_roots,
             binance_futures_role: BinanceFuturesRole::Full,
             bybit_role: BybitRole::Full,
@@ -527,6 +530,7 @@ impl SpreadPbsApp {
     ) -> Self {
         Self {
             config,
+            publishers: SpreadPbsPublisherPool::default(),
             publish_roots,
             binance_futures_role,
             bybit_role: BybitRole::Full,
@@ -542,6 +546,7 @@ impl SpreadPbsApp {
     ) -> Self {
         Self {
             config,
+            publishers: SpreadPbsPublisherPool::default(),
             publish_roots,
             binance_futures_role,
             bybit_role,
@@ -551,6 +556,11 @@ impl SpreadPbsApp {
 
     pub fn with_market_data_provider(mut self, provider: MarketDataProvider) -> Self {
         self.market_data_provider = provider;
+        self
+    }
+
+    pub fn with_publishers(mut self, publishers: SpreadPbsPublisherPool) -> Self {
+        self.publishers = publishers;
         self
     }
 
@@ -767,7 +777,8 @@ impl SpreadPbsApp {
         // ---- IceOryx publisher + 共享态（Rc<RefCell> 单线程零锁，跨重启复用）----
         let publisher = if bbo_enabled {
             let publisher = Rc::new(
-                SpreadPublisher::new_with_root(venue_slug, publish_roots.spread_root())
+                self.publishers
+                    .bbo_for(venue_slug, publish_roots.spread_root())
                     .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
             );
             publisher
@@ -779,19 +790,9 @@ impl SpreadPbsApp {
         };
         let trade_publisher = if direct_trade_enabled {
             let publisher = Rc::new(
-                SpreadTradePublisher::new_open_or_create_with_root(
-                    venue_slug,
-                    publish_roots.dat_root(),
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "spread_pbs[{}] failed to open/create replacement trade ipc channel {}/{}/trade: {:#}",
-                        venue_slug,
-                        publish_roots.dat_root(),
-                        venue_slug,
-                        e
-                    )
-                }),
+                self.publishers
+                    .trade_for(venue_slug, publish_roots.dat_root())
+                    .with_context(|| format!("create trade IPC publisher for {}", venue_slug))?,
             );
             publisher
                 .seed_symbols(&initial_symbols)
@@ -802,19 +803,11 @@ impl SpreadPbsApp {
         };
         let incremental_publisher = if direct_incremental_enabled {
             let publisher = Rc::new(
-                SpreadIncrementalPublisher::new_open_or_create_with_root(
-                    venue_slug,
-                    publish_roots.dat_root(),
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "spread_pbs[{}] failed to open/create replacement incremental ipc channel {}/{}/incremental: {:#}",
-                        venue_slug,
-                        publish_roots.dat_root(),
-                        venue_slug,
-                        e
-                    )
-                }),
+                self.publishers
+                    .incremental_for(venue_slug, publish_roots.dat_root())
+                    .with_context(|| {
+                        format!("create incremental IPC publisher for {}", venue_slug)
+                    })?,
             );
             publisher
                 .seed_symbols(&initial_symbols)
@@ -825,19 +818,11 @@ impl SpreadPbsApp {
         };
         let derivatives_publisher = if direct_derivatives_enabled {
             let publisher = Rc::new(
-                SpreadDerivativesPublisher::new_open_or_create_with_root(
-                    venue_slug,
-                    publish_roots.dat_root(),
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "spread_pbs[{}] failed to open/create replacement derivatives ipc channel {}/{}/derivatives: {:#}",
-                        venue_slug,
-                        publish_roots.dat_root(),
-                        venue_slug,
-                        e
-                    )
-                }),
+                self.publishers
+                    .derivatives_for(venue_slug, publish_roots.dat_root())
+                    .with_context(|| {
+                        format!("create derivatives IPC publisher for {}", venue_slug)
+                    })?,
             );
             publisher
                 .seed_symbols(&initial_symbols)

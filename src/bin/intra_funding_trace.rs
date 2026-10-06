@@ -139,7 +139,7 @@ fn main() -> Result<()> {
     let open_venue = parse_venue(&args.open_venue)?;
     let hedge_venue = parse_venue(&args.hedge_venue)?;
     let symbol = normalize_symbol_key(&args.symbol);
-    let service_name = format!("dat_pbs/{}/derivatives", venue.data_pub_slug());
+    let service_name = format!("dat_pbs/{}/derivatives", venue.market_data_pub_slug());
     let node_name = format!(
         "intra_funding_trace_{}_{}_{}",
         venue.data_pub_slug().replace('-', "_"),

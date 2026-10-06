@@ -4,6 +4,7 @@
 //! - Binance futures 入口同时连接 USD-M / COIN-M，按合约类型保留各自的 IPC 服务
 //! - 双路 ws（primary/secondary）按 per-venue seq 字段去重
 //! - IceOryx 服务名 `spread_pbs/<venue>/ask_bid_spread`，与 dat_pbs 完全独立
+//! - Binance USD-M/COIN-M 行情共用 `binance-futures`，通过 symbol 区分原始市场
 //!
 //! 已支持的 venue：OKex/Binance/Bybit/Gate/Bitget/Hyperliquid。
 

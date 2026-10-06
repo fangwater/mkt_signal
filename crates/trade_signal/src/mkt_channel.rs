@@ -109,7 +109,7 @@ fn askbid_service_root(venue: TradingVenue) -> &'static str {
 }
 
 fn askbid_service_root_with_proxy(venue: TradingVenue, proxy_enabled: bool) -> &'static str {
-    if venue == TradingVenue::BinanceFutures && proxy_enabled {
+    if venue.market_data_pub_slug() == "binance-futures" && proxy_enabled {
         "spread_pbs_proxy"
     } else {
         "spread_pbs"
@@ -121,7 +121,7 @@ fn derivatives_service_root(venue: TradingVenue) -> &'static str {
 }
 
 fn derivatives_service_root_with_proxy(venue: TradingVenue, proxy_enabled: bool) -> &'static str {
-    if venue == TradingVenue::BinanceFutures && proxy_enabled {
+    if venue.market_data_pub_slug() == "binance-futures" && proxy_enabled {
         "dat_pbs_proxy"
     } else {
         "dat_pbs"
@@ -136,7 +136,7 @@ fn askbid_service_name_for_pair(venue: TradingVenue) -> String {
     format!(
         "{}/{}/ask_bid_spread",
         askbid_service_root_for_pair(venue),
-        venue.data_pub_slug()
+        venue.market_data_pub_slug()
     )
 }
 
@@ -144,7 +144,7 @@ fn derivatives_service_name(venue: TradingVenue) -> String {
     format!(
         "{}/{}/derivatives",
         derivatives_service_root(venue),
-        venue.data_pub_slug()
+        venue.market_data_pub_slug()
     )
 }
 
@@ -408,6 +408,10 @@ fn process_askbid_payload(
 
     // 零拷贝解析
     let symbol_raw = AskBidSpreadMsg::get_symbol(payload);
+    let feed_venue = feed_venue.market_data_venue_for_symbol(symbol_raw);
+    if !quotes.borrow().contains_key(&feed_venue) {
+        return;
+    }
     let symbol = normalize_symbol_key_cow(symbol_raw);
     let bid_price = AskBidSpreadMsg::get_bid_price(payload);
     let bid_amount = AskBidSpreadMsg::get_bid_amount(payload);
@@ -642,7 +646,7 @@ impl MktChannel {
 
         // 启动订阅任务。open/hedge 相同（例如 MM）时只订阅一次维护盘口；
         // open/hedge 不同时用单个 paired listener 同步 drain 两路后再判断价差。
-        if hedge_venue == open_venue {
+        if hedge_service == open_service {
             Self::spawn_askbid_listener(
                 open_node,
                 open_service,
@@ -653,8 +657,8 @@ impl MktChannel {
                 quotes.clone(),
             );
             info!(
-                "MktChannel askbid paired listener skipped for same venue={:?}",
-                open_venue
+                "MktChannel askbid uses one service for open={:?} hedge={:?}",
+                open_venue, hedge_venue
             );
         } else {
             Self::spawn_paired_askbid_listener(
@@ -684,7 +688,11 @@ impl MktChannel {
                 index_prices.clone(),
             );
         }
-        if subscribe_derivatives && hedge_venue != open_venue && is_futures(hedge_venue) {
+        if subscribe_derivatives
+            && is_futures(hedge_venue)
+            && (!is_futures(open_venue)
+                || derivatives_service_name(hedge_venue) != derivatives_service_name(open_venue))
+        {
             let derivatives_service = derivatives_service_name(hedge_venue);
             let derivatives_node = build_node_name(hedge_slug, "derivatives");
             Self::spawn_derivatives_listener(
@@ -1168,6 +1176,7 @@ impl MktChannel {
                                 MktMsgType::FundingRate => {
                                     // 零拷贝解析
                                     let symbol_raw = FundingRateMsg::get_symbol(payload);
+                                    let feed_venue = feed_venue.market_data_venue_for_symbol(symbol_raw);
                                     let symbol = normalize_symbol_key(symbol_raw);
                                     let funding_rate = FundingRateMsg::get_funding_rate(payload);
                                     stats_funding_msgs += 1;
@@ -1202,6 +1211,7 @@ impl MktChannel {
                                 MktMsgType::MarkPrice => {
                                     // 零拷贝解析
                                     let symbol_raw = MarkPriceMsg::get_symbol(payload);
+                                    let feed_venue = feed_venue.market_data_venue_for_symbol(symbol_raw);
                                     // premium 配对：USD≡USDT，统一前缀，让 BTCUSDT/BTCUSD 落到同一 key
                                     let symbol = derivative_price_symbol_key(symbol_raw, feed_venue);
                                     let mark_price = MarkPriceMsg::get_mark_price(payload);
@@ -1215,6 +1225,7 @@ impl MktChannel {
                                 }
                                 MktMsgType::IndexPrice => {
                                     let symbol_raw = IndexPriceMsg::get_symbol(payload);
+                                    let feed_venue = feed_venue.market_data_venue_for_symbol(symbol_raw);
                                     let symbol = derivative_price_symbol_key(symbol_raw, feed_venue);
                                     let index_price = IndexPriceMsg::get_index_price(payload);
 
@@ -1377,6 +1388,58 @@ mod tests {
     }
 
     #[test]
+    fn combined_binance_bbo_routes_each_quote_to_its_native_market() {
+        let linear = TradingVenue::BinanceFutures;
+        let coin = TradingVenue::BinanceCoinFutures;
+        let quotes = Rc::new(RefCell::new(HashMap::from([
+            (linear, HashMap::new()),
+            (coin, HashMap::new()),
+        ])));
+        let mut dirty = HashMap::new();
+        let mut total = 0;
+        let mut unique = HashSet::new();
+        let mut last = String::new();
+        for (symbol, amount) in [("BTCUSDT", 1.0), ("BTCUSDC", 2.0), ("BTCUSD_PERP", 100.0)] {
+            let msg =
+                AskBidSpreadMsg::create(symbol.into(), 123, 49_999.0, amount, 50_001.0, amount);
+            process_askbid_payload(
+                &msg.to_bytes(),
+                linear,
+                &quotes,
+                &mut dirty,
+                &mut total,
+                &mut unique,
+                &mut last,
+            );
+        }
+        let cache = quotes.borrow();
+        assert_eq!(cache[&linear].len(), 2);
+        assert_eq!(cache[&coin].len(), 1);
+        assert_eq!(cache[&linear]["BTCUSDT"].bid_qty, 1.0);
+        assert_eq!(cache[&linear]["BTCUSDC"].bid_qty, 2.0);
+        assert_eq!(cache[&coin]["BTCUSD"].bid_qty, 100.0);
+        assert_eq!(total, 3);
+        drop(cache);
+
+        // A linear-only consumer must not cache COIN-M quotes or trigger on them.
+        quotes.borrow_mut().remove(&coin);
+        dirty.clear();
+        let msg =
+            AskBidSpreadMsg::create("BTCUSD_PERP".into(), 124, 50_000.0, 200.0, 50_001.0, 200.0);
+        process_askbid_payload(
+            &msg.to_bytes(),
+            linear,
+            &quotes,
+            &mut dirty,
+            &mut total,
+            &mut unique,
+            &mut last,
+        );
+        assert!(dirty.is_empty());
+        assert_eq!(total, 3);
+    }
+
+    #[test]
     fn canonical_market_symbol_is_borrowed() {
         assert!(matches!(
             normalize_symbol_key_cow("BTCUSDT"),
@@ -1402,13 +1465,29 @@ mod tests {
             "spread_pbs/binance-futures/ask_bid_spread"
         );
         assert_eq!(
+            askbid_service_name_for_pair(TradingVenue::BinanceCoinFutures),
+            "spread_pbs/binance-futures/ask_bid_spread"
+        );
+        assert_eq!(
             derivatives_service_name(TradingVenue::BinanceFutures),
+            "dat_pbs/binance-futures/derivatives"
+        );
+        assert_eq!(
+            derivatives_service_name(TradingVenue::BinanceCoinFutures),
             "dat_pbs/binance-futures/derivatives"
         );
     }
 
     #[test]
     fn binance_futures_proxy_selection_is_venue_scoped() {
+        assert_eq!(
+            askbid_service_root_with_proxy(TradingVenue::BinanceCoinFutures, true),
+            "spread_pbs_proxy"
+        );
+        assert_eq!(
+            derivatives_service_root_with_proxy(TradingVenue::BinanceCoinFutures, true),
+            "dat_pbs_proxy"
+        );
         assert_eq!(
             askbid_service_root_with_proxy(TradingVenue::BinanceFutures, true),
             "spread_pbs_proxy"

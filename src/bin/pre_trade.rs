@@ -1025,9 +1025,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             }
             if exec_pre_trade {
                 trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
-                for venue in &exec_venues {
-                    mkt_signal::pre_trade::exec_volume_channel::start(*venue);
-                }
+                mkt_signal::pre_trade::exec_volume_channel::start(&exec_venues);
                 info!(
                     "exec-pre-trade BBO subscribers initialized: open={} hedge={}",
                     open_venue.data_pub_slug(),

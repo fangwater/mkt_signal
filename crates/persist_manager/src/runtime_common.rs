@@ -168,18 +168,6 @@ pub fn get_timestamp_us() -> i64 {
         .unwrap_or_default()
 }
 
-pub fn normalize_symbol_for_whitelist(symbol: &str, venue: order_common::TradingVenue) -> String {
-    let mut cleaned = symbol.to_uppercase().replace(['-', '_'], "");
-    if matches!(
-        venue,
-        order_common::TradingVenue::OkexMargin | order_common::TradingVenue::OkexFutures
-    ) && cleaned.ends_with("SWAP")
-    {
-        cleaned.truncate(cleaned.len().saturating_sub(4));
-    }
-    cleaned
-}
-
 pub fn spread_symbol(payload: &[u8]) -> Option<&str> {
     let symbol_len = u32::from_le_bytes(payload.get(4..8)?.try_into().ok()?) as usize;
     std::str::from_utf8(payload.get(8..8 + symbol_len)?).ok()

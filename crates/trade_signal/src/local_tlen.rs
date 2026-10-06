@@ -821,7 +821,7 @@ fn spawn_incremental_listener(venue: TradingVenue) {
     tokio::task::spawn_local(async move {
         let result: Result<()> = async move {
             let venue_slug = venue.data_pub_slug();
-            let service_name = format!("dat_pbs/{}/incremental", venue_slug);
+            let service_name = format!("dat_pbs/{}/incremental", venue.market_data_pub_slug());
             let node_name = format!(
                 "trade_signal_local_tlen_{}_incremental",
                 venue_slug.replace('-', "_")
@@ -881,7 +881,9 @@ fn process_incremental_payload(payload: &[u8]) {
     };
     LOCAL_TLEN.with(|state| {
         if let LocalTlenRuntime::Local(store) = &mut *state.borrow_mut() {
-            store.apply_incremental_message(update);
+            if store.venue.market_data_venue_for_symbol(update.symbol) == store.venue {
+                store.apply_incremental_message(update);
+            }
         }
     });
 }
