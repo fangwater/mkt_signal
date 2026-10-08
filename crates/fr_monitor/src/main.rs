@@ -44,6 +44,9 @@ struct SourceView {
     id: String,
     namespace: String,
     markets: Vec<String>,
+    market_symbols: BTreeMap<String, Vec<String>>,
+    max_asset_exposure_usdt: f64,
+    max_total_exposure_usdt: f64,
     snapshot: Option<Value>,
 }
 
@@ -165,6 +168,13 @@ async fn collect(
             id: s.id,
             namespace: s.namespace,
             markets: s.markets.iter().map(|m| m.venue.clone()).collect(),
+            market_symbols: s
+                .markets
+                .iter()
+                .map(|m| (m.venue.clone(), m.symbols.clone()))
+                .collect(),
+            max_asset_exposure_usdt: s.max_asset_exposure_usdt,
+            max_total_exposure_usdt: s.max_total_exposure_usdt,
             snapshot,
         },
         checks,
