@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-05 13:41 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-08 06:00 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -33,7 +33,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`binance-cta-special-rx02`、`binance-cta-special-rx03`、`okex-intra-arb01`、`bitget-intra-arb01`；Exec `trade02`–`trade04` `local_ips[0]` |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`binance-cta-special-rx02`、`binance-cta-special-rx03`、`okex-intra-arb01`；Exec `trade02`–`trade04` `local_ips[0]` |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
@@ -74,12 +74,21 @@ ens42  172.31.46.91/20 172.31.46.92/20 172.31.46.93/20
 恢复解锁）：两个交易连接仍绑定 `172.31.35.231`，部署前后 `trade_engine.toml`
 校验一致。
 
+2026-10-07 15:38 UTC 按 publish FR 流程重新发布 `binance_fr_arb03`（`d35f67ea`）：
+两个交易连接的 `local_ips` 仍为 `172.31.35.231`，trade_engine / account_monitor
+启动日志已核验该 source IP；部署前后 `trade_engine.toml` 和 `env.sh` 校验一致。
+
+2026-10-08 06:00 UTC 完成 `gate-intra-arb01`、`bitget-intra-arb01` 退役，
+RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；共享出口 `.228`
+仍由其他环境使用。`bitget-gate-cross-arb01` 的 Bitget 凭据已独立写入其 `env.sh`，
+与原 `bitget-intra-arb01` 相同，Gate 凭据保持一致；Cross 配置服务已重新加载，
+交易栈仍停止，不依赖已删除的目录。
+
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP
 binance-cta-special-rx02     172.31.35.228                  RapidX/LTP
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP
 okex-intra-arb01             172.31.35.228, 172.31.35.228
-bitget-intra-arb01           172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230
 binance_fr_arb01             172.31.35.231, 172.31.35.231
 binance_fr_arb02             172.31.35.231, 172.31.35.231
@@ -91,7 +100,6 @@ bitget_fr_arb01              172.31.35.231, 172.31.35.231
 bitget_fr_arb02              172.31.35.231, 172.31.35.231
 bitget_fr_arb03              172.31.35.231, 172.31.35.231
 gate_fr_arb02                172.31.35.232, 172.31.35.233
-gate-intra-arb01             0.0.0.0, 0.0.0.0
 bitget-gate-cross-arb01      0.0.0.0, 0.0.0.0
 binance_exec_trade01         0.0.0.0, 0.0.0.0
 binance_exec_trade02         172.31.35.228, 172.31.35.234
@@ -100,6 +108,17 @@ binance_exec_trade04         172.31.35.228, 172.31.35.234
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。
+
+## 已退役 intra RocksDB 归档
+
+JP `~/retired_data/` 中仅保存以下 RocksDB 数据归档及各自 `.sha256` 文件，
+权限为 `600`；归档不含 `env.sh`、配置、凭据或程序。两份归档均已核对完整文件清单、
+文件大小与逐文件 SHA-256，回收两个部署目录约释放 4.28 GB。
+
+| 环境 | tar.gz 文件 | 压缩后字节数 | SHA-256 |
+| --- | --- | ---: | --- |
+| `gate-intra-arb01` | `gate-intra-arb01_rocksdb_20261008T055407Z.tar.gz` | 150730111 | `093066d7667078c3f04158254e353df996794a4e042ce6316d959f7dda1bca8f` |
+| `bitget-intra-arb01` | `bitget-intra-arb01_rocksdb_20261008T055407Z.tar.gz` | 519207764 | `c5968d1ba61241ed6584a6ca4a69ac0c1d14ba75ba91f5248b676859a1e00b4d` |
 
 ## 现场 socket 快照（2026-08-16）
 

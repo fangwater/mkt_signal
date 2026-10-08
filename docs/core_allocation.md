@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-04 15:11 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-08 06:00 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
@@ -45,6 +45,15 @@ persist_center、predict_file 及各类 viz/config/dashboard 服务。
 2026-10-04 15:11 UTC 重新发布 `gate_fr_arb03`（`322c482c`，Gate WS 保证金恢复解锁），
 六个交易栈程序已重启并核验：persist_manager 绑核 15，account_monitor、
 trade_signal、pre_trade、trade_engine、viz_server 和 FR dashboard 未固定绑核。
+2026-10-07 15:38 UTC 按 publish FR 流程重新发布 `binance_fr_arb03`（`d35f67ea`，
+含 Binance FR 限仓价格 buffer 修复）；六个交易栈程序均已核验运行文件校验值。
+persist_manager 仍绑核 15，其余五个程序未固定绑核，在线可用核为 housekeeping 0-5。
+trade_signal 在撤单、替换和 F 现货对齐期间停止，对齐核验后已恢复。
+2026-10-08 06:00 UTC 完成 `gate-intra-arb01`、`bitget-intra-arb01` 退役：
+仅将各自 `data/persist_manager` 的 RocksDB 归档至 `~/retired_data/`，逐文件校验后
+删除部署目录、退役配置服务的 PM2 历史条目及对应 Nginx 转发；两环境无运行进程。
+`bitget-gate-cross-arb01` 仅配置服务在线，交易栈仍处于停止状态；
+Gate FR 三套交易进程的 PID 与操作前一致。归档清单见 IP 绑定文档。
 其中 fr_arb / okex-intra 的 trade_engine 与 housekeeping 上的系统服务同核,
 数据面 NIC IRQ 已迁到 46/47,不再与它们抢硬中断。如在意调度抖动仍可迁入空闲隔离核。
 

@@ -1,5 +1,7 @@
 # Persist Sync Distribution
 
+最后更新: 2026-10-08 UTC。
+
 Global allocation table for `persist_manager` gRPC sync sources across JP, HK, and SG.
 
 ## Strategy
@@ -50,6 +52,21 @@ Regions:
 | 6381 | jp | fr | `bitget_fr_arb03` | `bitget_fr_arb03` | `http://127.0.0.1:6381` | `127.0.0.1:50081` | planned |
 
 ## Setup Notes
+
+On 2026-10-08, JP `gate-intra-arb01` and `bitget-intra-arb01` were archived and
+retired. Their public ports `6343`/`6344`, local binds `50043`/`50044`, Nginx
+forwarding, and distribution allocations were removed. Cross arb01 remains on
+`6345`/`50045`; no trading process was started during retirement.
+
+Removing the two sources from the center collector configuration caused its
+restart to fail with `Column families not opened`: the center RocksDB retains
+eight historical column families for those sources, while the collector opens
+only families derived from its current source list. The runtime
+`~/persist_center/persist.toml` was restored to its original 14-source list and
+only the history collector was restarted to restore collection for other
+sources. The two retired endpoints remain in that runtime list and are
+unavailable; the repository template omits them. No collector code fix was
+deployed. Center historical data and the running read server were preserved.
 
 Use the table-driven helper from the env directory. It fails if the env is not listed in `config/persist_sync_distribution.toml`.
 
