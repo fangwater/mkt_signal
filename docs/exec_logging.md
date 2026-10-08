@@ -13,6 +13,9 @@ use DEBUG:
 | Trade engine | Normal connection establishment and planned reconnects; healthy TCP summaries |
 | Viz / PM forwarder | Healthy receive/forwarding statistics |
 
+The standalone `viz_server` uses `crates/viz_server/src/subscribers.rs`; its
+statistics follow the same levels as the library's `src/viz/subscribers.rs`.
+
 BatchExec and ChaseExec parameter changes remain INFO. Viz and PM forwarding
 windows with dropped messages are WARN. TCP summaries with disconnected,
 paused or protected connections retain INFO, and existing TCP anomalies and
@@ -33,3 +36,7 @@ RUST_LOG=info,mkt_signal::strategy::batch_exec_strategy=debug
 Avoid a global DEBUG filter during normal operation. These source changes take
 effect when the corresponding newly built binaries are deployed and started;
 editing source or process environment files does not change a running logger.
+
+`scripts/start-exec.sh` masks authentication query parameters (`listenKey`,
+`signature`, `apiKey`, `access_token` and `token`) before echoing startup logs,
+alongside the existing JSON credential, key-preview and authorization masks.

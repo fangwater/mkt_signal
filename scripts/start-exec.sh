@@ -675,6 +675,7 @@ check_recent_logs() {
     if [[ -n "$stream_output" ]]; then
       display_output="$(printf '%s\n' "$stream_output" | sed -E \
         -e 's/("(KEY|SIGN|API_KEY|API_SECRET|SECRET|SIGNATURE|TOKEN|AUTHORIZATION)"[[:space:]]*:[[:space:]]*")[^"]*"/\1<redacted>"/gI' \
+        -e 's/([?&](listenKey|signature|apiKey|access_token|token)=)[^&[:space:]"]+/\1<redacted>/gI' \
         -e "s/(first4=')[^']*(' last4=')[^']*'/\1<redacted>\2<redacted>'/g" \
         -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1<redacted>/gI')"
       printf '%s\n' "$display_output"
