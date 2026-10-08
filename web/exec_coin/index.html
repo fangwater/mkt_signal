@@ -50,19 +50,28 @@
     <div class="actions"><button id="refresh" type="button">刷新</button><a class="button" href="./config/">查看配置</a></div>
   </header>
   <main>
-    <section class="metrics" aria-label="币本位账户与仓位">
-      <div class="metric"><label>账户权益 · 折合 USD</label><strong id="equity">--</strong></div>
-      <div class="metric"><label>币本位总名义价值 · USD</label><strong id="gross">--</strong></div>
-      <div class="metric"><label>币本位净名义价值 · USD</label><strong id="net">--</strong></div>
-      <div class="metric"><label>仓位 / 账户权益</label><strong id="leverage">--</strong></div>
+    <section class="metrics" aria-label="币本位账户监控">
+      <div class="metric"><label>账户数据</label><strong id="account-status">等待数据</strong></div>
+      <div class="metric"><label>非零资产币种</label><strong id="asset-count">--</strong></div>
+      <div class="metric"><label>实际持仓记录</label><strong id="position-count">--</strong></div>
+      <div class="metric"><label>账户更新时间</label><strong id="account-time">--</strong></div>
     </section>
-    <p class="note">目标与实际数量以对应币计，合约张数对应固定 USD 面值，币数量随价格变化。不同币的数量分别展示。统一账户的权益与保证金风险包含共享抵押资产。</p>
+    <p class="note">权益、盈亏和保证金按结算币分别展示，BTC 与 ETH 不相加。账户权益来自交易所，包含抵押币余额；策略成交盈亏与账户净值是不同口径。</p>
+    <section>
+      <div class="section-head"><h2>账户资产 · 原币单位</h2><label class="muted"><input id="show-zero" type="checkbox" style="width:auto"> 显示零余额币种</label></div>
+      <div class="table-wrap"><table><thead><tr><th>结算币</th><th>钱包余额</th><th>未实现盈亏</th><th>账户权益</th><th>可用余额</th><th>初始保证金</th><th>维持保证金</th></tr></thead><tbody id="asset-rows"></tbody></table><div id="asset-empty" class="empty">等待账户数据</div></div>
+    </section>
+    <section>
+      <div class="section-head"><h2>账户实际持仓</h2></div>
+      <p class="muted">张数是固定面值合约数量；币名义数量采用交易所当前估值。持仓按合约和方向分别列出。</p>
+      <div class="table-wrap"><table><thead><tr><th>合约</th><th>结算币</th><th>方向</th><th>持仓 · 张</th><th>开仓均价 · USD</th><th>名义数量 · 币</th><th>未实现盈亏 · 币</th><th>保证金模式</th></tr></thead><tbody id="position-rows"></tbody></table><div id="position-empty" class="empty">等待账户数据</div></div>
+    </section>
     <section>
       <div class="section-head"><h2>币本位目标与执行</h2><div class="filters">
         <select id="strategy" aria-label="策略筛选"><option value="">全部策略</option></select>
         <input id="symbol" aria-label="品种筛选" placeholder="BTCUSD / ETHUSD">
       </div></div>
-      <p id="state-meta" class="muted">等待币本位仓位</p>
+      <p id="state-meta" class="muted">暂无策略执行数据</p>
       <div class="table-wrap"><table>
         <thead><tr><th>品种 / 结算币</th><th>策略</th><th>状态</th><th>目标 · 币</th><th>实际 · 币</th><th>活动挂单 · 币</th><th>待下单 · 币</th><th>仓位差 · USD</th><th>剩余批次</th><th>预计完成</th></tr></thead>
         <tbody id="rows"></tbody>
@@ -72,7 +81,7 @@
   <script>
     (() => {
       const MARKET = "binance-coin-futures";
-      const state = { exec: null, risk: null, strategy: "", symbol: "", ws: null, retry: null, stopped: false, received: 0 };
+      const state = { account: null, exec: null, risk: null, strategy: "", symbol: "", ws: null, retry: null, stopped: false, received: 0 };
       const byId = (id) => document.getElementById(id);
       const finite = (value) => typeof value === "number" && Number.isFinite(value);
       const number = (value, digits = 8) => finite(value) ? value.toLocaleString("en-US", { maximumFractionDigits: digits }) : "--";
@@ -82,13 +91,18 @@
       function connection(status, text) { byId("connection").dataset.status = status; byId("connection").textContent = text; }
       function updateConnection() {
         if (state.ws?.readyState !== WebSocket.OPEN) return;
-        if (!state.exec || !state.risk) connection("checking", "等待币本位数据");
-        else if (Date.now() - Math.min(state.exec.ts_ms, state.risk.ts_ms) > 15000) connection("error", "数据延迟");
-        else connection("online", "实时");
+        if (!state.account) connection("checking", "等待账户数据");
+        else if (Date.now() - state.account.ts_ms > 30000) connection("error", "账户数据延迟");
+        else connection("online", "账户监控正常");
+        byId("account-status").textContent = !state.account ? "等待数据" : Date.now() - state.account.ts_ms > 30000 ? "数据延迟" : "已更新";
       }
       function applyMessage(message) {
         if (!message || message.venue !== MARKET || !message.entry || !finite(message.ts_ms)) return;
-        if (message.type === "exec_pre_trade_state") {
+        if (message.type === "coin_account_snapshot") {
+          if (message.entry.venue !== MARKET || message.entry.account_mode !== "STANDARD" || !Array.isArray(message.entry.assets) || !Array.isArray(message.entry.positions)) return;
+          if (state.account && message.ts_ms < state.account.ts_ms) return;
+          state.account = message;
+        } else if (message.type === "exec_pre_trade_state") {
           if (!Array.isArray(message.entry.rows) || message.entry.rows.some((row) => !coinSymbol(row.symbol))) {
             connection("error", "收到非币本位仓位，已拒绝"); return;
           }
@@ -107,11 +121,18 @@
         return ["等待执行", "wait"];
       }
       function render() {
-        const risk = state.risk?.entry;
-        byId("equity").textContent = number(risk?.equity_usdt, 2);
-        byId("gross").textContent = number(risk?.gross_notional_usdt, 2);
-        byId("net").textContent = number(risk?.net_notional_usdt, 2);
-        byId("leverage").textContent = finite(risk?.leverage) ? `${number(risk.leverage, 2)}x` : "--";
+        const account = state.account?.entry;
+        const nonzero = (a) => [a.wallet_balance, a.unrealized_pnl, a.equity, a.available_balance, a.initial_margin, a.maintenance_margin].some((v) => finite(v) && v !== 0);
+        const assets = (account?.assets || []).filter((a) => byId("show-zero").checked || nonzero(a));
+        byId("asset-count").textContent = account ? account.assets.filter(nonzero).length : "--";
+        byId("position-count").textContent = account ? account.positions.length : "--";
+        byId("account-time").textContent = state.account ? new Date(state.account.ts_ms).toLocaleTimeString() : "--";
+        byId("asset-rows").innerHTML = assets.map((a) => `<tr><td>${escape(a.asset)}</td><td>${number(a.wallet_balance)}</td><td class="${sign(a.unrealized_pnl)}">${number(a.unrealized_pnl)}</td><td>${number(a.equity)}</td><td>${number(a.available_balance)}</td><td>${number(a.initial_margin)}</td><td>${number(a.maintenance_margin)}</td></tr>`).join("");
+        byId("asset-empty").style.display = assets.length ? "none" : "block";
+        byId("asset-empty").textContent = account ? "无非零资产；可勾选显示零余额币种" : "等待账户数据";
+        byId("position-rows").innerHTML = (account?.positions || []).map((p) => `<tr><td>${escape(p.symbol)}</td><td>${escape(p.settlement_asset)}</td><td>${p.side === "LONG" ? "多头" : p.side === "SHORT" ? "空头" : p.contracts < 0 ? "净空头" : "净多头"}</td><td>${number(p.contracts, 0)}</td><td>${number(p.entry_price)}</td><td>${number(p.notional_coin)}</td><td class="${sign(p.unrealized_pnl)}">${number(p.unrealized_pnl)}</td><td>${p.isolated ? "逐仓" : "全仓"}</td></tr>`).join("");
+        byId("position-empty").style.display = account?.positions.length ? "none" : "block";
+        byId("position-empty").textContent = account ? "当前账户无持仓" : "等待账户数据";
         const entry = state.exec?.entry;
         const allRows = entry?.rows || [];
         const names = [...new Set(allRows.map((row) => row.strategy_name))].sort();
@@ -128,8 +149,8 @@
             `<td class="${sign(row.delta_usdt)}">${number(row.delta_usdt, 2)}</td><td>${escape(row.remaining_batches ?? 0)}</td><td>${escape(eta)}</td></tr>`;
         }).join("");
         byId("empty").style.display = rows.length ? "none" : "block";
-        byId("state-meta").textContent = `${entry?.position_ready ? "币本位仓位已就绪" : "等待币本位仓位"} · ${names.length} 个策略 · ${rows.length} 条执行记录`;
-        byId("namespace").textContent = state.exec?.namespace || state.risk?.namespace || "--";
+        byId("state-meta").textContent = `${entry?.position_ready ? "币本位仓位已就绪" : "暂无策略执行数据"} · ${names.length} 个策略 · ${rows.length} 条执行记录`;
+        byId("namespace").textContent = state.account?.namespace || state.exec?.namespace || state.risk?.namespace || "--";
         byId("updated").textContent = state.received ? new Date(state.received).toLocaleTimeString("zh-CN", { hour12: false }) : "--";
       }
       async function loadSnapshot() {
@@ -151,6 +172,7 @@
         ws.onerror = () => connection("error", "连接错误");
         ws.onclose = () => { connection("error", "已断开"); if (!state.stopped) state.retry = setTimeout(connect, 2000); };
       }
+      byId("show-zero").onchange = render;
       byId("strategy").onchange = (event) => { state.strategy = event.target.value; render(); };
       byId("symbol").oninput = (event) => { state.symbol = event.target.value.trim().toUpperCase(); render(); };
       byId("refresh").onclick = () => { void loadSnapshot(); connect(); };

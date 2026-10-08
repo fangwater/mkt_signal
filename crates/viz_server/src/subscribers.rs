@@ -113,7 +113,28 @@ pub fn spawn_exec_pre_trade_resample_listeners_with_cfg(
 
     let venue = runtime_common::exec_market::parse_venue(&exec.venue)?;
     spawn_exec_state_listener(hub.clone(), namespace, venue)?;
-    spawn_exec_risk_listener(hub, namespace, venue)
+    spawn_exec_risk_listener(hub.clone(), namespace, venue)?;
+    if venue == order_common::TradingVenue::BinanceCoinFutures {
+        use viz_common::coin_account::{CoinAccountSnapshot, COIN_ACCOUNT_CHANNEL};
+        let ns = namespace.to_string();
+        spawn_resample_channel(
+            &format!("viz_coin_account_{}", sanitize_node_component(namespace)),
+            &format!("{namespace}/viz_pubs/{COIN_ACCOUNT_CHANNEL}"),
+            move |entry: CoinAccountSnapshot, hub: WsHub| {
+                if entry.venue != "binance-coin-futures" || entry.account_mode != "STANDARD" {
+                    return;
+                }
+                if let Ok(message) = serde_json::to_string(&json!({
+                    "type": COIN_ACCOUNT_CHANNEL, "namespace": ns,
+                    "venue": entry.venue, "ts_ms": entry.ts_ms, "entry": entry,
+                })) {
+                    hub.broadcast(message);
+                }
+            },
+            hub,
+        )?;
+    }
+    Ok(())
 }
 
 fn spawn_exec_state_listener(

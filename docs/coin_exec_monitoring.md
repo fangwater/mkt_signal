@@ -1,0 +1,65 @@
+# COIN-M account monitoring without order execution
+
+Last updated: 2026-10-08 UTC.
+
+The standard Binance COIN-M account monitor publishes a complete, sanitized
+`CoinAccountSnapshot` on `<namespace>/viz_pubs/coin_account_snapshot` after each
+successful `GET /dapi/v1/account`. This uses its existing CM wallet poll cycle
+(default 5 seconds), account credentials, and configured account egress.
+It does not poll public order rules or send trading instructions.
+
+Viz subscribes directly in coin Exec environments. The separately maintained
+coin frontend shows native-coin wallet balance, unrealized PnL, margin equity,
+available balance, initial/maintenance margin, and actual positions in exchange
+contracts. `notionalValue` is displayed in settlement coins. Asset amounts from
+different settlement currencies are never summed. Active delivery positions
+are visible as factual account exposure even though Exec supports perpetuals.
+Strategy execution state remains a separate section from actual account data.
+
+Each observation replaces the entire asset/position set, so closing or removing
+a position clears it. Missing fields, invalid decimals, nonfinite values, and
+fractional contract counts reject the snapshot; failed requests retain the last
+good observation with its original timestamp. The browser warns after 30 seconds
+without a fresh account snapshot. A missing snapshot is distinct from a valid
+empty account. No account equity history or unitized NAV is persisted here.
+The new observation channel supports STANDARD CM accounts; unified-account
+observation is not synthesized from the standard snapshot schema.
+
+This mode requires only `account_monitor`, Viz and Config. Keep `exec-pre-trade`,
+`trade_engine`, and `trade_signal` stopped when the operator requires no orders.
+Use only environment-local component wrappers, never `start-exec.sh` for this
+monitoring-only setup. The monitor's existing user-stream session creation and
+renewal do not submit orders. This configuration does not cancel independently
+existing exchange orders.
+
+## Position and NAV units
+
+A contract has fixed USD face value C. N contracts conserve face F=N*C; at mark
+P their coin exposure is F/P. Manager's order rules supply C (currently BTCUSD
+100 USD and ETHUSD 10 USD). Exec targets use base-coin quantity, and conversion
+to exchange contracts uses the same valuation reference as the position ledger,
+then quantity-step/minimum filters. Consequently a fixed coin target is not a
+fixed-contract target as prices move. The strategy ledger stores inverse USD
+face and revalues base exposure, outstanding children and partial-fill progress
+at a common reference. Missing marks or order rules block execution.
+
+For a long, settled coin PnL is F*(1/entry - 1/exit); a short reverses the sign.
+For example, 10 BTC contracts (F=1000 USD), bought at 50,000 and sold at 60,000,
+yield 0.0033333333 BTC before fees, worth 200 USD at exit. FIFO matches face,
+not the differing entry/exit coin quantities. Manager's existing factual NAV
+reports USD-equivalent execution PnL, keeps realized amounts translated at each
+close, and uses the latest fill for remaining-position marks. This does not
+revalue retained realized coins or collateral as a complete account balance.
+Estimated fees use each fill's face times Maker/Taker rate.
+
+Complete account NAV additionally requires native-coin ledgers, mark prices,
+funding/fees/transfers and flow-adjusted share accounting. It must not be inferred
+from trade-only PnL. Manager's theoretical Kline model currently supports USD-M,
+not COIN-M. These monitoring changes do not alter either NAV model.
+
+## Validation
+
+Account-monitor unit tests cover signed contract/native-coin units, full empty
+snapshots, invalid data rejection, and separate delivery/hedged positions.
+Browser fixtures exercise both native currencies, full snapshot clearing,
+venue isolation and stale warnings at desktop/mobile widths.

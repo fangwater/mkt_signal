@@ -1,3 +1,4 @@
+pub mod coin_account;
 pub mod resample;
 
 pub const DEFAULT_EXPOSURE_CHANNEL: &str = "pre_trade_exposure";

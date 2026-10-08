@@ -1,3 +1,5 @@
+#[path = "binance_account_monitor/coin_snapshot.rs"]
+mod coin_snapshot;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
 use account_monitor_common::binance_spot_ws_api_user_stream::BinanceSpotWsApiUserDataConnection;
 use account_monitor_common::binance_user_stream::{
@@ -884,6 +886,34 @@ fn binance_std_cm_wallet_msg_from_row(
     ))
 }
 
+// This publisher only emits complete account observations. It has no order IPC.
+thread_local! {
+    static COIN_ACCOUNT_PUBLISHER: RefCell<Option<ipc_common::iceoryx_publisher::ResamplePublisher>> = const { RefCell::new(None) };
+}
+
+fn publish_coin_account_snapshot(body: &str) -> Result<()> {
+    use ipc_common::iceoryx_publisher::ResamplePublisher;
+    use viz_common::coin_account::COIN_ACCOUNT_CHANNEL;
+    let snapshot = coin_snapshot::parse(body, chrono::Utc::now().timestamp_millis())?;
+    let encoded = bincode::serialize(&snapshot)?;
+    let mut payload = Vec::with_capacity(encoded.len() + 4);
+    payload.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&encoded);
+    COIN_ACCOUNT_PUBLISHER.with(|cell| {
+        let mut publisher = cell.borrow_mut();
+        if publisher.is_none() {
+            *publisher = Some(ResamplePublisher::new_with_prefix(
+                "viz_pubs",
+                COIN_ACCOUNT_CHANNEL,
+            )?);
+        }
+        publisher
+            .as_ref()
+            .context("account snapshot publisher missing")?
+            .publish(&payload)
+    })
+}
+
 fn spawn_binance_std_cm_wallet_poller(
     api_key: String,
     api_secret: String,
@@ -951,6 +981,14 @@ fn spawn_binance_std_cm_wallet_poller(
                             Err(err) => warn!("binance std CM wallet response parse failed: {err:#}"),
                         },
                         Err(err) => warn!("binance std CM wallet poll failed: {err:#}"),
+                    }
+                    match signed_get_binance(&client, &dapi_rest_base, "/dapi/v1/account", &api_key, &api_secret).await {
+                        Ok(body) => {
+                            if let Err(err) = publish_coin_account_snapshot(&body) {
+                                warn!("binance std CM account observation failed: {err:#}");
+                            }
+                        }
+                        Err(err) => warn!("binance std CM account observation request failed: {err:#}"),
                     }
                 }
             }
