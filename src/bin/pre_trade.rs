@@ -68,7 +68,7 @@ use trade_signal::ArbMode;
 #[command(name = env!("CARGO_BIN_NAME"))]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// Execution venue. Native binance-futures also routes USD perpetuals to COIN-M.
+    /// The only execution market managed by this Exec deployment.
     #[arg(long, value_enum)]
     venue: Option<ExecVenue>,
 
@@ -105,15 +105,8 @@ enum ExecVenue {
 const FR_STARTUP_STABILITY_DELAY: Duration = Duration::from_secs(3);
 type HmacSha256 = Hmac<Sha256>;
 
-fn exec_runtime_venues(venue: TradingVenue, rapidx_binance: bool) -> Vec<TradingVenue> {
-    if venue == TradingVenue::BinanceFutures && !rapidx_binance {
-        vec![
-            TradingVenue::BinanceFutures,
-            TradingVenue::BinanceCoinFutures,
-        ]
-    } else {
-        vec![venue]
-    }
+fn exec_runtime_venues(venue: TradingVenue) -> Vec<TradingVenue> {
+    vec![venue]
 }
 
 #[derive(Debug, Clone)]
@@ -657,6 +650,12 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures"
             ));
         }
+        if let Some(configured) = runtime_common::exec_market::configured_venue()? {
+            anyhow::ensure!(
+                configured == venue,
+                "Exec --venue must match EXEC_VENUE / EXEC_START_VENUE"
+            );
+        }
         (venue, venue)
     } else {
         if args.venue.is_some() {
@@ -717,7 +716,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
     let exec_venues = if exec_pre_trade {
-        exec_runtime_venues(open_venue, rapidx_binance)
+        exec_runtime_venues(open_venue)
     } else {
         vec![open_venue]
     };
@@ -1497,24 +1496,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_binance_exec_owns_both_markets_and_rapidx_stays_linear() {
+    fn exec_manages_only_its_configured_market() {
         assert_eq!(
-            exec_runtime_venues(TradingVenue::BinanceFutures, false),
-            vec![
-                TradingVenue::BinanceFutures,
-                TradingVenue::BinanceCoinFutures
-            ]
-        );
-        assert_eq!(
-            exec_runtime_venues(TradingVenue::BinanceFutures, true),
+            exec_runtime_venues(TradingVenue::BinanceFutures),
             vec![TradingVenue::BinanceFutures]
         );
         assert_eq!(
-            exec_runtime_venues(TradingVenue::BinanceCoinFutures, false),
+            exec_runtime_venues(TradingVenue::BinanceCoinFutures),
             vec![TradingVenue::BinanceCoinFutures]
         );
         assert_eq!(
-            exec_runtime_venues(TradingVenue::OkexFutures, false),
+            exec_runtime_venues(TradingVenue::OkexFutures),
             vec![TradingVenue::OkexFutures]
         );
     }

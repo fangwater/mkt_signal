@@ -13,6 +13,11 @@ case "$VENUE" in
   okex-futures) EXCHANGE="okex" ;;
   *) echo "[ERROR] unsupported EXEC_VENUE: $VENUE" >&2; exit 1 ;;
 esac
+if [[ -n "${EXEC_START_VENUE:-}" && "$VENUE" != "$EXEC_START_VENUE" ]]; then
+  echo "[ERROR] EXEC_VENUE and EXEC_START_VENUE must name the same market" >&2
+  exit 1
+fi
+export EXEC_VENUE="$VENUE"
 
 dir_tag="$(basename "$BASE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"
 export PMDAEMON_NAME="${PMDAEMON_NAME:-exec_te_${dir_tag}}"

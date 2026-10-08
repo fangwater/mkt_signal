@@ -202,6 +202,8 @@ json_base="$(json_escape "$BASE_DIR")"
 json_exchange="$(json_escape "$EXCHANGE")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_tcp_health_log_interval_ms="$(json_escape "$TCP_HEALTH_LOG_INTERVAL_MS")"
+json_exec_venue="$(json_escape "${EXEC_VENUE:-}")"
+json_exec_start_venue="$(json_escape "${EXEC_START_VENUE:-}")"
 
 cat >"$cfg_file" <<JSON
 {
@@ -214,6 +216,8 @@ cat >"$cfg_file" <<JSON
       "env": {
         "RUST_LOG": "${json_rust_log}",
         "TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS": "${json_tcp_health_log_interval_ms}",
+        "EXEC_VENUE": "${json_exec_venue}",
+        "EXEC_START_VENUE": "${json_exec_start_venue}",
         "enable_ipc_fast_poll": "${FAST_POLL_ENABLED}",
         "ENABLE_IPC_FAST_POLL": "${FAST_POLL_ENABLED}"
       }

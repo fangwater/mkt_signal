@@ -84,13 +84,13 @@ class FakeRedis:
         return FakePipeline(self)
 
 
-def fake_store():
+def fake_store(venue="binance-futures", env_name="cta_exec_trade"):
     store = object.__new__(MODULE.ExecConfigStore)
     store.client = FakeRedis()
-    store.env_name = "cta_exec_trade"
-    store.venue = "binance-futures"
-    store.markets = ["binance-futures", "binance-coin-futures"]
-    store.prefix = "cta_exec_trade:binance-futures:batch_exec:"
+    store.env_name = env_name
+    store.venue = venue
+    store.markets = [venue]
+    store.prefix = f"{env_name}:{venue}:batch_exec:"
     store.index_key = f"{store.prefix}strategy_names"
     store.removed_index_key = f"{store.prefix}removed_strategy_names"
     store._save_lock = threading.Lock()
@@ -103,58 +103,56 @@ def order_parameters(config):
 
 
 class ExecConfigServerTests(unittest.TestCase):
-    def test_mixed_market_publish_update_and_remove(self):
-        store = fake_store()
-        config = {**MODULE.DEFAULT_CONFIG, "targets": {
-            "BTCUSDT": {"qty": 0.2, "signal": 1},
-            "BTCUSDC": 0.3, "BTCUSD_PERP": 0.01,
-        }, "symbol_overrides": {"BTCUSD": {"single_order_usdt": 100}}}
-        current = store.save("mixed", config)
-        um_key = store.key("mixed")
-        cm_key = store.key("mixed", venue="binance-coin-futures")
-        um = json.loads(store.client.get(um_key))
-        cm = json.loads(store.client.get(cm_key))
-        self.assertEqual(set(um["targets"]), {"BTCUSDT", "BTCUSDC"})
-        self.assertEqual(cm["targets"], {"BTCUSD": {"qty": 0.01, "signal": 0}})
-        self.assertEqual(um["updated_at_us"], cm["updated_at_us"])
-        self.assertEqual(store.load("mixed"), current)
+    def test_independent_market_publish_update_and_remove(self):
+        um = fake_store(env_name="exec_um")
+        cm = fake_store("binance-coin-futures", "exec_cm")
+        cm.client = um.client
+        um.save("same_strategy", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSDT": 0.2}})
+        current = cm.save("same_strategy", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD_PERP": 0.01}})
+        old_um = dict(um.client.values)
         parameters = order_parameters(current)
         parameters["single_order_usdt"] = 200
-        saved = store.save_order_parameters("mixed", parameters, current["updated_at_us"])
-        for key in (um_key, cm_key):
-            scoped = json.loads(store.client.get(key))
-            self.assertEqual(scoped["single_order_usdt"], 200)
-            self.assertEqual(scoped["updated_at_us"], saved["updated_at_us"])
-        self.assertEqual(saved["targets"], current["targets"])
-        self.assertEqual(saved["symbol_overrides"], current["symbol_overrides"])
-        self.assertTrue(store.remove("mixed"))
-        for venue in store.markets:
-            prefix = store.family_prefix(venue=venue)
-            self.assertEqual(json.loads(store.client.get(prefix + "strategy_names")), [])
-            self.assertEqual(json.loads(store.client.get(prefix + "removed_strategy_names")), ["mixed"])
+        saved = cm.save_order_parameters("same_strategy", parameters, current["updated_at_us"])
+        self.assertEqual(saved["targets"], {"BTCUSD": {"qty": 0.01, "signal": 0}})
+        self.assertEqual(saved["single_order_usdt"], 200)
+        self.assertTrue(cm.remove("same_strategy"))
+        for key, value in old_um.items():
+            if key.startswith(um.prefix):
+                self.assertEqual(um.client.get(key), value)
+        self.assertEqual(json.loads(cm.client.get(cm.removed_index_key)), ["same_strategy"])
 
-    def test_coin_target_race_aborts_parameter_write_in_both_markets(self):
-        store = fake_store()
-        current = store.save("mixed", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSDT": 0.1, "BTCUSD": 0.01}})
-        um_key = store.key("mixed")
-        cm_key = store.key("mixed", venue="binance-coin-futures")
-        old_um = store.client.get(um_key)
+    def test_coin_target_race_aborts_parameter_write(self):
+        store = fake_store("binance-coin-futures")
+        current = store.save("coin", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD": 0.01}})
+        cm_key = store.key("coin")
         changed_cm = json.loads(store.client.get(cm_key))
         changed_cm["targets"]["BTCUSD"]["qty"] = 0.02
         store.client.before_pipeline_execute = lambda: store.client.set(cm_key, json.dumps(changed_cm))
         with self.assertRaises(MODULE.ConfigVersionConflict):
-            store.save_order_parameters("mixed", order_parameters(current), current["updated_at_us"])
-        self.assertEqual(store.client.get(um_key), old_um)
+            store.save_order_parameters("coin", order_parameters(current), current["updated_at_us"])
         self.assertEqual(json.loads(store.client.get(cm_key)), changed_cm)
 
     def test_backend_mapping_limits_coin_market_and_rejects_target_before_writes(self):
         with mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND": "rapidx", "TRADE_ENGINE_EXEC_BACKEND_MAP": "*=rapidx,binance=native"}):
-            self.assertEqual(MODULE.exec_markets("binance-futures"), ["binance-futures", "binance-coin-futures"])
+            self.assertEqual(MODULE.exec_markets("binance-futures"), ["binance-futures"])
+            self.assertEqual(MODULE.exec_markets("binance-coin-futures"), ["binance-coin-futures"])
         with mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND": "native", "TRADE_ENGINE_EXEC_BACKEND_MAP": "binance=rapidx"}):
             store = fake_store()
             store.markets = MODULE.exec_markets(store.venue)
-            with self.assertRaisesRegex(ValueError, "does not support"):
+            with self.assertRaisesRegex(ValueError, "does not belong"):
                 store.save("coin", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD": 0.01}})
+            self.assertEqual(store.client.values, {})
+            with self.assertRaises(ValueError):
+                MODULE.exec_markets("binance-coin-futures")
+
+    def test_mixed_targets_and_foreign_overrides_never_write_redis(self):
+        for venue, foreign in [("binance-futures", "BTCUSD"), ("binance-coin-futures", "BTCUSDT")]:
+            store = fake_store(venue)
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                store.save("mixed", {**MODULE.DEFAULT_CONFIG, "targets": {"BTCUSD": 0.01, "BTCUSDT": 0.1}})
+            self.assertEqual(store.client.values, {})
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                store.save("foreign", {**MODULE.DEFAULT_CONFIG, "symbol_overrides": {foreign: {"single_order_usdt": 100}}})
             self.assertEqual(store.client.values, {})
 
     def test_coin_symbols_normalize_without_changing_base_qty(self):

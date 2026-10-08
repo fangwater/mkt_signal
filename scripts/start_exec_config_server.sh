@@ -25,6 +25,14 @@ dir_name="$(basename "$BASE_DIR")"
 dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
 ENV_NAME="${ENV_NAME:-$dir_name}"
 VENUE="${VENUE:-${EXEC_VENUE:-}}"
+if [[ -n "${EXEC_VENUE:-}" && "$VENUE" != "$EXEC_VENUE" ]]; then
+  echo "[ERROR] Exec Config VENUE must match EXEC_VENUE" >&2
+  exit 1
+fi
+if [[ -n "${EXEC_START_VENUE:-}" && "$VENUE" != "$EXEC_START_VENUE" ]]; then
+  echo "[ERROR] Exec Config VENUE must match EXEC_START_VENUE" >&2
+  exit 1
+fi
 if [[ -z "$VENUE" ]]; then
   echo "[ERROR] VENUE or EXEC_VENUE is required" >&2
   exit 1

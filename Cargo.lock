@@ -6808,6 +6808,7 @@ dependencies = [
  "iceoryx2",
  "ipc_common",
  "log",
+ "order_common",
  "reqwest",
  "runtime_common",
  "serde",

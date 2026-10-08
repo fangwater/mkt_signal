@@ -20,9 +20,11 @@ endpoint overrides are `BINANCE_DAPI_URL` and `BINANCE_PAPI_URL`.
 
 The account monitor enables COIN-M when any of `OPEN_VENUE`, `HEDGE_VENUE`,
 `EXEC_VENUE`, `EXEC_START_VENUE`, or `VENUE` is
-`binance-coin-futures`. A native Exec with `EXEC_VENUE=binance-futures` or
-`EXEC_START_VENUE=binance-futures` also enables COIN-M. `BINANCE_ENABLE_COIN_FUTURES=1` is available for
-standalone monitor deployments that do not expose a venue variable.
+`binance-coin-futures`. For an Exec deployment, `EXEC_VENUE` / `EXEC_START_VENUE`
+select exactly one market and take precedence over generic opening/hedging venue
+settings. A U-margined Exec never enables COIN-M automatically.
+`BINANCE_ENABLE_COIN_FUTURES=1` is available only for standalone monitor
+deployments without an Exec market binding.
 
 ## Quantity semantics
 
@@ -93,21 +95,25 @@ script are dry-run unless `--execute` is provided.
 
 ## Exec and CTA Manager
 
-A native Binance Exec and Manager source configured with
-`venue = "binance-futures"` manage USDT, USDC and USD perpetuals in the same
-account and process. Target suffixes route USDT/USDC to USD-M and USD to COIN-M.
-STANDARD accounts retain the USD-M Multi-Assets startup requirement; UNIFIED
-accounts use Portfolio Margin UM/CM endpoints. No exchange account mode is
-changed automatically. `venue = "binance-coin-futures"` remains available for
-COIN-M-only environments. The deploy/publish/start/stop wrappers accept both.
+Each Exec deployment and Manager source owns exactly one market:
+`venue = "binance-futures"` accepts USDT/USDC perpetuals, while
+`venue = "binance-coin-futures"` accepts USD coin-margined perpetuals.
+Use independent environment directories, source IDs, IPC namespaces, Redis
+prefixes, persist_manager RocksDB stores, and Viz/Config listeners. One Manager
+continues to manage both types as independent sources. Neither Config nor Manager
+splits a strategy across markets; an opposite-market target or override is rejected
+before runtime publication. Batch/POV and Chase also validate persisted target and
+allocation symbols before leverage initialization or strategy registration.
 
-Manager publishes both market scopes in one Redis transaction with one receipt
-timestamp. It retains the existing per-market rule caches and position ledgers;
-Exec loads both, subscribes to the combined BBO/trade/mark feeds, and requires the
-matching position snapshot before reconciling each market. The Config API shows
-one strategy with the merged targets; parameter updates and strategy removal
-apply to both scopes. Native combined Exec startup cancels open orders in both
-markets before execution begins.
+Startup cancellation touches only the configured market. The trade engine rejects
+another market's order, cancel, amend, leverage and position-query requests. The
+account monitor starts only the selected standard futures stream and filters
+Portfolio Margin order/position events before forwarding them into the environment.
+Shared Portfolio Margin collateral, debt and risk remain visible for correct account
+risk calculations; this separation does not create separate exchange margin pools.
+STANDARD USD-M retains the Multi-Assets startup requirement. No exchange account
+mode is changed automatically. Public market-data services may still be shared;
+each Exec consumes only symbols from its own market.
 Manager remains the sole owner of rule refresh; Exec consumes its complete
 current cache, including `contractSize`, tradable status and quantity filters.
 
@@ -122,8 +128,7 @@ A Manager position-strategy request can contain:
 
 Exec and Manager targets identify perpetual contracts by their quote suffix:
 `BTCUSDT` is USDT-margined, `BTCUSDC` is USDC-margined, and `BTCUSD` is
-coin-margined. Native `binance-futures` sources accept all three suffixes;
-COIN-M-only sources accept USD.
+coin-margined. USD-M sources accept USDT/USDC; COIN-M sources accept USD.
 Quantity remains base coin: this means 0.01 BTC, before binding shares. The
 current internal key is `BTCUSD`; only exchange requests restore `BTCUSD_PERP`.
 Wire-name aliases normalize to the same key and duplicates are errors. Delivery
@@ -149,3 +154,25 @@ factual inverse trade PnL by matching USD face, rather than fill-time coin
 quantity. Its reported USD PnL is coin PnL converted at the close/mark; it excludes
 collateral revaluation and account-ledger flows. Minute-kline theoretical NAV
 and the USDT/BFUSD live-equity widget remain USD-M only.
+
+## Separate Viz frontends
+
+Exec Viz requires `[servers.exec_pre_trade].venue` alongside its explicit namespace.
+Set it to the deployment's `EXEC_VENUE`. Wrong-market state/risk samples are
+discarded. `VIZ_CHECK_CONFIG_ONLY=1` validates the configuration without opening
+IPC or HTTP services; the start wrapper runs this before stopping an existing Viz.
+
+USD-M/OKX uses `docs/exec_pre_trade_dashboard.html`. COIN-M uses its independent
+frontend `web/exec_coin/index.html`, with per-symbol coin quantities and USD
+notional labels. The server selects the frontend from configuration, never from
+a browser query parameter. Each deployment retains its own root, WebSocket,
+snapshot and read-only Config proxy. COIN-M instance 01 defaults to Viz 10141 /
+Config 18261; USD-M instance 01 retains 10041 / 18161. Explicit port overrides
+remain supported and must be checked for availability before provisioning.
+
+Existing Exec Viz TOMLs need the explicit venue added before publishing this
+release. Provision a fresh environment/source for the other market; do not change
+an existing deployment's market or relabel/copy its order history. Existing archives
+remain immutable under their original source IDs. Historical reconstruction still
+resolves their factual markets from their archived symbols; this grants no runtime
+permission to publish or execute the other market.

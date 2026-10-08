@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Exec 执行监控</title>
+    <title>U 本位 Exec 执行监控</title>
     <style>
       :root {
         color-scheme: dark;
@@ -214,7 +214,7 @@
   </head>
   <body>
     <header>
-      <h1>Exec 执行监控</h1>
+      <h1>U 本位 Exec 执行监控</h1>
       <div class="connection">
         <span id="conn-dot" class="dot"></span>
         <span id="conn-text">连接中</span>
@@ -332,6 +332,9 @@
         }
         function applyMessage(msg) {
           if (!msg || !msg.entry) return;
+          if (msg.venue === "binance-coin-futures") return;
+          if (msg.type === "exec_pre_trade_state" && Array.isArray(msg.entry.rows) &&
+              msg.entry.rows.some((row) => /USD(?:_PERP)?$/.test(String(row.symbol || "")))) return;
           const wrapped = { entry: msg.entry, namespace: msg.namespace || "", received: Date.now() };
           if (msg.type === "exec_pre_trade_state") state.exec = wrapped;
           if (msg.type === "exec_pre_trade_risk") state.risk = wrapped;

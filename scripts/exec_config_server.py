@@ -502,7 +502,7 @@ def exec_markets(venue: str) -> List[str]:
     selected = overrides.get("binance", overrides.get("*", selected))
     if venue == "binance-coin-futures" and selected != "native":
         raise ValueError("COIN-M execution requires the native Binance backend")
-    return [venue, "binance-coin-futures"] if venue == "binance-futures" and selected == "native" else [venue]
+    return [venue]
 
 
 class ExecConfigStore:
@@ -550,7 +550,7 @@ class ExecConfigStore:
         else:
             raise ValueError(f"Binance perpetual symbol must end with USDT, USDC or USD: {symbol}")
         if selected not in self.markets:
-            raise ValueError(f"account execution backend does not support {selected}: {symbol}")
+            raise ValueError(f"symbol {symbol} does not belong to Exec market {self.venue}; use a separate Exec deployment")
         return selected
 
     @staticmethod
@@ -690,7 +690,7 @@ INDEX_HTML = r"""<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Exec Config</title>
+    <title>__EXEC_MARKET__ Exec Config</title>
     <style>
       :root {
         color-scheme: dark;
@@ -752,7 +752,7 @@ INDEX_HTML = r"""<!doctype html>
   </head>
   <body>
     <header>
-      <h1>Exec Config</h1>
+      <h1>__EXEC_MARKET__ Exec Config</h1>
       <select id="strategy"><option value="">Select strategy</option></select>
       <button id="reload" type="button">Reload</button>
       <a id="dashboard" class="command" href="../">Dashboard</a>
@@ -763,7 +763,7 @@ INDEX_HTML = r"""<!doctype html>
       <section>
         <div class="section-head"><h2>Order Parameters</h2></div>
         <div class="param-grid">
-          <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Single Order __NOTIONAL_CURRENCY__</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
           <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Batch</label><input id="max_batch" inputmode="numeric" disabled /></div>
           <div class="field"><label>Maker Price Anchor</label><select id="maker_price_anchor" disabled><option value="own_best">Own Best</option><option value="opposite_best_plus_one_tick">Opposite Best + 1 Tick</option></select></div>
@@ -771,7 +771,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="field"><label>Batch Interval ms</label><input id="batch_interval_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" disabled /></div>
-          <div class="field"><label>Target Tolerance USDT</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Target Tolerance __NOTIONAL_CURRENCY__</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
           <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option></select></div>
         </div>
       </section>
@@ -786,7 +786,7 @@ INDEX_HTML = r"""<!doctype html>
           <span class="readonly-state">Read only</span>
         </div>
         <div class="targets">
-          <table><thead><tr><th>Symbol</th><th>Target Qty</th><th>Signal</th></tr></thead><tbody id="target-rows"></tbody></table>
+          <table><thead><tr><th>Symbol</th><th>Target Qty (Base Coin)</th><th>Signal</th></tr></thead><tbody id="target-rows"></tbody></table>
           <div id="target-empty" class="empty">No non-zero target positions</div>
         </div>
       </section>
@@ -795,7 +795,7 @@ INDEX_HTML = r"""<!doctype html>
       (() => {
         const DEFAULTS = __DEFAULTS__;
         const fields = ["single_order_usdt", "orders_per_batch", "max_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt", "algorithm"];
-        const povLabels = {participation_rate: "Participation Rate", max_batch_usdt: "Max Batch USDT", max_carry_usdt: "Max Carry USDT", volume_stale_ms: "Volume Stale ms", quote_stale_ms: "Quote Stale ms", duration_ms: "Duration ms", liquidity: "Liquidity", limit_price: "Limit Price"};
+        const povLabels = {participation_rate: "Participation Rate", max_batch_usdt: "Max Batch __NOTIONAL_CURRENCY__", max_carry_usdt: "Max Carry __NOTIONAL_CURRENCY__", volume_stale_ms: "Volume Stale ms", quote_stale_ms: "Quote Stale ms", duration_ms: "Duration ms", liquidity: "Liquidity", limit_price: "Limit Price"};
         const state = { bootstrap: null, names: [], name: "", config: null };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }
@@ -884,9 +884,13 @@ def make_handler(
     dashboard_url: str,
     order_parameter_token: Optional[str] = None,
 ):
-    html = INDEX_HTML.replace(
-        "__DEFAULTS__", json.dumps(DEFAULT_CONFIG, ensure_ascii=False)
-    ).encode("utf-8")
+    coin = store.venue == "binance-coin-futures"
+    html = (
+        INDEX_HTML.replace("__DEFAULTS__", json.dumps(DEFAULT_CONFIG, ensure_ascii=False))
+        .replace("__EXEC_MARKET__", "币本位" if coin else "U 本位")
+        .replace("__NOTIONAL_CURRENCY__", "USD" if coin else "USDT")
+        .encode("utf-8")
+    )
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "ExecConfigServer/1.0"

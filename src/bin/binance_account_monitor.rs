@@ -73,6 +73,7 @@ struct Args {
 struct DirectAccountForwarder {
     forwarder: PmForwarder,
     deduper: AccountEventDeduper,
+    exec_venue: Option<order_common::TradingVenue>,
 }
 
 thread_local! {
@@ -98,6 +99,12 @@ fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
         let Some(state) = state.as_mut() else {
             return false;
         };
+        if state
+            .exec_venue
+            .is_some_and(|venue| !exec_account_event_allowed(venue, &msg))
+        {
+            return true;
+        }
         let should_forward = match dedup_key {
             Some(key) => state.deduper.should_forward_key(key),
             None => state.deduper.should_forward(&msg),
@@ -116,6 +123,7 @@ fn init_direct_forwarder(exchange: &str) -> Result<()> {
     let state = DirectAccountForwarder {
         forwarder: PmForwarder::new(exchange)?,
         deduper: AccountEventDeduper::new(8192),
+        exec_venue: runtime_common::exec_market::configured_venue()?,
     };
     DIRECT_FORWARDER.with(|cell| {
         *cell.borrow_mut() = Some(state);
@@ -160,15 +168,71 @@ fn configured_venue_values() -> Vec<String> {
 }
 
 fn coin_futures_enabled(configured_venues: &[String]) -> bool {
+    if let Ok(Some(venue)) = runtime_common::exec_market::configured_venue() {
+        return venue == order_common::TradingVenue::BinanceCoinFutures;
+    }
     if env_flag_enabled("BINANCE_ENABLE_COIN_FUTURES") {
         return true;
     }
     configured_venues
         .iter()
         .any(|value| value.contains("binance-coin-futures"))
-        || ["EXEC_VENUE", "EXEC_START_VENUE"]
-            .into_iter()
-            .any(|name| std::env::var(name).as_deref() == Ok("binance-futures"))
+}
+
+fn exec_account_event_allowed(venue: order_common::TradingVenue, msg: &[u8]) -> bool {
+    let Some((kind, scope, payload)) = split_basic_account_event(msg) else {
+        return false;
+    };
+    let coin = venue == order_common::TradingVenue::BinanceCoinFutures;
+    match kind {
+        BasicAccountEventType::OrderUpdate => {
+            BinanceBasicOrderMsg::from_bytes(&payload).is_ok_and(|order| {
+                order.venue
+                    == if coin {
+                        BinanceBasicOrderMsg::VENUE_CM
+                    } else {
+                        BinanceBasicOrderMsg::VENUE_UM
+                    }
+            })
+        }
+        BasicAccountEventType::TradeUpdateLite => {
+            !coin
+                && matches!(
+                    scope,
+                    BasicAccountScope::BinanceUnified | BasicAccountScope::BinanceStdUm
+                )
+        }
+        BasicAccountEventType::PositionUpdate
+        | BasicAccountEventType::UnrealizedPnlUpdate
+        | BasicAccountEventType::BinanceStdUmWalletSnapshot => {
+            if coin {
+                matches!(
+                    scope,
+                    BasicAccountScope::BinanceStdCm | BasicAccountScope::BinanceUnifiedCm
+                )
+            } else {
+                matches!(
+                    scope,
+                    BasicAccountScope::BinanceStdUm | BasicAccountScope::BinanceUnified
+                )
+            }
+        }
+        // Unified collateral/debt/risk must remain available to both isolated markets.
+        BasicAccountEventType::BalanceUpdate
+        | BasicAccountEventType::BorrowInterest
+        | BasicAccountEventType::AccountRisk => {
+            scope == BasicAccountScope::BinanceUnified
+                || if coin {
+                    matches!(
+                        scope,
+                        BasicAccountScope::BinanceStdCm | BasicAccountScope::BinanceUnifiedCm
+                    )
+                } else {
+                    scope == BasicAccountScope::BinanceStdUm
+                }
+        }
+        _ => false,
+    }
 }
 
 /// 构造最终的用户数据 WS URL。
@@ -1152,7 +1216,10 @@ async fn main() -> Result<()> {
     const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
     const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
-    let configured_venues = configured_venue_values();
+    let exec_venue = runtime_common::exec_market::configured_venue()?;
+    let configured_venues = exec_venue
+        .map(|venue| vec![venue.data_pub_slug().to_string()])
+        .unwrap_or_else(configured_venue_values);
     let binance_coin_futures_enabled = coin_futures_enabled(&configured_venues);
     let binance_um_enabled = configured_venues.is_empty()
         || configured_venues
@@ -1562,8 +1629,65 @@ fn spawn_std_spot_fix_er_path(source_ip: Option<IpAddr>, mut shutdown_rx: watch:
 mod tests {
     use super::{
         account_monitor_fix_er_enabled, binance_std_cm_wallet_msg_from_row,
-        binance_std_um_account_status_from_result, build_ws_url, BinanceStdUmBalanceRow,
+        binance_std_um_account_status_from_result, build_ws_url, exec_account_event_allowed,
+        BinanceStdUmBalanceRow,
     };
+    use bytes::Bytes;
+    use mkt_parsers::msg::basic_account_msg::{
+        BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
+    };
+    use order_common::TradingVenue;
+
+    #[test]
+    fn exec_forwarding_isolates_positions_but_retains_shared_collateral_risk() {
+        for kind in [
+            BasicAccountEventType::PositionUpdate,
+            BasicAccountEventType::UnrealizedPnlUpdate,
+        ] {
+            let cm = BasicAccountEventMsg::create(
+                kind,
+                BasicAccountScope::BinanceUnifiedCm,
+                Bytes::new(),
+            )
+            .to_bytes();
+            let um =
+                BasicAccountEventMsg::create(kind, BasicAccountScope::BinanceUnified, Bytes::new())
+                    .to_bytes();
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceCoinFutures,
+                &cm
+            ));
+            assert!(!exec_account_event_allowed(
+                TradingVenue::BinanceFutures,
+                &cm
+            ));
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceFutures,
+                &um
+            ));
+            assert!(!exec_account_event_allowed(
+                TradingVenue::BinanceCoinFutures,
+                &um
+            ));
+        }
+        for kind in [
+            BasicAccountEventType::BalanceUpdate,
+            BasicAccountEventType::AccountRisk,
+            BasicAccountEventType::BorrowInterest,
+        ] {
+            let shared =
+                BasicAccountEventMsg::create(kind, BasicAccountScope::BinanceUnified, Bytes::new())
+                    .to_bytes();
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceCoinFutures,
+                &shared
+            ));
+            assert!(exec_account_event_allowed(
+                TradingVenue::BinanceFutures,
+                &shared
+            ));
+        }
+    }
 
     #[test]
     fn build_ws_url_uses_private_query_format_for_new_private_base() {

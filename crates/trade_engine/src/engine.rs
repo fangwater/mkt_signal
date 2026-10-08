@@ -543,6 +543,9 @@ fn parse_bool_env(value: &str) -> Option<bool> {
 }
 
 fn configured_binance_ws_markets() -> (bool, bool) {
+    if let Ok(Some(venue)) = runtime_common::exec_market::configured_venue() {
+        return (venue == order_common::TradingVenue::BinanceFutures, false);
+    }
     let venues: Vec<String> = [
         "OPEN_VENUE",
         "HEDGE_VENUE",
@@ -561,6 +564,89 @@ fn configured_binance_ws_markets() -> (bool, bool) {
     let um = venues.iter().any(|venue| venue == "binance-futures");
     let spot = venues.iter().any(|venue| venue == "binance-margin");
     (um, spot)
+}
+
+fn exec_trade_request_allowed(
+    venue: order_common::TradingVenue,
+    request: TradeRequestType,
+) -> bool {
+    use order_common::TradingVenue;
+    use TradeRequestType::*;
+    match venue {
+        TradingVenue::BinanceFutures => matches!(
+            request,
+            BinanceNewUMOrder
+                | BinanceNewUMConditionalOrder
+                | BinanceCancelUMOrder
+                | BinanceCancelAllUMOrders
+                | BinanceCancelUMConditionalOrder
+                | BinanceCancelAllUMConditionalOrders
+                | BinanceModifyUMOrder
+                | BinanceUMSetLeverage
+                | BinanceWsNewUMOrder
+                | BinanceWsCancelUMOrder
+                | BinanceWsModifyUMOrder
+                | BinanceStdModifyUMOrder
+                | BinanceStdBatchModifyUMOrders
+                | BinanceStdMainToUmTransfer
+                | BinanceStdUmToMainTransfer
+        ),
+        TradingVenue::BinanceCoinFutures => matches!(
+            request,
+            BinanceNewCmOrder
+                | BinanceCancelCmOrder
+                | BinanceCmSetLeverage
+                | BinancePmNewCmOrder
+                | BinancePmCancelCmOrder
+                | BinancePmCmSetLeverage
+                | BinanceModifyCmOrder
+                | BinancePmModifyCmOrder
+        ),
+        TradingVenue::OkexFutures => matches!(
+            request,
+            OkexNewUMOrder | OkexCancelUMOrder | OkexModifyUMOrder
+        ),
+        _ => false,
+    }
+}
+
+fn exec_query_request_allowed(
+    venue: order_common::TradingVenue,
+    request: QueryRequestType,
+) -> bool {
+    use order_common::TradingVenue;
+    use QueryRequestType::*;
+    match venue {
+        // Portfolio balance and risk are shared collateral, not another market's positions.
+        TradingVenue::BinanceFutures => matches!(
+            request,
+            BinanceUMQuery
+                | BinanceWsUMQuery
+                | BinancePmBalanceSnapshot
+                | BinancePmAccountSnapshot
+                | BinanceUmAccountSnapshot
+                | BinanceUmBalanceSnapshotStd
+                | BinanceUmAccountSnapshotStd
+        ),
+        TradingVenue::BinanceCoinFutures => matches!(
+            request,
+            BinanceCmQuery
+                | BinancePmCmQuery
+                | BinancePmBalanceSnapshot
+                | BinancePmAccountSnapshot
+                | BinanceCmBalanceSnapshotStd
+                | BinanceCmAccountSnapshotStd
+                | BinancePmCmAccountSnapshot
+        ),
+        TradingVenue::OkexFutures => matches!(
+            request,
+            OkexUMQuery
+                | OkexAccountBalanceSnapshot
+                | OkexPositionsSnapshot
+                | OkexUsdtAvailableSnapshot
+        ),
+        _ => false,
+    }
 }
 
 fn enable_ipc_fast_poll() -> bool {
@@ -1449,6 +1535,15 @@ impl TradeEngine {
         exchange: Exchange,
         shutdown: CancellationToken,
     ) -> Result<()> {
+        let exec_venue = runtime_common::exec_market::configured_venue()?;
+        if let Some(venue) = exec_venue {
+            anyhow::ensure!(
+                venue.trade_engine_exchange() == exchange.as_str(),
+                "Exec market {} does not match trade engine exchange {}",
+                venue.data_pub_slug(),
+                exchange
+            );
+        }
         if !matches!(
             exchange,
             Exchange::Binance
@@ -1472,6 +1567,10 @@ impl TradeEngine {
             ));
         }
         let use_ltp_backend = exec_backend == ExecBackend::Ltp;
+        anyhow::ensure!(
+            !use_ltp_backend || exec_venue != Some(order_common::TradingVenue::BinanceCoinFutures),
+            "COIN-M execution requires the native Binance backend"
+        );
         if use_ltp_backend {
             runtime_common::execution_backend::rapidx_portfolio_id()?;
         }
@@ -2560,6 +2659,22 @@ impl TradeEngine {
                 };
                 idle_spin_count = 0;
                 routed_since_yield = true;
+                if exec_venue.is_some_and(|venue| !exec_trade_request_allowed(venue, msg.req_type))
+                {
+                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                        req_type: msg.req_type,
+                        client_order_id: msg.client_order_id,
+                        status: 400,
+                        body: "request does not belong to this Exec market".to_string(),
+                        exchange: exchange_for_req_worker,
+                        order_id: 0,
+                        order_status_u8: 0,
+                        order_update_time: 0,
+                        executed_qty: 0.0,
+                        response_price: 0.0,
+                    });
+                    continue;
+                }
                 let _ = drain_order_control_ingress(
                     &mut order_control_ingress,
                     &internal_open_terminates,
@@ -3089,6 +3204,22 @@ impl TradeEngine {
                     };
                     idle_spin_count = 0;
                     routed_since_yield = true;
+                    if exec_venue
+                        .is_some_and(|venue| !exec_query_request_allowed(venue, msg.req_type))
+                    {
+                        let _ = query_resp_sink.send(QueryExecOutcome {
+                            req_type: msg.req_type,
+                            client_query_id: msg.client_query_id,
+                            status: 400,
+                            body: bytes::Bytes::from_static(
+                                b"query does not belong to this Exec market",
+                            ),
+                            exchange: exchange_copy,
+                            ip_used_weight_1m: None,
+                            query_count_1m: None,
+                        });
+                        continue;
+                    }
                     debug!(
                         "routing query: type={:?} client_query_id={}",
                         msg.req_type, msg.client_query_id
@@ -4555,9 +4686,11 @@ mod tests {
     use super::{
         binance_batch_modify_order_rest_pairs, binance_batch_modify_outcomes,
         binance_modify_order_rest_pairs, binance_std_usdt_transfer_rest_pairs,
-        configured_binance_ws_markets, enable_ipc_fast_poll, parse_bool_env,
-        router_idle_spin_iters, trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        configured_binance_ws_markets, enable_ipc_fast_poll, exec_query_request_allowed,
+        exec_trade_request_allowed, parse_bool_env, router_idle_spin_iters,
+        trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
+    use crate::query_request::QueryRequestType;
     use crate::trade_request::{
         BinanceBatchModifyOrdersParams, BinanceModifyOrderParams, BinancePriceMatch,
         TradeRequestMsg, TradeRequestType,
@@ -4723,9 +4856,57 @@ mod tests {
         std::env::set_var("EXEC_VENUE", "binance-coin-futures");
         assert_eq!(configured_binance_ws_markets(), (false, false));
         std::env::set_var("OPEN_VENUE", "binance-margin");
-        assert_eq!(configured_binance_ws_markets(), (false, true));
+        assert_eq!(configured_binance_ws_markets(), (false, false));
         std::env::remove_var("OPEN_VENUE");
         std::env::remove_var("EXEC_VENUE");
+    }
+
+    #[test]
+    fn exec_rejects_foreign_market_orders_cancels_and_position_queries() {
+        use order_common::TradingVenue::{BinanceCoinFutures as Cm, BinanceFutures as Um};
+        for request in [
+            TradeRequestType::BinanceNewCmOrder,
+            TradeRequestType::BinancePmNewCmOrder,
+            TradeRequestType::BinanceCancelCmOrder,
+            TradeRequestType::BinancePmCancelCmOrder,
+            TradeRequestType::BinanceModifyCmOrder,
+            TradeRequestType::BinancePmModifyCmOrder,
+        ] {
+            assert!(exec_trade_request_allowed(Cm, request));
+            assert!(!exec_trade_request_allowed(Um, request));
+        }
+        for request in [
+            TradeRequestType::BinanceNewUMOrder,
+            TradeRequestType::BinanceWsNewUMOrder,
+            TradeRequestType::BinanceCancelUMOrder,
+            TradeRequestType::BinanceWsCancelUMOrder,
+            TradeRequestType::BinanceWsModifyUMOrder,
+        ] {
+            assert!(exec_trade_request_allowed(Um, request));
+            assert!(!exec_trade_request_allowed(Cm, request));
+        }
+        for venue in [Cm, Um] {
+            assert!(!exec_trade_request_allowed(
+                venue,
+                TradeRequestType::BinanceNewMarginOrder
+            ));
+            assert!(exec_query_request_allowed(
+                venue,
+                QueryRequestType::BinancePmAccountSnapshot
+            ));
+            assert!(exec_query_request_allowed(
+                venue,
+                QueryRequestType::BinancePmBalanceSnapshot
+            ));
+        }
+        assert!(!exec_query_request_allowed(
+            Cm,
+            QueryRequestType::BinanceUmAccountSnapshot
+        ));
+        assert!(!exec_query_request_allowed(
+            Um,
+            QueryRequestType::BinancePmCmAccountSnapshot
+        ));
     }
 
     #[test]

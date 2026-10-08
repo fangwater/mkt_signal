@@ -16,7 +16,33 @@ impl VizCfg {
             !cfg.servers.is_empty(),
             "viz config: missing required `[[servers]]` entries"
         );
+        cfg.validate()?;
         Ok(cfg)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for server in &self.servers {
+            let exec = &server.exec_pre_trade;
+            if !exec.enabled {
+                continue;
+            }
+            anyhow::ensure!(
+                !exec.namespace.trim().is_empty(),
+                "Exec Viz requires an explicit namespace"
+            );
+            let venue = runtime_common::exec_market::parse_venue(&exec.venue)?;
+            if let Some(configured) = runtime_common::exec_market::configured_venue()? {
+                anyhow::ensure!(
+                    venue == configured,
+                    "Exec Viz venue must match EXEC_VENUE / EXEC_START_VENUE"
+                );
+            }
+            anyhow::ensure!(
+                !server.pre_trade.enabled,
+                "Exec Viz cannot subscribe to normal pre-trade channels"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -94,6 +120,9 @@ pub struct ExecPreTradeSrcCfg {
     /// Exec 必须显式使用独立 namespace，不继承 server.namespaces。
     #[serde(default)]
     pub namespace: String,
+    /// Exactly one configured market; required when Exec Viz is enabled.
+    #[serde(default)]
+    pub venue: String,
     /// Optional local config server proxied under `/config/` on the dashboard.
     #[serde(default)]
     pub config_proxy_url: Option<String>,
@@ -102,6 +131,24 @@ pub struct ExecPreTradeSrcCfg {
 #[cfg(test)]
 mod tests {
     use super::VizCfg;
+
+    #[test]
+    fn exec_viz_requires_one_explicit_market() {
+        let mut cfg: VizCfg = toml::from_str(
+            r#"
+            [[servers]]
+            [servers.pre_trade]
+            enabled = false
+            [servers.exec_pre_trade]
+            enabled = true
+            namespace = "exec_coin"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
+        cfg.servers[0].exec_pre_trade.venue = "binance-margin".into();
+        assert!(cfg.validate().is_err());
+    }
 
     #[test]
     fn exec_pre_trade_namespace_is_explicit_and_disabled_by_default() {
@@ -130,6 +177,7 @@ mod tests {
                 [servers.exec_pre_trade]
                 enabled = true
                 namespace = "cta_exec_trade"
+                venue = "binance-coin-futures"
                 config_proxy_url = "http://127.0.0.1:18161"
             "#,
         )
@@ -137,6 +185,7 @@ mod tests {
 
         assert!(cfg.servers[0].exec_pre_trade.enabled);
         assert_eq!(cfg.servers[0].exec_pre_trade.namespace, "cta_exec_trade");
+        assert_eq!(cfg.servers[0].exec_pre_trade.venue, "binance-coin-futures");
         assert_eq!(
             cfg.servers[0].exec_pre_trade.config_proxy_url.as_deref(),
             Some("http://127.0.0.1:18161")

@@ -17,7 +17,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures> [--viz-port <port>] [--config-port <port>] [--scripts-only]"
       echo "Deploys the complete Exec runtime plus the matching spread_pbs venue; nothing is started."
-      echo "Default ports are derived from the trailing instance number: 01 -> 10041/18161, 02 -> 10042/18162."
+      echo "Default ports: U/OKX 01 -> 10041/18161; COIN-M 01 -> 10141/18261."
       exit 0
       ;;
     *) echo "[ERROR] Unknown arg: $1" >&2; exit 1 ;;
@@ -33,14 +33,25 @@ else
   exit 1
 fi
 ((INSTANCE_INDEX >= 1 && INSTANCE_INDEX <= 99)) || { echo "[ERROR] instance number must be 01..99" >&2; exit 1; }
-VIZ_PORT="${VIZ_PORT:-$((10040 + INSTANCE_INDEX))}"
-CONFIG_PORT="${CONFIG_PORT:-$((18160 + INSTANCE_INDEX))}"
+if [[ "$VENUE" == "binance-coin-futures" ]]; then
+  VIZ_PORT="${VIZ_PORT:-$((10140 + INSTANCE_INDEX))}"
+  CONFIG_PORT="${CONFIG_PORT:-$((18260 + INSTANCE_INDEX))}"
+else
+  VIZ_PORT="${VIZ_PORT:-$((10040 + INSTANCE_INDEX))}"
+  CONFIG_PORT="${CONFIG_PORT:-$((18160 + INSTANCE_INDEX))}"
+fi
 [[ "$VIZ_PORT" =~ ^[0-9]+$ ]] && ((VIZ_PORT >= 1 && VIZ_PORT <= 65535)) || { echo "[ERROR] invalid --viz-port" >&2; exit 1; }
 [[ "$CONFIG_PORT" =~ ^[0-9]+$ ]] && ((CONFIG_PORT >= 1 && CONFIG_PORT <= 65535)) || { echo "[ERROR] invalid --config-port" >&2; exit 1; }
 [[ "$VIZ_PORT" != "$CONFIG_PORT" ]] || { echo "[ERROR] viz and config ports must differ" >&2; exit 1; }
 
 DEPLOY_ROOT="${DEPLOY_ROOT:-${HOME}}"
 TARGET_DIR="${DEPLOY_ROOT}/${ENV_NAME}"
+if [[ -f "${TARGET_DIR}/env.sh" ]]; then
+  if ! (requested_exec_venue="$VENUE"; requested_exec_namespace="$ENV_NAME"; source "${TARGET_DIR}/env.sh" >/dev/null 2>&1 || exit 1; [[ "${EXEC_VENUE:-${VENUE:-}}" == "$requested_exec_venue" && "${IPC_NAMESPACE:-}" == "$requested_exec_namespace" ]]); then
+    echo "[ERROR] existing deployment must retain its Exec market and namespace; create a separate environment for the other market" >&2
+    exit 1
+  fi
+fi
 SPREAD_ROOT="${DEPLOY_ROOT}/spread_pbs"
 SPREAD_DIR="${SPREAD_ROOT}/${VENUE}"
 HOST_CONFIG_DIR="${DEPLOY_ROOT}/config"
@@ -147,6 +158,7 @@ enabled = false
 [servers.exec_pre_trade]
 enabled = true
 namespace = "${ENV_NAME}"
+venue = "${VENUE}"
 config_proxy_url = "http://127.0.0.1:${CONFIG_PORT}"
 TOML
 fi

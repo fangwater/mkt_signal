@@ -217,12 +217,6 @@ fn infer_exec_venue_from_key_suffix(key_suffix: &str) -> Option<TradingVenue> {
     futures_venue_for_exchange(normalize_exchange_str(&raw))
 }
 
-fn infer_exec_venue_from_env() -> Option<TradingVenue> {
-    std::env::var("EXEC_VENUE")
-        .ok()
-        .and_then(|venue| venue_from_slug(&venue))
-}
-
 fn infer_arb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
     let open = std::env::var("OPEN_VENUE").ok()?;
     let hedge = std::env::var("HEDGE_VENUE").ok()?;
@@ -725,8 +719,8 @@ async fn main() -> Result<()> {
                 )
             }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("exec") => {
-                let exec_venue = infer_exec_venue_from_key_suffix(&suffix)
-                    .or_else(infer_exec_venue_from_env)
+                let exec_venue = runtime_common::exec_market::configured_venue()?
+                    .or_else(|| infer_exec_venue_from_key_suffix(&suffix))
                     .with_context(|| {
                         format!(
                             "failed to infer exec venue from CWD suffix='{}' or env EXEC_VENUE",

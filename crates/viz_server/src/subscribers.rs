@@ -111,11 +111,16 @@ pub fn spawn_exec_pre_trade_resample_listeners_with_cfg(
         "viz: exec_pre_trade.enabled requires an explicit exec_pre_trade.namespace"
     );
 
-    spawn_exec_state_listener(hub.clone(), namespace)?;
-    spawn_exec_risk_listener(hub, namespace)
+    let venue = runtime_common::exec_market::parse_venue(&exec.venue)?;
+    spawn_exec_state_listener(hub.clone(), namespace, venue)?;
+    spawn_exec_risk_listener(hub, namespace, venue)
 }
 
-fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
+fn spawn_exec_state_listener(
+    hub: WsHub,
+    namespace: &str,
+    venue: order_common::TradingVenue,
+) -> Result<()> {
     let namespace = namespace.to_string();
     let namespace_for_msg = namespace.clone();
     let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_STATE_CHANNEL);
@@ -137,9 +142,19 @@ fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
                     return;
                 }
             };
+            if rows.iter().any(|row| {
+                runtime_common::exec_market::validate_symbol(venue, &row.symbol).is_err()
+            }) {
+                warn!(
+                    "Exec Viz discarded a state sample containing another market (namespace={})",
+                    namespace_for_msg
+                );
+                return;
+            }
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "exec_pre_trade_state",
                 "namespace": namespace_for_msg.as_str(),
+                "venue": venue.data_pub_slug(),
                 "channel": EXEC_STATE_CHANNEL,
                 "ts_ms": get_timestamp_us() / 1000,
                 "entry": {
@@ -155,7 +170,11 @@ fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
     )
 }
 
-fn spawn_exec_risk_listener(hub: WsHub, namespace: &str) -> Result<()> {
+fn spawn_exec_risk_listener(
+    hub: WsHub,
+    namespace: &str,
+    venue: order_common::TradingVenue,
+) -> Result<()> {
     let namespace = namespace.to_string();
     let namespace_for_msg = namespace.clone();
     let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_RISK_CHANNEL);
@@ -163,9 +182,17 @@ fn spawn_exec_risk_listener(hub: WsHub, namespace: &str) -> Result<()> {
         &format!("viz_exec_risk_{}", sanitize_node_component(&namespace)),
         &service_name,
         move |entry: ExecAccountRiskResampleEntry, hub: WsHub| {
+            if entry.venue != venue.data_pub_slug() {
+                warn!(
+                    "Exec Viz discarded another market's risk sample (namespace={})",
+                    namespace_for_msg
+                );
+                return;
+            }
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "exec_pre_trade_risk",
                 "namespace": namespace_for_msg.as_str(),
+                "venue": venue.data_pub_slug(),
                 "channel": EXEC_RISK_CHANNEL,
                 "ts_ms": get_timestamp_us() / 1000,
                 "entry": entry,

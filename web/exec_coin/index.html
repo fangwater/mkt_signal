@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>币本位 Exec · 执行监控</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, "PingFang SC", sans-serif; background: #0b1318; color: #e5edf0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header, main { max-width: 1560px; margin: auto; padding: 24px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid #263740; }
+    h1 { margin: 6px 0; font-size: 24px; } h2 { margin: 0; font-size: 17px; }
+    .eyebrow { color: #e7b763; font-size: 12px; letter-spacing: .14em; }
+    .muted, .note { color: #9aaeb7; font-size: 13px; line-height: 1.7; }
+    .connection { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #9aaeb7; }
+    #connection[data-status="online"], .positive { color: #70d4b1; }
+    #connection[data-status="error"], .negative { color: #ff929e; }
+    .actions, .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    button, input, select, a.button { color: inherit; background: #15242c; border: 1px solid #344953; border-radius: 8px; padding: 9px 12px; font: inherit; font-size: 13px; }
+    button, a.button { cursor: pointer; } a { color: #86d6d0; text-decoration: none; }
+    button:hover, a.button:hover { border-color: #86d6d0; }
+    input { width: 180px; } select { max-width: 260px; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric { background: #122029; border: 1px solid #263740; border-radius: 12px; padding: 18px; }
+    .metric label { display: block; color: #9aaeb7; font-size: 12px; margin-bottom: 10px; }
+    .metric strong { font-size: 23px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 28px 0 14px; }
+    .table-wrap { overflow-x: auto; border: 1px solid #263740; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 13px 15px; border-bottom: 1px solid #263740; text-align: right; }
+    th { background: #15242c; color: #9aaeb7; font-size: 12px; font-weight: 500; }
+    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+    tbody tr:last-child td { border-bottom: 0; } tbody tr:hover { background: #122029; }
+    .empty { display: none; padding: 28px; text-align: center; color: #9aaeb7; }
+    .status { display: inline-block; padding: 4px 7px; border-radius: 5px; background: #20333a; font-size: 11px; }
+    .status.wait { color: #e7b763; } .status.done { color: #70d4b1; }
+    .note { margin: 0; padding: 14px 18px; border-left: 3px solid #e7b763; background: #152029; }
+    @media (max-width: 760px) { header, main { padding: 16px; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 430px) { .metric { padding: 12px; } .metric strong { font-size: 19px; } .filters { width: 100%; } .filters select, .filters input { width: 100%; max-width: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <span class="eyebrow">COIN-M · 独立执行实例</span>
+      <h1>币本位执行监控</h1>
+      <div class="connection"><span id="connection">连接中</span><span id="namespace">--</span><span id="updated">--</span></div>
+    </div>
+    <div class="actions"><button id="refresh" type="button">刷新</button><a class="button" href="./config/">查看配置</a></div>
+  </header>
+  <main>
+    <section class="metrics" aria-label="币本位账户与仓位">
+      <div class="metric"><label>账户权益 · 折合 USD</label><strong id="equity">--</strong></div>
+      <div class="metric"><label>币本位总名义价值 · USD</label><strong id="gross">--</strong></div>
+      <div class="metric"><label>币本位净名义价值 · USD</label><strong id="net">--</strong></div>
+      <div class="metric"><label>仓位 / 账户权益</label><strong id="leverage">--</strong></div>
+    </section>
+    <p class="note">目标与实际数量以对应币计，合约张数对应固定 USD 面值，币数量随价格变化。不同币的数量分别展示。统一账户的权益与保证金风险包含共享抵押资产。</p>
+    <section>
+      <div class="section-head"><h2>币本位目标与执行</h2><div class="filters">
+        <select id="strategy" aria-label="策略筛选"><option value="">全部策略</option></select>
+        <input id="symbol" aria-label="品种筛选" placeholder="BTCUSD / ETHUSD">
+      </div></div>
+      <p id="state-meta" class="muted">等待币本位仓位</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>品种 / 结算币</th><th>策略</th><th>状态</th><th>目标 · 币</th><th>实际 · 币</th><th>活动挂单 · 币</th><th>待下单 · 币</th><th>仓位差 · USD</th><th>剩余批次</th><th>预计完成</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table><div id="empty" class="empty">当前筛选没有币本位仓位</div></div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const MARKET = "binance-coin-futures";
+      const state = { exec: null, risk: null, strategy: "", symbol: "", ws: null, retry: null, stopped: false, received: 0 };
+      const byId = (id) => document.getElementById(id);
+      const finite = (value) => typeof value === "number" && Number.isFinite(value);
+      const number = (value, digits = 8) => finite(value) ? value.toLocaleString("en-US", { maximumFractionDigits: digits }) : "--";
+      const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+      const sign = (value) => !finite(value) || value === 0 ? "" : value > 0 ? "positive" : "negative";
+      function coinSymbol(symbol) { return /^[A-Z0-9]+USD$/.test(String(symbol || "")); }
+      function connection(status, text) { byId("connection").dataset.status = status; byId("connection").textContent = text; }
+      function updateConnection() {
+        if (state.ws?.readyState !== WebSocket.OPEN) return;
+        if (!state.exec || !state.risk) connection("checking", "等待币本位数据");
+        else if (Date.now() - Math.min(state.exec.ts_ms, state.risk.ts_ms) > 15000) connection("error", "数据延迟");
+        else connection("online", "实时");
+      }
+      function applyMessage(message) {
+        if (!message || message.venue !== MARKET || !message.entry || !finite(message.ts_ms)) return;
+        if (message.type === "exec_pre_trade_state") {
+          if (!Array.isArray(message.entry.rows) || message.entry.rows.some((row) => !coinSymbol(row.symbol))) {
+            connection("error", "收到非币本位仓位，已拒绝"); return;
+          }
+          if (state.exec && message.ts_ms < state.exec.ts_ms) return;
+          state.exec = message;
+        } else if (message.type === "exec_pre_trade_risk" && message.entry.venue === MARKET) {
+          if (state.risk && message.ts_ms < state.risk.ts_ms) return;
+          state.risk = message;
+        } else return;
+        state.received = Math.max(state.received, message.ts_ms); render(); updateConnection();
+      }
+      function rowStatus(row, ready) {
+        if (!ready || row.position_allocated === false) return ["等待仓位", "wait"];
+        if (row.execution_complete) return ["已完成", "done"];
+        if (finite(row.live_order_qty) && row.live_order_qty !== 0) return ["执行中", ""];
+        return ["等待执行", "wait"];
+      }
+      function render() {
+        const risk = state.risk?.entry;
+        byId("equity").textContent = number(risk?.equity_usdt, 2);
+        byId("gross").textContent = number(risk?.gross_notional_usdt, 2);
+        byId("net").textContent = number(risk?.net_notional_usdt, 2);
+        byId("leverage").textContent = finite(risk?.leverage) ? `${number(risk.leverage, 2)}x` : "--";
+        const entry = state.exec?.entry;
+        const allRows = entry?.rows || [];
+        const names = [...new Set(allRows.map((row) => row.strategy_name))].sort();
+        byId("strategy").innerHTML = '<option value="">全部策略</option>' + names.map((name) => `<option value="${escape(name)}">${escape(name)}</option>`).join("");
+        if (!names.includes(state.strategy)) state.strategy = "";
+        byId("strategy").value = state.strategy;
+        const rows = allRows.filter((row) => (!state.strategy || row.strategy_name === state.strategy) && (!state.symbol || row.symbol.includes(state.symbol)));
+        byId("rows").innerHTML = rows.map((row) => {
+          const [status, statusClass] = rowStatus(row, entry.position_ready);
+          const asset = row.symbol.slice(0, -3);
+          const eta = row.estimated_completion_ts_ms > 0 ? new Date(row.estimated_completion_ts_ms).toLocaleTimeString("zh-CN", { hour12: false }) : "--";
+          return `<tr><td>${escape(row.symbol)} <span class="muted">${escape(asset)}</span></td><td>${escape(row.strategy_name)}</td><td><span class="status ${statusClass}">${status}</span></td>` +
+            [row.target_qty, row.current_qty, row.live_order_qty, row.pending_qty].map((value) => `<td class="${sign(value)}">${number(value)}</td>`).join("") +
+            `<td class="${sign(row.delta_usdt)}">${number(row.delta_usdt, 2)}</td><td>${escape(row.remaining_batches ?? 0)}</td><td>${escape(eta)}</td></tr>`;
+        }).join("");
+        byId("empty").style.display = rows.length ? "none" : "block";
+        byId("state-meta").textContent = `${entry?.position_ready ? "币本位仓位已就绪" : "等待币本位仓位"} · ${names.length} 个策略 · ${rows.length} 条执行记录`;
+        byId("namespace").textContent = state.exec?.namespace || state.risk?.namespace || "--";
+        byId("updated").textContent = state.received ? new Date(state.received).toLocaleTimeString("zh-CN", { hour12: false }) : "--";
+      }
+      async function loadSnapshot() {
+        try {
+          const response = await fetch(new URL("./snapshot", location.href), { cache: "no-store" });
+          if (!response.ok) throw new Error(String(response.status));
+          const snapshot = await response.json();
+          (snapshot.entries || []).forEach(applyMessage);
+        } catch (_) { if (!state.received) connection("error", "快照读取失败"); }
+      }
+      function connect() {
+        clearTimeout(state.retry);
+        if (state.ws) { state.ws.onclose = null; state.ws.close(); }
+        const url = new URL("./ws", location.href); url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(url); state.ws = ws;
+        connection("checking", "连接中");
+        ws.onopen = () => { updateConnection(); void loadSnapshot(); };
+        ws.onmessage = (event) => { try { applyMessage(JSON.parse(event.data)); } catch (_) {} };
+        ws.onerror = () => connection("error", "连接错误");
+        ws.onclose = () => { connection("error", "已断开"); if (!state.stopped) state.retry = setTimeout(connect, 2000); };
+      }
+      byId("strategy").onchange = (event) => { state.strategy = event.target.value; render(); };
+      byId("symbol").oninput = (event) => { state.symbol = event.target.value.trim().toUpperCase(); render(); };
+      byId("refresh").onclick = () => { void loadSnapshot(); connect(); };
+      const staleTimer = setInterval(updateConnection, 1000);
+      window.addEventListener("pagehide", () => { state.stopped = true; clearTimeout(state.retry); clearInterval(staleTimer); if (state.ws) { state.ws.onclose = null; state.ws.close(); } });
+      render(); void loadSnapshot(); connect();
+    })();
+  </script>
+</body>
+</html>

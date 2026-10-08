@@ -30,6 +30,11 @@ if [[ "$VENUE" != "binance-futures" && "$VENUE" != "binance-coin-futures" && "$V
   echo "[ERROR] unsupported venue: $VENUE" >&2
   exit 1
 fi
+if [[ -n "${EXEC_VENUE:-}" && "$VENUE" != "$EXEC_VENUE" ]] || [[ -n "${EXEC_START_VENUE:-}" && "$VENUE" != "$EXEC_START_VENUE" ]]; then
+  echo "[ERROR] --venue must match EXEC_VENUE / EXEC_START_VENUE" >&2
+  exit 1
+fi
+export EXEC_VENUE="$VENUE"
 
 case "$VENUE" in
   binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
@@ -136,7 +141,7 @@ fi
 if [[ "$EXEC_BACKEND" == "native" ]]; then
 case "$VENUE" in
   binance-futures)
-    for file in binance_cancel_all_std_um_ws_orders.py binance_cancel_all_std_cm_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
+    for file in binance_cancel_all_std_um_ws_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
       [[ -f "${SCRIPT_DIR}/${file}" ]] || { echo "[ERROR] missing startup cancel dependency: scripts/${file}" >&2; exit 1; }
     done
     ;;
@@ -167,7 +172,7 @@ done
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
+{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","EXEC_VENUE":"${VENUE}","EXEC_START_VENUE":"${EXEC_START_VENUE:-}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
 JSON
 
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_exec_pre_trade.sh"

@@ -1875,6 +1875,13 @@ impl ChaseExecConfigReloader {
             let normalized_symbol_overrides = payload
                 .normalized_symbol_overrides()
                 .with_context(|| format!("invalid ChaseExec symbol overrides key={key}"))?;
+            for symbol in normalized_targets
+                .keys()
+                .chain(normalized_symbol_overrides.keys())
+            {
+                runtime_common::exec_market::validate_symbol(self.venue, symbol)
+                    .with_context(|| format!("invalid ChaseExec market key={key}"))?;
+            }
             loaded.push((
                 strategy_name,
                 key,

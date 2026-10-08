@@ -13,6 +13,16 @@ export ENABLE_IPC_FAST_POLL=0
 
 [[ $# -eq 0 ]] || { echo "[ERROR] start_exec_trade_signal.sh takes no arguments" >&2; exit 1; }
 [[ -n "${IPC_NAMESPACE:-}" ]] || { echo "[ERROR] IPC_NAMESPACE is required" >&2; exit 1; }
+EXEC_VENUE="${EXEC_VENUE:-${VENUE:-}}"
+case "$EXEC_VENUE" in
+  binance-futures|binance-coin-futures|okex-futures) ;;
+  *) echo "[ERROR] explicit EXEC_VENUE is required" >&2; exit 1 ;;
+esac
+if [[ -n "${EXEC_START_VENUE:-}" && "$EXEC_VENUE" != "$EXEC_START_VENUE" ]]; then
+  echo "[ERROR] EXEC_VENUE and EXEC_START_VENUE must name the same market" >&2
+  exit 1
+fi
+export EXEC_VENUE
 
 BIN_PATH=""
 for candidate in "${BASE_DIR}/trade_signal" "${BASE_DIR}/target/release/trade_signal"; do
@@ -51,10 +61,10 @@ done
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","IPC_NAMESPACE":"${IPC_NAMESPACE}","TRADE_SIGNAL_ENABLE_QUEUE_POSITION":"${QUEUE_POSITION_ENABLED}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
+{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","IPC_NAMESPACE":"${IPC_NAMESPACE}","EXEC_VENUE":"${EXEC_VENUE}","EXEC_START_VENUE":"${EXEC_START_VENUE:-}","TRADE_SIGNAL_ENABLE_QUEUE_POSITION":"${QUEUE_POSITION_ENABLED}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
 JSON
 
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_exec_trade_signal.sh"
-echo "[INFO] Starting ${PROC_NAME}; Exec branch and venue will be inferred from cwd=${BASE_DIR}; queue_position=${QUEUE_POSITION_ENABLED}"
+echo "[INFO] Starting ${PROC_NAME}; Exec market=${EXEC_VENUE}; queue_position=${QUEUE_POSITION_ENABLED}"
 "$PMDAEMON_BIN" --config "$cfg_file" start --name "$PROC_NAME"
 echo "[INFO] Logs: ${PMDAEMON_BIN} logs ${PROC_NAME} --follow"

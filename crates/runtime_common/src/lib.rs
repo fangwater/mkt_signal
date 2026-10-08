@@ -1,5 +1,6 @@
 pub mod affinity;
 pub mod exchange;
+pub mod exec_market;
 pub mod execution_backend;
 pub mod fast_hash;
 pub mod ipc_service_name;

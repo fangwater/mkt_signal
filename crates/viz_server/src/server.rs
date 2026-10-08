@@ -26,6 +26,16 @@ const WS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const CONFIG_PROXY_TIMEOUT: Duration = Duration::from_secs(3);
 const CONFIG_PROXY_BODY_LIMIT: usize = 1_000_000;
 const EXEC_DASHBOARD_HTML: &str = include_str!("../../../docs/exec_pre_trade_dashboard.html");
+const COIN_EXEC_DASHBOARD_HTML: &str = include_str!("../../../web/exec_coin/index.html");
+
+fn exec_dashboard_html(venue: &str) -> Result<&'static str> {
+    let venue = runtime_common::exec_market::parse_venue(venue)?;
+    Ok(if venue == order_common::TradingVenue::BinanceCoinFutures {
+        COIN_EXEC_DASHBOARD_HTML
+    } else {
+        EXEC_DASHBOARD_HTML
+    })
+}
 
 #[derive(Clone)]
 struct HttpState {
@@ -188,7 +198,7 @@ impl WsHub {
 pub async fn serve_http(
     cfg: HttpCfg,
     hub: WsHub,
-    exec_dashboard: bool,
+    exec_dashboard: Option<String>,
     config_proxy_url: Option<String>,
 ) -> Result<()> {
     hub.spawn_flush_loop();
@@ -207,8 +217,9 @@ pub async fn serve_http(
         )
         .route("/snapshot", get(snapshot_route))
         .route(&ws_path, get(ws_route));
-    if exec_dashboard {
-        app = app.route("/", get(|| async { Html(EXEC_DASHBOARD_HTML) }));
+    if let Some(venue) = exec_dashboard {
+        let html = exec_dashboard_html(&venue)?;
+        app = app.route("/", get(move || async move { Html(html) }));
     }
     if config_proxy_enabled {
         app = app
@@ -402,7 +413,18 @@ async fn snapshot_route(AxumState(state): AxumState<HttpState>) -> impl IntoResp
 
 #[cfg(test)]
 mod tests {
-    use super::config_proxy_path;
+    use super::{config_proxy_path, exec_dashboard_html};
+
+    #[test]
+    fn exec_frontends_are_selected_by_the_configured_market() {
+        let linear = exec_dashboard_html("binance-futures").unwrap();
+        let coin = exec_dashboard_html("binance-coin-futures").unwrap();
+        assert!(linear.contains("U 本位 Exec 执行监控"));
+        assert!(coin.contains("币本位执行监控"));
+        assert!(coin.contains("品种 / 结算币"));
+        assert!(!coin.contains("账户权益 USDT"));
+        assert!(exec_dashboard_html("binance-margin").is_err());
+    }
 
     #[test]
     fn config_proxy_path_strips_dashboard_prefix_and_preserves_query() {

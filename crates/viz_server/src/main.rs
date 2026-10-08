@@ -16,6 +16,9 @@ async fn main() -> Result<()> {
     let cfg_path = std::env::var("VIZ_CFG").unwrap_or_else(|_| "config/viz.toml".to_string());
     let cfg = VizCfg::load(&cfg_path).await?;
     info!("viz_server config loaded from {}", cfg_path);
+    if std::env::var("VIZ_CHECK_CONFIG_ONLY").as_deref() == Ok("1") {
+        return Ok(());
+    }
 
     let local = tokio::task::LocalSet::new();
     local
@@ -23,7 +26,10 @@ async fn main() -> Result<()> {
             for server in cfg.servers {
                 let hub = WsHub::new(128);
                 let http_cfg = server.http.clone();
-                let exec_dashboard = server.exec_pre_trade.enabled;
+                let exec_dashboard = server
+                    .exec_pre_trade
+                    .enabled
+                    .then(|| server.exec_pre_trade.venue.clone());
                 let config_proxy_url = server.exec_pre_trade.config_proxy_url.clone();
 
                 if let Err(err) = spawn_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
