@@ -1036,7 +1036,7 @@ where
                         if !forward_account_event(risk_event.to_bytes()) {
                             warn!("binance std UM account poller: failed to forward risk event");
                         }
-                        info!(
+                        debug!(
                             "Binance StdUmAccountSnapshot: equity_usd={:.8} initial_margin_usd={:.8} maintenance_margin_usd={:.8} margin_ratio={:.8} stable_asset_rows={} weight={}",
                             risk.actual_equity_usd,
                             risk.initial_margin_usd,
@@ -1054,7 +1054,7 @@ where
                             if !forward_account_event(event.to_bytes()) {
                                 warn!("binance std UM account poller: failed to forward wallet event");
                             }
-                            info!(
+                            debug!(
                                 "Binance StdUmWalletSnapshot: asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={}",
                                 snapshot.asset,
                                 snapshot.balance,
@@ -1986,7 +1986,7 @@ fn log_parsed_event(msg: &Bytes) {
                     BinanceBasicOrderMsg::VENUE_CM => "cm",
                     _ => "unknown",
                 };
-                info!(
+                debug!(
                     "Binance OrderUpdate: scope={} venue={} sym={} side={:?} x={} X={} cli_id={} ord_id={} price={} qty={} last_qty={} filled={}",
                     account_scope.as_str(),
                     venue,
@@ -2009,7 +2009,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::TradeUpdateLite => {
             if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance TradeUpdateLite: scope={} venue=um sym={} side={:?} cli_id={} trade_id={} last_px={} last_qty={} maker={}",
                     account_scope.as_str(),
                     m.symbol,
@@ -2024,7 +2024,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance BalanceUpdate: scope={} ts={} symbol={} wallet={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -2035,7 +2035,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance PositionUpdate: scope={} ts={} inst={} side={} amt={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -2059,7 +2059,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -2077,7 +2077,7 @@ fn log_parsed_event(msg: &Bytes) {
                     0.0
                 };
                 let diff = m.margin_ratio - calc_margin_ratio;
-                info!(
+                debug!(
                     "Binance AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6} calc_margin_ratio={:.6} diff={:.6}",
                     account_scope.as_str(),
                     m.timestamp,
@@ -2093,7 +2093,7 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::BinanceStdUmWalletSnapshot => {
             if let Ok(m) = BinanceStdUmWalletSnapshotMsg::from_bytes(&payload) {
-                info!(
+                debug!(
                     "Binance StdUmWalletSnapshot event: scope={} ts={} asset={} balance={:.8} cross_wallet={:.8} cross_un_pnl={:.8} cross_equity={:.8} available={:.8} max_withdraw={:.8} margin_available={} update_time={}",
                     account_scope.as_str(),
                     m.timestamp,

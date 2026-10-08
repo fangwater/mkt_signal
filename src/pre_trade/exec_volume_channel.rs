@@ -9,7 +9,30 @@ use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const FEED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct FeedWarningThrottle {
+    last_warning: Option<Instant>,
+    suppressed: u64,
+}
+
+impl FeedWarningThrottle {
+    fn summary_due(&mut self, now: Instant) -> Option<u64> {
+        if self
+            .last_warning
+            .is_none_or(|last| now.saturating_duration_since(last) >= FEED_WARNING_INTERVAL)
+        {
+            self.last_warning = Some(now);
+            Some(std::mem::take(&mut self.suppressed))
+        } else {
+            self.suppressed = self.suppressed.saturating_add(1);
+            None
+        }
+    }
+}
 
 #[derive(Default)]
 struct TradeCursor {
@@ -58,11 +81,17 @@ pub fn start(venues: &[TradingVenue]) {
 fn start_feed(venue: TradingVenue, venues: Vec<TradingVenue>) {
     tokio::task::spawn_local(async move {
         let mut cursors: HashMap<String, TradeCursor> = HashMap::new();
+        let mut subscribe_warnings = FeedWarningThrottle::default();
+        let mut receive_warnings = FeedWarningThrottle::default();
         loop {
             let subscriber = match subscribe(venue) {
                 Ok(sub) => sub,
                 Err(err) => {
-                    log::warn!("Exec POV volume unavailable venue={venue:?}: {err:#}");
+                    if let Some(suppressed) = subscribe_warnings.summary_due(Instant::now()) {
+                        log::warn!(
+                            "Exec POV volume unavailable venue={venue:?} suppressed={suppressed}: {err:#}"
+                        );
+                    }
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -78,7 +107,11 @@ fn start_feed(venue: TradingVenue, venues: Vec<TradingVenue>) {
                         Ok(Some(sample)) => sample,
                         Ok(None) => break,
                         Err(err) => {
-                            log::warn!("Exec POV trade receive failed: {err:?}");
+                            if let Some(suppressed) = receive_warnings.summary_due(Instant::now()) {
+                                log::warn!(
+                                    "Exec POV trade receive failed venue={venue:?} suppressed={suppressed}: {err:?}"
+                                );
+                            }
                             failed = true;
                             break;
                         }
@@ -126,6 +159,28 @@ fn start_feed(venue: TradingVenue, venues: Vec<TradingVenue>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_feed_failures_keep_first_warning_and_minute_summaries() {
+        let start = Instant::now();
+        let mut warnings = FeedWarningThrottle::default();
+        assert_eq!(warnings.summary_due(start), Some(0));
+        for seconds in [5, 10, 55, 59] {
+            assert_eq!(
+                warnings.summary_due(start + Duration::from_secs(seconds)),
+                None
+            );
+        }
+        assert_eq!(
+            warnings.summary_due(start + Duration::from_secs(60)),
+            Some(4)
+        );
+        assert_eq!(warnings.summary_due(start + Duration::from_secs(65)), None);
+        assert_eq!(
+            warnings.summary_due(start + Duration::from_secs(120)),
+            Some(1)
+        );
+    }
 
     #[test]
     fn duplicate_and_reordered_trades_cannot_mint_volume() {

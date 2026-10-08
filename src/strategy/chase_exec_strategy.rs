@@ -692,7 +692,7 @@ impl ChaseExecStrategy {
         {
             target.effective_batch_usdt = Some(value);
         }
-        info!(
+        debug!(
             "ChaseExecStrategy: strategy_id={} strategy_name={} symbol={} target generation={} mark_price={:.8} delta_usdt={:.4} batch_floor_usdt={:.4} effective_batch_usdt={:.4} max_batch={} max_open_batches={}",
             self.strategy_id,
             self.strategy_name,
@@ -817,7 +817,7 @@ impl ChaseExecStrategy {
             .virtual_position_qty()
             .expect("allocation checked above");
         self.taker_pending_base_qty = 0.0;
-        info!(
+        debug!(
             "ChaseExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} signal={} allocated_position_qty={:.8} generation={}",
             self.strategy_id,
             self.strategy_name,

@@ -28,7 +28,7 @@ use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use account_common::BinanceAccountMode;
 use anyhow::Result;
 use bytes::Bytes;
-use log::{info, warn};
+use log::{debug, info, warn};
 use order_common::{Side, TradingVenue};
 use runtime_common::redis_client::RedisSettings;
 use runtime_common::time_util::get_timestamp_us;
@@ -371,7 +371,7 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
             let now = get_timestamp_us();
             let req = GenericQueryRequest::create(request_type, now, now, context);
             let _ = QueryEngHub::publish_query_request(exchange, &req.to_bytes());
-            info!("snapshot query sent: {desc}");
+            debug!("snapshot query sent: {desc}");
             published = true;
         };
 
@@ -777,7 +777,7 @@ impl PreTrade {
                     refresh_cfg.open_venue,
                     refresh_cfg.hedge_venue,
                 ) {
-                    Ok(()) => info!("pre_trade risk parameters synchronous refresh succeeded"),
+                    Ok(()) => debug!("pre_trade risk parameters synchronous refresh succeeded"),
                     Err(err) => {
                         warn!("pre_trade risk parameters synchronous refresh failed: {err:#}")
                     }
@@ -810,7 +810,7 @@ impl PreTrade {
                         threshold_us: 0,
                     }),
                 );
-                info!(
+                debug!(
                     "pre_trade synchronous maintenance round finished: elapsed_us={} open_signals=drop close_signals=preserve",
                     maintenance_elapsed_us
                 );

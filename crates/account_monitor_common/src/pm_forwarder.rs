@@ -266,9 +266,16 @@ impl PmForwarder {
 
     /// 打印统计信息并清零窗口计数
     pub fn log_stats(&mut self) {
-        info!(
+        log::log!(
+            if self.dropped > 0 {
+                log::Level::Warn
+            } else {
+                log::Level::Debug
+            },
             "PM forwarder stats: sent={}, dropped={}, max_seen={} bytes",
-            self.sent, self.dropped, self.max_seen
+            self.sent,
+            self.dropped,
+            self.max_seen
         );
         self.sent = 0;
         self.dropped = 0;

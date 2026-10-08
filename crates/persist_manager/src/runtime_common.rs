@@ -3,7 +3,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use log::info;
+use log::debug;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use serde::de::DeserializeOwned;
@@ -97,7 +97,7 @@ impl RedisClient {
             .await
             .with_context(|| format!("connect redis failed: {}", url))?;
 
-        info!(
+        debug!(
             "redis connected host={} port={} db={} prefix={:?}",
             settings.host, settings.port, settings.db, settings.prefix
         );

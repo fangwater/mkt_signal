@@ -1286,7 +1286,7 @@ impl TradeWsClient {
                             self.current_remote_addr = Some(remote_addr);
                             self.current_tcp_fd = Some(raw_fd);
                             self.tcp_health_last = None;
-                            info!(
+                            debug!(
                                 "trade ws client id={} established connection to {} via {} remote_addr={}",
                                 self.id, self.url, self.local_ip, remote_addr
                             );
@@ -1605,7 +1605,7 @@ impl TradeWsClient {
                     if self.can_planned_reconnect_now()
                         && self.try_begin_proactive_reconnect(std::time::Instant::now())
                     {
-                        info!(
+                        debug!(
                             "trade ws client id={} exchange={} planned reconnect url={} local_ip={} remote_addr={:?} period_ms={} offset_ms={}",
                             self.id,
                             self.exchange,

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use anyhow::{Context, Result};
-use log::info;
+use log::debug;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Commands};
 use serde::de::DeserializeOwned;
@@ -101,7 +101,7 @@ impl RedisClient {
             .await
             .with_context(|| format!("连接 Redis 失败: {}", url))?;
 
-        info!(
+        debug!(
             "Redis 已连接 host={} port={} db={} prefix={:?}",
             settings.host, settings.port, settings.db, settings.prefix
         );
@@ -270,7 +270,7 @@ impl BlockingRedisClient {
             .get_connection()
             .with_context(|| format!("连接 Redis 失败: {}", url))?;
 
-        info!(
+        debug!(
             "Redis blocking connected host={} port={} db={} prefix={:?}",
             settings.host, settings.port, settings.db, settings.prefix
         );

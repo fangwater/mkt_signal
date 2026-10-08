@@ -1794,7 +1794,12 @@ impl TradeEngine {
                             {
                                 let summary = TcpHealthSummary::from_snapshots(&snapshots);
                                 if summary.endpoints > 0 {
-                                    info!(
+                                    log::log!(
+                                        if summary.disconnected > 0 || summary.paused > 0 || summary.protected > 0 {
+                                            log::Level::Info
+                                        } else {
+                                            log::Level::Debug
+                                        },
                                         "TcpHealthSummary: exchange={} endpoints={} connected={} healthy={} disconnected={} paused={} draining={} reconnecting={} protected={} spot_connected={}/{} futures_connected={}/{} window_data_segs_out={} window_retrans={} window_bp={} total_retrans={} rtt_us_avg={} rtt_us_max={} rttvar_us_max={} pending={} inflight={}",
                                         health_exchange,
                                         summary.endpoints,

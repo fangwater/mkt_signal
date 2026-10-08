@@ -15,7 +15,7 @@ use crate::strategy::chase_exec_strategy::ChaseExecStrategy;
 use crate::strategy::StrategyManager;
 use account_common::BinanceAccountMode;
 use anyhow::{Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use order_common::TradingVenue;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
@@ -1985,7 +1985,8 @@ impl ChaseExecConfigReloader {
             }
 
             if config_changed || previous_targets != targets {
-                info!(
+                log::log!(
+                    if config_changed { log::Level::Info } else { log::Level::Debug },
                     "ChaseExec Redis applied: strategy_name={} config_changed={} targets={} symbol_overrides={}",
                     strategy_name,
                     config_changed,
@@ -2064,7 +2065,7 @@ impl ChaseExecConfigReloader {
             timer.tick().await;
             loop {
                 if let Some(wakeup) = notify.as_ref().and_then(|channel| channel.drain()) {
-                    info!(
+                    debug!(
                         "ChaseExec reload notify received: strategy_name={} updated_at_us={}",
                         wakeup.strategy_name, wakeup.updated_at_us
                     );

@@ -1,7 +1,7 @@
 use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use bytes::Bytes;
-use log::{info, warn};
+use log::{debug, warn};
 pub use order_common::{
     gate_text_from_client_order_id, BinanceAccountMode, Order, OrderExecutionStatus, OrderManager,
     OrderQuantizedValue, OrderStatus, OrderType, OrderUpdateSkipReason, ProtectedCumulativeFill,
@@ -395,7 +395,7 @@ fn check_binance_unified_margin_balance(
             );
         }
     } else if !suppress_pre_submit_hot_path_logs() {
-        info!(
+        debug!(
             "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
             check_asset, required_amount, available_balance, order.symbol, order.side
         );
@@ -1035,7 +1035,7 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
-                    info!(
+                    debug!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
                         self.venue,
                         self.client_order_id,
@@ -1070,7 +1070,7 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
-                    info!(
+                    debug!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
                         self.venue,
                         self.client_order_id,
@@ -1362,7 +1362,7 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
-                    info!(
+                    debug!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
                         self.venue,
                         self.client_order_id,
@@ -1397,7 +1397,7 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
-                    info!(
+                    debug!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
                         self.venue,
                         self.client_order_id,

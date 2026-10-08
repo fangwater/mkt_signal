@@ -260,9 +260,16 @@ where
                                 let mut st = stats.borrow_mut();
                                 st.count += 1;
                                 if st.window_start.elapsed() >= Duration::from_secs(3) {
-                                    info!(
+                                    log::log!(
+                                        if st.dropped > 0 {
+                                            log::Level::Warn
+                                        } else {
+                                            log::Level::Debug
+                                        },
                                         "viz resample relay {} received count={} dropped={}",
-                                        channel_label, st.count, st.dropped
+                                        channel_label,
+                                        st.count,
+                                        st.dropped
                                     );
                                     st.window_start = Instant::now();
                                     st.count = 0;

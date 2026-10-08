@@ -1611,7 +1611,7 @@ impl BatchExecStrategy {
                 *level_qty += residual_base_qty;
             }
         }
-        info!(
+        debug!(
             "BatchExecStrategy: strategy_id={} symbol={} coalesced residual into ready batch={} residual_base_qty={:.8} batch_base_qty={:.8}",
             self.strategy_id,
             self.symbol,
@@ -1757,7 +1757,7 @@ impl BatchExecStrategy {
         let position_qty = self
             .virtual_position_qty()
             .expect("allocation checked above");
-        info!(
+        debug!(
             "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} signal={} allocated_position_qty={:.8} generation={}",
             self.strategy_id,
             self.strategy_name,
@@ -1975,7 +1975,7 @@ impl BatchExecStrategy {
                     {
                         target.effective_single_order_usdt = Some(value);
                     }
-                    info!(
+                    debug!(
                     "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target generation={} mark_price={:.8} delta_usdt={:.4} configured_single_usdt={:.4} effective_single_usdt={:.4} max_batch={}",
                     self.strategy_id,
                     self.strategy_name,
@@ -2014,7 +2014,7 @@ impl BatchExecStrategy {
             return;
         };
         if self.next_batch_at_us == i64::MAX {
-            info!(
+            debug!(
                 "BatchExecStrategy: strategy_id={} symbol={} aggregate residual became executable aggregate_base_qty={:.8} minimum_base_qty={:.8}",
                 self.strategy_id, self.symbol, aggregate_base_qty, minimum_base_qty
             );
@@ -2939,7 +2939,7 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         self.finish_child_order(client_order_id);
         if retry_post_only_immediately {
             self.next_batch_at_us = get_timestamp_us();
-            info!(
+            debug!(
                 "BatchExecStrategy: strategy_id={} symbol={} post-only rejection released for immediate retry order_id={}",
                 self.strategy_id, self.symbol, client_order_id
             );

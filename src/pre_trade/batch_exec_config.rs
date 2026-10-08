@@ -13,7 +13,7 @@ use crate::strategy::batch_exec_strategy::{
 use crate::strategy::StrategyManager;
 use account_common::BinanceAccountMode;
 use anyhow::{Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use order_common::TradingVenue;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
@@ -2150,7 +2150,8 @@ impl BatchExecConfigReloader {
             }
 
             if config_changed || previous_targets != targets {
-                info!(
+                log::log!(
+                    if config_changed { log::Level::Info } else { log::Level::Debug },
                     "BatchExec Redis applied: strategy_name={} config_changed={} targets={} symbol_overrides={}",
                     strategy_name,
                     config_changed,
@@ -2243,7 +2244,7 @@ impl BatchExecConfigReloader {
                     continue;
                 }
                 if let Some(wakeup) = notify.as_ref().and_then(|channel| channel.drain()) {
-                    info!(
+                    debug!(
                         "BatchExec reload notify received: strategy_name={} updated_at_us={}",
                         wakeup.strategy_name, wakeup.updated_at_us
                     );

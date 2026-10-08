@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, warn};
 use tokio::time::Instant;
 
 use crate::bbo_spread::BboSpreadStore;
@@ -108,7 +108,7 @@ impl UniformOrderPersistor {
                 .map(|store| store.format_spread_for_symbol(&order.symbol, order.update_ts))
                 .unwrap_or_default();
             let payload = append_bbo_spread(order.payload, &bbo_spread);
-            info!(
+            debug!(
                 "persist uniform order: key={} payload_len={} bbo_spread_len={}",
                 order.key,
                 payload.len(),
