@@ -15,8 +15,9 @@ use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 
 use crate::spread_pbs::adapter::{
-    create_adapter, BboDedupPolicy, BboFrame, IncrementalDedupPolicy, IncrementalFrame,
-    KeepaliveSpec, RawIncremental, RawIncrementalView, TradeDedupPolicy, TradeFrame, VenueAdapter,
+    create_adapter, BboDedupPolicy, BboFrame, BinaryChannel, IncrementalDedupPolicy,
+    IncrementalFrame, KeepaliveSpec, RawIncremental, RawIncrementalView, TradeDedupPolicy,
+    TradeFrame, VenueAdapter,
 };
 use crate::spread_pbs::binance::{
     binance_futures_mm_ws_enabled, binance_futures_standard_ws_url,
@@ -36,6 +37,8 @@ use crate::spread_pbs::publisher::{
 use crate::spread_pbs::ws::{
     run_public_ws, run_public_ws_with_ack_policy, FrameHandler, RollingRestartSpec, WsLoopParams,
 };
+
+use crate::spread_pbs::latency::PublicationLatency;
 
 mod hyperliquid_shards;
 
@@ -834,6 +837,8 @@ impl SpreadPbsApp {
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
             symbol_state: SymbolSeqState::with_symbols(&initial_symbols),
             bbo_dedup_policy: adapter.bbo_dedup_policy(),
+            sbe_symbols: fast_hash_map_with_capacity(initial_symbols.len()),
+            publication_latency: PublicationLatency::default(),
             trade_publish_not_before_us: (adapter.trade_dedup_policy()
                 == TradeDedupPolicy::RecentIdentity)
                 .then_some(app_started_at_us),
@@ -1129,6 +1134,7 @@ impl SpreadPbsApp {
                         s.symbol_state.incremental_seen()
                     );
                     s.log_and_reset_selected_source_stats(venue_slug);
+                    s.publication_latency.log_and_reset(venue_slug);
                 }
                 _ = health_ticker.tick(), if direct_incremental_enabled => {
                     if health_started_at.elapsed() >= INCREMENTAL_HEALTH_STARTUP_GRACE {
@@ -2451,6 +2457,8 @@ impl RecentTradeIdentities {
 struct SharedState {
     symbol_state: SymbolSeqState,
     bbo_dedup_policy: BboDedupPolicy,
+    sbe_symbols: FastHashMap<String, (Rc<str>, usize)>,
+    publication_latency: PublicationLatency,
     // Hyperliquid replays recent public trades in the first subscription batch
     // without an isSnapshot marker. Keep only trades at/after this process run.
     trade_publish_not_before_us: Option<i64>,
@@ -2754,6 +2762,13 @@ fn parse_binary_replacement_batch(
     include_derivatives: bool,
     emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
 ) -> ReplacementBatch {
+    let channel = adapter.binary_channel(raw);
+    let include_bbo = include_bbo && channel.is_none_or(|c| c == BinaryChannel::Bbo);
+    let include_trade = include_trade && channel.is_none_or(|c| c == BinaryChannel::Trade);
+    let include_incremental =
+        include_incremental && channel.is_none_or(|c| c == BinaryChannel::Incremental);
+    let include_derivatives =
+        include_derivatives && channel.is_none_or(|c| c == BinaryChannel::Derivatives);
     if include_bbo {
         match adapter.parse_binary_frame(raw, emit_bbo) {
             Ok(()) => {}
@@ -2999,6 +3014,28 @@ fn make_handler(
     source: MarketSource,
 ) -> FrameHandler {
     Rc::new(move |recv_us: i64, raw: &[u8]| {
+        if !looks_like_json(raw) && adapter.binary_channel(raw) == Some(BinaryChannel::Bbo) {
+            match adapter.parse_sbe_bbo(raw) {
+                Ok(Some(bbo)) => {
+                    let mut s = state.borrow_mut();
+                    process_sbe_bbo(
+                        &mut s,
+                        adapter.as_ref(),
+                        bbo,
+                        recv_us,
+                        source,
+                        |symbol, timestamp, [bid_price, bid_amount, ask_price, ask_amount]| {
+                            publisher.publish_bbo(
+                                symbol, timestamp, bid_price, bid_amount, ask_price, ask_amount,
+                            )
+                        },
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => log::error!("spread_pbs[{}] SBE BBO decode failed: {:#}", label, e),
+            }
+            return Ok(());
+        }
         if let Some(bbo) = adapter.parse_bbo_raw_borrowed(raw) {
             let accepted_us = get_timestamp_us();
             let slot_index = adapter.symbol_slot_index(bbo.symbol);
@@ -3678,6 +3715,52 @@ fn next_level_chunk(bids_remaining: usize, asks_remaining: usize, max: usize) ->
     (chunk_bids, chunk_asks)
 }
 
+/// Only used by the native Gate/Bitget monotonic SBE BBO feeds. Owned wrappers
+/// remain available to other consumers, while this path borrows the wire symbol.
+fn process_sbe_bbo(
+    state: &mut SharedState,
+    adapter: &dyn VenueAdapter,
+    view: mkt_parsers::sbe::Bbo<'_>,
+    recv_us: i64,
+    source: MarketSource,
+    publish: impl FnOnce(&str, i64, [f64; 4]) -> Result<()>,
+) {
+    reset_dedup_high_water_if_needed(state, get_timestamp_us());
+    let (symbol, index) = if let Some(cached) = state.sbe_symbols.get(view.symbol) {
+        cached.clone()
+    } else {
+        let symbol: Rc<str> = adapter.normalize_sbe_symbol(view.symbol).into();
+        let index = state.symbol_state.ensure_symbol(&symbol);
+        state
+            .sbe_symbols
+            .insert(view.symbol.to_string(), (symbol.clone(), index));
+        (symbol, index)
+    };
+    let slot = state.symbol_state.bbo_slot_by_index(index);
+    if should_drop_bbo_fields(&slot, view.timestamp_us, view.seq_id, false) {
+        state.dropped_by_seq += 1;
+        return;
+    }
+    let Some(prices) = view.prices() else {
+        return;
+    };
+    let sample = PublicationLatency::should_sample(state.published);
+    if let Err(e) = publish(&symbol, view.timestamp_us, prices) {
+        log::warn!("spread_pbs publish failed: {:#}", e);
+        return;
+    }
+    if sample {
+        state
+            .publication_latency
+            .record(recv_us, get_timestamp_us());
+    }
+    state
+        .symbol_state
+        .set_bbo_slot(slot, view.seq_id, view.timestamp_us);
+    state.record_selected_source(source);
+    state.published += 1;
+}
+
 fn process_frame(
     state: &mut SharedState,
     publisher: &Rc<SpreadPublisher>,
@@ -3822,6 +3905,8 @@ mod tests {
         SharedState {
             symbol_state: SymbolSeqState::with_symbols(&[]),
             bbo_dedup_policy: BboDedupPolicy::MonotonicSequence,
+            sbe_symbols: fast_hash_map_with_capacity(16),
+            publication_latency: PublicationLatency::default(),
             trade_publish_not_before_us: None,
             published: 0,
             trades_published: 0,
@@ -3841,6 +3926,219 @@ mod tests {
             dropped_by_seq: 0,
             trades_dropped_by_seq: 0,
             last_dedup_reset_us: now_us,
+        }
+    }
+
+    #[test]
+    fn sbe_bbo_deduplicates_before_conversion_and_commits_only_after_publish() {
+        let adapter = crate::spread_pbs::gate_sbe::GateSbeAdapter::new();
+        let now = get_timestamp_us();
+        let mut state = test_state(now);
+        // Production initially seeds venue-native symbols. BBO normalization must
+        // still use its own correct slot, not collide with another native symbol.
+        state
+            .symbol_state
+            .ensure_symbols(&["BTC_USDT".into(), "ETH_USDT".into()]);
+        let mut view = mkt_parsers::sbe::Bbo {
+            symbol: "BTC_USDT",
+            timestamp_us: now,
+            seq_id: 10,
+            price_exponent: -2,
+            size_exponent: -3,
+            bid_price: 10001,
+            bid_amount: 2300,
+            ask_price: 10002,
+            ask_amount: 4500,
+        };
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            view,
+            now,
+            MarketSource::Other,
+            |symbol, ts, prices| {
+                assert_eq!(symbol, "BTCUSDT");
+                assert_eq!(ts, now);
+                assert!((prices[0] - 100.01).abs() < 1e-12);
+                Ok(())
+            },
+        );
+        assert_eq!(state.published, 1);
+        assert_eq!(state.symbol_state.bbo_prev("BTCUSDT"), 10);
+        assert_eq!(state.symbol_state.bbo_prev("ETH_USDT"), i64::MIN);
+        let cached_symbol = state.sbe_symbols["BTC_USDT"].0.clone();
+
+        // Both an equal sequence and an older timestamp are dropped. A bad
+        // mantissa here proves deduplication ran before price validation.
+        let duplicate = mkt_parsers::sbe::Bbo {
+            bid_price: 0,
+            ..view
+        };
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            duplicate,
+            now,
+            MarketSource::Other,
+            |_, _, _| panic!("duplicate published"),
+        );
+        let stale = mkt_parsers::sbe::Bbo {
+            seq_id: 11,
+            timestamp_us: now - 1,
+            ..view
+        };
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            stale,
+            now,
+            MarketSource::Other,
+            |_, _, _| panic!("stale published"),
+        );
+        assert_eq!(state.dropped_by_seq, 2);
+        assert!(Rc::ptr_eq(&cached_symbol, &state.sbe_symbols["BTC_USDT"].0));
+
+        view.seq_id = 11;
+        let invalid = mkt_parsers::sbe::Bbo {
+            ask_amount: 0,
+            ..view
+        };
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            invalid,
+            now,
+            MarketSource::Other,
+            |_, _, _| panic!("invalid published"),
+        );
+        assert_eq!(state.symbol_state.bbo_prev("BTCUSDT"), 10);
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            view,
+            now,
+            MarketSource::Other,
+            |_, _, _| anyhow::bail!("publisher full"),
+        );
+        assert_eq!(state.symbol_state.bbo_prev("BTCUSDT"), 10);
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            view,
+            now,
+            MarketSource::Other,
+            |_, _, _| Ok(()),
+        );
+        assert_eq!(state.symbol_state.bbo_prev("BTCUSDT"), 11);
+        assert_eq!(state.published, 2);
+
+        // Keep the existing periodic reset semantics for venue sequence resets.
+        state.last_dedup_reset_us = now - DEDUP_RESET_INTERVAL_US - 1;
+        view.seq_id = 1;
+        process_sbe_bbo(
+            &mut state,
+            &adapter,
+            view,
+            now,
+            MarketSource::Other,
+            |_, _, _| Ok(()),
+        );
+        assert_eq!(state.symbol_state.bbo_prev("BTCUSDT"), 1);
+        assert_eq!(state.published, 3);
+    }
+
+    #[test]
+    fn binary_channel_dispatch_invokes_only_the_selected_decoder() {
+        use std::cell::Cell;
+        struct Probe {
+            channel: BinaryChannel,
+            calls: Cell<u8>,
+        }
+        impl VenueAdapter for Probe {
+            fn name(&self) -> &'static str {
+                "probe"
+            }
+            fn ws_url(&self) -> String {
+                String::new()
+            }
+            fn build_subscribe(&self, _: &[String]) -> Vec<serde_json::Value> {
+                Vec::new()
+            }
+            fn keepalive(&self) -> Option<KeepaliveSpec> {
+                None
+            }
+            fn parse_frame(
+                &self,
+                _: &serde_json::Value,
+                _: &mut dyn FnMut(BboFrame) -> Result<()>,
+            ) -> Result<()> {
+                panic!("JSON decoder")
+            }
+            fn binary_channel(&self, _: &[u8]) -> Option<BinaryChannel> {
+                Some(self.channel)
+            }
+            fn parse_binary_frame(
+                &self,
+                _: &[u8],
+                _: &mut dyn FnMut(BboFrame) -> Result<()>,
+            ) -> Result<()> {
+                assert_eq!(self.channel, BinaryChannel::Bbo);
+                self.calls.set(self.calls.get() + 1);
+                Ok(())
+            }
+            fn parse_trade_binary_frame(&self, _: &[u8]) -> Result<Vec<TradeFrame>> {
+                assert_eq!(self.channel, BinaryChannel::Trade);
+                self.calls.set(self.calls.get() + 1);
+                Ok(Vec::new())
+            }
+            fn parse_incremental_binary_frame(&self, _: &[u8]) -> Result<Vec<IncrementalFrame>> {
+                assert_eq!(self.channel, BinaryChannel::Incremental);
+                self.calls.set(self.calls.get() + 1);
+                Ok(Vec::new())
+            }
+            fn parse_derivatives_binary_frame(&self, _: &[u8]) -> Result<Vec<bytes::Bytes>> {
+                assert_eq!(self.channel, BinaryChannel::Derivatives);
+                self.calls.set(self.calls.get() + 1);
+                Ok(Vec::new())
+            }
+        }
+        for channel in [
+            BinaryChannel::Bbo,
+            BinaryChannel::Trade,
+            BinaryChannel::Incremental,
+            BinaryChannel::Derivatives,
+            BinaryChannel::Ignored,
+        ] {
+            let adapter = Probe {
+                channel,
+                calls: Cell::new(0),
+            };
+            parse_binary_replacement_batch(
+                "test",
+                &adapter,
+                &[],
+                true,
+                true,
+                true,
+                true,
+                &mut |_| Ok(()),
+            );
+            assert_eq!(
+                adapter.calls.get(),
+                u8::from(channel != BinaryChannel::Ignored)
+            );
+            adapter.calls.set(0);
+            parse_binary_replacement_batch(
+                "test",
+                &adapter,
+                &[],
+                false,
+                false,
+                false,
+                false,
+                &mut |_| Ok(()),
+            );
+            assert_eq!(adapter.calls.get(), 0);
         }
     }
 

@@ -20,7 +20,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 use crate::spread_pbs::adapter::{
-    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    BboFrame, BinaryChannel, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
 use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, Level, MarkPriceMsg};
 use order_common::TradingVenue;
@@ -56,6 +56,20 @@ impl VenueAdapter for BitgetAdapter {
 
     fn ws_url(&self) -> String {
         BITGET_SBE_WS_URL.to_string()
+    }
+
+    fn binary_channel(&self, raw: &[u8]) -> Option<BinaryChannel> {
+        Some(
+            match raw.get(2..4).map(|v| u16::from_le_bytes([v[0], v[1]])) {
+                Some(bitget_codec::SBE_TEMPLATE_BOOKS1) => BinaryChannel::Bbo,
+                Some(bitget_codec::SBE_TEMPLATE_PUBLIC_TRADE) => BinaryChannel::Trade,
+                _ => BinaryChannel::Ignored,
+            },
+        )
+    }
+
+    fn parse_sbe_bbo<'a>(&self, raw: &'a [u8]) -> Result<Option<mkt_parsers::sbe::Bbo<'a>>> {
+        Ok(bitget_codec::parse_sbe_books1_view(raw)?)
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {

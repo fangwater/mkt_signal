@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Query, subscribe, and redeem Binance BFUSD.
+"""Query, subscribe, and redeem Binance BFUSD or RWUSD.
 
 Binance moved BFUSD subscription and redemption to Simple Earn in August 2025.
-Both account modes therefore use the same Spot-account BFUSD endpoints. Optional
+Both products use Spot-account Simple Earn endpoints. Optional
 wallet moves adapt that Spot-only contract to this repository's trading modes:
 
 * STANDARD: Spot <-> USD-M Futures (UMFUTURE)
@@ -11,8 +11,13 @@ wallet moves adapt that Spot-only contract to this repository's trading modes:
 All mutating commands are dry-run unless ``--execute`` is supplied. Mutating
 requests are never retried automatically because a timeout can leave the remote
 result ambiguous. The API key needs Spot & Margin Trading permission. Moving
-BFUSD to Standard UM assumes Multi-Assets Mode is already enabled; this script
-does not change the futures account mode.
+BFUSD/RWUSD to Standard UM assumes Multi-Assets Mode is already enabled; this
+script does not change the futures account mode. BFUSD redeems to Spot USDT;
+RWUSD redeems to Spot USDC. Redemption does not transfer proceeds back to trading.
+
+API contracts:
+  https://developers.binance.com/en/docs/catalog/investment-and-services-simple-earn/api/rest-api/bfusd
+  https://developers.binance.com/en/docs/catalog/investment-and-services-simple-earn/api/rest-api/rwusd
 
 Examples:
   # Read-only BFUSD account and quota queries.
@@ -29,6 +34,13 @@ Examples:
   # Collect PM BFUSD, move it to Spot, then request fast redemption to Spot USDT.
   python3 scripts/binance_bfusd.py redeem --amount 1000 --type FAST \
       --account-mode PM --from-trading --execute
+
+  # Use RWUSD instead (omit --execute to preview all wallet moves).
+  python3 scripts/binance_bfusd.py quota --product RWUSD
+  python3 scripts/binance_bfusd.py subscribe --product RWUSD --amount 1000 \
+      --account-mode STANDARD --from-trading --to-trading
+  python3 scripts/binance_bfusd.py redeem --product RWUSD --amount 1000 \
+      --type FAST --account-mode STANDARD --from-trading
 """
 
 from __future__ import annotations
@@ -53,13 +65,39 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 DEFAULT_SAPI_URL = "https://api.binance.com"
 DEFAULT_PAPI_URL = "https://papi.binance.com"
-BFUSD_ACCOUNT_PATH = "/sapi/v1/bfusd/account"
-BFUSD_QUOTA_PATH = "/sapi/v1/bfusd/quota"
-BFUSD_SUBSCRIBE_PATH = "/sapi/v1/bfusd/subscribe"
-BFUSD_REDEEM_PATH = "/sapi/v1/bfusd/redeem"
 UNIVERSAL_TRANSFER_PATH = "/sapi/v1/asset/transfer"
 PM_ASSET_COLLECTION_PATH = "/papi/v1/asset-collection"
-RECEIVED_BFUSD = "<received-bfusd>"
+
+
+@dataclass(frozen=True)
+class EarnProduct:
+    asset: str
+    redemption_asset: str
+
+    def path(self, operation: str) -> str:
+        return f"/sapi/v1/{self.asset.lower()}/{operation}"
+
+    @property
+    def amount_field(self) -> str:
+        return f"{self.asset.lower()}Amount"
+
+    @property
+    def received_amount(self) -> str:
+        return f"<received-{self.asset.lower()}>"
+
+
+PRODUCTS = {
+    "BFUSD": EarnProduct("BFUSD", "USDT"),
+    "RWUSD": EarnProduct("RWUSD", "USDC"),
+}
+
+
+def resolve_product(value: str) -> EarnProduct:
+    try:
+        return PRODUCTS[value.strip().upper()]
+    except KeyError as exc:
+        raise ValueError("product must be BFUSD or RWUSD") from exc
+
 
 AUTHORITATIVE_ENV_KEYS = (
     "BINANCE_API_KEY",
@@ -330,11 +368,13 @@ def build_subscribe_plan(
     account_mode: Optional[str],
     from_trading: bool,
     to_trading: bool,
+    product: str = "BFUSD",
 ) -> list[Step]:
+    selected = resolve_product(product)
     amount = normalize_amount(amount)
     asset = asset.strip().upper()
     if asset not in {"USDT", "USDC"}:
-        raise ValueError("BFUSD subscription asset must be USDT or USDC")
+        raise ValueError(f"{selected.asset} subscription asset must be USDT or USDC")
     if (from_trading or to_trading) and account_mode not in {"STANDARD", "PM"}:
         raise ValueError("STANDARD or PM account mode is required for trading-wallet moves")
 
@@ -359,11 +399,11 @@ def build_subscribe_plan(
 
     steps.append(
         Step(
-            name="subscribe_bfusd",
-            description=f"subscribe BFUSD with {amount} {asset} from Spot",
+            name=f"subscribe_{selected.asset.lower()}",
+            description=f"subscribe {selected.asset} with {amount} {asset} from Spot",
             method="POST",
             api="sapi",
-            path=BFUSD_SUBSCRIBE_PATH,
+            path=selected.path("subscribe"),
             params={"asset": asset, "amount": amount},
         )
     )
@@ -377,11 +417,11 @@ def build_subscribe_plan(
             destination = "Standard UM"
         steps.append(
             universal_transfer_step(
-                "transfer_bfusd_to_trading",
-                f"transfer the received BFUSD from Spot to {destination}",
+                f"transfer_{selected.asset.lower()}_to_trading",
+                f"transfer the received {selected.asset} from Spot to {destination}",
                 transfer_type,
-                "BFUSD",
-                RECEIVED_BFUSD,
+                selected.asset,
+                selected.received_amount,
             )
         )
     return steps
@@ -392,7 +432,9 @@ def build_redeem_plan(
     redemption_type: str,
     account_mode: Optional[str],
     from_trading: bool,
+    product: str = "BFUSD",
 ) -> list[Step]:
+    selected = resolve_product(product)
     amount = normalize_amount(amount)
     redemption_type = redemption_type.strip().upper()
     if redemption_type not in {"FAST", "STANDARD"}:
@@ -403,7 +445,7 @@ def build_redeem_plan(
     steps: list[Step] = []
     if from_trading:
         if account_mode == "PM":
-            steps.append(pm_collection_step("BFUSD"))
+            steps.append(pm_collection_step(selected.asset))
             transfer_type = "PORTFOLIO_MARGIN_MAIN"
             source = "PM"
         else:
@@ -411,21 +453,24 @@ def build_redeem_plan(
             source = "Standard UM"
         steps.append(
             universal_transfer_step(
-                "transfer_bfusd_to_spot",
-                f"transfer {amount} BFUSD from {source} to Spot",
+                f"transfer_{selected.asset.lower()}_to_spot",
+                f"transfer {amount} {selected.asset} from {source} to Spot",
                 transfer_type,
-                "BFUSD",
+                selected.asset,
                 amount,
             )
         )
 
     steps.append(
         Step(
-            name="redeem_bfusd",
-            description=f"redeem {amount} BFUSD ({redemption_type}) to Spot USDT",
+            name=f"redeem_{selected.asset.lower()}",
+            description=(
+                f"redeem {amount} {selected.asset} ({redemption_type}) "
+                f"to Spot {selected.redemption_asset}"
+            ),
             method="POST",
             api="sapi",
-            path=BFUSD_REDEEM_PATH,
+            path=selected.path("redeem"),
             params={"amount": amount, "type": redemption_type},
         )
     )
@@ -437,7 +482,7 @@ def printable_params(params: Mapping[str, str]) -> str:
 
 
 def print_plan(steps: Iterable[Step], sapi_url: str, papi_url: str) -> None:
-    print("BFUSD workflow plan:")
+    print("Simple Earn workflow plan:")
     for index, step in enumerate(steps, start=1):
         base_url = sapi_url if step.api == "sapi" else papi_url
         print(f"  {index}. {step.description}")
@@ -448,7 +493,11 @@ def print_plan(steps: Iterable[Step], sapi_url: str, papi_url: str) -> None:
 
 
 def response_succeeded(step: Step, payload: Any) -> None:
-    if step.name in {"subscribe_bfusd", "redeem_bfusd"}:
+    if any(
+        step.path == product.path(operation)
+        for product in PRODUCTS.values()
+        for operation in ("subscribe", "redeem")
+    ):
         if not isinstance(payload, dict) or payload.get("success") is not True:
             raise ApiError(f"{step.path} returned an unsuccessful payload: {payload!r}")
 
@@ -456,25 +505,34 @@ def response_succeeded(step: Step, payload: Any) -> None:
 def execute_plan(client: BinanceClient, steps: Sequence[Step]) -> list[Tuple[Step, Any]]:
     completed: list[str] = []
     results: list[Tuple[Step, Any]] = []
-    received_bfusd: Optional[str] = None
+    received_amounts: Dict[str, str] = {}
 
     for step in steps:
         params = dict(step.params)
-        if params.get("amount") == RECEIVED_BFUSD:
-            if received_bfusd is None:
+        if params.get("amount") in {p.received_amount for p in PRODUCTS.values()}:
+            received = received_amounts.get(params["amount"])
+            if received is None:
                 raise WorkflowError(
-                    "subscription response did not provide a positive bfusdAmount; "
-                    "received BFUSD may remain in Spot",
+                    "subscription response did not provide a positive received amount; "
+                    "subscribed assets may remain in Spot",
                     completed,
                 )
-            params["amount"] = received_bfusd
+            params["amount"] = received
         try:
             payload = client.request(step.api, step.method, step.path, params)
             response_succeeded(step, payload)
-            if step.name == "subscribe_bfusd":
-                if not isinstance(payload, dict):
-                    raise ApiError("BFUSD subscription response is not an object")
-                received_bfusd = normalize_amount(str(payload.get("bfusdAmount", "")))
+            for product in PRODUCTS.values():
+                if step.path == product.path("subscribe"):
+                    try:
+                        received_amounts[product.received_amount] = normalize_amount(
+                            str(payload.get(product.amount_field, ""))
+                        )
+                    except ValueError as exc:
+                        raise ApiError(
+                            f"subscription reported success but {product.amount_field} "
+                            f"is invalid; received {product.asset} may remain in Spot; "
+                            "check account/history before retrying"
+                        ) from exc
         except (ApiError, ValueError) as exc:
             raise WorkflowError(f"step {step.name} failed: {exc}", completed) from exc
 
@@ -486,6 +544,10 @@ def execute_plan(client: BinanceClient, steps: Sequence[Step]) -> list[Tuple[Ste
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--product", type=str.upper, choices=tuple(PRODUCTS), default="BFUSD",
+        help="Simple Earn product (default: BFUSD)",
+    )
     parser.add_argument(
         "--env-file",
         help="source this env.sh first; otherwise auto-source ./env.sh when present",
@@ -509,19 +571,19 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Query, subscribe, and redeem Binance BFUSD",
+        description="Query, subscribe, and redeem Binance BFUSD/RWUSD",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     for name, help_text in (
-        ("account", "query BFUSD account information (read-only)"),
-        ("quota", "query BFUSD subscription/redemption quotas (read-only)"),
+        ("account", "query product account information (read-only)"),
+        ("quota", "query product subscription/redemption quotas (read-only)"),
     ):
         subparser = subparsers.add_parser(name, help=help_text)
         add_common_args(subparser)
 
-    subscribe = subparsers.add_parser("subscribe", help="subscribe BFUSD using Spot USDT/USDC")
+    subscribe = subparsers.add_parser("subscribe", help="subscribe BFUSD/RWUSD using Spot USDT/USDC")
     add_common_args(subscribe)
     subscribe.add_argument("--amount", required=True, help="USDT/USDC amount to subscribe")
     subscribe.add_argument(
@@ -537,13 +599,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     subscribe.add_argument(
         "--to-trading",
         action="store_true",
-        help="move the received BFUSD from Spot to Standard UM or PM",
+        help="move the received BFUSD/RWUSD from Spot to Standard UM or PM",
     )
     subscribe.add_argument("--execute", action="store_true", help="submit all mutating steps")
 
-    redeem = subparsers.add_parser("redeem", help="redeem Spot BFUSD to Spot USDT")
+    redeem = subparsers.add_parser("redeem", help="redeem BFUSD to Spot USDT or RWUSD to Spot USDC")
     add_common_args(redeem)
-    redeem.add_argument("--amount", required=True, help="BFUSD amount to redeem")
+    redeem.add_argument("--amount", required=True, help="BFUSD/RWUSD amount to redeem")
     redeem.add_argument(
         "--type",
         dest="redemption_type",
@@ -553,7 +615,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     redeem.add_argument(
         "--from-trading",
         action="store_true",
-        help="first move BFUSD from Standard UM or PM to Spot",
+        help="first move BFUSD/RWUSD from Standard UM or PM to Spot",
     )
     redeem.add_argument("--execute", action="store_true", help="submit all mutating steps")
     return parser.parse_args(argv)
@@ -580,7 +642,7 @@ def run_read_only(args: argparse.Namespace, sapi_url: str, papi_url: str) -> int
         args.recv_window,
         args.timeout,
     )
-    path = BFUSD_ACCOUNT_PATH if args.command == "account" else BFUSD_QUOTA_PATH
+    path = resolve_product(args.product).path(args.command)
     payload = client.request("sapi", "GET", path, {})
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -610,6 +672,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 account_mode,
                 args.from_trading,
                 args.to_trading,
+                args.product,
             )
         else:
             steps = build_redeem_plan(
@@ -617,6 +680,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.redemption_type,
                 account_mode,
                 args.from_trading,
+                args.product,
             )
 
         print(f"account_mode={account_mode or 'SPOT_ONLY'} execute={args.execute}")

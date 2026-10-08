@@ -11,6 +11,103 @@ use persist_common::{
     UNIFORM_ORDER_TAIL_BINARY_LEN,
 };
 
+/// Minimal factual order observation for read-only health checks. Uses the same
+/// persisted codecs as exports, including terminal unmatched exchange evidence.
+#[derive(Debug, Clone)]
+pub struct OrderHealthObservation {
+    pub venue: String,
+    pub symbol: String,
+    pub client_order_id: i64,
+    pub observed_us: i64,
+    pub status: Option<String>,
+    pub uniform: bool,
+}
+
+/// Reopens read-only on every scan so live WAL updates are visible. A capped
+/// scan is an error, never an apparently healthy incomplete order history.
+pub fn read_order_health_observations(
+    path: &std::path::Path,
+    since_us: i64,
+    max_records_per_cf: usize,
+) -> Result<Vec<OrderHealthObservation>> {
+    use rocksdb::{Direction, IteratorMode, Options, DB};
+    anyhow::ensure!(path.is_dir(), "order store is not a directory");
+    anyhow::ensure!(
+        since_us >= 0 && max_records_per_cf > 0,
+        "invalid order scan bounds"
+    );
+    let options = Options::default();
+    let names = DB::list_cf(&options, path).context("list order store column families")?;
+    let requested = [
+        "uniform_orders",
+        "order_updates",
+        "trade_updates",
+        "order_updates_unmatched",
+        "trade_updates_unmatched",
+    ];
+    for name in requested {
+        anyhow::ensure!(
+            names.iter().any(|n| n == name),
+            "missing order column family {name}"
+        );
+    }
+    let db = DB::open_cf_for_read_only(&options, path, names, false)
+        .context("open order store read-only")?;
+    let start = format!("{since_us:020}");
+    let mut observations = Vec::new();
+    for name in requested {
+        let cf = db
+            .cf_handle(name)
+            .context("order column family disappeared")?;
+        for (index, item) in db
+            .iterator_cf(cf, IteratorMode::From(start.as_bytes(), Direction::Forward))
+            .enumerate()
+        {
+            anyhow::ensure!(index < max_records_per_cf, "order scan limit reached in {name}; increase max_order_records or shorten lookback");
+            let (key, value) = item.context("read order event")?;
+            let ts = i64::try_from(parse_simple_key(std::str::from_utf8(&key)?)?)?;
+            let observation = match name {
+                "uniform_orders" => {
+                    let r = decode_uniform_order_record(&value)
+                        .context("decode uniform order health record")?;
+                    OrderHealthObservation {
+                        venue: r.trading_venue,
+                        symbol: r.symbol,
+                        client_order_id: r.client_order_id,
+                        observed_us: ts.max(r.recv_ts_us).max(r.update_ts),
+                        status: Some(r.status),
+                        uniform: true,
+                    }
+                }
+                "order_updates" | "order_updates_unmatched" => {
+                    let r = decode_order_record(&value).context("decode order health update")?;
+                    OrderHealthObservation {
+                        venue: r.trading_venue,
+                        symbol: r.symbol,
+                        client_order_id: r.client_order_id,
+                        observed_us: ts,
+                        status: Some(r.status),
+                        uniform: false,
+                    }
+                }
+                _ => {
+                    let r = decode_trade_record(&value).context("decode trade health update")?;
+                    OrderHealthObservation {
+                        venue: r.trading_venue,
+                        symbol: r.symbol,
+                        client_order_id: r.client_order_id,
+                        observed_us: ts,
+                        status: r.order_status,
+                        uniform: false,
+                    }
+                }
+            };
+            observations.push(observation);
+        }
+    }
+    Ok(observations)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RangeFilter {
     start_ts: Option<u64>,
@@ -1076,6 +1173,56 @@ mod tests {
             buf.put_slice(&SignalBbo::encode_optional(signal_bbo));
         }
         buf.to_vec()
+    }
+
+    #[test]
+    fn order_health_reader_sees_live_wal_without_writing_primary_and_rejects_caps() {
+        use rocksdb::{Options, DB};
+        let path = std::env::temp_dir().join(format!(
+            "fr-health-reader-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let names = [
+            "uniform_orders",
+            "order_updates",
+            "trade_updates",
+            "order_updates_unmatched",
+            "trade_updates_unmatched",
+        ];
+        let db = DB::open_cf(&options, &path, names).unwrap();
+        let cf = db.cf_handle("uniform_orders").unwrap();
+        db.put_cf(cf, format!("{:020}", 1000), uniform_payload(None))
+            .unwrap();
+        let sequence = db.latest_sequence_number();
+        let observations = read_order_health_observations(&path, 0, 100).unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].client_order_id, 17);
+        assert_eq!(observations[0].status.as_deref(), Some("NEW"));
+        assert_eq!(db.latest_sequence_number(), sequence);
+        db.put_cf(cf, format!("{:020}", 2000), uniform_payload(None))
+            .unwrap();
+        assert_eq!(
+            read_order_health_observations(&path, 0, 100).unwrap().len(),
+            2
+        );
+        assert!(read_order_health_observations(&path, 0, 1).is_err());
+        assert_eq!(
+            read_order_health_observations(&path, 1500, 100)
+                .unwrap()
+                .len(),
+            1
+        );
+        db.put_cf(cf, format!("{:020}", 3000), b"corrupt").unwrap();
+        assert!(read_order_health_observations(&path, 0, 100).is_err());
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -1,0 +1,20 @@
+[package]
+name = "fr_monitor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = "0.7"
+base64 = "0.22"
+clap = { version = "4.0", features = ["derive"] }
+iceoryx2 = "0.8.1"
+hmac = "0.12"
+mkt_parsers = { path = "../mkt_parsers" }
+persist_manager = { path = "../persist_manager", features = ["runtime"] }
+reqwest = { version = "0.12.19", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+tokio = { version = "1.0", features = ["full"] }
+toml = "0.8"

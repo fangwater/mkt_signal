@@ -57,6 +57,16 @@ pub struct RawBboFrame<'a> {
     pub ask_amount: f64,
 }
 
+/// Known binary adapters dispatch a frame once instead of probing every parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryChannel {
+    Bbo,
+    Trade,
+    Incremental,
+    Derivatives,
+    Ignored,
+}
+
 /// 各家逐笔成交解析后的统一中间表示。
 #[derive(Debug, Clone)]
 pub struct TradeFrame {
@@ -192,6 +202,15 @@ impl KeepaliveSpec {
 pub trait VenueAdapter {
     fn name(&self) -> &'static str;
     fn ws_url(&self) -> String;
+    fn binary_channel(&self, _raw: &[u8]) -> Option<BinaryChannel> {
+        None
+    }
+    fn parse_sbe_bbo<'a>(&self, _raw: &'a [u8]) -> Result<Option<mkt_parsers::sbe::Bbo<'a>>> {
+        Ok(None)
+    }
+    fn normalize_sbe_symbol(&self, symbol: &str) -> String {
+        symbol.to_ascii_uppercase()
+    }
     fn ws_headers(&self) -> Vec<(String, String)> {
         Vec::new()
     }

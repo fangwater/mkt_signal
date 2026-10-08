@@ -92,3 +92,60 @@ impl LatencyKll {
         Some(stats)
     }
 }
+
+// Sampled local receive-to-IPC time, without an exchange-clock dependency.
+#[derive(Default)]
+pub struct PublicationLatency {
+    samples: u64,
+    total_us: u64,
+    max_us: u64,
+}
+
+impl PublicationLatency {
+    pub fn should_sample(published: u64) -> bool {
+        published % 1024 == 0
+    }
+
+    pub fn record(&mut self, recv_us: i64, published_us: i64) {
+        // Wall-clock steps backwards cannot represent processing time.
+        let Some(delta) = published_us.checked_sub(recv_us).filter(|v| *v >= 0) else {
+            return;
+        };
+        self.samples += 1;
+        self.total_us = self.total_us.saturating_add(delta as u64);
+        self.max_us = self.max_us.max(delta as u64);
+    }
+
+    pub fn log_and_reset(&mut self, venue: &str) {
+        if self.samples == 0 {
+            return;
+        }
+        log::info!(
+            "spread_pbs[{}] bbo_recv_to_ipc_us sample_every=1024 samples={} mean={} max={}",
+            venue,
+            self.samples,
+            self.total_us / self.samples,
+            self.max_us
+        );
+        *self = Self::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampled_local_duration_ignores_backwards_clock_steps() {
+        let mut stats = PublicationLatency::default();
+        assert!(PublicationLatency::should_sample(0));
+        assert!(!PublicationLatency::should_sample(1));
+        assert!(PublicationLatency::should_sample(1024));
+        stats.record(100, 110);
+        stats.record(100, 130);
+        stats.record(100, 90);
+        assert_eq!((stats.samples, stats.total_us, stats.max_us), (2, 40, 30));
+        stats.log_and_reset("test");
+        assert_eq!((stats.samples, stats.total_us, stats.max_us), (0, 0, 0));
+    }
+}

@@ -1706,6 +1706,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "fr_monitor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "hmac",
+ "iceoryx2",
+ "mkt_parsers",
+ "persist_manager",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "fs2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

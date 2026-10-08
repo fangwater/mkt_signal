@@ -12,6 +12,7 @@ members = [
     "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",
+    "crates/fr_monitor",
     "crates/inpos_engine",
     "crates/ipc_common",
     "crates/mkt_model_runtime",

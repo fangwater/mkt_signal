@@ -1,0 +1,169 @@
+# JP inventory observed read-only on 2026-10-08. No trading credentials here.
+# Exposure thresholds below are monitor defaults, not trading risk settings.
+# Market symbols are explicit BBO sentinels; extend them for per-symbol coverage.
+[monitor]
+bind = "127.0.0.1:18180"
+host_tag = "jp-meta-elvpn"
+poll_secs = 10
+stale_secs = 90
+market_stale_secs = 30
+order_stale_secs = 300
+order_lookback_secs = 3600
+max_order_records = 50000
+alert_delay_secs = 30
+repeat_secs = 300
+# Same environment-variable names as CTA monitor. Read only with --execute.
+market_webhook_url_env = "CTA_DINGTALK_MARKET_WEBHOOK_URL"
+order_webhook_url_env = "CTA_DINGTALK_ORDER_WEBHOOK_URL"
+# market_secret_env = "CTA_DINGTALK_MARKET_SECRET"
+# order_secret_env = "CTA_DINGTALK_ORDER_SECRET"
+
+[[sources]]
+id = "binance_fr_arb01"
+namespace = "binance_fr_arb01"
+enabled = false
+viz_url = "http://127.0.0.1:20131"
+rocksdb_path = "/home/ubuntu/binance_fr_arb01/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "binance-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "binance-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "binance_fr_arb02"
+namespace = "binance_fr_arb02"
+enabled = true
+viz_url = "http://127.0.0.1:20132"
+rocksdb_path = "/home/ubuntu/binance_fr_arb02/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "binance-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "binance-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "binance_fr_arb03"
+namespace = "binance_fr_arb03"
+enabled = true
+viz_url = "http://127.0.0.1:20133"
+rocksdb_path = "/home/ubuntu/binance_fr_arb03/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "binance-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "binance-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "binance_fr_arb04"
+namespace = "binance_fr_arb04"
+enabled = true
+viz_url = "http://127.0.0.1:20134"
+rocksdb_path = "/home/ubuntu/binance_fr_arb04/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "binance-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "binance-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "gate_fr_arb01"
+namespace = "gate_fr_arb01"
+enabled = true
+viz_url = "http://127.0.0.1:20121"
+rocksdb_path = "/home/ubuntu/gate_fr_arb01/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "gate-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "gate-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "gate_fr_arb02"
+namespace = "gate_fr_arb02"
+enabled = true
+viz_url = "http://127.0.0.1:20122"
+rocksdb_path = "/home/ubuntu/gate_fr_arb02/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "gate-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "gate-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "gate_fr_arb03"
+namespace = "gate_fr_arb03"
+enabled = true
+viz_url = "http://127.0.0.1:20123"
+rocksdb_path = "/home/ubuntu/gate_fr_arb03/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "gate-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "gate-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "bitget_fr_arb01"
+namespace = "bitget_fr_arb01"
+enabled = true
+viz_url = "http://127.0.0.1:20151"
+rocksdb_path = "/home/ubuntu/bitget_fr_arb01/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "bitget-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "bitget-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "bitget_fr_arb02"
+namespace = "bitget_fr_arb02"
+enabled = true
+viz_url = "http://127.0.0.1:20152"
+rocksdb_path = "/home/ubuntu/bitget_fr_arb02/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "bitget-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "bitget-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[[sources]]
+id = "bitget_fr_arb03"
+namespace = "bitget_fr_arb03"
+enabled = true
+viz_url = "http://127.0.0.1:20153"
+rocksdb_path = "/home/ubuntu/bitget_fr_arb03/data/persist_manager"
+max_asset_exposure_usdt = 1000.0
+max_total_exposure_usdt = 5000.0
+[[sources.markets]]
+venue = "bitget-margin"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[sources.markets]]
+venue = "bitget-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
