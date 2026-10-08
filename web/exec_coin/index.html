@@ -27,6 +27,8 @@
     .metric strong { font-size: 23px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 28px 0 14px; }
     .table-wrap { overflow-x: auto; border: 1px solid #263740; border-radius: 12px; }
+    .asset-table { max-height: 360px; overflow: auto; }
+    .asset-table th { position: sticky; top: 0; z-index: 1; }
     table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
     th, td { padding: 13px 15px; border-bottom: 1px solid #263740; text-align: right; }
     th { background: #15242c; color: #9aaeb7; font-size: 12px; font-weight: 500; }
@@ -58,8 +60,9 @@
     </section>
     <p class="note">权益、盈亏和保证金按结算币分别展示，BTC 与 ETH 不相加。账户权益来自交易所，包含抵押币余额；策略成交盈亏与账户净值是不同口径。</p>
     <section>
-      <div class="section-head"><h2>账户资产 · 原币单位</h2><label class="muted"><input id="show-zero" type="checkbox" style="width:auto"> 显示零余额币种</label></div>
-      <div class="table-wrap"><table><thead><tr><th>结算币</th><th>钱包余额</th><th>未实现盈亏</th><th>账户权益</th><th>可用余额</th><th>初始保证金</th><th>维持保证金</th></tr></thead><tbody id="asset-rows"></tbody></table><div id="asset-empty" class="empty">等待账户数据</div></div>
+      <div class="section-head"><h2>账户资产 · 原币单位</h2><label class="muted"><input id="show-zero" type="checkbox" checked style="width:auto"> 显示零余额币种</label></div>
+      <p id="asset-meta" class="muted">等待交易所账户快照</p>
+      <div class="table-wrap asset-table"><table><thead><tr><th>结算币</th><th>钱包余额</th><th>未实现盈亏</th><th>账户权益</th><th>可用余额</th><th>初始保证金</th><th>维持保证金</th></tr></thead><tbody id="asset-rows"></tbody></table><div id="asset-empty" class="empty">等待账户数据</div></div>
     </section>
     <section>
       <div class="section-head"><h2>账户实际持仓</h2></div>
@@ -123,13 +126,15 @@
       function render() {
         const account = state.account?.entry;
         const nonzero = (a) => [a.wallet_balance, a.unrealized_pnl, a.equity, a.available_balance, a.initial_margin, a.maintenance_margin].some((v) => finite(v) && v !== 0);
-        const assets = (account?.assets || []).filter((a) => byId("show-zero").checked || nonzero(a));
+        const rank = (a) => nonzero(a) ? 0 : a.asset === "BTC" ? 1 : a.asset === "ETH" ? 2 : 3;
+        const assets = (account?.assets || []).filter((a) => byId("show-zero").checked || nonzero(a)).sort((a, b) => rank(a) - rank(b) || a.asset.localeCompare(b.asset));
+        byId("asset-meta").textContent = account ? `已收到交易所 ${account.assets.length} 个币种的余额，${account.assets.filter(nonzero).length} 个非零；当前显示 ${assets.length} 个币种` : "等待交易所账户快照";
         byId("asset-count").textContent = account ? account.assets.filter(nonzero).length : "--";
         byId("position-count").textContent = account ? account.positions.length : "--";
         byId("account-time").textContent = state.account ? new Date(state.account.ts_ms).toLocaleTimeString() : "--";
         byId("asset-rows").innerHTML = assets.map((a) => `<tr><td>${escape(a.asset)}</td><td>${number(a.wallet_balance)}</td><td class="${sign(a.unrealized_pnl)}">${number(a.unrealized_pnl)}</td><td>${number(a.equity)}</td><td>${number(a.available_balance)}</td><td>${number(a.initial_margin)}</td><td>${number(a.maintenance_margin)}</td></tr>`).join("");
         byId("asset-empty").style.display = assets.length ? "none" : "block";
-        byId("asset-empty").textContent = account ? "无非零资产；可勾选显示零余额币种" : "等待账户数据";
+        byId("asset-empty").textContent = !account ? "等待账户数据" : account.assets.length ? "零余额币种已隐藏；勾选显示零余额币种可查看" : "交易所账户快照未返回资产记录";
         byId("position-rows").innerHTML = (account?.positions || []).map((p) => `<tr><td>${escape(p.symbol)}</td><td>${escape(p.settlement_asset)}</td><td>${p.side === "LONG" ? "多头" : p.side === "SHORT" ? "空头" : p.contracts < 0 ? "净空头" : "净多头"}</td><td>${number(p.contracts, 0)}</td><td>${number(p.entry_price)}</td><td>${number(p.notional_coin)}</td><td class="${sign(p.unrealized_pnl)}">${number(p.unrealized_pnl)}</td><td>${p.isolated ? "逐仓" : "全仓"}</td></tr>`).join("");
         byId("position-empty").style.display = account?.positions.length ? "none" : "block";
         byId("position-empty").textContent = account ? "当前账户无持仓" : "等待账户数据";
