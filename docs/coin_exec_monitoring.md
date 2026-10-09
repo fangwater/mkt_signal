@@ -96,5 +96,34 @@ is `121321c8f88715f8189a56516d3915ef5e763d9aac3c067c87f31d636cfc00a5`;
 concurrent CME/FR changes were retained and excluded from deployment commits.
 Rollback binaries, scripts and private config are retained in each environment's
 `backups/usdm_exec_manager_20261009T075516Z`. Manager's same-named backup holds
-the PostgreSQL dump and process/config verification. Recoveries must preserve
-the operator's stopped-trading requirement.
+the PostgreSQL dump and process/config verification. Recoveries must honor the
+operator's latest account-specific startup instructions below.
+
+## Subsequent trade01 restart and xy_lxy21 preparation
+
+On the operator's subsequent October 9 instruction, bahll202210
+(`binance_exec_trade01`) resumed its USD-M execution using the existing six
+`8a263e04` binaries. `scripts/start-exec.sh` passed each component's health check;
+pre-trade, trade engine, persistence, account monitor, Viz and Config are running.
+The signal generator remains stopped. Positions are ready and the Manager
+timeline observed 40 post-restart fill records. Trade10/11 retain observation
+services only. No trading TOML, target, leverage or account mode was changed.
+
+The retired prc slot had historical orders, bindings and position snapshots.
+Its order store is archived under
+`/home/el01/binance_exec_trade05/archive/prc/persist_manager`, with the original
+source ID retained in Manager history. Its old env.sh now blocks accidental
+starts; protected old credentials/config remain in its replacement backup.
+A fresh `/home/el01/binance_exec_xy_lxy21_05` deployment supplies xy_lxy21 at the
+same trade05 gateway/ports, with its own source ID, namespace and Redis prefix.
+All six `8a263e04` binaries and current scripts were published and hash-checked.
+New credentials passed a read-only USD-M check. It has no inherited order data,
+bindings or snapshots. **All xy_lxy21 processes remain stopped**, as explicitly
+required by the operator. No cancellation or account mutation was submitted to
+the new account. The existing gateway checks its new source ID.
+
+Manager handles bahll202210 Earn through the explicitly chosen `.6` public
+egress, retaining 8,000 USDT with a 2,000-USDT trigger. The first automatic
+5,000-USDT round and the requested manual 34,879.04-USDT subscription both
+completed at par with zero purchase fee. Automatic settings were restored after
+the manual round. Kline remains on `.10`; normal trading bindings were retained.
