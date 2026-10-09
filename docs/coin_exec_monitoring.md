@@ -118,12 +118,43 @@ A fresh `/home/el01/binance_exec_xy_lxy21_05` deployment supplies xy_lxy21 at th
 same trade05 gateway/ports, with its own source ID, namespace and Redis prefix.
 All six `8a263e04` binaries and current scripts were published and hash-checked.
 New credentials passed a read-only USD-M check. It has no inherited order data,
-bindings or snapshots. **All xy_lxy21 processes remain stopped**, as explicitly
-required by the operator. No cancellation or account mutation was submitted to
-the new account. The existing gateway checks its new source ID.
+bindings or snapshots. At preparation, **all xy_lxy21 processes stayed stopped**,
+as then required by the operator. No cancellation or account mutation was
+submitted to the new account during preparation. The existing gateway checks
+its new source ID. The subsequent activation below supersedes that stopped state.
 
 Manager handles bahll202210 Earn through the explicitly chosen `.6` public
 egress, retaining 8,000 USDT with a 2,000-USDT trigger. The first automatic
 5,000-USDT round and the requested manual 34,879.04-USDT subscription both
 completed at par with zero purchase fee. Automatic settings were restored after
 the manual round. Kline remains on `.10`; normal trading bindings were retained.
+
+## xy_lxy21 activated with c40 Follow
+
+The operator subsequently authorized starting xy_lxy21, following `virtual01`
+(`c40t12_group1`) at multiplier 116. Manager's Nginx API saved that configuration
+before startup: its two 0.5-share bindings each became 58 shares, both complete
+40-symbol target vectors reached the new source's Redis namespace, and the
+durable publish queue drained. Account configure grants were explicitly given
+to shaokai and dzy; their ordinary sessions verified both Viz snapshots and
+Config bootstrap through `/exec_trade05/`.
+
+The first start stopped at the missing new-source `pre_trade_risk_params` hash.
+The maintained `scripts/sync_exec_risk_params.py` was published to the new env
+and initialized only its empty risk hash with the standard five parameters:
+10 live limit orders, 10 on each side, 400 orders/minute and 200 orders/10s.
+Then synchronized `arbmm` `scripts/start-exec.sh` passed all six startup checks.
+The existing `8a263e04` runtime binaries are unchanged; persistence, trade engine,
+account monitor, pre-trade, Viz and Config are running. The signal generator
+stays stopped. Startup's normal USD-M account-mode check and open-order
+cancellation completed successfully.
+
+Viz reported positions ready, both named strategies allocated and 12 displayed
+position rows each. All 24 named-strategy rows and three system residual rows
+completed the current target execution. A source-scoped Manager timeline observed
+94 Maker fills after the successful start. All 62 other protected processes
+remained unchanged. Trading IPs, leverage and account mode were not modified,
+and retired prc history was preserved. The new env's `EXEC-RELEASE.json` records
+the authorized running state and its corrected environment identity. Catalog,
+risk and runtime recovery evidence is retained under
+`backups/follow_c40_start_20261009T104355Z` in the new environment.
