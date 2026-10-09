@@ -1,6 +1,6 @@
 # COIN-M account monitoring without order execution
 
-Last updated: 2026-10-08 UTC.
+Last updated: 2026-10-09 UTC.
 
 The standard Binance COIN-M account monitor publishes a complete, sanitized
 `CoinAccountSnapshot` on `<namespace>/viz_pubs/coin_account_snapshot` after each
@@ -63,3 +63,38 @@ Account-monitor unit tests cover signed contract/native-coin units, full empty
 snapshots, invalid data rejection, and separate delivery/hedged positions.
 Browser fixtures exercise both native currencies, full snapshot clearing,
 venue isolation and stale warnings at desktop/mobile widths.
+
+## Current el01 deployment scope
+
+On 2026-10-09 the operator corrected zy_group26 (`binance_exec_trade10`) and
+zy_group29 (`binance_exec_trade11`) to Binance USD-M futures. Their earlier
+COIN-M observations described the queried market only; subsequent USD-M checks
+had already found nonzero positions. Both deployments now declare
+`binance-futures` consistently in their private env's market fields, explicit
+Viz config, Config server and Manager catalog. Source IDs, namespaces, listener
+ports, credentials, account modes and trading IP bindings are retained.
+
+Both accounts and bahll202210 (`binance_exec_trade01`) received the six current
+Exec binaries and scripts, built locally from synchronized `arbmm` source
+`8a263e04ed3190636ba1787ea65e9a9e69c45998`. The publish wrapper verified the
+targets were stopped, verified SHA-256 and installed each file atomically.
+Only account-monitor, Viz and Config component wrappers were started afterward;
+all three accounts keep pre-trade, trade engine, signal and persistence stopped.
+Trade01 was stopped before publication. No trading startup, order submission,
+target publish, cancellation, leverage or exchange account-mode change was run.
+
+The three authenticated gateways return the USD-M frontend and Config bootstrap,
+HTTP 200 snapshots and WebSocket 101. A stopped pre-trade producer supplies no
+fresh execution-state snapshot; this is not proof of empty account holdings.
+Manager release `20261009T080509Z` reports all three accounts as USD-M.
+52 other protected processes and all trading TOML hashes remained unchanged.
+All 11 account-monitor and 6 Viz unit tests passed.
+
+Each environment's `EXEC-RELEASE.json` records the current complete release and
+supersedes earlier component-only manifests. The build's local Cargo.lock SHA-256
+is `121321c8f88715f8189a56516d3915ef5e763d9aac3c067c87f31d636cfc00a5`;
+concurrent CME/FR changes were retained and excluded from deployment commits.
+Rollback binaries, scripts and private config are retained in each environment's
+`backups/usdm_exec_manager_20261009T075516Z`. Manager's same-named backup holds
+the PostgreSQL dump and process/config verification. Recoveries must preserve
+the operator's stopped-trading requirement.
