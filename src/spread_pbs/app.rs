@@ -129,6 +129,7 @@ pub struct SpreadPbsApp {
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
     market_data_provider: MarketDataProvider,
+    futures_bbo_only: bool,
 }
 
 /// Selects the public data source independently from the native execution venue.
@@ -358,7 +359,10 @@ fn apply_symbol_filter_from_raw(
     raw: &str,
 ) -> Vec<String> {
     let key = |symbol: &str| {
-        if venue_slug == "binance-coin-futures" {
+        if matches!(
+            venue_slug,
+            "binance-coin-futures" | "gate-futures" | "bitget-futures"
+        ) {
             runtime_common::symbol_util::normalize_symbol_for_internal(symbol)
         } else {
             symbol.trim().to_ascii_uppercase()
@@ -389,6 +393,14 @@ fn apply_symbol_filter_from_raw(
     symbols
 }
 
+async fn get_symbols_for_scope(config: &Config, futures_bbo_only: bool) -> Result<Vec<String>> {
+    if futures_bbo_only {
+        config.get_futures_bbo_symbols().await
+    } else {
+        get_symbols_for_venue(config).await
+    }
+}
+
 async fn get_symbols_for_venue(config: &Config) -> Result<Vec<String>> {
     if is_hyperliquid_venue(config.venue) {
         crate::spread_pbs::hyperliquid::refresh_symbols(config.venue).await
@@ -402,11 +414,12 @@ async fn get_symbols_for_venue(config: &Config) -> Result<Vec<String>> {
 async fn wait_for_symbols_for_role(
     config: &Config,
     binance_futures_role: BinanceFuturesRole,
+    futures_bbo_only: bool,
 ) -> Vec<String> {
     let mut backoff = Duration::from_secs(2);
     let cap = Duration::from_secs(30);
     loop {
-        match get_symbols_for_venue(config).await {
+        match get_symbols_for_scope(config, futures_bbo_only).await {
             Ok(symbols) if !symbols.is_empty() => return symbols,
             Ok(_) => log::error!(
                 "spread_pbs[{}] symbol lookup returned empty for role={}; retry in {:?}",
@@ -474,6 +487,7 @@ struct FixMdLeg {
 struct LegCtx {
     adapter: Rc<dyn VenueAdapter>,
     market_data_provider: MarketDataProvider,
+    futures_bbo_only: bool,
     publisher: Option<Rc<SpreadPublisher>>,
     trade_publisher: Option<Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
@@ -512,6 +526,7 @@ impl SpreadPbsApp {
             binance_futures_role: BinanceFuturesRole::Full,
             bybit_role: BybitRole::Full,
             market_data_provider: MarketDataProvider::Native,
+            futures_bbo_only: false,
         }
     }
 
@@ -523,6 +538,7 @@ impl SpreadPbsApp {
             binance_futures_role: BinanceFuturesRole::Full,
             bybit_role: BybitRole::Full,
             market_data_provider: MarketDataProvider::Native,
+            futures_bbo_only: false,
         }
     }
 
@@ -538,6 +554,7 @@ impl SpreadPbsApp {
             binance_futures_role,
             bybit_role: BybitRole::Full,
             market_data_provider: MarketDataProvider::Native,
+            futures_bbo_only: false,
         }
     }
 
@@ -554,6 +571,26 @@ impl SpreadPbsApp {
             binance_futures_role,
             bybit_role,
             market_data_provider: MarketDataProvider::Native,
+            futures_bbo_only: false,
+        }
+    }
+
+    /// Hard stream restriction, independent of data_types and env overrides.
+    pub fn with_futures_bbo_only(mut self) -> Self {
+        self.futures_bbo_only = true;
+        self
+    }
+
+    fn stream_policy(&self) -> (bool, bool) {
+        if self.futures_bbo_only {
+            (true, false)
+        } else {
+            role_stream_policy(
+                self.config.venue,
+                self.binance_futures_role,
+                self.bybit_role,
+                self.market_data_provider,
+            )
         }
     }
 
@@ -590,6 +627,20 @@ impl SpreadPbsApp {
         let app_started_at_us = get_timestamp_us().div_euclid(1_000) * 1_000;
         let venue = self.config.venue;
         let market_data_provider = self.market_data_provider;
+        if self.futures_bbo_only {
+            anyhow::ensure!(
+                matches!(
+                    venue,
+                    TradingVenue::GateFutures | TradingVenue::BitgetFutures
+                ) && market_data_provider == MarketDataProvider::Native,
+                "futures BBO only supports native Gate/Bitget USDT futures"
+            );
+            anyhow::ensure!(
+                self.publish_roots == SpreadPbsPublishRoots::futures_bbo(false)
+                    || self.publish_roots == SpreadPbsPublishRoots::futures_bbo(true),
+                "futures BBO requires its independent IPC root"
+            );
+        }
         let venue_slug: &'static str = venue.data_pub_slug();
         let binance_spot_transport = if venue == TradingVenue::BinanceMargin {
             BinanceSpotTransport::from_env()?
@@ -646,10 +697,12 @@ impl SpreadPbsApp {
 
         // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
         // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
-        let initial_symbols = apply_symbol_filter(
-            wait_for_symbols_for_role(&self.config, binance_futures_role).await,
-            venue_slug,
-        );
+        let initial_symbols = tokio::select! {
+            symbols = wait_for_symbols_for_role(
+                &self.config, binance_futures_role, self.futures_bbo_only,
+            ) => apply_symbol_filter(symbols, venue_slug),
+            _ = shutdown_rx.wait_for(|shutdown| *shutdown) => return Ok(()),
+        };
         if initial_symbols.is_empty() {
             bail!(
                 "spread_pbs[{}] no symbols left after {} filter",
@@ -692,12 +745,7 @@ impl SpreadPbsApp {
         );
         let is_binance_futures_market_role =
             is_binance_futures_venue(venue) && binance_futures_role == BinanceFuturesRole::Market;
-        let (bbo_enabled, replacement_enabled) = role_stream_policy(
-            venue,
-            binance_futures_role,
-            bybit_role,
-            market_data_provider,
-        );
+        let (bbo_enabled, replacement_enabled) = self.stream_policy();
         let direct_trade_enabled = replacement_enabled
             && enable_trade
             && direct_trade_replacement_enabled(venue, market_data_provider);
@@ -849,7 +897,11 @@ impl SpreadPbsApp {
             incremental_gap_warnings: 0,
             derivatives_published: 0,
             derivatives_dropped_duplicate: 0,
-            derivatives_recent: fast_hash_map_with_capacity(2048),
+            derivatives_recent: fast_hash_map_with_capacity(if direct_derivatives_enabled {
+                2048
+            } else {
+                0
+            }),
             derivatives_since_prune: 0,
             recent_bbo_identities: Vec::with_capacity(initial_symbols.len()),
             recent_trade_identities: Vec::with_capacity(initial_symbols.len()),
@@ -906,6 +958,7 @@ impl SpreadPbsApp {
         let ctx = LegCtx {
             adapter: adapter.clone(),
             market_data_provider,
+            futures_bbo_only: self.futures_bbo_only,
             publisher: publisher.clone(),
             trade_publisher: main_trade_publisher,
             incremental_publisher: main_incremental_publisher,
@@ -1117,6 +1170,14 @@ impl SpreadPbsApp {
                 }
                 _ = stats_ticker.tick() => {
                     let mut s = state.borrow_mut();
+                    if self.futures_bbo_only {
+                        log::info!(
+                            "futures_bbo[{}] published={} dropped_by_seq={} symbols_seen={}",
+                            venue_slug, s.published, s.dropped_by_seq, s.symbol_state.bbo_seen(),
+                        );
+                        s.publication_latency.log_and_reset(venue_slug);
+                        continue;
+                    }
                     log::info!(
                         "spread_pbs[{}] stats published={} trades_published={} incremental_published={} derivatives_published={} derivatives_dropped_duplicate={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={} incremental_gap_warnings={} symbols_seen={} trade_symbols_seen={} incremental_symbols_seen={}",
                         venue_slug,
@@ -1927,7 +1988,7 @@ async fn restart_leg(
     log::info!("spread_pbs[{}] leg={} restart begin", venue_slug, leg.label);
 
     // 先拉新 symbol；失败/空一律保留旧 leg，不重启。
-    let new_symbols = match get_symbols_for_venue(config).await {
+    let new_symbols = match get_symbols_for_scope(config, ctx.futures_bbo_only).await {
         Ok(v) if !v.is_empty() => apply_symbol_filter(v, venue_slug),
         Ok(_) => {
             log::error!(
@@ -3752,7 +3813,7 @@ fn process_sbe_bbo(
     if sample {
         state
             .publication_latency
-            .record(recv_us, get_timestamp_us());
+            .record(recv_us, get_timestamp_us(), view.timestamp_us);
     }
     state
         .symbol_state
@@ -3885,6 +3946,101 @@ fn should_drop_bbo_fields(slot: &SymbolSlot, ts_us: i64, seq_id: i64, reset_seq:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn futures_bbo_filter_accepts_shared_internal_symbols_and_keeps_wire_names() {
+        for filter in ["btcusdt,ETHUSDT", "BTC_USDT,ETH_USDT"] {
+            assert_eq!(
+                apply_symbol_filter_from_raw(
+                    vec!["BTC_USDT".into(), "ETH_USDT".into(), "SOL_USDT".into()],
+                    "gate-futures",
+                    filter
+                ),
+                ["BTC_USDT", "ETH_USDT"],
+            );
+            assert_eq!(
+                apply_symbol_filter_from_raw(
+                    vec!["BTCUSDT".into(), "ETHUSDT".into(), "SOLUSDT".into()],
+                    "bitget-futures",
+                    filter
+                ),
+                ["BTCUSDT", "ETHUSDT"],
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn futures_bbo_subscribes_only_bbo_with_full_market_config() {
+        for (venue, symbol) in [
+            (TradingVenue::GateFutures, "BTC_USDT"),
+            (TradingVenue::BitgetFutures, "BTCUSDT"),
+        ] {
+            let config = Config::load_config("config/mkt_cfg.yaml", venue)
+                .await
+                .unwrap();
+            assert!(config.data_types.enable_incremental);
+            assert!(config.data_types.enable_trade);
+            assert!(config.data_types.enable_derivatives);
+            let app = SpreadPbsApp::new_with_publish_roots(
+                config,
+                SpreadPbsPublishRoots::futures_bbo(true),
+            )
+            .with_futures_bbo_only();
+            let adapter: Rc<dyn VenueAdapter> =
+                Rc::from(create_adapter(venue).await.unwrap().unwrap());
+            let (bbo, other) = app.stream_policy();
+            let subscriptions =
+                build_market_subscribe(&adapter, &[symbol.into()], bbo, other, other, other);
+            assert_eq!(subscriptions.len(), 1);
+            let msg = &subscriptions[0];
+            match venue {
+                TradingVenue::GateFutures => {
+                    assert_eq!(msg["channel"], "futures.book_ticker");
+                    assert_eq!(msg["payload"], serde_json::json!([symbol]));
+                }
+                TradingVenue::BitgetFutures => {
+                    assert_eq!(msg["args"][0]["topic"], "books1");
+                    assert_eq!(msg["args"][0]["instType"], "usdt-futures");
+                    assert_eq!(msg["args"].as_array().unwrap().len(), 1);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn futures_bbo_rejects_shared_roots_and_non_native_venues_before_connecting() {
+        for (venue, roots, provider, expected) in [
+            (
+                TradingVenue::GateFutures,
+                SpreadPbsPublishRoots::production(),
+                MarketDataProvider::Native,
+                "independent IPC root",
+            ),
+            (
+                TradingVenue::GateMargin,
+                SpreadPbsPublishRoots::futures_bbo(true),
+                MarketDataProvider::Native,
+                "native Gate/Bitget",
+            ),
+            (
+                TradingVenue::BitgetFutures,
+                SpreadPbsPublishRoots::futures_bbo(true),
+                MarketDataProvider::RapidX,
+                "native Gate/Bitget",
+            ),
+        ] {
+            let config = Config::load_config("config/mkt_cfg.yaml", venue)
+                .await
+                .unwrap();
+            let app = SpreadPbsApp::new_with_publish_roots(config, roots)
+                .with_market_data_provider(provider)
+                .with_futures_bbo_only();
+            let (_tx, rx) = watch::channel(false);
+            let err = app.run_with_shutdown(rx).await.unwrap_err();
+            assert!(err.to_string().contains(expected), "{err:#}");
+        }
+    }
 
     #[test]
     fn coin_symbol_filter_accepts_usd_targets_and_retains_wire_subscriptions() {

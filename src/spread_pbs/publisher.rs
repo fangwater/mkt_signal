@@ -42,6 +42,19 @@ pub struct SpreadPbsPublishRoots {
 }
 
 impl SpreadPbsPublishRoots {
+    /// Independent Gate/Bitget futures BBO process; never shares FR publishers.
+    pub fn futures_bbo(test: bool) -> Self {
+        let root = if test {
+            "futures_bbo_test"
+        } else {
+            "futures_bbo"
+        };
+        Self {
+            spread_root: root.to_string(),
+            dat_root: root.to_string(),
+        }
+    }
+
     pub fn production() -> Self {
         Self {
             spread_root: DEFAULT_SPREAD_SERVICE_ROOT.to_string(),
@@ -2065,6 +2078,68 @@ mod tests {
         AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg,
         TradeMsg,
     };
+
+    #[test]
+    fn futures_bbo_coexists_with_fr_and_keeps_venues_isolated() {
+        let directory =
+            std::env::temp_dir().join(format!("futures_bbo_ipc_{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = iceoryx2::config::Config::default();
+        config.global.set_root_path(
+            &iceoryx2::prelude::Path::new(directory.as_os_str().as_encoded_bytes()).unwrap(),
+        );
+        {
+            let mut pool = SpreadPbsPublisherPool::default();
+            pool.small.node_config = Some(config.clone());
+            let node = NodeBuilder::new()
+                .config(&config)
+                .create::<ipc::Service>()
+                .unwrap();
+            let mut publishers = Vec::new();
+            let mut services = Vec::new();
+            let mut subscribers = Vec::new();
+            for root in [
+                SpreadPbsPublishRoots::production(),
+                SpreadPbsPublishRoots::futures_bbo(false),
+                SpreadPbsPublishRoots::futures_bbo(true),
+            ] {
+                for venue in ["gate-futures", "bitget-futures"] {
+                    let publisher = pool.bbo_for(venue, root.spread_root()).unwrap();
+                    assert_eq!(
+                        publisher.service_name(),
+                        format!("{}/{venue}/ask_bid_spread", root.spread_root())
+                    );
+                    let service = node
+                        .service_builder(&ServiceName::new(publisher.service_name()).unwrap())
+                        .publish_subscribe::<[u8; SPREAD_PAYLOAD_BYTES]>()
+                        .open()
+                        .unwrap();
+                    subscribers.push(service.subscriber_builder().create().unwrap());
+                    services.push(service);
+                    publishers.push(publisher);
+                }
+            }
+            for (index, publisher) in publishers.iter().enumerate() {
+                publisher
+                    .publish_bbo("BTCUSDT", 123, 100.0, index as f64, 101.0, 2.0)
+                    .unwrap();
+            }
+            for (index, subscriber) in subscribers.iter().enumerate() {
+                let sample = subscriber.receive().unwrap().expect("own channel BBO");
+                assert_eq!(AskBidSpreadMsg::get_symbol(sample.payload()), "BTCUSDT");
+                assert_eq!(AskBidSpreadMsg::get_timestamp(sample.payload()), 123);
+                assert_eq!(
+                    AskBidSpreadMsg::get_bid_amount(sample.payload()),
+                    index as f64
+                );
+                assert!(
+                    subscriber.receive().unwrap().is_none(),
+                    "cross-channel message leak"
+                );
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn combined_binance_streams_share_ipc_without_sharing_symbol_slots() {

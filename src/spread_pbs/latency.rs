@@ -93,12 +93,17 @@ impl LatencyKll {
     }
 }
 
-// Sampled local receive-to-IPC time, without an exchange-clock dependency.
+// Fixed-size counters only; sample exchange age separately from local processing.
 #[derive(Default)]
 pub struct PublicationLatency {
     samples: u64,
     total_us: u64,
     max_us: u64,
+    exchange_samples: u64,
+    exchange_total_us: i128,
+    exchange_min_us: i64,
+    exchange_max_us: i64,
+    exchange_negative: u64,
 }
 
 impl PublicationLatency {
@@ -106,7 +111,7 @@ impl PublicationLatency {
         published % 1024 == 0
     }
 
-    pub fn record(&mut self, recv_us: i64, published_us: i64) {
+    pub fn record(&mut self, recv_us: i64, published_us: i64, exchange_us: i64) {
         // Wall-clock steps backwards cannot represent processing time.
         let Some(delta) = published_us.checked_sub(recv_us).filter(|v| *v >= 0) else {
             return;
@@ -114,6 +119,17 @@ impl PublicationLatency {
         self.samples += 1;
         self.total_us = self.total_us.saturating_add(delta as u64);
         self.max_us = self.max_us.max(delta as u64);
+        if let Some(age) = recv_us.checked_sub(exchange_us).filter(|_| exchange_us > 0) {
+            if self.exchange_samples == 0 {
+                self.exchange_min_us = age;
+                self.exchange_max_us = age;
+            }
+            self.exchange_samples += 1;
+            self.exchange_total_us += i128::from(age);
+            self.exchange_min_us = self.exchange_min_us.min(age);
+            self.exchange_max_us = self.exchange_max_us.max(age);
+            self.exchange_negative += u64::from(age < 0);
+        }
     }
 
     pub fn log_and_reset(&mut self, venue: &str) {
@@ -127,6 +143,17 @@ impl PublicationLatency {
             self.total_us / self.samples,
             self.max_us
         );
+        if self.exchange_samples > 0 {
+            log::info!(
+                "spread_pbs[{}] bbo_exchange_to_recv_us sample_every=1024 samples={} mean={} min={} max={} negative={}",
+                venue,
+                self.exchange_samples,
+                self.exchange_total_us / i128::from(self.exchange_samples),
+                self.exchange_min_us,
+                self.exchange_max_us,
+                self.exchange_negative,
+            );
+        }
         *self = Self::default();
     }
 }
@@ -141,11 +168,24 @@ mod tests {
         assert!(PublicationLatency::should_sample(0));
         assert!(!PublicationLatency::should_sample(1));
         assert!(PublicationLatency::should_sample(1024));
-        stats.record(100, 110);
-        stats.record(100, 130);
-        stats.record(100, 90);
+        stats.record(100, 110, 80);
+        stats.record(100, 130, 105);
+        stats.record(100, 90, 80);
         assert_eq!((stats.samples, stats.total_us, stats.max_us), (2, 40, 30));
+        assert_eq!(
+            (
+                stats.exchange_samples,
+                stats.exchange_total_us,
+                stats.exchange_min_us,
+                stats.exchange_max_us,
+                stats.exchange_negative
+            ),
+            (2, 15, -5, 20, 1)
+        );
+        stats.record(100, 110, 0);
+        assert_eq!(stats.exchange_samples, 2);
         stats.log_and_reset("test");
         assert_eq!((stats.samples, stats.total_us, stats.max_us), (0, 0, 0));
+        assert_eq!(stats.exchange_samples, 0);
     }
 }

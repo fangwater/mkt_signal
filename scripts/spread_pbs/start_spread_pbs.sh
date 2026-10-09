@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT_DIR="$(cd "${BASE_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin|both)|(binance|bitget)-coin-futures)$'
+VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin|both)|(binance|bitget)-coin-futures|gate-bitget-futures-bbo)$'
 
 usage() {
   cat <<'USAGE'
@@ -26,6 +26,8 @@ Behavior:
     Bybit-both 默认拆成 market/bookticker 两个进程，避免 JSON market 流和 BBO 流互相抢 CPU。
     启动 both 前需要先停止同 exchange 的单独 margin/futures spread_pbs 进程。
   - 启动方式：taskset -c <core> + pmdaemon，进程名 spp_<ex>_<market>。
+  - gate-bitget-futures-bbo：一个进程只收两家 USDT 合约 BBO，独立 futures_bbo IPC。
+    必须显式设置 SPREAD_PBS_CORE，可与 gate-both / bitget-both 同时运行。
 USAGE
 }
 
@@ -180,7 +182,7 @@ elif [[ "$venue" == "bybit-both" ]]; then
     exit 1
   fi
   CORE="$SPREAD_PBS_BYBIT_MARKET_CORE"
-elif [[ "$venue" == hyperliquid-* ]]; then
+elif [[ "$venue" == hyperliquid-* || "$venue" == "gate-bitget-futures-bbo" ]]; then
   if [[ -z "${SPREAD_PBS_CORE:-}" ]]; then
     echo "[ERROR] ${venue} 不提供默认 core；必须显式设置 SPREAD_PBS_CORE。" >&2
     echo "[HINT] 在 ${BASE_DIR}/env.sh 中添加: export SPREAD_PBS_CORE=<core>" >&2

@@ -14,7 +14,7 @@ use runtime_common::affinity::pin_to_core;
 #[command(name = "spread_pbs")]
 #[command(about = "Dedicated high-speed askbidspread publisher (pinned core).")]
 struct Args {
-    /// Trading venue. binance-futures covers USDT/USDC/USD perpetuals; also accepts <exchange>-both.
+    /// Venue, <exchange>-both, or gate-bitget-futures-bbo (independent BBO-only IPC).
     #[arg(short, long, value_parser = parse_venue_selection)]
     venue: SpreadVenueSelection,
 
@@ -51,6 +51,10 @@ async fn main() -> Result<()> {
     let config_str = config_path.to_string_lossy();
     log::info!("spread_pbs venue selection: {}", args.venue.label());
     validate_role_selection(&args.venue, args.binance_futures_role, args.bybit_role)?;
+    let futures_bbo_only = matches!(args.venue, SpreadVenueSelection::GateBitgetFuturesBbo);
+    if futures_bbo_only && args.market_data_provider != MarketDataProvider::Native {
+        bail!("gate-bitget-futures-bbo requires native SBE feeds");
+    }
     if args.market_data_provider == MarketDataProvider::RapidX
         && (args.binance_futures_role != BinanceFuturesRole::Full
             || args.bybit_role != BybitRole::Full)
@@ -63,7 +67,9 @@ async fn main() -> Result<()> {
         args.bybit_role.as_str(),
         args.market_data_provider.as_str(),
     );
-    let publish_roots = if args.test {
+    let publish_roots = if futures_bbo_only {
+        SpreadPbsPublishRoots::futures_bbo(args.test)
+    } else if args.test {
         SpreadPbsPublishRoots::test()
     } else {
         SpreadPbsPublishRoots::production()
@@ -86,12 +92,14 @@ async fn main() -> Result<()> {
             args.binance_futures_role,
             args.bybit_role,
             args.market_data_provider,
+            futures_bbo_only,
         ))
         .await
 }
 
 #[derive(Debug, Clone, Copy)]
 enum SpreadVenueSelection {
+    GateBitgetFuturesBbo,
     Single(TradingVenue),
     Both {
         exchange: &'static str,
@@ -103,6 +111,9 @@ enum SpreadVenueSelection {
 impl SpreadVenueSelection {
     fn venues(self) -> Vec<TradingVenue> {
         match self {
+            Self::GateBitgetFuturesBbo => {
+                vec![TradingVenue::GateFutures, TradingVenue::BitgetFutures]
+            }
             Self::Single(TradingVenue::BinanceFutures) => vec![
                 TradingVenue::BinanceFutures,
                 TradingVenue::BinanceCoinFutures,
@@ -170,6 +181,7 @@ impl SpreadVenueSelection {
 
     fn label(self) -> String {
         match self {
+            Self::GateBitgetFuturesBbo => "gate-bitget-futures-bbo".to_string(),
             Self::Single(venue) => venue.data_pub_slug().to_string(),
             Self::Both { exchange, .. } => format!("{exchange}-both"),
         }
@@ -178,6 +190,9 @@ impl SpreadVenueSelection {
 
 fn parse_venue_selection(raw: &str) -> std::result::Result<SpreadVenueSelection, String> {
     let normalized = raw.trim().to_ascii_lowercase().replace('_', "-");
+    if normalized == "gate-bitget-futures-bbo" {
+        return Ok(SpreadVenueSelection::GateBitgetFuturesBbo);
+    }
     if let Some(exchange) = normalized.strip_suffix("-both") {
         return both_selection_for_exchange(exchange).ok_or_else(|| {
             format!(
@@ -311,6 +326,7 @@ async fn run_selected(
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
     market_data_provider: MarketDataProvider,
+    futures_bbo_only: bool,
 ) -> Result<()> {
     let labels: Vec<&'static str> = configs
         .iter()
@@ -348,6 +364,11 @@ async fn run_selected(
         )
         .with_market_data_provider(market_data_provider)
         .with_publishers(publishers.clone());
+        let app = if futures_bbo_only {
+            app.with_futures_bbo_only()
+        } else {
+            app
+        };
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)
         }));
@@ -432,6 +453,44 @@ fn resolve_cfg_path_from(current_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn combined_futures_bbo_loads_exactly_two_futures_venues() {
+        let args = Args::try_parse_from([
+            "spread_pbs",
+            "--venue",
+            "gate-bitget-futures-bbo",
+            "--core",
+            "0",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.venue,
+            SpreadVenueSelection::GateBitgetFuturesBbo
+        ));
+        let configs = load_selected_configs(
+            "config/mkt_cfg.yaml",
+            &args.venue,
+            args.market_data_provider,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            configs.iter().map(|c| c.venue).collect::<Vec<_>>(),
+            [TradingVenue::GateFutures, TradingVenue::BitgetFutures]
+        );
+        assert!(validate_role_selection(
+            &args.venue,
+            BinanceFuturesRole::BookTicker,
+            BybitRole::Full
+        )
+        .is_err());
+        assert!(
+            validate_role_selection(&args.venue, BinanceFuturesRole::Full, BybitRole::Market)
+                .is_err()
+        );
+    }
 
     #[test]
     fn resolves_config_from_current_venue_directory() {

@@ -1213,6 +1213,16 @@ impl Config {
         Err(last_err.expect("retry loop must produce at least one error on failure"))
     }
 
+    /// Complete USDT futures universe, without a spot/margin intersection.
+    /// Keep this out of the normal venue cache, which stores the FR universe.
+    pub async fn get_futures_bbo_symbols(&self) -> Result<Vec<String>> {
+        match self.venue {
+            TradingVenue::GateFutures => Self::get_symbol_for_gate_futures().await,
+            TradingVenue::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
+            venue => anyhow::bail!("futures BBO universe unsupported for {venue:?}"),
+        }
+    }
+
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
         let venue = self.venue;
         let label = format!("get_symbols[{:?}]", venue);
