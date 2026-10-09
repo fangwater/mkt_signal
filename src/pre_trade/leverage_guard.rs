@@ -48,12 +48,16 @@ impl LeverageTarget {
     fn new(venue: TradingVenue, symbol: &str) -> Self {
         Self {
             venue,
-            symbol: normalize_online_value_to_internal_symbol(symbol).unwrap_or_else(|| {
-                symbol
-                    .trim()
-                    .to_ascii_uppercase()
-                    .replace(['-', '_', '/'], "")
-            }),
+            symbol: if venue == TradingVenue::BinanceFutures {
+                symbol_for_venue(symbol, venue)
+            } else {
+                normalize_online_value_to_internal_symbol(symbol).unwrap_or_else(|| {
+                    symbol
+                        .trim()
+                        .to_ascii_uppercase()
+                        .replace(['-', '_', '/'], "")
+                })
+            },
         }
     }
 
@@ -1068,6 +1072,18 @@ async fn set_target_leverage(
 }
 
 fn symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
+    if venue == TradingVenue::BinanceFutures {
+        let canonical = clean_symbol_text(
+            &symbol
+                .split('@')
+                .next()
+                .unwrap_or(symbol)
+                .to_ascii_uppercase(),
+        );
+        if canonical.ends_with("USDC") && canonical.len() > 4 {
+            return canonical;
+        }
+    }
     if venue == TradingVenue::BinanceCoinFutures {
         return runtime_common::symbol_util::binance_coin_futures_symbol(symbol);
     }
@@ -1721,6 +1737,24 @@ mod tests {
         assert_eq!(
             normalize_online_value_to_internal_symbol("龙虾USDT"),
             Some("龙虾USDT".to_string())
+        );
+    }
+
+    #[test]
+    fn binance_usdc_leverage_preserves_quote_currency() {
+        for symbol in ["BNBUSDC", "bnb/usdc", "BNB_USDC@source"] {
+            assert_eq!(
+                symbol_for_venue(symbol, TradingVenue::BinanceFutures),
+                "BNBUSDC"
+            );
+            assert_eq!(
+                LeverageTarget::new(TradingVenue::BinanceFutures, symbol).symbol,
+                "BNBUSDC"
+            );
+        }
+        assert_eq!(
+            symbol_for_venue("BNBUSDT", TradingVenue::BinanceFutures),
+            "BNBUSDT"
         );
     }
 

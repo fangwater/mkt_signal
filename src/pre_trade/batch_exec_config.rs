@@ -105,6 +105,7 @@ pub struct BatchExecConfigReloader {
     binance_account_mode: Option<BinanceAccountMode>,
     leverage_init: BatchExecLeverageInitState,
     leverage_confirmed_symbols: BTreeSet<String>,
+    leverage_retry_after: BTreeMap<String, std::time::Instant>,
     leverage_blocked_symbols: BTreeSet<String>,
     snapshots: BTreeMap<String, BatchExecRedisValue>,
     position_ledger: Option<BatchExecPositionLedger>,
@@ -125,6 +126,19 @@ const POSITION_ALLOCATION_EPS: f64 = 1e-10;
 const NEW_TARGET_SETTLE_US: i64 = 5_000_000;
 const INTERNAL_CROSS_MAX_QUOTE_AGE_US: i64 = 5_000_000;
 const LEVERAGE_INIT_REQUEST_SPACING: Duration = Duration::from_millis(75);
+const LEVERAGE_INIT_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
+fn reserve_leverage_attempt(
+    retry_after: &mut BTreeMap<String, std::time::Instant>,
+    symbol: &str,
+    now: std::time::Instant,
+) -> bool {
+    if retry_after.get(symbol).is_some_and(|next| now < *next) {
+        return false;
+    }
+    retry_after.insert(symbol.to_string(), now + LEVERAGE_INIT_RETRY_INTERVAL);
+    true
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -609,6 +623,7 @@ impl BatchExecConfigReloader {
             binance_account_mode,
             leverage_init,
             leverage_confirmed_symbols,
+            leverage_retry_after: BTreeMap::new(),
             leverage_blocked_symbols: BTreeSet::new(),
             snapshots: BTreeMap::new(),
             position_ledger: None,
@@ -835,6 +850,16 @@ impl BatchExecConfigReloader {
         let mut newly_initialized = BTreeSet::new();
         for (index, symbol) in required_symbols.iter().enumerate() {
             if self.leverage_confirmed_symbols.contains(symbol) {
+                continue;
+            }
+            // Reload notifications may arrive many times per second. Failed
+            // activation remains blocked without repeating exchange requests.
+            if !reserve_leverage_attempt(
+                &mut self.leverage_retry_after,
+                symbol,
+                std::time::Instant::now(),
+            ) {
+                blocked.insert(symbol.clone());
                 continue;
             }
             match crate::pre_trade::leverage_guard::set_batch_exec_default_leverage(
@@ -2305,6 +2330,31 @@ impl BatchExecConfigReloader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_leverage_activation_retries_at_most_once_per_minute_per_symbol() {
+        let mut schedule = BTreeMap::new();
+        let now = std::time::Instant::now();
+        assert!(reserve_leverage_attempt(&mut schedule, "BNBUSDC", now));
+        for seconds in 0..60 {
+            assert!(!reserve_leverage_attempt(
+                &mut schedule,
+                "BNBUSDC",
+                now + Duration::from_secs(seconds)
+            ));
+        }
+        assert!(reserve_leverage_attempt(&mut schedule, "BTCUSDT", now));
+        assert!(reserve_leverage_attempt(
+            &mut schedule,
+            "BNBUSDC",
+            now + Duration::from_secs(60)
+        ));
+        assert!(!reserve_leverage_attempt(
+            &mut schedule,
+            "BNBUSDC",
+            now + Duration::from_secs(61)
+        ));
+    }
 
     fn allocation_candidate(
         strategy_id: i32,
