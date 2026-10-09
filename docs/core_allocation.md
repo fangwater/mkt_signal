@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-08 06:00 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-09 03:10 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
@@ -24,7 +24,8 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 13 | depth_pub_general | 本机 8 路 depth25（BN/OKX/Bitget/Gate × margin+futures）；**不含 Bybit**（Bybit 在 sg）。pm2 `dp_general` |
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
-| 16-19 | (空) | 原 binance-intra-arb01 已下线退役 |
+| 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
+| 17-19 | (空) | 原 binance-intra-arb01 已下线退役 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
 | 21 | trade_signal(okex_mm_alpha) | |
 | 22 | pre_trade(okex_mm_alpha) | |
@@ -34,6 +35,13 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
+
+2026-10-09 03:04 UTC 新增 `~/spread_pbs/gate-bitget-futures-bbo`，代码 `78150e7a`，
+本地 release 构建上传、SHA-256 校验后原子安装，使用环境内 start 脚本启动。
+单进程绑定 CPU16，Gate / Bitget 各两条 SBE BBO 连接，源 IP 分别为
+`172.31.46.90` / `172.31.46.91`（ens42，table 101）；不订阅深度/成交/ticker。
+原 `gate-both` / `bitget-both` 进程及 FR 消费通道维持运行；新通道为
+`futures_bbo/{gate-futures,bitget-futures}/ask_bid_spread`。
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
 binance_fr_arb01/02/03/04、gate_fr_arb01/02/03、bitget_fr_arb01/02、

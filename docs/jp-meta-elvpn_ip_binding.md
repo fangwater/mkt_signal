@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-08 06:00 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-09 03:10 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -51,6 +51,10 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.46.93` | `18.181.48.65` | 已使用 / 非交易 | CTA Manager 1 分钟 K 线 REST 缓存；少量 `ipc_bridge` socket |
 
 `ens42` 没有策略 `local_ips` 引用；行情和 IPC 连接已使用这块网卡。
+2026-10-09 03:04 UTC 新增 `~/spread_pbs/gate-bitget-futures-bbo`（CPU16）：
+Gate 和 Bitget USDT 合约各两条 BBO 连接，primary 绑定 `172.31.46.90`、
+secondary 绑定 `172.31.46.91`。现场 `ss` 核验共四条 TLS 连接均使用这两个源 IP，
+`ip route get` 均经 ens42 / table 101。复用现有行情源地址，未新增 IP 或路由规则。
 2026-10-05 部署 CTA Manager 分钟 K 线缓存：`[kline].local_ip = "172.31.46.93"`，
 `public_ip = "18.181.48.65"`，请求 Binance USDⓈ-M `/fapi/v1/klines?interval=1m`。
 通过 IMDSv2 与绑定私网地址的外部请求核验映射；检查全部 24 份现场
