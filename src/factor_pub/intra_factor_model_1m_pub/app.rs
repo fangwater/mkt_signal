@@ -15,12 +15,11 @@ use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use crate::common::amount_threshold::AmountThreshold;
 use crate::depth_pub::orderbook::OrderBook;
+use crate::factor_pub::cta_factor_universe::{load_enabled_symbols, CtaFactorUniverse};
 use crate::factor_pub::fusion_factor_pub::app::{
-    load_amount_thresholds_from_tlen_server, load_online_symbols_from_tlen_server,
-    BaselineReplayState,
+    load_amount_thresholds_from_tlen_server, BaselineReplayState,
 };
 use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
-use crate::factor_pub::fusion_factor_pub::plan::load_symbol_factor_plans_from_tlen_server;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
@@ -31,8 +30,6 @@ use super::cfg::{IntraFactorModelPubConfig, KafkaInputConfig, NormalizeConfig};
 
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
-const FACTOR_PLAN_CONFIG_TYPE: &str = "factor_plan_1m";
-const AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds_1m";
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
 const BAR_MS: i64 = 60_000;
 const FACTOR_LONG_QUANTILE: f64 = 0.9;
@@ -43,21 +40,8 @@ const NQ_MIN_PERIODS: usize = 720;
 const NQ_QUANTILE: f64 = 0.5;
 const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 
-pub const INTRA_FACTOR_NAMES: [&str; 10] = [
-    "baseline_035",
-    "TD_PR_011",
-    "baseline_053",
-    "TP_VPI_006",
-    "TD_PR_005",
-    "factor_116",
-    "net_buy_medium",
-    "factor_004",
-    "baseline_091",
-    "TD_TI_008",
-];
-
 struct FactorOutput {
-    factor_name: &'static str,
+    factor_name: String,
     service_path: String,
     publisher: ModelPublisher,
     seq_no: u64,
@@ -188,13 +172,13 @@ struct SymbolState {
 }
 
 impl SymbolState {
-    fn new(window_size: usize, normalize: &NormalizeConfig) -> Self {
+    fn new(window_size: usize, normalize: &NormalizeConfig, factor_count: usize) -> Self {
         Self {
             evaluator: BaselineReplayState::default(),
-            windows: (0..INTRA_FACTOR_NAMES.len())
+            windows: (0..factor_count)
                 .map(|_| ExactRollingWindow::new(window_size))
                 .collect(),
-            normalize: (0..INTRA_FACTOR_NAMES.len())
+            normalize: (0..factor_count)
                 .map(|_| NormalizeState::new(normalize))
                 .collect(),
             last_trade_flow_ts: None,
@@ -400,6 +384,7 @@ pub struct IntraFactorModel1mPubApp {
     venue: TradingVenue,
     venue_slug: String,
     tlen_server: TlenServerConfig,
+    universe: CtaFactorUniverse,
     window_size: usize,
     min_samples: usize,
     normalize: NormalizeConfig,
@@ -456,29 +441,21 @@ impl IntraFactorModel1mPubApp {
         let venue_slug = venue.data_pub_slug().to_string();
         let plan = SymbolFactorPlan::from_factor_names(
             "intra_factor_model_1m",
-            INTRA_FACTOR_NAMES
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect(),
+            config.universe.factors.clone(),
         )?;
         BaselineReplayState::validate_factor_plan(&plan)
             .context("validate intra 1m raw factor plan")?;
 
-        let allowed_symbols = load_enabled_symbols(&config.tlen_server, venue, &venue_slug)
-            .await
-            .with_context(|| {
-                format!(
-                    "load intra 1m enabled symbols failed: venue={} factor_plan={}",
-                    venue_slug, FACTOR_PLAN_CONFIG_TYPE
-                )
-            })?;
-        if allowed_symbols.is_empty() {
-            bail!(
-                "no online symbols have the required 1m intra factor plan: venue={} factors={:?}",
-                venue_slug,
-                INTRA_FACTOR_NAMES
-            );
-        }
+        let allowed_symbols =
+            load_enabled_symbols(&config.tlen_server, venue, &venue_slug, &config.universe)
+                .await
+                .with_context(|| {
+                    format!(
+                        "load intra 1m enabled symbols failed: venue={} factor_plan={}",
+                        venue_slug, "factor_plan_1m"
+                    )
+                })?;
+        config.universe.require_complete(&allowed_symbols, venue)?;
 
         let amount_thresholds = load_amount_thresholds_from_tlen_server(
             &config.tlen_server,
@@ -506,8 +483,14 @@ impl IntraFactorModel1mPubApp {
         let kafka_consumer =
             RawKafkaConsumer::new(&kafka_config).context("create intra 1m Kafka consumer")?;
 
-        let mut outputs = Vec::with_capacity(INTRA_FACTOR_NAMES.len());
-        for factor_name in INTRA_FACTOR_NAMES {
+        for symbol in &allowed_symbols {
+            anyhow::ensure!(
+                amount_thresholds.contains_key(symbol),
+                "missing trade-flow amount thresholds: {symbol}"
+            );
+        }
+        let mut outputs = Vec::with_capacity(config.universe.factors.len());
+        for factor_name in &config.universe.factors {
             let service_path = output_service_path(&venue_slug, factor_name);
             let node_name = format!(
                 "intra_factor_model_1m_{}_{}",
@@ -521,7 +504,7 @@ impl IntraFactorModel1mPubApp {
                 )
             })?;
             outputs.push(FactorOutput {
-                factor_name,
+                factor_name: factor_name.clone(),
                 service_path,
                 publisher,
                 seq_no: 0,
@@ -536,6 +519,7 @@ impl IntraFactorModel1mPubApp {
             venue,
             venue_slug,
             tlen_server: config.tlen_server.clone(),
+            universe: config.universe.clone(),
             window_size: config.percentile.window_size,
             min_samples: config.percentile.min_samples,
             normalize: config.normalize.clone(),
@@ -605,7 +589,7 @@ impl IntraFactorModel1mPubApp {
         }
         self.last_symbol_reload = Instant::now();
 
-        match load_enabled_symbols(&self.tlen_server, self.venue, &self.venue_slug).await {
+        match load_enabled_symbols(&self.tlen_server, self.venue, &self.venue_slug, &self.universe).await {
             Ok(symbols) if symbols.is_empty() => self.warn_reload_throttled(&format!(
                 "intra factor 1m symbol reload returned no enabled symbols; retaining previous set: venue={}",
                 self.venue_slug
@@ -694,10 +678,13 @@ impl IntraFactorModel1mPubApp {
         // join key diverges from the millisecond NQ keys.
         let ts_in_ms = msg.ts;
         let observations = match {
-            let state = self
-                .states
-                .entry(symbol.clone())
-                .or_insert_with(|| SymbolState::new(self.window_size, &self.normalize));
+            let state = self.states.entry(symbol.clone()).or_insert_with(|| {
+                SymbolState::new(
+                    self.window_size,
+                    &self.normalize,
+                    self.plan.factor_names().len(),
+                )
+            });
             state.evaluate(msg, &self.plan, self.min_samples, record_percentile)
         } {
             Ok(Some(observations)) => observations,
@@ -1055,46 +1042,6 @@ fn historical_bar_has_valid_prices(bar: &BaselineBar) -> bool {
     .all(|value| value.is_finite() && *value > 0.0)
 }
 
-async fn load_enabled_symbols(
-    tlen_server: &TlenServerConfig,
-    venue: TradingVenue,
-    venue_slug: &str,
-) -> Result<HashSet<String>> {
-    let online_symbols = load_online_symbols_from_tlen_server(
-        tlen_server,
-        venue,
-        venue_slug,
-        AMOUNT_THRESHOLD_CONFIG_TYPE,
-    )
-    .await?;
-    let plans =
-        load_symbol_factor_plans_from_tlen_server(tlen_server, venue_slug, FACTOR_PLAN_CONFIG_TYPE)
-            .await?;
-
-    Ok(select_enabled_symbols(venue, &online_symbols, plans))
-}
-
-fn select_enabled_symbols(
-    venue: TradingVenue,
-    online_symbols: &HashSet<String>,
-    plans: HashMap<String, SymbolFactorPlan>,
-) -> HashSet<String> {
-    plans
-        .into_iter()
-        .filter_map(|(raw_symbol, plan)| {
-            let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
-            (online_symbols.contains(&symbol) && plan_has_required_factors(&plan)).then_some(symbol)
-        })
-        .collect()
-}
-
-fn plan_has_required_factors(plan: &SymbolFactorPlan) -> bool {
-    let names: Vec<&str> = plan.factor_names().collect();
-    INTRA_FACTOR_NAMES
-        .iter()
-        .all(|required| names.contains(required))
-}
-
 pub fn output_service_path(venue_slug: &str, factor_name: &str) -> String {
     format!(
         "model_output/intra-{}-1m-{}",
@@ -1142,67 +1089,34 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        output_service_path, parse_trade_side, plan_has_required_factors, select_enabled_symbols,
-        sort_period_events, timestamp_as_micros, NormalizeConfig, PeriodEvent, SpotNqState,
-        SymbolState, INTRA_FACTOR_NAMES,
+        output_service_path, parse_trade_side, sort_period_events, timestamp_as_micros,
+        NormalizeConfig, PeriodEvent, SpotNqState, SymbolState,
     };
     use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
     use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
     use order_common::TradingVenue;
     use period_pbs::pb::{IncrementOrderBookInfo, PriceLevel, TradeInfo};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
+
+    fn configured_factors() -> Vec<String> {
+        toml::from_str::<super::IntraFactorModelPubConfig>(include_str!(
+            "../../../config/intra_factor_model_1m_pub.toml"
+        ))
+        .expect("repository config")
+        .universe
+        .factors
+    }
 
     #[test]
     fn output_services_are_distinct_per_factor() {
-        let services: HashSet<String> = INTRA_FACTOR_NAMES
+        let services: HashSet<String> = configured_factors()
             .iter()
             .map(|factor| output_service_path("binance-futures", factor))
             .collect();
 
-        assert_eq!(services.len(), INTRA_FACTOR_NAMES.len());
-        assert!(services.contains("model_output/intra-binance-futures-1m-baseline_035"));
-        assert!(services.contains("model_output/intra-binance-futures-1m-td_ti_008"));
-    }
-
-    #[test]
-    fn plan_selection_requires_the_complete_factor_set() {
-        let complete = SymbolFactorPlan::from_factor_names(
-            "BTCUSDT",
-            INTRA_FACTOR_NAMES
-                .iter()
-                .rev()
-                .map(|name| (*name).to_string())
-                .collect(),
-        )
-        .expect("complete plan");
-        let incomplete = SymbolFactorPlan::from_factor_names(
-            "ETHUSDT",
-            INTRA_FACTOR_NAMES[..8]
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect(),
-        )
-        .expect("incomplete plan");
-        assert!(plan_has_required_factors(&complete));
-        assert!(!plan_has_required_factors(&incomplete));
-        let mut with_single_venue = INTRA_FACTOR_NAMES
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect::<Vec<_>>();
-        with_single_venue.extend(["TP_VPI_018".to_string(), "baseline_104".to_string()]);
-        let extended = SymbolFactorPlan::from_factor_names("SOLUSDT", with_single_venue)
-            .expect("extended plan");
-        assert!(plan_has_required_factors(&extended));
-
-        let symbols = select_enabled_symbols(
-            TradingVenue::BinanceFutures,
-            &HashSet::from(["BTCUSDT".to_string(), "ETHUSDT".to_string()]),
-            HashMap::from([
-                ("BTCUSDT".to_string(), complete),
-                ("ETHUSDT".to_string(), incomplete),
-            ]),
-        );
-        assert_eq!(symbols, HashSet::from(["BTCUSDT".to_string()]));
+        assert_eq!(services.len(), configured_factors().len());
+        assert!(services.contains("model_output/intra-binance-futures-1m-factor_036"));
+        assert!(services.contains("model_output/intra-binance-futures-1m-td_ti_002"));
     }
 
     #[test]
@@ -1212,11 +1126,11 @@ mod tests {
             min_periods: 2,
             clip_zscore: 3.0,
         };
-        let mut state = SymbolState::new(4, &normalize);
-        let first = state.observe(vec![1.0; INTRA_FACTOR_NAMES.len()], 2);
-        let second = state.observe(vec![2.0; INTRA_FACTOR_NAMES.len()], 2);
-        let third = state.observe(vec![3.0; INTRA_FACTOR_NAMES.len()], 2);
-        let missing = state.observe(vec![f64::NAN; INTRA_FACTOR_NAMES.len()], 2);
+        let mut state = SymbolState::new(4, &normalize, configured_factors().len());
+        let first = state.observe(vec![1.0; configured_factors().len()], 2);
+        let second = state.observe(vec![2.0; configured_factors().len()], 2);
+        let third = state.observe(vec![3.0; configured_factors().len()], 2);
+        let missing = state.observe(vec![f64::NAN; configured_factors().len()], 2);
 
         // One bar is not enough to define the capped-series statistics, so the
         // z-score stays unresolved and the slot is not observed.
@@ -1378,9 +1292,9 @@ mod tests {
     fn ignores_replayed_kafka_bar_with_same_timestamp() {
         let plan = SymbolFactorPlan::from_factor_names(
             "BTCUSDT",
-            INTRA_FACTOR_NAMES
+            configured_factors()
                 .iter()
-                .map(|name| (*name).to_string())
+                .map(|name| name.to_string())
                 .collect(),
         )
         .expect("factor plan");
@@ -1391,7 +1305,7 @@ mod tests {
             &vec![1.0; 112],
         )
         .expect("trade-flow message");
-        let mut state = SymbolState::new(3, &NormalizeConfig::default());
+        let mut state = SymbolState::new(3, &NormalizeConfig::default(), plan.factor_names().len());
 
         assert!(state
             .evaluate(msg.clone(), &plan, 1, true)

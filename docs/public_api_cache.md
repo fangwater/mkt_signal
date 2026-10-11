@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-05 UTC
+最后更新：2026-10-10 UTC
 
 ## 状态
 
@@ -293,6 +293,23 @@ curl -sS -D - -o /dev/null 'http://127.0.0.1:28902/api/v3/market/margin-loans?co
 [Get Instruments Info](https://bybit-exchange.github.io/docs/v5/market/instrument)。
 
 ## 已审计、暂缓实施的项目
+
+### Binance CTA 分钟 K 线消费者
+
+`scripts/cta_special_signal_history.py` 在 CTA 部署环境中采集
+`GET /fapi/v1/klines`，只发送无鉴权公共 GET，固定 `interval=1m&limit=499`。
+首次每币三页补齐最近 24h（1440 根闭合分钟加当前分钟），随后默认每 20s 更新
+最后两根及缺失分钟，最大并发为 2。429/418 在整个消费者共享 60..900s 退避，
+遵守 `Retry-After`；失败保留本地已存 K 线、显示错误，不伪造缺口。
+
+这个消费者使用专用 `BINANCE_FUTURES_PUBLIC_API_BASE`，未设置时默认
+`https://fapi.binance.com`。它不读取私有 API 基址，不附带账户凭据，配置代理后失败也不绕过代理。
+当前变更只增加消费者，**没有部署 Binance Nginx 缓存或分配主机缓存端口**。
+当前形成中的分钟每 20s 更新，因此没有设置分钟级缓存 TTL。
+未来接入主机缓存时只允许此公共 GET、完整查询参数进入 key，并重新评估当前分钟的 TTL；
+私有查询和交易写接口继续直连。
+
+官方契约：[USD-M Futures market data](https://developers.binance.info/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data)。
 
 以下项目于 2026-09-09 UTC 在 `jp-meta-elvpn` 完成只读审计，但没有修改 Gate
 代码或配置。继续实施前需要重新确认应用显式公共基址的接入方式；当前不使用

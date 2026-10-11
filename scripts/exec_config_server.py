@@ -153,6 +153,8 @@ def normalize_target_signal(raw: Any, field: str) -> int:
 
 
 def normalize_target_position(raw: Any, field: str) -> Dict[str, Any]:
+    if raw == "clear":
+        return {"qty": "clear", "signal": 0}
     if isinstance(raw, bool) or isinstance(raw, (int, float, str)):
         return {"qty": finite_float(raw, f"{field}.qty"), "signal": 0}
     if not isinstance(raw, dict):
@@ -163,7 +165,7 @@ def normalize_target_position(raw: Any, field: str) -> Dict[str, Any]:
     if "qty" not in raw:
         raise ValueError(f"{field}.qty is required")
     return {
-        "qty": finite_float(raw["qty"], f"{field}.qty"),
+        "qty": "clear" if raw["qty"] == "clear" else finite_float(raw["qty"], f"{field}.qty"),
         "signal": normalize_target_signal(raw.get("signal"), f"{field}.signal"),
     }
 
@@ -265,8 +267,8 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         raise ValueError(f"missing fields: {', '.join(missing)}")
 
     algorithm = raw.get("algorithm", "batch")
-    if algorithm not in ("batch", "pov"):
-        raise ValueError("algorithm must be batch or pov")
+    if algorithm not in ("batch", "pov", "ctaker"):
+        raise ValueError("algorithm must be batch, pov or ctaker")
 
     anchor = str(raw["maker_price_anchor"]).strip()
     if anchor not in {"own_best", "opposite_best_plus_one_tick"}:
@@ -772,7 +774,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" disabled /></div>
           <div class="field"><label>Target Tolerance __NOTIONAL_CURRENCY__</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
-          <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option></select></div>
+          <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option><option value="ctaker">CTaker</option></select></div>
         </div>
       </section>
       <section id="pov-section" hidden>
@@ -813,7 +815,7 @@ INDEX_HTML = r"""<!doctype html>
           select.innerHTML = '<option value="">Select strategy</option>' + state.names.map((name) => `<option value="${name}">${name}</option>`).join("");
           select.value = state.name;
         }
-        function targetQty(raw) { return raw && typeof raw === "object" ? Number(raw.qty) : Number(raw); }
+        function targetQty(raw) { const qty = raw && typeof raw === "object" ? raw.qty : raw; return qty === "clear" ? "clear" : Number(qty); }
         function targetSignal(raw) { return raw && typeof raw === "object" && raw.signal != null ? Number(raw.signal) : 0; }
         function renderTargets(targets) {
           const tbody = el("target-rows");

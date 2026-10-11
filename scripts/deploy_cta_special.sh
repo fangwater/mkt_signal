@@ -9,7 +9,6 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/deploy_cta_special.sh --env-name binance-cta-special-<tag>
-                                --factor <tp_vpi_018|baseline_104>
                                 --config-port <port> --dashboard-port <port>
                                 [--namespace <name>]
                                 [--trade-engine-config <path>]
@@ -24,7 +23,6 @@ EOF
 }
 
 ENV_NAME=""
-FACTOR=""
 CONFIG_PORT=""
 DASHBOARD_PORT=""
 NAMESPACE=""
@@ -34,7 +32,6 @@ SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-name) ENV_NAME="${2:-}"; shift 2 ;;
-    --factor) FACTOR="${2:-}"; shift 2 ;;
     --config-port) CONFIG_PORT="${2:-}"; shift 2 ;;
     --dashboard-port) DASHBOARD_PORT="${2:-}"; shift 2 ;;
     --namespace) NAMESPACE="${2:-}"; shift 2 ;;
@@ -47,12 +44,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 ENV_NAME="${ENV_NAME,,}"
-FACTOR="${FACTOR,,}"
 [[ "$ENV_NAME" =~ ^binance-cta-special-[a-z0-9][a-z0-9_-]*$ ]] || {
   echo "[ERROR] --env-name must match binance-cta-special-<tag>" >&2; exit 1;
-}
-[[ "$FACTOR" == "tp_vpi_018" || "$FACTOR" == "baseline_104" ]] || {
-  echo "[ERROR] --factor must be tp_vpi_018 or baseline_104" >&2; exit 1;
 }
 for value in "$CONFIG_PORT" "$DASHBOARD_PORT"; do
   [[ "$value" =~ ^[0-9]+$ && "$value" -ge 1024 && "$value" -le 65535 ]] || {
@@ -81,6 +74,15 @@ else
 fi
 
 TARGET_DIR="${HOME}/${ENV_NAME}"
+if [[ "$SKIP_BUILD" -eq 0 && "$ROOT_DIR" != "/home/fanghaizhou/mkt_signal" ]]; then
+  echo "[ERROR] build release artifacts in /home/fanghaizhou/mkt_signal; publish uploaded artifacts with --skip-build" >&2
+  exit 1
+fi
+if [[ -f "$TARGET_DIR/config/cta_special.json" ]]; then
+  # Reject legacy/invalid strategy files before replacing any runtime artifact.
+  python3 "$ROOT_DIR/scripts/cta_special_config_server.py" \
+    --config "$TARGET_DIR/config/cta_special.json" --check >/dev/null
+fi
 if [[ ! -f "${TARGET_DIR}/env.sh" ]]; then
   bash scripts/deploy_setup_env_intra.sh \
     --env-name "$ENV_NAME" \
@@ -116,7 +118,7 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
   cargo build --release \
     --bin cta_special_signal \
     --bin cta_special_factor_model_1m_pub \
-    --bin pre_trade \
+    --bin exec-pre-trade \
     --bin trade_engine \
     --bin rapidx_account_monitor
   cargo build --release --package persist_manager --features runtime --bin persist_manager
@@ -125,7 +127,7 @@ fi
 declare -A BIN_SOURCES=(
   [cta_special_signal]="$(intra_bin_path_release "$TARGET_BUILD_DIR" cta_special_signal)"
   [cta_special_factor_model_1m_pub]="$(intra_bin_path_release "$TARGET_BUILD_DIR" cta_special_factor_model_1m_pub)"
-  [pre_trade]="$(intra_bin_path_release "$TARGET_BUILD_DIR" pre_trade)"
+  [exec-pre-trade]="$(intra_bin_path_release "$TARGET_BUILD_DIR" exec-pre-trade)"
   [trade_engine]="$(intra_bin_path_release "$TARGET_BUILD_DIR" trade_engine)"
   [account_monitor_binance]="$(intra_bin_path_release "$TARGET_BUILD_DIR" rapidx_account_monitor)"
   [persist_manager]="$(intra_bin_path_release "$TARGET_BUILD_DIR" persist_manager)"
@@ -150,6 +152,9 @@ for file in \
   scripts/cta_special_config_server.py scripts/cta_special_dashboard.py \
   scripts/start_cta_special.sh scripts/stop_cta_special.sh \
   scripts/start_cta_special_signal.sh scripts/stop_cta_special_signal.sh \
+  scripts/cta_special_factor_config.py scripts/cta_special_signal_history.py scripts/cta_special_position_replay.py \
+  scripts/exec_config_server.py scripts/sync_exec_risk_params.py \
+  scripts/prepare_cta_special_exec.sh scripts/start_exec_pre_trade.sh scripts/stop_exec_pre_trade.sh \
   scripts/start_cta_special_factor_model_1m_pub.sh scripts/stop_cta_special_factor_model_1m_pub.sh \
   scripts/start_cta_special_config_server.sh scripts/stop_cta_special_config_server.sh \
   scripts/start_cta_special_dashboard.sh scripts/stop_cta_special_dashboard.sh \
@@ -163,72 +168,27 @@ for file in \
   copy_script "$file"
 done
 for file in web/cta_special/index.html web/cta_special_config/index.html \
-  config/iceoryx2.toml; do
+  web/cta_special_signals/index.html web/cta_special_signals/panel.js \
+  web/vendor/echarts.min.js web/vendor/ECHARTS-LICENSE.txt web/vendor/ECHARTS-NOTICE.txt web/vendor/README.md \
+  scripts/factor_validation_allowlist.txt config/iceoryx2.toml; do
   copy_file "$file"
 done
 
-created_config=0
 if [[ ! -f "$TARGET_DIR/config/cta_special.json" ]]; then
   copy_file config/cta_special.json
-  created_config=1
 fi
-python3 - "$TARGET_DIR/config/cta_special.json" "$FACTOR" "$created_config" <<'PY'
-import json
-import os
-import pathlib
-import sys
-path = pathlib.Path(sys.argv[1])
-factor = sys.argv[2]
-created = sys.argv[3] == "1"
-config = json.loads(path.read_text())
-if created:
-    config["enabled"] = False
-    config["rule_name"] = factor
-elif str(config.get("rule_name", "")).lower() != factor:
-    raise SystemExit("existing cta_special.json factor does not match --factor")
-entry = config.get("entry") or {}
-execution = config.get("execution") or {}
-compact = {
-    "enabled": bool(config.get("enabled", False)),
-    "rule_name": factor,
-    "symbols": config.get("symbols", []),
-    "entry": {
-        "trade_sides": entry.get("trade_sides", "both"),
-        "factor_long_quantile": entry.get("factor_long_quantile", 0.9),
-        "factor_short_quantile": entry.get("factor_short_quantile", 0.1),
-        "cooldown_seconds": entry.get("cooldown_seconds", 0),
-        "signal_delay_seconds": entry.get("signal_delay_seconds", 1),
-        "nq_change_enabled": bool(entry.get("nq_change_enabled", True)),
-        "nq_long_quantile": entry.get("nq_long_quantile", 0.5),
-        "nq_short_quantile": entry.get("nq_short_quantile", 0.5),
-    },
-    "execution": {
-        "order_notional_usdt": execution.get("order_notional_usdt", 100.0),
-        "open_offsets": execution.get("open_offsets", [0.0, 0.0001, 0.0003, 0.0005]),
-        "maker_ttl_seconds": execution.get("maker_ttl_seconds", 120),
-        "factor_exit_enabled": bool(execution.get("factor_exit_enabled", True)),
-        "factor_exit_quantile_long": execution.get("factor_exit_quantile_long", 0.3),
-        "factor_exit_quantile_short": execution.get("factor_exit_quantile_short", 0.7),
-        "trailing_stop_enabled": bool(execution.get("trailing_stop_enabled", True)),
-        "trailing_stop_trigger_step": execution.get("trailing_stop_trigger_step", 0.02),
-        "trailing_stop_move_step": execution.get("trailing_stop_move_step", 0.01),
-        "max_holding_seconds": execution.get("max_holding_seconds", 0),
-    },
-}
-temp = path.with_name(f".{path.name}.deploy.tmp")
-temp.write_text(json.dumps(compact, indent=2) + "\n")
-temp.chmod(path.stat().st_mode & 0o777)
-os.replace(temp, path)
-PY
+# Validate the current contract without rewriting an operator's existing config.
+# A legacy single-factor config must be migrated explicitly before publishing.
 python3 "$TARGET_DIR/scripts/cta_special_config_server.py" \
   --config "$TARGET_DIR/config/cta_special.json" --check >/dev/null
+[[ -f "$TARGET_DIR/config/cta_special_symbol_factors.json" ]] || copy_file config/cta_special_symbol_factors.json
 [[ -f "$TARGET_DIR/config/cta_special_factor_model_1m_pub.toml" ]] || \
   copy_file config/cta_special_factor_model_1m_pub.toml
 
 manifest="$TARGET_DIR/intra-release.manifest"
 {
   for spec in \
-    "pre_trade:pre_trade" \
+    "exec-pre-trade:exec-pre-trade" \
     "trade_engine:trade_engine" \
     "rapidx_account_monitor:account_monitor_binance" \
     "persist_manager:persist_manager" \
@@ -244,7 +204,7 @@ release_id="$(sha256sum "${manifest}.tmp" | awk '{print $1}')"
 rm -f "${manifest}.tmp"
 
 echo "[INFO] deployed disabled CTA special env: $TARGET_DIR"
-echo "[INFO] factor=$FACTOR shared_factor_publisher=$FACTOR_PUBLISHER config_port=$CONFIG_PORT dashboard_port=$DASHBOARD_PORT backend=ltp"
-echo "[INFO] initialize the isolated risk key before starting:"
-echo "       cd $TARGET_DIR && ./intra_scripts/sync_cta_risk_params.py --env-name $ENV_NAME --open-venue binance-futures --hedge-venue binance-futures"
+echo "[INFO] factor_key=${ENV_NAME}:cta_symbol_factors shared_factor_publisher=$FACTOR_PUBLISHER config_port=$CONFIG_PORT dashboard_port=$DASHBOARD_PORT backend=ltp"
+"$TARGET_DIR/scripts/prepare_cta_special_exec.sh" --execute
+echo "[INFO] initialize standard Exec order-rate risk from the companion Exec directory before enabling execution"
 echo "[INFO] dry-run start: cd $TARGET_DIR && ./scripts/start_cta_special.sh"

@@ -1,0 +1,111 @@
+[
+  {
+    "env": "binance-cta-special-rx02",
+    "trading_enabled": false,
+    "config": {
+      "enabled": false,
+      "entry": {
+        "factor_long_quantile": 0.9,
+        "factor_short_quantile": 0.1,
+        "nq_change_enabled": true,
+        "nq_long_quantile": 0.5,
+        "nq_short_quantile": 0.5
+      },
+      "execution": {
+        "factor_exit_quantile_long": 0.3,
+        "factor_exit_quantile_short": 0.7
+      },
+      "max_pos_u": 1000.0
+    },
+    "factors": 5,
+    "symbols": 16,
+    "manager_exec_documents_preserved": true,
+    "risk_endpoints_removed": true,
+    "historical_replay_identical": true,
+    "closed_trades": 9,
+    "programs": [
+      {
+        "pid": 1898311,
+        "comm": "account_monitor",
+        "script": ""
+      },
+      {
+        "pid": 1898714,
+        "comm": "persist_manager",
+        "script": ""
+      },
+      {
+        "pid": 1975542,
+        "comm": "cta_special_fac",
+        "script": ""
+      },
+      {
+        "pid": 2581462,
+        "comm": "python3",
+        "script": "cta_special_config_server.py"
+      },
+      {
+        "pid": 2582314,
+        "comm": "cta_special_sig",
+        "script": ""
+      },
+      {
+        "pid": 2585918,
+        "comm": "python3",
+        "script": "cta_special_dashboard.py"
+      }
+    ]
+  },
+  {
+    "env": "binance-cta-special-rx03",
+    "trading_enabled": false,
+    "config": {
+      "enabled": false,
+      "entry": {
+        "factor_long_quantile": 0.9,
+        "factor_short_quantile": 0.1,
+        "nq_change_enabled": true,
+        "nq_long_quantile": 0.5,
+        "nq_short_quantile": 0.5
+      },
+      "execution": {
+        "factor_exit_quantile_long": 0.7,
+        "factor_exit_quantile_short": 0.3
+      },
+      "max_pos_u": 1000.0
+    },
+    "factors": 5,
+    "symbols": 16,
+    "manager_exec_documents_preserved": true,
+    "risk_endpoints_removed": true,
+    "historical_replay_identical": true,
+    "closed_trades": 639,
+    "programs": [
+      {
+        "pid": 1902298,
+        "comm": "account_monitor",
+        "script": ""
+      },
+      {
+        "pid": 1903557,
+        "comm": "persist_manager",
+        "script": ""
+      },
+      {
+        "pid": 2587076,
+        "comm": "python3",
+        "script": "cta_special_config_server.py"
+      },
+      {
+        "pid": 2587152,
+        "comm": "cta_special_sig",
+        "script": ""
+      },
+      {
+        "pid": 2587842,
+        "comm": "python3",
+        "script": "cta_special_dashboard.py"
+      }
+    ]
+  }
+]

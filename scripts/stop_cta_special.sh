@@ -25,6 +25,10 @@ fi
 cd "$BASE_DIR"
 "${BASE_DIR}/scripts/stop_cta_special_signal.sh"
 "${BASE_DIR}/scripts/stop_cta_special_factor_model_1m_pub.sh"
+EXEC_DIR="$(dirname "$BASE_DIR")/${ENV_NAME/binance-cta-special-/binance-exec-cta-special-}"
+if [[ -x "$EXEC_DIR/scripts/stop_exec_pre_trade.sh" ]]; then
+  "$EXEC_DIR/scripts/stop_exec_pre_trade.sh"
+fi
 "${BASE_DIR}/intra_scripts/stop_intra_pre_trade.sh"
 "${BASE_DIR}/intra_scripts/stop_intra_persist_manager.sh"
 "${BASE_DIR}/intra_scripts/stop_intra_trade_engine.sh"

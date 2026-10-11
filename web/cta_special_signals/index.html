@@ -1,0 +1,992 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>CTA · 单因子交易面板</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b111a;
+        --panel: #111b28;
+        --line: #243347;
+        --text: #e7edf7;
+        --muted: #8496af;
+        --green: #4ad6ab;
+        --red: #f48792;
+        --blue: #8aaeff;
+        --gold: #e5c184;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      button,
+      a,
+      input,
+      select {
+        font: inherit;
+      }
+      button,
+      a {
+        touch-action: manipulation;
+      }
+      button {
+        cursor: pointer;
+      }
+      a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--text);
+      }
+      button {
+        border: 1px solid var(--line);
+        background: #172234;
+        color: var(--muted);
+        border-radius: 7px;
+        padding: 7px 13px;
+      }
+      button:hover,
+      button.active {
+        color: var(--text);
+        border-color: #5c7ca6;
+        background: #243652;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      select:focus-visible,
+      tr:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 3px;
+      }
+      header {
+        min-height: 76px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 26px;
+        border-bottom: 1px solid var(--line);
+        gap: 20px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+      }
+      .monogram {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        border: 1px solid #54729d;
+        border-radius: 11px;
+        color: var(--blue);
+        font-weight: 750;
+        background: #1d2b42;
+      }
+      .brand b {
+        font-size: 17px;
+      }
+      .eyebrow {
+        font-size: 10px;
+        letter-spacing: 1.4px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      nav {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .live {
+        font-size: 12px;
+        color: var(--green);
+        white-space: nowrap;
+      }
+      .live:before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        margin-right: 8px;
+      }
+      .live.warn {
+        color: var(--gold);
+      }
+      .workspace {
+        display: grid;
+        grid-template-columns: 175px minmax(0, 1fr);
+        min-height: calc(100vh - 76px);
+      }
+      aside.watchlist {
+        border-right: 1px solid var(--line);
+        padding: 25px 12px;
+      }
+      .watchlist h2 {
+        font-size: 11px;
+        letter-spacing: 1.6px;
+        color: var(--muted);
+        font-weight: 500;
+        margin: 0 10px 17px;
+      }
+      .scope-summary {
+        margin: 18px 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .symbol {
+        display: flex;
+        width: 100%;
+        justify-content: space-between;
+        align-items: center;
+        border: 0;
+        background: none;
+        padding: 10px;
+        margin: 3px 0;
+        text-align: left;
+      }
+      .symbol.active {
+        background: #1c2c43;
+        border-left: 2px solid var(--blue);
+        padding-left: 8px;
+      }
+      .symbol strong {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .symbol small {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .count {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      main {
+        min-width: 0;
+        padding: 25px 28px;
+      }
+      .market-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 20px;
+        margin-bottom: 18px;
+      }
+      .market-name {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .market-name h1 {
+        font-size: 27px;
+        line-height: 1;
+        margin: 0;
+        font-weight: 620;
+      }
+      .tag {
+        font-size: 10px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 2px 6px;
+        color: var(--muted);
+      }
+      .factor-tag {
+        color: var(--blue);
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .market-source {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 10px;
+      }
+      .price-row {
+        text-align: right;
+      }
+      .last-price {
+        font-size: 24px;
+        font-variant-numeric: tabular-nums;
+      }
+      .change {
+        font-size: 12px;
+      }
+      .positive {
+        color: var(--green);
+      }
+      .negative {
+        color: var(--red);
+      }
+      .neutral {
+        color: var(--muted);
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.7;
+        margin: 8px 0;
+      }
+      .factor-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+        margin-bottom: 18px;
+      }
+      .factor-choice {
+        text-align: left;
+        min-width: 152px;
+        flex: 1;
+        padding: 11px 14px;
+        background: var(--panel);
+      }
+      .factor-choice b {
+        display: block;
+        font-size: 12px;
+        letter-spacing: 0.2px;
+      }
+      .factor-choice span {
+        display: block;
+        font-size: 10px;
+        margin: 4px 0 5px;
+        color: var(--muted);
+      }
+      .factor-choice strong {
+        font-size: 16px;
+        font-weight: 550;
+      }
+      .factor-choice small {
+        font-size: 9px;
+        color: var(--muted);
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 13px 16px;
+        min-width: 0;
+      }
+      .stat > span {
+        font-size: 11px;
+        color: var(--muted);
+        display: block;
+      }
+      .stat > b {
+        display: block;
+        font-size: 25px;
+        font-weight: 550;
+        margin: 4px 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .stat > small {
+        display: block;
+        font-size: 10px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      #replay-summary {
+        margin-bottom: 18px;
+      }
+      .content {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 325px;
+        gap: 18px;
+        align-items: start;
+      }
+      .content > div {
+        min-width: 0;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        overflow: hidden;
+      }
+      .chart-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 15px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      .chart-title {
+        font-size: 13px;
+        font-weight: 550;
+        white-space: nowrap;
+      }
+      .chart-title small {
+        display: block;
+        font-size: 10px;
+        color: var(--muted);
+        font-weight: 400;
+        margin-top: 2px;
+      }
+      .chart-toolbar select {
+        background: #172234;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 5px;
+        font-size: 11px;
+        min-width: 0;
+        max-width: 180px;
+      }
+      .time-controls {
+        display: flex;
+        gap: 4px;
+      }
+      .time-controls button {
+        font-size: 11px;
+        padding: 5px 9px;
+      }
+      .chart-wrap {
+        position: relative;
+        height: 560px;
+      }
+      #chart {
+        height: 100%;
+        width: 100%;
+      }
+      .chart-empty {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        text-align: center;
+        color: var(--muted);
+        background: #111b28f5;
+        font-size: 12px;
+      }
+      .chart-empty[hidden] {
+        display: none;
+      }
+      .chart-footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px 18px 13px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 13px;
+      }
+      .legend i {
+        font-style: normal;
+      }
+      .legend i:first-child {
+        color: var(--green);
+      }
+      .legend i:nth-child(2) {
+        color: var(--red);
+      }
+      .inspector-head,
+      .table-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 15px 17px;
+        border-bottom: 1px solid var(--line);
+      }
+      .inspector-head b,
+      .table-heading b {
+        font-size: 12px;
+        font-weight: 550;
+      }
+      .badge {
+        font-size: 10px;
+        color: var(--blue);
+        white-space: nowrap;
+      }
+      .inspector-body {
+        padding: 17px;
+      }
+      .signal-top {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 12px;
+        margin-bottom: 17px;
+      }
+      .signal-top span {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 13px 15px;
+      }
+      .detail-grid small {
+        display: block;
+        font-size: 10px;
+        color: var(--muted);
+        margin-bottom: 3px;
+      }
+      .detail-grid b {
+        font-size: 12px;
+        font-weight: 550;
+        overflow-wrap: anywhere;
+      }
+      .factor-snapshot {
+        display: flex;
+        gap: 9px;
+        flex-wrap: wrap;
+        padding: 12px 0;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .trade-detail {
+        padding: 0 0 17px;
+        margin-bottom: 17px;
+        border-bottom: 1px solid var(--line);
+      }
+      .trade-detail p {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .section-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .section-heading span {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .nq-section {
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .nq-section .nq-state {
+        font-size: 11px;
+      }
+      .nq-row {
+        margin: 10px 0;
+        padding: 11px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        font-size: 11px;
+      }
+      .nq-row.selected {
+        border-color: #577aa2;
+        background: #18283d;
+      }
+      .nq-row > div {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 5px;
+      }
+      .nq-row b {
+        font-weight: 500;
+      }
+      .nq-row small {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .nq-row > strong {
+        display: block;
+        font-weight: 500;
+        font-size: 10px;
+        margin-top: 4px;
+      }
+      .nq-method {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.7;
+        margin-top: 13px;
+      }
+      .nq-method summary {
+        cursor: pointer;
+        color: var(--blue);
+      }
+      .trade-ledger {
+        margin-top: 17px;
+      }
+      .table-heading > span {
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .table-scroll {
+        max-height: 330px;
+        overflow: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+        white-space: nowrap;
+        font-size: 11px;
+      }
+      th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 400;
+        padding: 10px 15px;
+      }
+      td {
+        padding: 11px 15px;
+        border-top: 1px solid #223044;
+        font-variant-numeric: tabular-nums;
+      }
+      td small {
+        display: block;
+        font-size: 9px;
+        color: var(--muted);
+        margin-top: 3px;
+      }
+      tbody tr {
+        cursor: pointer;
+      }
+      tbody tr:hover,
+      tbody tr.selected {
+        background: #1c2d44;
+      }
+      .side-badge {
+        font-size: 10px;
+      }
+      .pending {
+        color: var(--gold);
+        font-size: 10px;
+      }
+      .empty {
+        padding: 23px 17px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .empty[hidden] {
+        display: none;
+      }
+      .observations {
+        margin-top: 15px;
+      }
+      .observations > summary {
+        cursor: pointer;
+        padding: 13px 17px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .observations > summary span {
+        float: right;
+        font-size: 10px;
+      }
+      .observations .hint {
+        padding: 0 17px;
+        margin: 0 0 10px;
+      }
+      .observations .table-scroll {
+        max-height: 245px;
+      }
+      .error-banner {
+        border: 1px solid #77603b;
+        border-radius: 7px;
+        background: #30291e;
+        color: var(--gold);
+        padding: 10px 14px;
+        font-size: 12px;
+        margin-bottom: 18px;
+      }
+      .error-banner[hidden] {
+        display: none;
+      }
+      .bottom-note {
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 10px;
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      @media (min-width: 1800px) {
+        .content {
+          grid-template-columns: minmax(0, 1fr) 370px;
+        }
+        .chart-wrap {
+          height: 635px;
+        }
+      }
+      @media (max-width: 1250px) {
+        .workspace {
+          grid-template-columns: 140px minmax(0, 1fr);
+        }
+        main {
+          padding: 22px 18px;
+        }
+        .content {
+          grid-template-columns: minmax(0, 1fr) 295px;
+          gap: 14px;
+        }
+        .stat {
+          padding: 12px;
+        }
+        .chart-toolbar {
+          padding: 12px;
+          flex-wrap: wrap;
+        }
+        .chart-wrap {
+          height: 510px;
+        }
+        .factor-choice {
+          min-width: 130px;
+        }
+      }
+      @media (max-width: 1000px) {
+        .content {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .inspector-body {
+          display: block;
+        }
+        .chart-wrap {
+          height: 510px;
+        }
+        .factor-choice {
+          min-width: 140px;
+        }
+        .inspector {
+          order: 2;
+        }
+      }
+      @media (max-width: 640px) {
+        header {
+          padding: 12px 15px;
+          min-height: 66px;
+          gap: 10px;
+        }
+        .brand b {
+          font-size: 14px;
+        }
+        .eyebrow {
+          font-size: 8px;
+          letter-spacing: 1px;
+        }
+        .monogram {
+          width: 31px;
+          height: 31px;
+        }
+        nav {
+          gap: 10px;
+          font-size: 11px;
+        }
+        .live {
+          display: none;
+        }
+        .workspace {
+          display: block;
+        }
+        aside.watchlist {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          padding: 8px;
+        }
+        .watchlist h2,
+        .scope-summary {
+          display: none;
+        }
+        #symbols {
+          display: flex;
+          overflow-x: auto;
+          gap: 4px;
+        }
+        .symbol {
+          width: auto;
+          flex-shrink: 0;
+          padding: 6px 10px;
+        }
+        .symbol.active {
+          padding-left: 8px;
+        }
+        .symbol small,
+        .count {
+          display: none;
+        }
+        .symbol strong {
+          font-size: 12px;
+        }
+        main {
+          padding: 17px 12px;
+        }
+        .market-header {
+          gap: 10px;
+        }
+        .market-name h1 {
+          font-size: 24px;
+        }
+        .factor-tag {
+          font-size: 12px;
+        }
+        .last-price {
+          font-size: 21px;
+        }
+        .market-source {
+          font-size: 9px;
+        }
+        .change {
+          font-size: 10px;
+        }
+        .factor-list {
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          margin-bottom: 14px;
+        }
+        .factor-choice {
+          flex: 0 0 142px;
+          min-width: 142px;
+          padding: 10px 12px;
+        }
+        .stats {
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+        }
+        .stat > b {
+          font-size: 21px;
+        }
+        .chart-wrap {
+          height: 440px;
+        }
+        .chart-toolbar {
+          gap: 9px;
+        }
+        .chart-title {
+          flex-basis: 100%;
+        }
+        .chart-toolbar select {
+          max-width: 160px;
+        }
+        .time-controls {
+          margin-left: auto;
+        }
+        .time-controls button {
+          padding: 5px 7px;
+        }
+        .chart-footer {
+          padding: 8px 12px 11px;
+          font-size: 9px;
+        }
+        .table-heading {
+          padding: 13px;
+        }
+        .table-heading b {
+          font-size: 11px;
+        }
+        th,
+        td {
+          padding: 10px 11px;
+        }
+        .bottom-note {
+          font-size: 9px;
+        }
+        .observations > summary {
+          font-size: 11px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <div class="monogram">F</div>
+        <div>
+          <b>单因子交易面板</b>
+          <div class="eyebrow">CTA SPECIAL · INDEPENDENT FACTORS</div>
+        </div>
+      </div>
+      <nav>
+        <span id="service-state" class="live warn">连接中</span
+        ><a href="../">状态 ↗</a><a href="../config/">因子配置 ↗</a>
+      </nav>
+    </header>
+    <div class="workspace">
+      <aside class="watchlist">
+        <h2>币种 · USDT 永续</h2>
+        <div id="symbols"></div>
+        <p class="scope-summary">右侧为可用因子数<br />每个因子独立观察交易</p>
+      </aside>
+      <main>
+        <div id="error" class="error-banner" hidden role="alert"></div>
+        <div id="demo" class="error-banner" hidden>
+          演示数据 · 仅用于面板验证，不代表真实行情或交易。
+        </div>
+        <div class="market-header">
+          <div>
+            <div class="market-name">
+              <h1 id="market-symbol">—</h1>
+              <span class="tag">PERP · 1m</span
+              ><span id="factor-name" class="factor-tag">—</span>
+            </div>
+            <div class="market-source">
+              Binance Futures · 交易所分钟 K 线 · UTC · 历史模拟
+            </div>
+          </div>
+          <div class="price-row">
+            <div id="price" class="last-price">—</div>
+            <div id="change" class="change neutral">24h —</div>
+          </div>
+        </div>
+        <div
+          id="factor-list"
+          class="factor-list"
+          aria-label="选择独立因子"
+        ></div>
+        <div class="stats">
+          <div class="stat">
+            <span>本因子已平交易</span><b id="closed-trades">—</b
+            ><small id="win-rate">胜率 — · 只计已平仓</small>
+          </div>
+          <div class="stat">
+            <span>当前持仓状态</span><b id="position-state">—</b
+            ><small id="position-qty">满仓多 / 满仓空 / 空仓</small>
+          </div>
+          <div class="stat">
+            <span>本因子 PnL · USDT</span><b id="pnl">—</b
+            ><small id="pnl-note">已实现 / 浮动</small>
+          </div>
+          <div class="stat">
+            <span>最新修正分位</span><b id="factor-quantile">—</b
+            ><small id="nq-status">NQ 开仓过滤保留</small>
+          </div>
+        </div>
+        <p id="replay-summary" class="hint">等待因子历史与仓位回放。</p>
+        <div class="content">
+          <div>
+            <section class="card">
+              <div class="chart-toolbar">
+                <div class="chart-title">
+                  本因子的开仓与平仓<small
+                    >分钟 K 线 / 持仓状态 / NQ 分位</small
+                  >
+                </div>
+                <select id="strategy-filter" aria-label="选择单因子">
+                  <option value="">读取因子…</option>
+                </select>
+                <div class="time-controls">
+                  <button data-hours="1">1H</button
+                  ><button data-hours="6" class="active">6H</button
+                  ><button data-hours="24">24H</button>
+                </div>
+              </div>
+              <div class="chart-wrap">
+                <div
+                  id="chart"
+                  aria-label="单因子分钟 K 线与成对买卖点"
+                  role="img"
+                ></div>
+                <div id="chart-empty" class="chart-empty">
+                  读取独立因子交易…
+                </div>
+              </div>
+              <div class="chart-footer">
+                <div class="legend">
+                  <i>B 买入</i><i>S 卖出</i><i>△ 开仓 / ○ 平仓</i
+                  ><i>虚线连接同一笔交易</i>
+                </div>
+                <span id="coverage">K 线覆盖 —</span>
+              </div>
+            </section>
+            <section class="card trade-ledger">
+              <div class="table-heading">
+                <b>交易账本 · 一笔持仓，一对 B/S</b
+                ><span id="trade-count">—</span>
+              </div>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>仓位方向</th>
+                      <th>开仓 UTC / 价格</th>
+                      <th>平仓 UTC / 价格</th>
+                      <th>原数量 qty</th>
+                      <th>PnL</th>
+                      <th>开仓 NQ</th>
+                    </tr>
+                  </thead>
+                  <tbody id="trade-rows"></tbody>
+                </table>
+                <div id="trades-empty" class="empty">
+                  等待该因子的交易记录。
+                </div>
+              </div>
+            </section>
+            <details class="card observations">
+              <summary>
+                分钟因子观察<span id="observation-count">—</span>
+              </summary>
+              <p class="hint">
+                持仓期间的重复触发不会形成新的 B/S。这里保留分位和 NQ
+                快照，最多展示最近 120 条。
+              </p>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间 UTC</th>
+                      <th>持仓 / 动作</th>
+                      <th>修正分位</th>
+                      <th>NQ</th>
+                    </tr>
+                  </thead>
+                  <tbody id="observation-rows"></tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+          <section class="card inspector">
+            <div class="inspector-head">
+              <b>因子与交易快照</b
+              ><span id="record-state" class="badge">等待选择</span>
+            </div>
+            <div id="inspector" class="inspector-body">
+              <div class="hint">
+                点击 B/S 点、交易记录或 K 线，查看这个因子的交易与 NQ。
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="bottom-note">
+          <span>多仓 B 开 → S 平 · 空仓 S 开 → B 平 · 未平仓保留单个开仓点</span
+          ><span id="updated">历史模拟 · 每 5 秒更新</span>
+        </div>
+      </main>
+    </div>
+    <script src="../assets/echarts.min.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>

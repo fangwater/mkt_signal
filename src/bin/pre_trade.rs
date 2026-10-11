@@ -1049,6 +1049,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             }
             let cta_special_factor_channel = if arb_mode == ArbMode::CtaSpecial {
                 let channel = CtaSpecialFactorChannel::new(&args.cta_special_config)
+                    .await
                     .with_context(|| {
                         format!(
                             "initialize CTA special pre-trade factor channel from {}",

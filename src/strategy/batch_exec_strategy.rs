@@ -83,16 +83,18 @@ const fn default_max_batch() -> u32 {
     20
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BatchExecTarget {
     pub qty: f64,
     pub signal: i32,
+    pub clear: bool,
 }
 
 impl BatchExecTarget {
     pub const ZERO: Self = Self {
         qty: 0.0,
         signal: 0,
+        clear: false,
     };
 
     pub fn new(qty: f64, signal: i32) -> Result<Self, String> {
@@ -100,11 +102,49 @@ impl BatchExecTarget {
             return Err("qty must be finite".to_string());
         }
         validate_target_signal(signal)?;
-        Ok(Self { qty, signal })
+        Ok(Self {
+            qty,
+            signal,
+            clear: false,
+        })
+    }
+
+    pub fn clear(signal: i32) -> Result<Self, String> {
+        validate_target_signal(signal)?;
+        Ok(Self {
+            qty: 0.0,
+            signal,
+            clear: true,
+        })
+    }
+
+    pub fn tolerance_usdt(self, configured: f64) -> f64 {
+        if self.clear {
+            0.0
+        } else {
+            configured
+        }
     }
 
     pub fn uses_taker_only(self) -> bool {
         self.signal.abs() == 1
+    }
+}
+
+impl Serialize for BatchExecTarget {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut object = serializer.serialize_struct("BatchExecTarget", 2)?;
+        if self.clear {
+            object.serialize_field("qty", "clear")?;
+        } else {
+            object.serialize_field("qty", &self.qty)?;
+        }
+        object.serialize_field("signal", &self.signal)?;
+        object.end()
     }
 }
 
@@ -117,13 +157,21 @@ impl<'de> Deserialize<'de> for BatchExecTarget {
         #[serde(untagged)]
         enum BatchExecTargetDe {
             Qty(f64),
+            Clear(String),
             Object(BatchExecTargetObject),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Quantity {
+            Qty(f64),
+            Clear(String),
         }
 
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct BatchExecTargetObject {
-            qty: f64,
+            qty: Quantity,
             #[serde(default)]
             signal: Option<i32>,
         }
@@ -132,9 +180,19 @@ impl<'de> Deserialize<'de> for BatchExecTarget {
             BatchExecTargetDe::Qty(qty) => {
                 BatchExecTarget::new(qty, 0).map_err(serde::de::Error::custom)
             }
-            BatchExecTargetDe::Object(value) => {
-                BatchExecTarget::new(value.qty, value.signal.unwrap_or(0))
-                    .map_err(serde::de::Error::custom)
+            BatchExecTargetDe::Object(value) => match value.qty {
+                Quantity::Qty(qty) => BatchExecTarget::new(qty, value.signal.unwrap_or(0)),
+                Quantity::Clear(text) if text == "clear" => {
+                    BatchExecTarget::clear(value.signal.unwrap_or(0))
+                }
+                Quantity::Clear(_) => Err("qty string must be clear".to_string()),
+            }
+            .map_err(serde::de::Error::custom),
+            BatchExecTargetDe::Clear(text) if text == "clear" => {
+                BatchExecTarget::clear(0).map_err(serde::de::Error::custom)
+            }
+            BatchExecTargetDe::Clear(_) => {
+                Err(serde::de::Error::custom("qty string must be clear"))
             }
         }
     }
@@ -156,6 +214,9 @@ pub fn validate_target_signal(signal: i32) -> Result<(), String> {
 }
 
 fn should_use_taker(config: &BatchExecConfig, maker_requotes: u32, signal: i32) -> bool {
+    if config.algorithm == ExecAlgorithm::Ctaker {
+        return true;
+    }
     if config.algorithm == ExecAlgorithm::Pov {
         match config.pov.liquidity {
             PovLiquidity::MakerOnly => return false,
@@ -288,7 +349,11 @@ fn estimate_batch_progress(
     }
 
     let single_order_usdt = config.effective_single_order_usdt(delta_usdt);
-    let raw_batches = (delta_usdt.abs() / config.batch_capacity_usdt(single_order_usdt)).ceil();
+    let raw_batches = if config.algorithm == ExecAlgorithm::Ctaker {
+        1.0
+    } else {
+        (delta_usdt.abs() / config.batch_capacity_usdt(single_order_usdt)).ceil()
+    };
     let batch_equivalent = if raw_batches >= f64::from(u32::MAX) {
         u32::MAX
     } else {
@@ -310,7 +375,7 @@ fn estimate_batch_progress(
         let last_batch_start_ts_us = now_ts_us
             .saturating_add(first_batch_delay_us)
             .saturating_add(subsequent_batch_delay_us);
-        let maker_lifecycle_us = if force_taker {
+        let maker_lifecycle_us = if force_taker || config.algorithm == ExecAlgorithm::Ctaker {
             0
         } else {
             // Initial maker order plus max_maker_requotes maker retries, then taker fallback.
@@ -591,6 +656,22 @@ fn minimum_executable_base_qty(price: f64, limits: BatchOrderLimits) -> Result<f
     };
     let required_venue_qty = limits.min_qty.max(notional_qty).max(limits.qty_step);
     Ok(align_child_qty_ceil(required_venue_qty, limits.qty_step) * qty_multiplier)
+}
+
+fn executable_pending_base_qty(
+    signed_base_qty: f64,
+    price: f64,
+    limits: BatchOrderLimits,
+) -> Result<f64, String> {
+    let multiplier = limits.qty_multiplier_at(price)?;
+    let minimum = minimum_executable_base_qty(price, limits)?;
+    let aligned =
+        align_child_qty_floor(signed_base_qty.abs() / multiplier, limits.qty_step) * multiplier;
+    Ok(if aligned + QTY_EPS < minimum {
+        0.0
+    } else {
+        signed_base_qty.signum() * aligned
+    })
 }
 
 fn select_executable_batch_base_qty(
@@ -1061,6 +1142,11 @@ impl BatchExecStrategy {
 
     fn effective_config(&self) -> BatchExecConfig {
         let mut config = self.config.clone();
+        if self.config.algorithm == ExecAlgorithm::Ctaker
+            || self.current_target().is_some_and(|target| target.clear)
+        {
+            config.target_tolerance_usdt = 0.0;
+        }
         if config.algorithm == ExecAlgorithm::Pov {
             return config;
         }
@@ -1385,6 +1471,18 @@ impl BatchExecStrategy {
         Ok(record)
     }
 
+    fn record_exchange_minimum(&mut self) {
+        self.completion_reason = self
+            .batches
+            .is_empty()
+            .then_some(BatchExecCompletionReason::ExchangeMinimum);
+        // A live batch must be checked again after its final fill/cancel. Parking
+        // it now would leave no ready batch or completion reason to wake it up.
+        if self.completion_reason.is_some() {
+            self.next_batch_at_us = i64::MAX;
+        }
+    }
+
     fn settled_completion_reason(&self, position_qty: f64) -> Option<BatchExecCompletionReason> {
         if !self.position_allocation_ready()
             || self.pending_target.is_some()
@@ -1406,11 +1504,30 @@ impl BatchExecStrategy {
         let effective_position_qty = position_qty;
         let target_qty = self.target_qty();
         let live_order_qty = self.live_order_signed_qty();
-        let pending_qty = target_qty
+        let raw_pending_qty = target_qty
             .map(|target| target - effective_position_qty - live_order_qty)
             .unwrap_or(0.0);
         let completion_reason = self.settled_completion_reason(position_qty);
         let execution_complete = completion_reason.is_some();
+        let pending_qty = if execution_complete {
+            0.0
+        } else {
+            MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .and_then(|quote| {
+                    let price = self
+                        .inverse_reference_price
+                        .unwrap_or(if raw_pending_qty > 0.0 {
+                            quote.ask
+                        } else {
+                            quote.bid
+                        });
+                    self.load_order_limits(price).ok().and_then(|limits| {
+                        executable_pending_base_qty(raw_pending_qty, price, limits).ok()
+                    })
+                })
+                .unwrap_or(raw_pending_qty)
+        };
         let (remaining_batches, estimated_completion_ts_ms) =
             if execution_complete || self.config.algorithm == ExecAlgorithm::Pov {
                 (0, 0)
@@ -1435,10 +1552,10 @@ impl BatchExecStrategy {
                     .unwrap_or((0, 0))
             };
         BatchExecSnapshot {
-            algorithm: if self.config.algorithm == ExecAlgorithm::Pov {
-                "pov"
-            } else {
-                "batch"
+            algorithm: match self.config.algorithm {
+                ExecAlgorithm::Batch => "batch",
+                ExecAlgorithm::Pov => "pov",
+                ExecAlgorithm::Ctaker => "ctaker",
             }
             .into(),
             pov: (self.config.algorithm == ExecAlgorithm::Pov).then(|| {
@@ -1836,7 +1953,9 @@ impl BatchExecStrategy {
         });
         // Exchange-minimum residuals disable new batch creation with i64::MAX,
         // but an existing batch may still need a maker requote or taker fallback.
-        if should_defer_batch_start(now_ts, self.next_batch_at_us, ready_batch.is_some()) {
+        if should_defer_batch_start(now_ts, self.next_batch_at_us, ready_batch.is_some())
+            && self.completion_reason != Some(BatchExecCompletionReason::ExchangeMinimum)
+        {
             return;
         }
         let unallocated_qty = self.unallocated_qty_for_target(target_qty);
@@ -1871,21 +1990,28 @@ impl BatchExecStrategy {
                 return;
             }
         };
-        let minimum_order_price = match maker_limit_price(
-            &self.config,
-            side,
-            0,
-            quote.bid,
-            quote.ask,
-            limits.price_tick,
-        ) {
-            Ok((price, _)) => price,
-            Err(err) => {
-                warn!(
-                    "BatchExecStrategy: strategy_id={} symbol={} invalid first maker price: {}",
-                    self.strategy_id, self.symbol, err
-                );
-                return;
+        let minimum_order_price = if should_use_taker(&self.config, 0, target_signal) {
+            match side {
+                Side::Buy => quote.ask,
+                Side::Sell => quote.bid,
+            }
+        } else {
+            match maker_limit_price(
+                &self.config,
+                side,
+                0,
+                quote.bid,
+                quote.ask,
+                limits.price_tick,
+            ) {
+                Ok((price, _)) => price,
+                Err(err) => {
+                    warn!(
+                        "BatchExecStrategy: strategy_id={} symbol={} invalid first maker price: {}",
+                        self.strategy_id, self.symbol, err
+                    );
+                    return;
+                }
             }
         };
         let minimum_base_qty = match minimum_executable_base_qty(
@@ -1901,15 +2027,21 @@ impl BatchExecStrategy {
                 return;
             }
         };
-        let within_target_tolerance =
-            aggregate_base_qty * reference_price <= self.config.target_tolerance_usdt;
+        let target_tolerance = if self.config.algorithm == ExecAlgorithm::Ctaker {
+            0.0
+        } else {
+            self.current_target()
+                .map(|t| t.tolerance_usdt(self.config.target_tolerance_usdt))
+                .unwrap_or(self.config.target_tolerance_usdt)
+        };
+        let within_target_tolerance = aggregate_base_qty * reference_price <= target_tolerance;
         let below_exchange_minimum = aggregate_base_qty + QTY_EPS < minimum_base_qty;
         if let Some(batch_seq) = ready_batch {
             if self.config.algorithm != ExecAlgorithm::Pov
                 && residual_should_coalesce(
                     aggregate_base_qty,
                     reference_price,
-                    self.config.target_tolerance_usdt,
+                    target_tolerance,
                     minimum_base_qty,
                 )
             {
@@ -1938,11 +2070,7 @@ impl BatchExecStrategy {
                     self.strategy_id, self.symbol, aggregate_base_qty, minimum_base_qty
                 );
             }
-            self.next_batch_at_us = i64::MAX;
-            self.completion_reason = self
-                .batches
-                .is_empty()
-                .then_some(BatchExecCompletionReason::ExchangeMinimum);
+            self.record_exchange_minimum();
             return;
         }
         self.completion_reason = None;
@@ -1994,6 +2122,9 @@ impl BatchExecStrategy {
         let batch_capacity_usdt = self.config.batch_capacity_usdt(effective_single_order_usdt);
         let mut desired_batch_base_qty =
             aggregate_base_qty.min(batch_capacity_usdt / reference_price);
+        if self.config.algorithm == ExecAlgorithm::Ctaker {
+            desired_batch_base_qty = aggregate_base_qty;
+        }
         if self.config.algorithm == ExecAlgorithm::Pov {
             let Some(qty) = self.pov_state.batch_qty(
                 &self.config.pov,
@@ -2205,7 +2336,7 @@ impl BatchExecStrategy {
                 self.strategy_id, self.symbol, batch_seq
             );
             self.batches.remove(&batch_seq);
-            self.next_batch_at_us = now_ts;
+            self.record_exchange_minimum();
             return;
         }
         let planned_base_qty: f64 = plans.iter().map(|plan| plan.qty_base).sum();
@@ -2527,7 +2658,11 @@ impl BatchExecStrategy {
                     } else {
                         quote.ask
                     };
-                    remaining_qty.abs() * reference_price <= self.config.target_tolerance_usdt
+                    let tolerance = self
+                        .current_target()
+                        .map(|t| t.tolerance_usdt(self.config.target_tolerance_usdt))
+                        .unwrap_or(self.config.target_tolerance_usdt);
+                    remaining_qty.abs() * reference_price <= tolerance
                 })
                 .unwrap_or(false);
             if !within_tolerance {
@@ -3170,6 +3305,27 @@ impl Strategy for BatchExecStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_quantity_is_explicit_and_ignores_notional_tolerance() {
+        let ordinary: BatchExecTarget = serde_json::from_str("0.1").unwrap();
+        assert_eq!(ordinary.qty, 0.1);
+        assert!(!ordinary.clear);
+        assert_eq!(ordinary.tolerance_usdt(10.0), 10.0);
+        for raw in ["\"clear\"", "{\"qty\":\"clear\",\"signal\":1}"] {
+            let target: BatchExecTarget = serde_json::from_str(raw).unwrap();
+            assert!(target.clear);
+            assert_eq!(target.qty, 0.0);
+            assert_eq!(target.tolerance_usdt(10.0), 0.0);
+            let roundtrip: BatchExecTarget =
+                serde_json::from_str(&serde_json::to_string(&target).unwrap()).unwrap();
+            assert_eq!(target, roundtrip);
+        }
+        assert!(serde_json::from_str::<BatchExecTarget>("\"+max_u_1000\"").is_err());
+        assert!(
+            serde_json::from_str::<BatchExecTarget>("{\"qty\":\"clear\",\"signal\":9}").is_err()
+        );
+    }
     use order_common::{TradeEngineResponseMessage, TradeRequestType};
     use symbol_utils::Exchange;
 
@@ -3313,6 +3469,28 @@ mod tests {
                 assert!(plans.iter().map(|plan| plan.qty_base).sum::<f64>() <= raw + QTY_EPS);
             }
         }
+    }
+
+    #[test]
+    fn ctaker_uses_one_market_order_for_full_signed_delta() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Ctaker;
+        cfg.single_order_usdt = 1.0;
+        cfg.orders_per_batch = 1;
+        for side in [Side::Buy, Side::Sell] {
+            let plans = build_child_order_plans(
+                &cfg, side, 7.123, 0, 0, 99.0, 100.0, 0.1, 0.001, 0.001, 5.0, 1.0,
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].order_type, OrderType::Market);
+            assert!((plans[0].qty_base - 7.123).abs() < 1e-10);
+            assert_eq!(plans[0].price, 0.0);
+        }
+        let mut strategy = strategy_with_orphan_batch(&[]);
+        strategy.config = cfg;
+        strategy.config.target_tolerance_usdt = 1000.0;
+        assert_eq!(strategy.effective_config().target_tolerance_usdt, 0.0);
     }
 
     #[test]
@@ -3525,6 +3703,7 @@ mod tests {
         );
         strategy.active_target = Some(ActiveTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 0,
             },
@@ -3535,6 +3714,7 @@ mod tests {
 
         strategy.update_target(
             BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 1,
             },
@@ -3576,6 +3756,34 @@ mod tests {
         qty_dominates.min_qty = 0.3;
         let minimum = minimum_executable_base_qty(100.0, qty_dominates).unwrap();
         assert!((minimum - 0.3).abs() < QTY_EPS);
+    }
+
+    #[test]
+    fn pending_quantity_respects_lots_minimum_quantity_and_notional() {
+        let mut limits = binance_twenty_usdt_limits();
+        limits.qty_step = 1.0;
+        limits.min_qty = 1.0;
+        limits.min_notional = 5.0;
+        // DOGE's sub-lot exit remains a factual position gap, not an order.
+        assert_eq!(
+            executable_pending_base_qty(0.84714119, 0.085, limits).unwrap(),
+            0.0
+        );
+        assert_eq!(
+            executable_pending_base_qty(58.99, 0.085, limits).unwrap(),
+            0.0
+        );
+        assert_eq!(
+            executable_pending_base_qty(-59.99, 0.085, limits).unwrap(),
+            -59.0
+        );
+        limits.qty_step = 0.1;
+        limits.min_qty = 0.3;
+        assert_eq!(
+            executable_pending_base_qty(0.299, 100.0, limits).unwrap(),
+            0.0
+        );
+        assert!((executable_pending_base_qty(0.39, 100.0, limits).unwrap() - 0.3).abs() < QTY_EPS);
     }
 
     #[test]
@@ -3842,6 +4050,83 @@ mod tests {
     }
 
     #[test]
+    fn minimum_residual_waits_for_final_fill_without_parking_live_batch() {
+        for algorithm in [
+            ExecAlgorithm::Ctaker,
+            ExecAlgorithm::Batch,
+            ExecAlgorithm::Pov,
+        ] {
+            let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.0)]);
+            strategy.config.algorithm = algorithm;
+            strategy.active_target = Some(ActiveTarget {
+                target: BatchExecTarget {
+                    clear: false,
+                    qty: 1.001,
+                    signal: 0,
+                },
+                generation_time: 1,
+                from_key: b"cta_alpha".to_vec(),
+                effective_single_order_usdt: None,
+            });
+            let meta = strategy.orphaned_child_orders.remove(&101).unwrap();
+            strategy.child_orders.insert(101, meta);
+            strategy
+                .batches
+                .get_mut(&1)
+                .unwrap()
+                .child_order_ids
+                .insert(101);
+            strategy.next_batch_at_us = 100;
+
+            // The rounded order owns 1.0; the unallocated 0.001 cannot be sent.
+            strategy.record_exchange_minimum();
+            assert_eq!(strategy.settled_completion_reason(0.0), None);
+            assert_eq!(strategy.next_batch_at_us, 100);
+
+            // The actual final fill removes the live batch, with no new target
+            // or account allocation to wake the scheduler.
+            strategy.apply_fill_delta(101, 1, 0, 1.0);
+            strategy
+                .child_orders
+                .get_mut(&101)
+                .unwrap()
+                .accounted_fill_base_qty = 1.0;
+            strategy.finish_child_order(101);
+            assert!(strategy.batches.is_empty());
+            assert!(!should_defer_batch_start(
+                101,
+                strategy.next_batch_at_us,
+                false
+            ));
+            strategy.record_exchange_minimum();
+            assert_eq!(
+                strategy.settled_completion_reason(1.0),
+                Some(BatchExecCompletionReason::ExchangeMinimum)
+            );
+        }
+    }
+
+    #[test]
+    fn empty_order_plan_does_not_park_other_live_batches() {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.0)]);
+        let mut exhausted_batch = strategy.batches.get(&1).unwrap().clone();
+        exhausted_batch.phase = BatchPhase::ReadyToSubmit;
+        exhausted_batch.remaining_base_qty = 0.001;
+        strategy.batches.insert(2, exhausted_batch);
+        strategy.next_batch_at_us = 100;
+
+        // submit_batch releases an empty rounded plan while batch 1 is live.
+        strategy.batches.remove(&2);
+        strategy.record_exchange_minimum();
+        assert_eq!(strategy.completion_reason, None);
+        assert!(!should_defer_batch_start(
+            101,
+            strategy.next_batch_at_us,
+            false
+        ));
+    }
+
+    #[test]
     fn completion_reason_requires_settled_execution() {
         let mut strategy = BatchExecStrategy::new(
             1,
@@ -3854,6 +4139,7 @@ mod tests {
         strategy.position_allocation_ready = true;
         strategy.active_target = Some(ActiveTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 0,
             },
@@ -4150,6 +4436,7 @@ mod tests {
         let mut strategy = strategy_with_orphan_batch(&[(105, 0, 1.0, 0.0)]);
         strategy.pending_target = Some(PendingTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 2.0,
                 signal: 0,
             },
@@ -4205,6 +4492,7 @@ mod tests {
         strategy.apply_position_allocation(0.6, 100).unwrap();
         strategy.active_target = Some(ActiveTarget {
             target: BatchExecTarget {
+                clear: false,
                 qty: 1.0,
                 signal: 0,
             },

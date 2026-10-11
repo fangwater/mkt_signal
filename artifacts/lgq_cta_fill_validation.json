@@ -1,0 +1,13 @@
+{
+  "since_utc": "2026-10-11T02:47:00Z",
+  "distinct_orders": 5,
+  "exchange_order_types": {
+    "MARKET": 5
+  },
+  "order_states": {
+    "FILLED": 5
+  },
+  "execution_persistence_pending": 0,
+  "statement_persistence_pending": 0,
+  "recovery_ready": true
+}

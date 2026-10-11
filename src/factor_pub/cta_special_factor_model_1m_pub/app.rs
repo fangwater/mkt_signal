@@ -9,16 +9,18 @@ use period_pbs::period::normalize_timestamp_ms;
 use rolling_common::exact_rolling_window::ExactRollingWindow;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::amount_threshold::AmountThreshold;
 use crate::depth_pub::orderbook::OrderBook;
+use crate::factor_pub::cta_factor_universe::{load_enabled_symbols, CtaFactorUniverse};
 use crate::factor_pub::fusion_factor_pub::app::{
-    load_amount_thresholds_from_tlen_server, load_online_symbols_from_tlen_server,
-    BaselineReplayState,
+    load_amount_thresholds_from_tlen_server, BaselineReplayState,
 };
 use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
-use crate::factor_pub::fusion_factor_pub::plan::load_symbol_factor_plans_from_tlen_server;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
@@ -27,7 +29,6 @@ use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
 
 use super::cfg::{CtaSpecialFactorPubConfig, KafkaInputConfig, NormalizeConfig};
 
-const FACTOR_NAMES: [&str; 2] = ["TP_VPI_018", "baseline_104"];
 const FACTOR_WINDOW: usize = 2_880;
 const FACTOR_MIN_SAMPLES: usize = 1_440;
 const NQ_LOOKBACK_BARS: usize = 1_440;
@@ -35,20 +36,18 @@ const NQ_QUANTILE_WINDOW: usize = 1_440;
 const NQ_MIN_PERIODS: usize = 720;
 const BAR_MS: i64 = 60_000;
 const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
-const FACTOR_PLAN_CONFIG_TYPE: &str = "factor_plan_1m";
-const AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds_1m";
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 
 struct FactorOutput {
-    name: &'static str,
+    name: String,
     factor_index: usize,
     service: String,
     publisher: ModelPublisher,
     seq_no: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 struct FactorObservation {
     score: f64,
     quantile: Option<f64>,
@@ -176,15 +175,13 @@ struct SymbolFactorState {
 }
 
 impl SymbolFactorState {
-    fn new(normalize: &NormalizeConfig) -> Self {
+    fn new(normalize: &NormalizeConfig, factor_count: usize) -> Self {
         Self {
             evaluator: BaselineReplayState::default(),
-            windows: FACTOR_NAMES
-                .iter()
+            windows: (0..factor_count)
                 .map(|_| ExactRollingWindow::new(FACTOR_WINDOW))
                 .collect(),
-            normalize: FACTOR_NAMES
-                .iter()
+            normalize: (0..factor_count)
                 .map(|_| NormalizeState::new(normalize))
                 .collect(),
             last_ts: None,
@@ -226,13 +223,16 @@ impl SymbolFactorState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 struct NqObservation {
     long_value: Option<f64>,
     long_quantile: Option<f64>,
     short_value: Option<f64>,
     short_quantile: Option<f64>,
     ready: bool,
+    execution_ts_ms: i64,
+    execution_bid: Option<f64>,
+    execution_ask: Option<f64>,
 }
 
 struct NqState {
@@ -291,6 +291,11 @@ impl NqState {
         ) {
             if bid.is_finite() && ask.is_finite() && bid > 0.0 && ask >= bid {
                 self.current_close = 0.5 * (bid + ask);
+                for (_, observation) in &mut closed {
+                    observation.execution_ts_ms = timestamp_ms;
+                    observation.execution_bid = Some(bid);
+                    observation.execution_ask = Some(ask);
+                }
             }
         }
         closed
@@ -333,6 +338,9 @@ impl NqState {
                 && self.short_window.len() >= NQ_MIN_PERIODS
                 && long_quantile.is_some()
                 && short_quantile.is_some(),
+            execution_ts_ms: 0,
+            execution_bid: None,
+            execution_ask: None,
         }
     }
 }
@@ -364,6 +372,7 @@ pub struct CtaSpecialFactorModel1mPubApp {
     venue: TradingVenue,
     venue_slug: String,
     tlen_server: TlenServerConfig,
+    universe: CtaFactorUniverse,
     plan: SymbolFactorPlan,
     consumer: RawKafkaConsumer,
     poll_timeout_ms: u64,
@@ -385,10 +394,77 @@ pub struct CtaSpecialFactorModel1mPubApp {
     last_pending_prune: Instant,
     last_stats_log: Instant,
     stats: Stats,
+    history: FactorHistoryWriter,
+}
+
+/// The same causal factor/NQ observations are saved during warm-up and live
+/// operation. Reweighting history never requires an execution publisher.
+struct FactorHistoryWriter {
+    root: PathBuf,
+    current: Option<(String, BufWriter<File>)>,
+}
+
+impl FactorHistoryWriter {
+    fn new(root: &Path) -> Result<Self> {
+        fs::create_dir_all(root).context("create CTA factor history directory")?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            current: None,
+        })
+    }
+
+    fn record(
+        &mut self,
+        symbol: &str,
+        ts: i64,
+        names: &[String],
+        factors: &[FactorObservation],
+        nq: &NqObservation,
+    ) -> Result<()> {
+        let date = chrono::DateTime::from_timestamp_millis(ts)
+            .context("invalid CTA factor history timestamp")?
+            .format("%Y%m%d")
+            .to_string();
+        if self
+            .current
+            .as_ref()
+            .is_none_or(|(previous, _)| previous != &date)
+        {
+            if let Some((_, writer)) = &mut self.current {
+                writer.flush()?;
+            }
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.root.join(format!("{date}.jsonl")))
+                .context("open CTA factor history")?;
+            self.current = Some((date, BufWriter::new(file)));
+        }
+        let inputs: std::collections::BTreeMap<_, _> = names.iter().zip(factors).collect();
+        let writer = &mut self
+            .current
+            .as_mut()
+            .context("missing CTA history writer")?
+            .1;
+        serde_json::to_writer(
+            &mut *writer,
+            &serde_json::json!({
+                "symbol":symbol, "model_ts_ms":ts, "inputs":inputs, "nq":nq,
+            }),
+        )?;
+        writer.write_all(b"\n")?;
+        writer.flush().context("flush CTA factor history")
+    }
 }
 
 impl CtaSpecialFactorModel1mPubApp {
-    pub async fn new(path: &str, venue: TradingVenue, wait_for_publishers: bool) -> Result<Self> {
+    pub async fn new(
+        path: &str,
+        venue: TradingVenue,
+        wait_for_publishers: bool,
+        history_path: &Path,
+        replay_only: bool,
+    ) -> Result<Self> {
         anyhow::ensure!(
             venue == TradingVenue::BinanceFutures,
             "CTA special factor publisher only supports binance-futures"
@@ -397,17 +473,13 @@ impl CtaSpecialFactorModel1mPubApp {
         let venue_slug = venue.data_pub_slug().to_string();
         let plan = SymbolFactorPlan::from_factor_names(
             "cta_special_factor_model_1m",
-            FACTOR_NAMES
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect(),
+            config.universe.factors.clone(),
         )?;
         BaselineReplayState::validate_factor_plan(&plan)
             .context("validate CTA special factor plan")?;
-        let allowed_symbols = load_enabled_symbols(&config.tlen_server, venue, &venue_slug).await?;
-        if allowed_symbols.is_empty() {
-            bail!("no symbols contain both CTA special factors");
-        }
+        let allowed_symbols =
+            load_enabled_symbols(&config.tlen_server, venue, &venue_slug, &config.universe).await?;
+        config.universe.require_complete(&allowed_symbols, venue)?;
         let amount_thresholds = load_amount_thresholds_from_tlen_server(
             &config.tlen_server,
             venue,
@@ -415,6 +487,12 @@ impl CtaSpecialFactorModel1mPubApp {
             TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE,
         )
         .await?;
+        for symbol in &allowed_symbols {
+            anyhow::ensure!(
+                amount_thresholds.contains_key(symbol),
+                "missing trade-flow amount thresholds: {symbol}"
+            );
+        }
         let startup_ms = now_millis();
         let mut kafka_config = config.kafka.consumer.clone();
         kafka_config.group_id = format!(
@@ -437,6 +515,7 @@ impl CtaSpecialFactorModel1mPubApp {
             venue,
             venue_slug,
             tlen_server: config.tlen_server.clone(),
+            universe: config.universe.clone(),
             plan,
             consumer,
             poll_timeout_ms: kafka_config.poll_timeout_ms.max(1),
@@ -459,10 +538,19 @@ impl CtaSpecialFactorModel1mPubApp {
             last_pending_prune: Instant::now(),
             last_stats_log: Instant::now(),
             stats: Stats::default(),
+            history: FactorHistoryWriter::new(history_path)?,
         };
         app.catch_up(&config.kafka)?;
+        if replay_only {
+            anyhow::ensure!(
+                app.stats.decode_errors == 0 && app.stats.evaluation_errors == 0,
+                "CTA replay had decode/evaluation errors"
+            );
+            info!("CTA history replay complete; no IPC publishers created");
+            return Ok(app);
+        }
         loop {
-            match create_shared_outputs(&app.venue_slug) {
+            match create_shared_outputs(&app.venue_slug, &app.universe.factors) {
                 Ok(outputs) => {
                     app.outputs = outputs;
                     break;
@@ -620,7 +708,9 @@ impl CtaSpecialFactorModel1mPubApp {
         let observations = match self
             .factor_states
             .entry(symbol.to_string())
-            .or_insert_with(|| SymbolFactorState::new(&self.normalize))
+            .or_insert_with(|| {
+                SymbolFactorState::new(&self.normalize, self.plan.factor_names().len())
+            })
             .evaluate(msg, &self.plan, ts >= self.history_start_ms)
         {
             Ok(Some(value)) => value,
@@ -643,6 +733,13 @@ impl CtaSpecialFactorModel1mPubApp {
         }
         let factors = self.pending_factors.remove(&key).expect("checked above");
         let nq = self.pending_nq.remove(&key).expect("checked above");
+        if let Err(err) = self
+            .history
+            .record(symbol, ts, &self.universe.factors, &factors, &nq)
+        {
+            self.stats.evaluation_errors = self.stats.evaluation_errors.saturating_add(1);
+            warn!("CTA factor history write failed symbol={symbol} ts={ts}: {err:#}");
+        }
         if !self.publish_enabled {
             return;
         }
@@ -766,7 +863,14 @@ impl CtaSpecialFactorModel1mPubApp {
             return;
         }
         self.last_symbol_reload = Instant::now();
-        match load_enabled_symbols(&self.tlen_server, self.venue, &self.venue_slug).await {
+        match load_enabled_symbols(
+            &self.tlen_server,
+            self.venue,
+            &self.venue_slug,
+            &self.universe,
+        )
+        .await
+        {
             Ok(symbols) if !symbols.is_empty() => {
                 self.allowed_symbols = symbols;
                 self.factor_states
@@ -800,15 +904,15 @@ impl CtaSpecialFactorModel1mPubApp {
     }
 }
 
-fn create_shared_outputs(venue_slug: &str) -> Result<Vec<FactorOutput>> {
-    let mut outputs = Vec::with_capacity(FACTOR_NAMES.len());
-    for (factor_index, name) in FACTOR_NAMES.iter().copied().enumerate() {
+fn create_shared_outputs(venue_slug: &str, factors: &[String]) -> Result<Vec<FactorOutput>> {
+    let mut outputs = Vec::with_capacity(factors.len());
+    for (factor_index, name) in factors.iter().enumerate() {
         let service = output_service_path(venue_slug, name);
         let node_name = format!("cta_special_factor_{}_{}", venue_slug, name)
             .replace('-', "_")
             .to_ascii_lowercase();
         outputs.push(FactorOutput {
-            name,
+            name: name.clone(),
             factor_index,
             publisher: ModelPublisher::new(&node_name, &service)?,
             service,
@@ -816,29 +920,6 @@ fn create_shared_outputs(venue_slug: &str) -> Result<Vec<FactorOutput>> {
         });
     }
     Ok(outputs)
-}
-
-async fn load_enabled_symbols(
-    tlen: &TlenServerConfig,
-    venue: TradingVenue,
-    venue_slug: &str,
-) -> Result<HashSet<String>> {
-    let online =
-        load_online_symbols_from_tlen_server(tlen, venue, venue_slug, AMOUNT_THRESHOLD_CONFIG_TYPE)
-            .await?;
-    let plans =
-        load_symbol_factor_plans_from_tlen_server(tlen, venue_slug, FACTOR_PLAN_CONFIG_TYPE)
-            .await?;
-    Ok(plans
-        .into_iter()
-        .filter_map(|(raw_symbol, plan)| {
-            let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
-            let names: HashSet<&str> = plan.factor_names().collect();
-            (online.contains(&symbol)
-                && FACTOR_NAMES.iter().all(|required| names.contains(required)))
-            .then_some(symbol)
-        })
-        .collect())
 }
 
 pub fn output_service_path(venue_slug: &str, factor: &str) -> String {
@@ -907,15 +988,24 @@ mod tests {
     }
 
     #[test]
-    fn publisher_exposes_both_shared_factor_services() {
+    fn publisher_exposes_configured_factor_services() {
         assert_eq!(
-            FACTOR_NAMES
-                .iter()
-                .map(|factor| output_service_path("binance-futures", factor))
-                .collect::<Vec<_>>(),
+            toml::from_str::<super::CtaSpecialFactorPubConfig>(include_str!(
+                "../../../config/cta_special_factor_model_1m_pub.toml"
+            ))
+            .expect("repository config")
+            .universe
+            .factors
+            .iter()
+            .map(|factor| output_service_path("binance-futures", factor))
+            .collect::<Vec<_>>(),
             vec![
-                "model_output/one-binance-futures-1m-tp_vpi_018",
-                "model_output/one-binance-futures-1m-baseline_104",
+                "model_output/one-binance-futures-1m-factor_036",
+                "model_output/one-binance-futures-1m-factor_051",
+                "model_output/one-binance-futures-1m-factor_170",
+                "model_output/one-binance-futures-1m-factor_004",
+                "model_output/one-binance-futures-1m-td_ti_002",
+                "model_output/one-binance-futures-1m-baseline_004",
             ]
         );
     }
@@ -945,5 +1035,38 @@ mod tests {
         assert!(observation.ready);
         assert!(observation.long_quantile.is_some());
         assert!(observation.short_quantile.is_some());
+    }
+
+    #[test]
+    fn history_export_keeps_missing_values_and_execution_context() {
+        let root = std::env::temp_dir().join(format!("cta-history-{}", uuid::Uuid::new_v4()));
+        let mut writer = FactorHistoryWriter::new(&root).unwrap();
+        let mut state = NqState::default();
+        state.current_close = 100.0;
+        let mut nq = state.close_bar();
+        nq.execution_ts_ms = 1_791_590_400_003;
+        nq.execution_bid = Some(99.0);
+        nq.execution_ask = Some(101.0);
+        writer
+            .record(
+                "ETHUSDT",
+                1_791_590_400_000,
+                &["baseline_004".into()],
+                &[FactorObservation {
+                    score: f64::NAN,
+                    quantile: None,
+                    ready: false,
+                }],
+                &nq,
+            )
+            .unwrap();
+        let record: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("20261010.jsonl")).unwrap())
+                .unwrap();
+        assert!(record["inputs"]["baseline_004"]["score"].is_null());
+        assert_eq!(record["nq"]["execution_bid"], 99.0);
+        assert_eq!(record["nq"]["execution_ts_ms"], 1_791_590_400_003_i64);
+        drop(writer);
+        fs::remove_dir_all(root).unwrap();
     }
 }

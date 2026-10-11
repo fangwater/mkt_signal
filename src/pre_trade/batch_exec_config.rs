@@ -384,6 +384,51 @@ fn allocate_account_position(
     }
 }
 
+fn recover_lot_allocations(
+    candidates: &mut [PositionAllocationCandidate],
+    account_qty: f64,
+    base_step: f64,
+) -> bool {
+    if candidates.is_empty()
+        || !account_qty.is_finite()
+        || !base_step.is_finite()
+        || base_step <= 0.0
+    {
+        return false;
+    }
+    // Old f32 position snapshots can leave a one-lot close split into a nearly
+    // full lot and microscopic SYSTEM_POSITION_CLOSE dust. Repair only when
+    // every allocation is already near a legal lot and their rounded sum
+    // exactly matches the factual account position. Fractional strategy
+    // inventory from internal crosses must remain untouched.
+    let scale = candidates.iter().map(|c| c.position_qty.abs()).sum::<f64>();
+    let tolerance = (scale * f64::from(f32::EPSILON) * 4.0)
+        .max(base_step * 1e-6)
+        .min(base_step * 1e-3);
+    let rounded: Vec<f64> = candidates
+        .iter()
+        .map(|c| (c.position_qty / base_step).round() * base_step)
+        .collect();
+    if candidates
+        .iter()
+        .zip(&rounded)
+        .any(|(c, qty)| !qty.is_finite() || (c.position_qty - qty).abs() > tolerance)
+        || (rounded.iter().sum::<f64>() - account_qty).abs() > POSITION_ALLOCATION_EPS
+    {
+        return false;
+    }
+    let changed = candidates
+        .iter()
+        .zip(&rounded)
+        .any(|(c, qty)| (c.position_qty - qty).abs() > POSITION_ALLOCATION_EPS);
+    if changed {
+        for (candidate, qty) in candidates.iter_mut().zip(rounded) {
+            candidate.position_qty = qty;
+        }
+    }
+    changed
+}
+
 fn allocations_to_pause_for_new_targets(
     groups: &BTreeMap<String, Vec<PositionAllocationCandidate>>,
     settling_symbols: &BTreeSet<String>,
@@ -1597,14 +1642,26 @@ impl BatchExecConfigReloader {
                 &other_positions,
                 &symbol,
             );
-            let allocated_qty: f64 = group.iter().map(|candidate| candidate.position_qty).sum();
-            let difference = account_position_qty - allocated_qty;
             let needs_initialization = group.iter().any(|candidate| !candidate.allocation_ready);
             let can_initialize = !group.iter().any(|candidate| candidate.execution_in_flight)
                 && !group.iter().any(|candidate| {
                     candidate.has_virtual_position && !candidate.reconciliation_settled
                 });
             let can_reconcile = group.iter().all(|candidate| candidate.reconciliation_ready);
+            let precision_repaired = !needs_initialization
+                && can_reconcile
+                && !self.venue.is_inverse_futures()
+                && monitor
+                    .try_venue_min_qty_table(self.venue)
+                    .is_some_and(|table| {
+                        let key =
+                            runtime_common::symbol_util::min_qty_symbol_key(self.venue, &symbol);
+                        let step = table.step_size(&key).unwrap_or(0.0)
+                            * table.contract_multiplier_opt(&key).unwrap_or(1.0);
+                        recover_lot_allocations(&mut group, account_position_qty, step)
+                    });
+            let allocated_qty: f64 = group.iter().map(|candidate| candidate.position_qty).sum();
+            let difference = account_position_qty - allocated_qty;
             let symbol_not_tradable = monitor
                 .try_venue_min_qty_table(self.venue)
                 .is_some_and(|table| table.snapshot_loaded() && !table.is_tradable_symbol(&symbol));
@@ -1618,6 +1675,7 @@ impl BatchExecConfigReloader {
                     continue;
                 }
             } else if (!untradable_allocations_need_reconciliation
+                && !precision_repaired
                 && difference.abs() <= POSITION_ALLOCATION_EPS)
                 || !can_reconcile
             {
@@ -2380,6 +2438,36 @@ mod tests {
     }
 
     #[test]
+    fn repairs_split_close_lot_only_when_factual_account_total_matches() {
+        let mut group = vec![
+            allocation_candidate(1, "factor", 0.0, -0.09999997615814205, false),
+            allocation_candidate(
+                2,
+                BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+                0.0,
+                -2.5331974073949937e-8,
+                false,
+            ),
+        ];
+        assert!(recover_lot_allocations(&mut group, -0.1, 0.1));
+        assert_eq!(group[0].position_qty, -0.1);
+        assert_eq!(group[1].position_qty, 0.0);
+        assert!(!recover_lot_allocations(&mut group, -0.1, 0.1));
+        group[0].position_qty = -0.09999997615814205;
+        let original = group.clone();
+        assert!(!recover_lot_allocations(&mut group, -0.2, 0.1));
+        assert_eq!(group[0].position_qty, original[0].position_qty);
+        // Opposing, genuinely fractional virtual legs cannot be rounded away.
+        let mut crossed = vec![
+            allocation_candidate(1, "long", 0.5, 0.58418458, false),
+            allocation_candidate(2, "short", -0.5, -0.68418458, false),
+        ];
+        assert!(!recover_lot_allocations(&mut crossed, -0.1, 0.1));
+        assert_eq!(crossed[0].position_qty, 0.58418458);
+        assert_eq!(crossed[1].position_qty, -0.68418458);
+    }
+
+    #[test]
     fn redis_value_contains_config_and_targets() {
         let value: BatchExecRedisValue = serde_json::from_str(
             r#"{
@@ -2399,6 +2487,7 @@ mod tests {
         assert_eq!(
             value.targets.get("BTCUSDT"),
             Some(&BatchExecTarget {
+                clear: false,
                 qty: 0.02,
                 signal: 0
             })
@@ -2424,6 +2513,7 @@ mod tests {
         value.targets.insert(
             "BTCUSD_261225".into(),
             BatchExecTarget {
+                clear: false,
                 qty: 0.01,
                 signal: 0,
             },
@@ -2454,6 +2544,7 @@ mod tests {
         assert_eq!(
             value.targets.get("BTCUSDT"),
             Some(&BatchExecTarget {
+                clear: false,
                 qty: 0.03,
                 signal: -1
             })
@@ -2461,6 +2552,7 @@ mod tests {
         assert_eq!(
             value.targets.get("ETHUSDT"),
             Some(&BatchExecTarget {
+                clear: false,
                 qty: -0.5,
                 signal: 0
             })

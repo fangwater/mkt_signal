@@ -20,3 +20,4 @@ printf '{"apps":[{"name":"%s","script":"%s","args":["%s","--bind","%s","--port",
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_cta_special_dashboard.sh"
 "$PMDAEMON_BIN" --config "$cfg_file" start --name "$PROC_NAME"
 echo "[INFO] started $PROC_NAME at http://${BIND}:${PORT}"
+echo "[INFO] signal panel http://${BIND}:${PORT}/signals/ (env-local signal history and 24h public klines)"

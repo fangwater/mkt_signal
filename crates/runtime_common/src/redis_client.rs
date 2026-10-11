@@ -131,6 +131,49 @@ impl RedisClient {
         Ok(())
     }
 
+    /// Compare-and-set a JSON document, optionally registering its strategy in
+    /// an existing JSON-array index. Concurrent configuration edits are retained.
+    pub async fn compare_and_set_indexed_json(
+        &mut self,
+        key: &str,
+        expected: Option<&str>,
+        value: &str,
+        index: &str,
+        member: &str,
+    ) -> Result<bool> {
+        const SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == 'missing' then
+    if current then return 0 end
+elseif current ~= ARGV[2] then return 0 end
+redis.call('SET', KEYS[1], ARGV[3])
+if ARGV[4] ~= '' then
+    local names = cjson.decode(redis.call('GET', KEYS[2]) or '[]')
+    local found = false
+    for _, name in ipairs(names) do if name == ARGV[4] then found = true end end
+    if not found then table.insert(names, ARGV[4]); table.sort(names) end
+    redis.call('SET', KEYS[2], cjson.encode(names))
+end
+return 1
+"#;
+        let result: i64 = redis::cmd("EVAL")
+            .arg(SCRIPT)
+            .arg(2)
+            .arg(self.key(key))
+            .arg(self.key(index))
+            .arg(if expected.is_some() {
+                "present"
+            } else {
+                "missing"
+            })
+            .arg(expected.unwrap_or(""))
+            .arg(value)
+            .arg(member)
+            .query_async(&mut self.manager)
+            .await?;
+        Ok(result == 1)
+    }
+
     /// 获取 JSON，并反序列化
     pub async fn get_json<T>(&mut self, key: &str) -> Result<Option<T>>
     where

@@ -1,0 +1,14 @@
+{
+  "checked_at_utc": "2026-10-11T05:46:36Z",
+  "public_exec_url": "http://13.115.227.29:4191/exec_trade05/",
+  "exec_equity_display": "9,993.13",
+  "pending_usdt_display": "0.00",
+  "public_websocket_equity_messages": 2,
+  "manager_equity_display": 9992.81,
+  "manager_equity_feed": "rapidx_account_risk",
+  "manager_equity_status": "ok",
+  "minimum_residuals_show_zero_pending": true,
+  "raw_position_gap_visible": true,
+  "mobile_no_page_overflow": true,
+  "javascript_errors": []
+}

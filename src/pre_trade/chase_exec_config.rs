@@ -2166,6 +2166,7 @@ mod tests {
         value.targets.insert(
             "BTCUSD_261225".into(),
             BatchExecTarget {
+                clear: false,
                 qty: 0.01,
                 signal: 0,
             },

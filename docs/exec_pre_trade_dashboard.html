@@ -232,7 +232,7 @@
 
     <main>
       <section class="risk-band" aria-label="账户风险">
-        <div class="metric"><label>账户权益 USDT</label><strong id="equity">--</strong></div>
+        <div class="metric"><label>实时权益 USDT <span id="equity-status"></span></label><strong id="equity">--</strong></div>
         <div class="metric"><label>杠杆率</label><strong id="leverage">--</strong></div>
         <div class="metric"><label>总名义价值</label><strong id="gross">--</strong></div>
         <div class="metric"><label>净名义价值</label><strong id="net">--</strong></div>
@@ -262,7 +262,7 @@
                 <th>目标仓位</th><th title="策略行显示策略实际仓位；品种汇总行显示交易所综合仓位">实际仓位</th>
                 <th>挂单数量</th><th>待下单数量</th><th>差额 USDT</th>
                 <th title="活动子单尚未成交数量 × 当前中间价">挂单 USDT</th>
-                <th title="(目标仓位 - 实际仓位 - 活动挂单数量) × 当前中间价">待下单 USDT</th>
+                <th title="执行端按数量步长、minQty 和 minNotional 检查后的待下单数量 × 当前中间价；不可执行余量保留在差额中">待下单 USDT</th>
                 <th title="达到目标仓位前预计还需完成的批次数量">剩余批次</th>
                 <th title="最后一个批次启动后，按最大 Maker 重报价次数估算">预计完成</th><th>操作</th>
               </tr>
@@ -411,6 +411,7 @@
           if (reason === "target_reached") return "已达到目标仓位";
           if (reason === "target_tolerance") return "剩余量已进入 Target Tolerance";
           if (reason === "exchange_minimum") return "剩余量低于交易所 minQty / minNotional";
+          if (reason === "symbol_not_tradable") return "品种不可交易，已停止下单";
           if (reason === "mixed") return "包含多种结束原因";
           return "执行已结束";
         }
@@ -421,7 +422,7 @@
             || (row.active_batches || 0) > 0;
           if (working) return ["执行中", "live"];
           if (row.execution_complete === true) {
-            return ["执行结束", "done", completionReasonText(row.completion_reason)];
+            return ["执行完成", "done", completionReasonText(row.completion_reason)];
           }
           const unsettled = row.has_unsettled === true || Math.abs(row.delta_usdt || 0) > 0.01;
           if (!unsettled) return ["已完成", "done"];
@@ -489,12 +490,12 @@
               effective_position_qty: sumField(children, "effective_position_qty"),
               delta_qty: targetQty - accountQty,
               live_order_qty: liveQty,
-              pending_qty: targetQty - accountQty - liveQty,
+              pending_qty: sumField(children, "pending_qty"),
               target_usdt: targetUsdt,
               current_usdt: accountUsdt,
               delta_usdt: targetUsdt - accountUsdt,
               live_order_usdt: liveUsdt,
-              pending_usdt: targetUsdt - accountUsdt - liveUsdt,
+              pending_usdt: sumField(children, "pending_usdt"),
               active_batches: sumField(children, "active_batches"),
               remaining_batches: sumField(children, "remaining_batches"),
               estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
@@ -579,6 +580,10 @@
         }
         function renderRisk() {
           const e = state.risk && state.risk.entry;
+          const delayed = !!state.risk && Date.now() - state.risk.received > STALE_MS;
+          byId("equity-status").textContent = !e ? "等待数据" : delayed ? "数据延迟" : "实时";
+          byId("equity-status").className = delayed ? "negative" : "muted";
+          byId("equity").title = state.risk ? `收到权益更新：${new Date(state.risk.received).toLocaleString("zh-CN", { hour12: false })}` : "";
           byId("equity").textContent = fmt(e && e.equity_usdt, usdFmt);
           byId("leverage").textContent = fmt(e && e.leverage, levFmt);
           byId("gross").textContent = fmt(e && e.gross_notional_usdt, usdFmt);
@@ -591,7 +596,9 @@
           const entry = state.exec && state.exec.entry;
           const rawRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
           renderStrategyUpdates(rawRows);
-          const allRows = rawRows.filter((row) => !isIdleZeroRow(row) && !isCompletedCloseResidual(row));
+          const allRows = rawRows.map((row) => row.execution_complete === true
+            ? { ...row, pending_qty: 0, pending_usdt: 0 }
+            : row).filter((row) => !isIdleZeroRow(row) && !isCompletedCloseResidual(row));
           refreshStrategies(allRows);
           const rows = allRows
             .filter((row) => !state.strategy || row.strategy_name === state.strategy)

@@ -102,6 +102,15 @@ def order_parameters(config):
     return {field: config[field] for field in MODULE.ORDER_PARAMETER_FIELDS}
 
 
+class ClearTargetTests(unittest.TestCase):
+    def test_clear_in_qty_preserves_ordinary_target_contract(self):
+        self.assertEqual(MODULE.normalize_target_position('clear', 'target'), {'qty':'clear','signal':0})
+        self.assertEqual(MODULE.normalize_target_position({'qty':'clear','signal':1}, 'target'), {'qty':'clear','signal':1})
+        self.assertEqual(MODULE.normalize_target_position(0.1, 'target'), {'qty':0.1,'signal':0})
+        with self.assertRaises(ValueError):
+            MODULE.normalize_target_position('+max_u_1000', 'target')
+
+
 class ExecConfigServerTests(unittest.TestCase):
     def test_independent_market_publish_update_and_remove(self):
         um = fake_store(env_name="exec_um")

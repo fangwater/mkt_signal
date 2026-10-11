@@ -1,0 +1,15 @@
+{
+  "release": "trade05_pending_equity_20261011T053214Z",
+  "source": "binance_exec_trade05",
+  "account": "RX02",
+  "sha256": {
+    "exec-pre-trade": "180fad71dd5c7b9b07c72106dab6d6881e9717d27cc548fb016df960919aeff7",
+    "viz_server": "fa7fd57b7ff22fe4765d484a0cc0a65db0c3d96b512975686cc9ce0e3a33e12b",
+    "cta_web": "e8c483d958258e1e41f5328194dcee868eb37c0b74e4c014874d0625419fcd38"
+  },
+  "mkt_tests_passed": 1241,
+  "manager_tests_passed": 284,
+  "manager_integration_passed": 8,
+  "branch": "arbmm",
+  "branch_synchronized": true
+}

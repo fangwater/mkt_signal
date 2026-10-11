@@ -1,6 +1,6 @@
 # Intra CTA（V007 两市场期现）
 
-最后更新：2026-09-23
+最后更新：2026-10-09
 
 本文记录普通 intra CTA（`ArbMode::Cta`，不是 `cta_special`）的 V007 研究契约与
 `jp-meta-elvpn:~/binance-cta-rx01` 部署。研究源码位于
@@ -51,10 +51,12 @@ rx01 dashboard 使用 `docs/intra_pre_trade_dashboard.html`，在风险和敞口
 ## 代码与配置
 
 - 因子/NQ publisher：`src/factor_pub/intra_factor_model_1m_pub/`，配置
-  `config/intra_factor_model_1m_pub.toml`。本地 publisher 的
-  `INTRA_FACTOR_NAMES` 已包含 `TD_TI_008`（共十个 service）；JP 六个 symbol 的
-  TLen `factor_plan_1m` 均已加入该因子。选择其他 V007 factor 时，必须先扩展
-  publisher 与 TLen factor plan，不能只在 Redis 填写不存在的 service。
+  `config/intra_factor_model_1m_pub.toml`。`[universe].symbols` 明确限定计算币种，
+  `factors` 按配置顺序创建独立 service、求值及滚动窗口。启动时校验因子
+  有求值实现、列表无重复、全部配置币种都有在线 `amount_thresholds_1m`、
+  完整 `factor_plan_1m` 与有效的成交分档 `amount_thresholds`；缺项拒绝启动。
+  运行中仍重载 TLen 的在线状态，但不会计算配置列表以外的币种。
+  修改计算列表需同步 TLen 并重启 publisher；只修改交易规则不会创建因子输出。
 - 开仓：`crates/trade_signal/src/cta_config.rs`、`arb_decision.rs`；
   `{env}:cta_rules` 配 model、方向、NQ 开关等，
   `{env}:cta_strategy_params:{open}:{hedge}` 配四档、TTL、因子退出分位和 trailing。
@@ -73,6 +75,18 @@ rx01 dashboard 使用 `docs/intra_pre_trade_dashboard.html`，在风险和敞口
   重启 pre-trade，不能在已有持仓时热切换到另一条因子。
 
 ## 部署与验收
+
+2026-10-09 仓库计算配置已准备为 16 币 × 5 因子：
+FIL、AVAX、LTC、DASH、ZEC、NEAR、AAVE、UNI、LINK、XLM、SOL、BNB、DOGE、DOT、
+XRP、ETH 的 USDT 合约；因子为 `factor_036`、`factor_051`、`factor_170`、
+`factor_004`、`TD_TI_002`。BTC 不在新列表中。纯合约 publisher 采用同一份
+计算范围，NQ 仍分别使用现货和合约行情。
+
+此配置尚未上线。现场仍是六币、普通 CTA 十因子和纯合约 CTA 两因子。
+`rx01` 订阅 `TD_TI_008`，`rx02/rx03` 订阅 `TP_VPI_018/baseline_104`，
+且旧环境仍有持仓。替换计算范围前必须明确旧策略与持仓的迁移方式；
+不能直接删除旧因子或 BTC 输出使旧仓失去因子退出输入，也不能自动将
+新因子映射到旧持仓。现有交易环境每个 env 最多一条独立规则的约束仍适用。
 
 2026-09-23 将 `binance-cta-rx01` 从 `TD_PR_005` 切换至 `TD_TI_008`，交易范围为
 BNB、BTC、DOGE、ETH、SOL、XRP 的 Binance margin/futures（RapidX）。使用

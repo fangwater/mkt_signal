@@ -1,6 +1,6 @@
 use crate::ltp_ws::LtpCredentials;
 use crate::query_parsers::compact_order::{CompactOrderQueryResp, ORDER_QUERY_NOT_FOUND_MARKER};
-use crate::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::query_request::{QueryRequestMsg, QueryRequestType, SNAPSHOT_COMPLETE_MARKER};
 use crate::query_response_handle::QueryExecOutcome;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -724,10 +724,19 @@ fn parse_ltp_positions_snapshot(
                     Bytes::new(),
                 )];
             }
-            payloads
+            let mut outcomes: Vec<_> = payloads
                 .into_iter()
                 .map(|body| query_outcome(msg, logical_exchange, http_status, body))
-                .collect()
+                .collect();
+            // Non-empty snapshots (including rows with zero qty) also need the
+            // existing completion marker before Exec may initialize its ledger.
+            outcomes.push(query_outcome(
+                msg,
+                logical_exchange,
+                http_status,
+                Bytes::from_static(SNAPSHOT_COMPLETE_MARKER),
+            ));
+            outcomes
         }
         Err(err) => vec![query_outcome(
             msg,
@@ -1804,5 +1813,61 @@ mod tests {
         );
         let pos = BasicPositionMsg::from_bytes(&pos_out[0].body).expect("position");
         assert_eq!(pos.inst_id, "BTCUSDT");
+    }
+
+    #[test]
+    fn rapidx_position_snapshot_completes_only_after_all_valid_rows() {
+        let request = GenericQueryRequest::create(
+            QueryRequestType::BinanceUmAccountSnapshot,
+            get_timestamp_us(),
+            45,
+            Bytes::new(),
+        );
+        let msg = QueryRequestMsg::parse(request.to_bytes().as_ref()).unwrap();
+        let mut response = json!({"code":200000,"data":[
+            {"portfolioId":"123","exchangeType":"BINANCE","sym":"BINANCE_PERP_BTC_USDT","positionSide":"NET","positionQty":"0"},
+            {"portfolioId":"123","exchangeType":"BINANCE","sym":"BINANCE_PERP_ETH_USDT","positionSide":"NET","positionQty":"-2"}
+        ]});
+        let outcomes = parse_ltp_positions_snapshot(
+            &msg,
+            Exchange::Binance,
+            200,
+            &response.to_string(),
+            "123",
+            "BINANCE",
+        );
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(
+            BasicPositionMsg::from_bytes(&outcomes[0].body)
+                .unwrap()
+                .position_amount,
+            0.0
+        );
+        assert_eq!(
+            BasicPositionMsg::from_bytes(&outcomes[1].body)
+                .unwrap()
+                .position_amount,
+            -2.0
+        );
+        assert!(crate::query_request::is_snapshot_complete_body(
+            &outcomes[2].body
+        ));
+        assert!(outcomes
+            .iter()
+            .all(|out| out.client_query_id == 45 && out.status == 200));
+        response["data"][1]["portfolioId"] = json!("456");
+        let failed = parse_ltp_positions_snapshot(
+            &msg,
+            Exchange::Binance,
+            200,
+            &response.to_string(),
+            "123",
+            "BINANCE",
+        );
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].status, 400);
+        assert!(!crate::query_request::is_snapshot_complete_body(
+            &failed[0].body
+        ));
     }
 }

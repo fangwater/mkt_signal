@@ -1,5 +1,13 @@
 # V007 normalized 1-minute factors exposed as one ModelMsg stream per factor.
 # score uses a causal clipped rolling z-score; entry thresholds use rolling q90/q10.
+[universe]
+symbols = [
+  "FILUSDT", "AVAXUSDT", "LTCUSDT", "DASHUSDT", "ZECUSDT", "NEARUSDT",
+  "AAVEUSDT", "UNIUSDT", "LINKUSDT", "XLMUSDT", "SOLUSDT", "BNBUSDT",
+  "DOGEUSDT", "DOTUSDT", "XRPUSDT", "ETHUSDT",
+]
+factors = ["factor_036", "factor_051", "factor_170", "factor_004", "TD_TI_002"]
+
 [tlen_server]
 # The deployed JP environment reaches its host-local TLen service through this loopback URL.
 base_url = "http://127.0.0.1:6322"

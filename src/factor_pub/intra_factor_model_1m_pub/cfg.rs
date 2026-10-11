@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
 
+use crate::factor_pub::cta_factor_universe::CtaFactorUniverse;
 use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
 use period_pbs::kafka::KafkaConsumerConfig;
 
@@ -13,6 +14,7 @@ pub const DEFAULT_NORMALIZE_CLIP_ZSCORE: f64 = 3.0;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct IntraFactorModelPubConfig {
+    pub universe: CtaFactorUniverse,
     pub tlen_server: TlenServerConfig,
     #[serde(default)]
     pub percentile: PercentileConfig,
@@ -99,6 +101,7 @@ impl IntraFactorModelPubConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        self.universe.validate()?;
         if self.tlen_server.base_url.trim().is_empty() {
             anyhow::bail!("tlen_server.base_url must not be empty");
         }
@@ -195,6 +198,10 @@ mod tests {
     fn defaults_to_notebook_percentile_window() {
         let config: IntraFactorModelPubConfig = toml::from_str(
             r#"
+                [universe]
+                symbols = ["FILUSDT"]
+                factors = ["factor_036"]
+
                 [tlen_server]
                 base_url = "http://127.0.0.1:6322"
             "#,
@@ -215,6 +222,10 @@ mod tests {
     fn parses_kafka_input() {
         let config: IntraFactorModelPubConfig = toml::from_str(
             r#"
+                [universe]
+                symbols = ["FILUSDT"]
+                factors = ["factor_036"]
+
                 [tlen_server]
                 base_url = "http://tlen.example"
 

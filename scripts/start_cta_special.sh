@@ -38,19 +38,20 @@ source "$EXECUTION_BACKEND_LIB"
   --config "${BASE_DIR}/config/cta_special.json" --check >/dev/null
 
 config_enabled="$(python3 -c 'import json,sys; print(str(bool(json.load(open(sys.argv[1]))["enabled"])).lower())' "${BASE_DIR}/config/cta_special.json" 2>/dev/null || echo invalid)"
-echo "[PLAN] env=${ENV_NAME} exchange=binance symbol_scope=config/cta_special.json backend=ltp live_mutation=start-processes"
+echo "[PLAN] env=${ENV_NAME} exchange=binance symbol_scope=${ENV_NAME}:cta_symbol_factors backend=ltp live_mutation=start-processes"
 echo "[PLAN] trading_enabled=${config_enabled}"
-echo "[PLAN] account_monitor -> trade_engine -> persist_manager -> pre_trade -> shared factor publisher (when configured) -> config server -> dashboard -> signal"
+echo "[PLAN] shared factor publisher (when configured) -> config server -> dashboard -> signal; publishes positions through CTA Manager"
 if [[ "$EXECUTE" -ne 1 ]]; then
   echo "[DRY-RUN] no process was started; pass --execute to proceed"
   exit 0
 fi
 
 cd "$BASE_DIR"
-"${BASE_DIR}/intra_scripts/start_intra_monitors.sh"
-"${BASE_DIR}/intra_scripts/start_intra_trade_engine.sh"
-"${BASE_DIR}/intra_scripts/start_intra_persist_manager.sh"
-"${BASE_DIR}/intra_scripts/start_intra_pre_trade.sh"
+"${PYTHON_BIN:-python3}" "${BASE_DIR}/scripts/cta_special_factor_config.py" \
+  --env-name "$ENV_NAME" --check >/dev/null
+if [[ "$config_enabled" == "true" ]]; then
+  [[ -n "${CTA_MANAGER_API_URL:-}" ]] || { echo '[ERROR] CTA_MANAGER_API_URL is required'; exit 1; }
+fi
 "${BASE_DIR}/scripts/start_cta_special_factor_model_1m_pub.sh"
 "${BASE_DIR}/scripts/start_cta_special_config_server.sh"
 "${BASE_DIR}/scripts/start_cta_special_dashboard.sh"

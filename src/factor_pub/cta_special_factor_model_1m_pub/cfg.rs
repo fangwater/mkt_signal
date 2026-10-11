@@ -1,3 +1,4 @@
+use crate::factor_pub::cta_factor_universe::CtaFactorUniverse;
 use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
 use anyhow::{bail, Context, Result};
 use period_pbs::kafka::KafkaConsumerConfig;
@@ -7,6 +8,7 @@ use std::fs;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CtaSpecialFactorPubConfig {
+    pub universe: CtaFactorUniverse,
     pub tlen_server: TlenServerConfig,
     pub normalize: NormalizeConfig,
     pub kafka: KafkaInputConfig,
@@ -39,6 +41,7 @@ impl CtaSpecialFactorPubConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        self.universe.validate()?;
         if self.tlen_server.base_url.trim().is_empty() {
             bail!("tlen_server.base_url must not be empty");
         }

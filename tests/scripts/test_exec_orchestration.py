@@ -25,6 +25,7 @@ COMMON_PUBLISH_FILES = [
     "scripts/exec_config_server.py",
     "scripts/mm_process_name.sh",
     "scripts/process_match_lib.sh",
+    "scripts/execution_backend_lib.sh",
     "scripts/start_exec_config_server.sh",
     "scripts/stop_exec_config_server.sh",
     "scripts/start_exec_viz_server.sh",
@@ -233,6 +234,45 @@ class ExecOrchestrationTests(unittest.TestCase):
             )
         return target
 
+    def _set_rapidx_backend(self, target: Path, exchange: str) -> None:
+        self._write(
+            target / "env.sh",
+            f"export IPC_NAMESPACE={target.name}\n"
+            f"export EXEC_VENUE={exchange}-futures\n"
+            f"export TRADE_ENGINE_EXEC_BACKEND_MAP='*=native,{exchange}=rapidx'\n"
+            "export LTP_API_KEY=fixture-key\n"
+            "export LTP_API_SECRET=fixture-secret\n"
+            "export LTP_PORTFOLIO_ID=123\n",
+        )
+
+    def _make_local_publish_repo(self) -> Path:
+        local_repo = self.temp_path / "local_repo"
+        local_script = local_repo / "scripts" / PUBLISH_SCRIPT.name
+        local_script.parent.mkdir(parents=True)
+        shutil.copy2(PUBLISH_SCRIPT, local_script)
+        all_files = set(COMMON_PUBLISH_FILES)
+        all_files.update(
+            {
+                "target/release/binance_account_monitor",
+                "target/release/okex_account_monitor",
+                "target/release/rapidx_account_monitor",
+                "scripts/binance_cancel_all_std_um_ws_orders.py",
+                "scripts/binance_cancel_all_std_cm_orders.py",
+                "scripts/binance_cancel_all_unified_open_orders.py",
+                "scripts/binance_local_ip.py",
+                "scripts/sell_margin_spot.py",
+                "scripts/okx_swap_open_orders.py",
+            }
+        )
+        for relative in all_files:
+            self._write(local_repo / relative, f"payload:{relative}\n")
+        for relative in (
+            "scripts/execution_backend_lib.sh",
+            "scripts/lib/ssh_remote_bash.sh",
+        ):
+            self._write(local_repo / relative, (ROOT / relative).read_text(encoding="utf-8"))
+        return local_repo
+
     @staticmethod
     def _free_tcp_port() -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -392,42 +432,37 @@ class ExecOrchestrationTests(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
-    def test_publish_skip_build_maps_exec_files_and_cleans_staging(self) -> None:
-        local_repo = self.temp_path / "local_repo"
+    def test_publish_skip_build_selects_native_and_rapidx_monitors(self) -> None:
+        local_repo = self._make_local_publish_repo()
         local_script = local_repo / "scripts" / PUBLISH_SCRIPT.name
-        local_script.parent.mkdir(parents=True)
-        shutil.copy2(PUBLISH_SCRIPT, local_script)
-
-        all_files = set(COMMON_PUBLISH_FILES)
-        all_files.update(
-            {
-                "target/release/binance_account_monitor",
-                "target/release/okex_account_monitor",
-                "scripts/binance_cancel_all_std_um_ws_orders.py",
-                "scripts/binance_cancel_all_unified_open_orders.py",
-                "scripts/binance_local_ip.py",
-                "scripts/sell_margin_spot.py",
-                "scripts/okx_swap_open_orders.py",
-            }
-        )
-        for relative in all_files:
-            self._write(local_repo / relative, f"payload:{relative}\n")
-
-        for exchange in ("binance", "okex"):
-            with self.subTest(exchange=exchange):
-                env_name = f"{exchange}_exec_pub01"
-                target = self.remote_home / env_name
-                target.mkdir()
+        self._write(self.fake_bin / "cargo", "#!/usr/bin/env bash\nexit 99\n", executable=True)
+        for backend, exchange in (
+            ("native", "binance"), ("native", "okex"),
+            ("rapidx", "binance"), ("rapidx", "okex"),
+        ):
+            with self.subTest(exchange=exchange, backend=backend):
+                target = self._make_remote_env(exchange, suffix=f"{backend}01")
+                destination = "account_monitor"
+                monitor = f"{exchange}_account_monitor"
+                if backend == "rapidx":
+                    self._set_rapidx_backend(target, exchange)
+                    # A RapidX publish must work without native monitor artifacts.
+                    (local_repo / f"target/release/{exchange}_account_monitor").unlink()
+                    destination = monitor = "rapidx_account_monitor"
+                original_env = (target / "env.sh").read_bytes()
+                original_config = (target / "config/exec_viz.toml").read_bytes()
                 result = self._run(
                     local_script,
                     "--env-name",
-                    env_name,
+                    target.name,
                     "--skip-build",
+                    # Remote env.sh owns the backend, not the publishing shell.
+                    env_overrides={"TRADE_ENGINE_EXEC_BACKEND": "rapidx"},
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(
-                    (target / "account_monitor").read_text(encoding="utf-8"),
-                    f"payload:target/release/{exchange}_account_monitor\n",
+                    (target / destination).read_text(encoding="utf-8"),
+                    f"payload:target/release/{monitor}\n",
                 )
                 self.assertEqual(
                     (target / "exec-pre-trade").read_text(encoding="utf-8"),
@@ -445,8 +480,97 @@ class ExecOrchestrationTests(unittest.TestCase):
                     else "okx_swap_open_orders.py"
                 )
                 self.assertTrue((target / "scripts" / helper).is_file())
-                self.assertFalse((target / "env.sh").exists())
+                self.assertEqual((target / "env.sh").read_bytes(), original_env)
+                self.assertEqual((target / "config/exec_viz.toml").read_bytes(), original_config)
+                self.assertNotIn("fixture-secret", result.stdout)
+                if backend == "rapidx":
+                    self.assertEqual((target / "account_monitor").read_text(), "#!/usr/bin/env bash\nexit 0\n")
                 self.assertFalse(any(target.glob(".publish-exec.*")))
+
+    def test_rapidx_start_preflight_requires_its_monitor_and_no_native_credentials(self) -> None:
+        for exchange in ("binance", "okex"):
+            with self.subTest(exchange=exchange):
+                target = self._make_remote_env(exchange, suffix="rx01")
+                self._set_rapidx_backend(target, exchange)
+                missing = self._run(START_SCRIPT, "--env-name", target.name, "--check-only")
+                self.assertNotEqual(missing.returncode, 0, missing.stdout)
+                self.assertIn("rapidx_account_monitor", missing.stdout)
+                self._write(target / "rapidx_account_monitor", "#!/usr/bin/env bash\nexit 0\n", executable=True)
+                (target / "account_monitor").unlink()
+                ready = self._run(START_SCRIPT, "--env-name", target.name, "--check-only")
+                self.assertEqual(ready.returncode, 0, ready.stdout)
+                self.assertIn("no process was started or restarted", ready.stdout)
+                self.assertNotIn("fixture-secret", ready.stdout)
+
+    def test_running_rapidx_monitor_blocks_publish_and_is_visible_to_stop(self) -> None:
+        target = self._make_remote_env("binance", suffix="rxrun01")
+        self._set_rapidx_backend(target, "binance")
+        monitor = target / "rapidx_account_monitor"
+        shutil.copy2("/bin/sleep", monitor)
+        process = subprocess.Popen([str(monitor), "30"])
+        try:
+            publish = self._run(PUBLISH_SCRIPT, "--env-name", target.name, "--check-only")
+            self.assertEqual(publish.returncode, 3, publish.stdout)
+            self.assertIn(f"pid={process.pid}", publish.stdout)
+            self.assertIn("rapidx_account_monitor", publish.stdout)
+            stop = self._run(STOP_SCRIPT, "--env-name", target.name, "--check-only")
+            self.assertEqual(stop.returncode, 0, stop.stdout)
+            self.assertIn(f"pid={process.pid}", stop.stdout)
+            self.assertIsNone(process.poll())
+            # Fake stop helpers deliberately do nothing; the final check must
+            # report the remaining RX monitor instead of claiming success.
+            remaining = self._run(STOP_SCRIPT, "--env-name", target.name)
+            self.assertNotEqual(remaining.returncode, 0, remaining.stdout)
+            self.assertIn("matching processes remain after stop", remaining.stdout)
+            self.assertIn("rapidx_account_monitor", remaining.stdout)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_publish_rejects_invalid_account_binding_before_upload(self) -> None:
+        target = self._make_remote_env("binance", suffix="invalid01")
+        base = (target / "env.sh").read_text()
+        for extra in (
+            "export TRADE_ENGINE_EXEC_BACKEND_MAP='binance=rapidx,binance=native'\n",
+            "export IPC_NAMESPACE=wrong\n",
+            "export EXEC_VENUE=okex-futures\n",
+            "export EXEC_VENUE=binance-coin-futures\nexport TRADE_ENGINE_EXEC_BACKEND=rapidx\n",
+        ):
+            with self.subTest(extra=extra):
+                self._write(target / "env.sh", base + extra)
+                args = ["--env-name", target.name, "--check-only"]
+                if "binance-coin-futures" in extra:
+                    args.extend(["--venue", "binance-coin-futures"])
+                result = self._run(PUBLISH_SCRIPT, *args)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse(any(target.glob(".publish-exec.*")))
+        (target / "env.sh").unlink()
+        missing = self._run(PUBLISH_SCRIPT, "--env-name", target.name, "--check-only")
+        self.assertNotEqual(missing.returncode, 0, missing.stdout)
+        self.assertIn("env.sh is required", missing.stdout)
+
+    def test_publish_aborts_when_account_backend_changes_during_upload(self) -> None:
+        local_repo = self._make_local_publish_repo()
+        target = self._make_remote_env("binance", suffix="race01")
+        original_binary = (target / "exec-pre-trade").read_bytes()
+        shutil.copy2(self.fake_bin / "scp", self.fake_bin / "scp_original")
+        self._write(
+            self.fake_bin / "scp",
+            '#!/usr/bin/env bash\nset -euo pipefail\n'
+            '"$(dirname "$0")/scp_original" "$@"\n'
+            'if [[ "${!#}" == */ ]]; then\n'
+            '  printf "export TRADE_ENGINE_EXEC_BACKEND=rapidx\\n" >>"$FAKE_CHANGED_ENV"\n'
+            'fi\n',
+            executable=True,
+        )
+        result = self._run(
+            local_repo / "scripts/publish-exec.sh", "--env-name", target.name, "--skip-build",
+            env_overrides={"FAKE_CHANGED_ENV": str(target / "env.sh")},
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("account backend changed during publish", result.stdout)
+        self.assertEqual((target / "exec-pre-trade").read_bytes(), original_binary)
+        self.assertFalse(any(target.glob(".publish-exec.*")))
 
     def test_live_start_order_and_signal_exclusion_with_fake_remote(self) -> None:
         target = self._make_remote_env("okex", suffix="start01")

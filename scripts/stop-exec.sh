@@ -169,6 +169,7 @@ target_executables=(
   "$target/account_monitor"
   "$target/binance_account_monitor"
   "$target/okex_account_monitor"
+  "$target/rapidx_account_monitor"
   "$target/viz_server"
   "$target/trade_engine"
   "$target/persist_manager"

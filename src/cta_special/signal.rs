@@ -1,631 +1,423 @@
 use crate::cta_special::config::{
-    CtaSpecialConfig, CTA_SPECIAL_MAX_MODEL_AGE_MS, CTA_SPECIAL_MAX_QUOTE_AGE_MS,
-    CTA_SPECIAL_SIGNAL_POLL_INTERVAL_MS, CTA_SPECIAL_STATUS_PATH, CTA_SPECIAL_VENUE_NAME,
+    CtaSpecialConfig, CTA_SPECIAL_MAX_QUOTE_AGE_MS, CTA_SPECIAL_SIGNAL_POLL_INTERVAL_MS,
+    CTA_SPECIAL_STATUS_PATH, CTA_SPECIAL_VENUE_NAME,
 };
-use anyhow::{Context, Result};
-use iceoryx2::prelude::*;
-use iceoryx2::service::ipc;
-use ipc_common::iceoryx_publisher::TradeSignalPublisher;
+use crate::cta_special::factor_channel::{IndependentFactorObservation, WeightedFactorChannel};
+use crate::cta_special::factors::{runtime_factor_config_key, WeightedBar};
+use crate::cta_special::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
+use crate::cta_special::positions::{equal_allocation, full_qty, next_position_flag};
+use anyhow::{ensure, Context, Result};
 use log::{info, warn};
-use order_common::{OrderType, Side, TradingVenue};
-use quote_plan::quote_plan_levels::{build_quote_plan_levels, QuotePlanLevelSpec};
-use runtime_common::exchange::Exchange;
-use runtime_common::execution_backend::{rapidx_portfolio_id, ExecBackend};
 use runtime_common::time_util::get_timestamp_us;
-use serde::Serialize;
-use signal_common::common::{SignalBytes, TradingLeg};
-use signal_common::open_signal::ArbOpenCtx;
-use signal_common::trade_signal::SignalType;
-use signal_common::venue_min_qty_table::VenueMinQtyTable;
-use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use trade_signal::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use trade_signal::MktChannel;
 
-const SIGNAL_CHANNEL: &str = "trade_signal";
-const MAX_DELAYED_SIGNAL_AGE_US: i64 = 5_000_000;
-const MODEL_OUTPUT_MAX_SUBSCRIBERS: usize = 32;
-
-#[derive(Debug, Clone)]
-struct ScheduledEntry {
-    symbol: String,
-    side: Side,
-    due_ts_us: i64,
-    model_ts_ms: i64,
-    config: CtaSpecialConfig,
+const SHADOW_PATH: &str = "run/cta_special_position_flags.json";
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StrategyPosition {
+    flag: i8,
+    qty: f64,
+    #[serde(default)]
+    entry_notional: f64,
 }
-
-#[derive(Debug, Clone, Serialize)]
-struct SymbolStatus {
-    model_ts_ms: i64,
-    score: Option<f64>,
-    quantile: Option<f64>,
-    entry_long_quantile: f64,
-    entry_short_quantile: f64,
-    score_ready: bool,
-    nq_long_value: Option<f64>,
-    nq_long_quantile: Option<f64>,
-    nq_short_value: Option<f64>,
-    nq_short_quantile: Option<f64>,
-    filter_ready: bool,
-    decision: &'static str,
-    updated_ts_us: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct RuntimeStatus<'a> {
-    enabled: bool,
-    venue: &'a str,
-    rule_name: &'a str,
-    model_service: &'a str,
-    updated_ts_us: i64,
-    scheduled_entries: usize,
-    symbols: &'a HashMap<String, SymbolStatus>,
-}
+type Positions = BTreeMap<String, BTreeMap<String, StrategyPosition>>;
 
 pub struct CtaSpecialSignalApp {
     config_path: PathBuf,
     config_modified: Option<SystemTime>,
     config: CtaSpecialConfig,
-    model_service: String,
-    venue: TradingVenue,
-    _model_node: Node<ipc::Service>,
-    model_hub: ModelOutputHub,
-    signal_pub: TradeSignalPublisher,
-    min_qty_table: VenueMinQtyTable,
-    symbols: HashSet<String>,
-    last_model_ts: HashMap<String, i64>,
-    last_scheduled_entry_ts_us: HashMap<String, i64>,
-    scheduled: Vec<ScheduledEntry>,
-    status: HashMap<String, SymbolStatus>,
+    factors: WeightedFactorChannel,
+    manager: reqwest::Client,
+    manager_url: Option<String>,
+    strategy_prefix: String,
+    last_published: BTreeMap<String, Value>,
+    publication_error: Option<String>,
+    positions: Positions,
+    observations: BTreeMap<String, BTreeMap<String, Value>>,
+    journal: SignalJournal,
     last_reload_check_us: i64,
     entry_live_after_ms: i64,
 }
-
 impl CtaSpecialSignalApp {
     pub async fn new(config_path: impl AsRef<Path>) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
         let config = CtaSpecialConfig::load(&config_path)?;
-        let venue = config.venue();
-        let model_service = config.model_service();
-        anyhow::ensure!(
-            ExecBackend::for_exchange(Exchange::Binance)? == ExecBackend::Ltp,
-            "cta_special requires binance=ltp execution backend"
+        let factor_key = runtime_factor_config_key()?;
+        let env = factor_key
+            .strip_suffix(":cta_symbol_factors")
+            .context("invalid CTA factor key")?
+            .to_string();
+        let factors =
+            WeightedFactorChannel::new(factor_key, "cta_special_model_input", false).await?;
+        MktChannel::init_bbo_singleton_readonly(config.venue(), config.venue())
+            .context("initialize CTA sizing BBO")?;
+        let manager_url = std::env::var("CTA_MANAGER_API_URL").ok();
+        if let Some(url) = &manager_url {
+            let parsed = reqwest::Url::parse(url).context("invalid CTA Manager URL")?;
+            ensure!(
+                parsed.scheme() == "http" || parsed.scheme() == "https",
+                "invalid Manager URL scheme"
+            );
+        }
+        ensure!(
+            !config.enabled || manager_url.is_some(),
+            "CTA_MANAGER_API_URL is required when publishing positions"
         );
-        let _ = rapidx_portfolio_id().context("cta_special requires LTP_PORTFOLIO_ID")?;
-
-        MktChannel::init_bbo_singleton_readonly(venue, venue)
-            .context("initialize CTA special BBO subscriber")?;
-        let model_node = NodeBuilder::new()
-            .name(&NodeName::new("cta_special_model_input")?)
-            .create::<ipc::Service>()?;
-        let mut model_hub =
-            ModelOutputHub::new_with_max_subscribers(venue, MODEL_OUTPUT_MAX_SUBSCRIBERS);
-        anyhow::ensure!(
-            model_hub.update_services(&model_node, vec![model_service.clone()]) == 1,
-            "failed to subscribe CTA special model service {}",
-            model_service
-        );
-        let signal_pub = TradeSignalPublisher::open_or_create(SIGNAL_CHANNEL)
-            .context("open CTA special trade signal publisher")?;
-        let mut min_qty_table = VenueMinQtyTable::new(venue);
-        min_qty_table
-            .refresh()
-            .await
-            .context("load Binance futures order filters for CTA special")?;
-        let config_modified = fs::metadata(&config_path)
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        let symbols = config.symbol_set();
-        info!(
-            "CtaSpecialSignal ready rule={} service={} symbols={} ltp_only=true",
-            config.rule_name,
-            model_service,
-            symbols.len()
-        );
-        Ok(Self {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(token) = std::env::var("CTA_PUBLISH_TOKEN") {
+            let mut value = reqwest::header::HeaderValue::from_str(&token)
+                .map_err(|_| anyhow::anyhow!("invalid CTA publish token header"))?;
+            value.set_sensitive(true);
+            headers.insert("X-CTA-Publish-Token", value);
+        }
+        let manager = reqwest::Client::builder()
+            .no_proxy()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(5))
+            .build()?;
+        let positions = if Path::new(SHADOW_PATH).exists() {
+            serde_json::from_slice(&fs::read(SHADOW_PATH)?)
+                .context("read CTA observation positions")?
+        } else {
+            Positions::new()
+        };
+        let config_modified = fs::metadata(&config_path).and_then(|m| m.modified()).ok();
+        let mut app = Self {
             config_path,
             config_modified,
             config,
-            model_service,
-            venue,
-            _model_node: model_node,
-            model_hub,
-            signal_pub,
-            min_qty_table,
-            symbols,
-            last_model_ts: HashMap::new(),
-            last_scheduled_entry_ts_us: HashMap::new(),
-            scheduled: Vec::new(),
-            status: HashMap::new(),
+            factors,
+            manager,
+            manager_url,
+            strategy_prefix: std::env::var("CTA_POSITION_STRATEGY_PREFIX")
+                .unwrap_or_else(|_| format!("{env}_")),
+            last_published: BTreeMap::new(),
+            publication_error: None,
+            positions,
+            observations: BTreeMap::new(),
+            journal: SignalJournal::new(SIGNAL_JOURNAL_DIR)?,
             last_reload_check_us: 0,
-            entry_live_after_ms: get_timestamp_us().div_euclid(1_000),
-        })
+            entry_live_after_ms: get_timestamp_us() / 1000,
+        };
+        app.sync_factor_scope();
+        app.write_status()?;
+        info!(
+            "CTA special independent factor strategies ready strategies={} enabled={}",
+            app.factors
+                .table()
+                .values()
+                .flat_map(|row| row.factors.iter())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            app.config.enabled
+        );
+        Ok(app)
     }
-
+    fn sync_factor_scope(&mut self) {
+        // Keep retired quantities as zero targets so Manager clears their original strategies.
+        for (factor, rows) in &mut self.positions {
+            for (symbol, position) in rows {
+                let active = self.factors.table().get(symbol).is_some_and(|row| {
+                    row.factors
+                        .iter()
+                        .zip(&row.weights)
+                        .any(|(f, w)| f == factor && *w != 0.0)
+                });
+                if !active {
+                    *position = StrategyPosition::default();
+                }
+            }
+        }
+    }
+    async fn publish_targets(&mut self) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        let base = self
+            .manager_url
+            .as_ref()
+            .context("CTA_MANAGER_API_URL is required")?;
+        let names: BTreeSet<String> = self
+            .factors
+            .table()
+            .values()
+            .flat_map(|row| {
+                row.factors
+                    .iter()
+                    .zip(&row.weights)
+                    .filter(|(_, w)| **w != 0.0)
+                    .map(|(f, _)| f.clone())
+            })
+            .chain(self.positions.keys().cloned())
+            .collect();
+        for factor in names {
+            let mut targets: BTreeMap<String, Value> = self
+                .positions
+                .get(&factor)
+                .into_iter()
+                .flat_map(|rows| rows.iter())
+                .map(|(symbol, p)| (symbol.clone(), json!({"qty":p.qty,"signal":0})))
+                .collect();
+            for (symbol, row) in self.factors.table() {
+                if row
+                    .factors
+                    .iter()
+                    .zip(&row.weights)
+                    .any(|(f, w)| f == &factor && *w != 0.0)
+                {
+                    targets
+                        .entry(symbol.clone())
+                        .or_insert_with(|| json!({"qty":0.0,"signal":0}));
+                }
+            }
+            let payload = json!({"strategy_name":format!("{}{factor}",self.strategy_prefix),"targets":targets});
+            if self.last_published.get(&factor) == Some(&payload) {
+                continue;
+            }
+            let response = self
+                .manager
+                .post(format!(
+                    "{}/catalog/position-strategies",
+                    base.trim_end_matches('/')
+                ))
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|_| anyhow::anyhow!("CTA Manager position publication unavailable"))?;
+            ensure!(
+                response.status().is_success(),
+                "CTA Manager position publication failed: status={}",
+                response.status()
+            );
+            let now = get_timestamp_us();
+            for (symbol, target) in &targets {
+                if let Some(row) = self
+                    .observations
+                    .get(&factor)
+                    .and_then(|rows| rows.get(symbol))
+                {
+                    self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
+                        "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
+                            "position_flag":row["position_flag"],"position_qty":row["position_qty"],
+                            "signal":row["signal"],"entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"published_ts_us":now})), ..Default::default() });
+                }
+            }
+            self.last_published.insert(factor, payload);
+        }
+        Ok(())
+    }
     pub async fn run(&mut self) -> Result<()> {
         let mut interval =
             tokio::time::interval(Duration::from_millis(CTA_SPECIAL_SIGNAL_POLL_INTERVAL_MS));
         loop {
             interval.tick().await;
-            self.maybe_reload_config();
-            self.poll_models();
-            self.publish_due_entries();
+            let now = get_timestamp_us();
+            if now - self.last_reload_check_us >= 1_000_000 {
+                self.last_reload_check_us = now;
+                self.reload_config();
+                self.sync_factor_scope();
+                self.publication_error = self
+                    .publish_targets()
+                    .await
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                if let Some(error) = &self.publication_error {
+                    warn!("CTA publication failed; retry next refresh: {error}");
+                }
+                self.write_status()?;
+            }
+            let (changed, updates) = self.factors.poll_independent(&self.config.entry);
+            if changed {
+                self.entry_live_after_ms = now / 1000;
+            }
+            for observation in updates {
+                if let Err(error) = self.handle_observation(observation).await {
+                    warn!("CTA factor observation failed: {error:#}");
+                }
+            }
+            if changed {
+                if let Err(error) = self.write_status() {
+                    warn!("CTA status write failed: {error:#}");
+                }
+            }
         }
     }
-
-    fn maybe_reload_config(&mut self) {
-        let now_us = get_timestamp_us();
-        if now_us.saturating_sub(self.last_reload_check_us) < 1_000_000 {
-            return;
-        }
-        self.last_reload_check_us = now_us;
+    fn reload_config(&mut self) {
         let modified = fs::metadata(&self.config_path)
-            .and_then(|metadata| metadata.modified())
+            .and_then(|m| m.modified())
             .ok();
         if modified.is_none() || modified == self.config_modified {
             return;
         }
         match CtaSpecialConfig::load(&self.config_path) {
             Ok(next) => {
-                if next.rule_name != self.config.rule_name {
-                    warn!(
-                        "CTA special config reload rejected immutable rule_name change; redeploy to change factor"
-                    );
-                    self.config_modified = modified;
+                if next.enabled && !self.config.enabled {
+                    self.last_published.clear();
+                    self.entry_live_after_ms = get_timestamp_us() / 1000;
+                }
+                if next.enabled && self.manager_url.is_none() {
+                    warn!("CTA publish enable rejected: CTA_MANAGER_API_URL is required");
                     return;
                 }
-                self.symbols = next.symbol_set();
-                self.scheduled.clear();
                 self.config = next;
                 self.config_modified = modified;
-                info!(
-                    "CTA special config reloaded rule={} service={} symbols={} enabled={}",
-                    self.config.rule_name,
-                    self.model_service,
-                    self.symbols.len(),
-                    self.config.enabled
-                );
+                self.entry_live_after_ms = get_timestamp_us() / 1000;
             }
-            Err(err) => warn!("CTA special config reload rejected: {err:#}"),
+            Err(error) => warn!("CTA config refresh rejected: {error:#}"),
         }
     }
-
-    fn poll_models(&mut self) {
-        let events = self.model_hub.poll_updates();
-        for event in events {
-            if event.service_name != self.model_service || !self.symbols.contains(&event.symbol_key)
+    async fn handle_observation(
+        &mut self,
+        observation: IndependentFactorObservation,
+    ) -> Result<()> {
+        let IndependentFactorObservation {
+            symbol,
+            factor,
+            model_ts_ms,
+            bar,
+        } = observation;
+        let now = get_timestamp_us();
+        let mut position = self
+            .positions
+            .get(&factor)
+            .and_then(|rows| rows.get(&symbol))
+            .cloned()
+            .unwrap_or_default();
+        let mut flag = bar
+            .as_ref()
+            .map(|bar| next_position_flag(position.flag, bar, &self.config))
+            .unwrap_or(position.flag);
+        let mut reason = if bar.is_none() {
+            "factor_unready"
+        } else {
+            "hold"
+        };
+        if self.config.enabled && model_ts_ms <= self.entry_live_after_ms {
+            flag = position.flag;
+            reason = "historical_bar";
+        }
+        if flag != position.flag {
+            if flag != 0 {
+                let quote = MktChannel::instance()
+                    .get_quote(&symbol, self.config.venue())
+                    .context("missing full-position sizing BBO")?;
+                ensure!(
+                    quote.ts > 0
+                        && quote.ts <= now
+                        && now - quote.ts <= CTA_SPECIAL_MAX_QUOTE_AGE_MS as i64 * 1000,
+                    "stale sizing BBO"
+                );
+                let count = self
+                    .factors
+                    .table()
+                    .get(&symbol)
+                    .context("missing factor allocation")?
+                    .weights
+                    .iter()
+                    .filter(|weight| **weight != 0.0)
+                    .count();
+                let used: f64 = self
+                    .positions
+                    .values()
+                    .filter_map(|rows| rows.get(&symbol))
+                    .map(|p| p.entry_notional)
+                    .sum();
+                let amount = equal_allocation(self.config.max_pos_u, count)?
+                    .min((self.config.max_pos_u - used).max(0.0));
+                if amount <= 0.0 {
+                    return Ok(());
+                }
+                position.entry_notional = amount;
+                position.qty =
+                    full_qty(amount, flag, if flag > 0 { quote.ask } else { quote.bid })?;
+                reason = "full_position_entry";
+            } else {
+                position.qty = 0.0;
+                position.entry_notional = 0.0;
+                reason = "factor_exit";
+            }
+            position.flag = flag;
+        }
+        let signal = bar.as_ref().map(|bar| signal_snapshot(bar, position.flag));
+        let snapshot = json!({"enabled":self.config.enabled,"source":"independent_factor_strategy","strategy_name":factor,
+            "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u,"signal":signal,
+            "position_flag":position.flag,"position_qty":position.qty});
+        self.observations.entry(factor.clone()).or_default().insert(symbol.clone(), json!({"model_ts_ms":model_ts_ms,
+            "score_ready":bar.is_some(),"position_flag":position.flag,"position_qty":position.qty,"entry_notional":position.entry_notional,"signal":signal,"updated_ts_us":now}));
+        self.positions
+            .entry(factor)
+            .or_default()
+            .insert(symbol.clone(), position);
+        self.journal.record(
+            &symbol,
+            model_ts_ms,
+            now,
+            "observed",
+            reason,
+            snapshot,
+            GridPublication::default(),
+        );
+        self.write_status()
+    }
+    fn write_status(&self) -> Result<()> {
+        fs::create_dir_all("run")?;
+        let mut strategies = self.observations.clone();
+        let now = get_timestamp_us();
+        for (symbol, row) in self.factors.table() {
+            let count = row.weights.iter().filter(|w| **w != 0.0).count();
+            let allocation = equal_allocation(self.config.max_pos_u, count)?;
+            let quote = MktChannel::instance().get_quote(symbol, self.config.venue());
+            let mark = quote
+                .filter(|q| {
+                    q.ts > 0
+                        && q.ts <= now
+                        && now - q.ts <= CTA_SPECIAL_MAX_QUOTE_AGE_MS as i64 * 1000
+                })
+                .map(|q| (q.bid + q.ask) / 2.0)
+                .filter(|p| p.is_finite() && *p > 0.0);
+            for (factor, weight) in row
+                .factors
+                .iter()
+                .zip(&row.weights)
+                .filter(|(_, w)| **w != 0.0)
             {
-                continue;
-            }
-            let lookup =
-                self.model_hub
-                    .cached_score(&self.model_service, &event.symbol_key, self.venue);
-            if lookup.score_ts_ms <= 0
-                || self
-                    .last_model_ts
-                    .get(&event.symbol_key)
-                    .is_some_and(|last| lookup.score_ts_ms <= *last)
-            {
-                continue;
-            }
-            self.last_model_ts
-                .insert(event.symbol_key.clone(), lookup.score_ts_ms);
-            if !model_bar_is_fresh(
-                lookup.score_ts_ms,
-                get_timestamp_us(),
-                CTA_SPECIAL_MAX_MODEL_AGE_MS,
-            ) {
-                continue;
-            }
-            self.handle_model_bar(&event.symbol_key, lookup);
-        }
-    }
-
-    fn handle_model_bar(&mut self, symbol: &str, lookup: ModelOutputScoreLookupResult) {
-        let now_us = get_timestamp_us();
-        let decision = entry_decision(&self.config, &lookup);
-        self.status.insert(
-            symbol.to_string(),
-            SymbolStatus {
-                model_ts_ms: lookup.score_ts_ms,
-                score: lookup.score,
-                quantile: lookup.score_quantile,
-                entry_long_quantile: self.config.entry.factor_long_quantile,
-                entry_short_quantile: self.config.entry.factor_short_quantile,
-                score_ready: lookup.score_ready,
-                nq_long_value: lookup.filter_long_value,
-                nq_long_quantile: lookup.filter_long_quantile,
-                nq_short_value: lookup.filter_short_value,
-                nq_short_quantile: lookup.filter_short_quantile,
-                filter_ready: lookup.filter_ready,
-                decision: match decision {
-                    Some(Side::Buy) => "long",
-                    Some(Side::Sell) => "short",
-                    None => "flat",
-                },
-                updated_ts_us: now_us,
-            },
-        );
-        let Some(side) = decision.filter(|_| {
-            self.config.enabled && entry_bar_is_live(lookup.score_ts_ms, self.entry_live_after_ms)
-        }) else {
-            self.write_status();
-            return;
-        };
-        let model_ts_us = lookup.score_ts_ms.saturating_mul(1_000);
-        let cooldown_us = self.config.entry.cooldown_seconds.saturating_mul(1_000_000);
-        if cooldown_us > 0
-            && self
-                .last_scheduled_entry_ts_us
-                .get(symbol)
-                .is_some_and(|last| model_ts_us.saturating_sub(*last) < cooldown_us)
-        {
-            self.write_status();
-            return;
-        }
-        self.last_scheduled_entry_ts_us
-            .insert(symbol.to_string(), model_ts_us);
-        let due_ts_us = lookup
-            .score_ts_ms
-            .saturating_mul(1_000)
-            .saturating_add(
-                self.config
-                    .entry
-                    .signal_delay_seconds
-                    .saturating_mul(1_000_000),
-            )
-            .max(now_us);
-        self.scheduled.push(ScheduledEntry {
-            symbol: symbol.to_string(),
-            side,
-            due_ts_us,
-            model_ts_ms: lookup.score_ts_ms,
-            config: self.config.clone(),
-        });
-        self.write_status();
-    }
-
-    fn publish_due_entries(&mut self) {
-        let now_us = get_timestamp_us();
-        let previous_count = self.scheduled.len();
-        let mut remaining = Vec::with_capacity(self.scheduled.len());
-        for scheduled in self.scheduled.drain(..) {
-            if scheduled.due_ts_us > now_us {
-                remaining.push(scheduled);
-                continue;
-            }
-            if now_us.saturating_sub(scheduled.due_ts_us) > MAX_DELAYED_SIGNAL_AGE_US {
-                warn!(
-                    "drop stale CTA special delayed entry symbol={} model_ts_ms={} age_us={}",
-                    scheduled.symbol,
-                    scheduled.model_ts_ms,
-                    now_us.saturating_sub(scheduled.due_ts_us)
-                );
-                continue;
-            }
-            if let Err(err) = publish_entry_grid(
-                &self.signal_pub,
-                &self.min_qty_table,
-                self.venue,
-                &scheduled,
-                now_us,
-            ) {
-                warn!(
-                    "publish CTA special entry grid failed symbol={} side={} err={:#}",
-                    scheduled.symbol,
-                    scheduled.side.as_str(),
-                    err
-                );
+                let item = strategies.entry(factor.clone()).or_default().entry(symbol.clone())
+                    .or_insert_with(|| json!({"score_ready":false,"position_flag":0,"position_qty":0.0,"entry_notional":0.0}));
+                let qty = item["position_qty"].as_f64().unwrap_or(0.0);
+                item["factor_sign"] = json!(if *weight > 0.0 { "+" } else { "-" });
+                item["allocation_usdt"] = json!(allocation);
+                item["mark_price"] = json!(mark);
+                item["position_usdt"] = if qty == 0.0 {
+                    json!(0.0)
+                } else {
+                    json!(mark.map(|price| qty * price))
+                };
             }
         }
-        self.scheduled = remaining;
-        if self.scheduled.len() != previous_count {
-            self.write_status();
-        }
-    }
-
-    fn write_status(&self) {
-        let path = Path::new(CTA_SPECIAL_STATUS_PATH);
-        if let Some(parent) = path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                warn!("create CTA special status directory failed: {err}");
-                return;
-            }
-        }
-        let status = RuntimeStatus {
-            enabled: self.config.enabled,
-            venue: CTA_SPECIAL_VENUE_NAME,
-            rule_name: &self.config.rule_name,
-            model_service: &self.model_service,
-            updated_ts_us: get_timestamp_us(),
-            scheduled_entries: self.scheduled.len(),
-            symbols: &self.status,
-        };
-        let Ok(payload) = serde_json::to_vec_pretty(&status) else {
-            return;
-        };
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, payload).is_ok() {
-            let _ = fs::rename(tmp, path);
-        }
+        let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_SPECIAL_VENUE_NAME,
+            "publication_error":self.publication_error,"manager_strategy_prefix":self.strategy_prefix,
+            "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
+            "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
+            "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":"equal_per_symbol","strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
+        atomic_json(Path::new(CTA_SPECIAL_STATUS_PATH), &status)?;
+        atomic_json(Path::new(SHADOW_PATH), &self.positions)
     }
 }
-
-fn model_bar_is_fresh(model_ts_ms: i64, now_us: i64, max_age_ms: u64) -> bool {
-    if model_ts_ms <= 0 {
-        return false;
-    }
-    let model_ts_us = model_ts_ms.saturating_mul(1_000);
-    let max_age_us = (max_age_ms as i64).saturating_mul(1_000);
-    model_ts_us <= now_us.saturating_add(MAX_DELAYED_SIGNAL_AGE_US)
-        && now_us.saturating_sub(model_ts_us) <= max_age_us
+fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)
+        .with_context(|| format!("write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
 }
-
-fn entry_bar_is_live(model_ts_ms: i64, process_started_ms: i64) -> bool {
-    model_ts_ms > process_started_ms
-}
-
-fn entry_decision(
-    config: &CtaSpecialConfig,
-    lookup: &ModelOutputScoreLookupResult,
-) -> Option<Side> {
-    if !lookup.score_ready {
-        return None;
-    }
-    let score_quantile = lookup
-        .score_quantile
-        .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))?;
-    let long_signal = config.allows_long() && score_quantile > config.entry.factor_long_quantile;
-    let short_signal = config.allows_short() && score_quantile < config.entry.factor_short_quantile;
-    if long_signal == short_signal {
-        return None;
-    }
-    if config.entry.nq_change_enabled {
-        if !lookup.filter_ready {
-            return None;
-        }
-        if long_signal
-            && !matches!(
-                lookup.filter_long_quantile,
-                Some(quantile) if quantile.is_finite() && quantile >= config.entry.nq_long_quantile
-            )
-        {
-            return None;
-        }
-        if short_signal
-            && !matches!(
-                lookup.filter_short_quantile,
-                Some(quantile) if quantile.is_finite() && quantile <= config.entry.nq_short_quantile
-            )
-        {
-            return None;
-        }
-    }
-    if long_signal {
-        Some(Side::Buy)
-    } else {
-        Some(Side::Sell)
-    }
-}
-
-fn publish_entry_grid(
-    publisher: &TradeSignalPublisher,
-    table: &VenueMinQtyTable,
-    venue: TradingVenue,
-    scheduled: &ScheduledEntry,
-    now_us: i64,
-) -> Result<()> {
-    let quote = MktChannel::instance()
-        .get_quote(&scheduled.symbol, venue)
-        .with_context(|| format!("missing BBO for {}", scheduled.symbol))?;
-    anyhow::ensure!(
-        quote.ts > 0
-            && now_us.saturating_sub(quote.ts)
-                <= (CTA_SPECIAL_MAX_QUOTE_AGE_MS as i64).saturating_mul(1_000),
-        "stale BBO ts={} now={}",
-        quote.ts,
-        now_us
-    );
-    let base_price = if scheduled.side == Side::Buy {
-        quote.bid
-    } else {
-        quote.ask
-    };
-    let specs: Vec<QuotePlanLevelSpec> = scheduled
-        .config
-        .execution
-        .open_offsets
-        .iter()
-        .enumerate()
-        .map(|(index, offset)| QuotePlanLevelSpec {
-            side: scheduled.side,
-            side_level_index: index + 1,
-            offset: *offset,
-            base_price,
-        })
-        .collect();
-    let (price_tick, qty_tick, levels) = build_quote_plan_levels(
-        venue,
-        &scheduled.symbol,
-        scheduled.config.execution.order_notional_usdt,
-        &specs,
-        table,
-    )
-    .map_err(anyhow::Error::msg)?;
-    for level in levels {
-        let mut ctx = ArbOpenCtx::new();
-        ctx.opening_leg = TradingLeg::new_with_qty(
-            venue,
-            quote.bid,
-            quote.bid_qty,
-            quote.ask,
-            quote.ask_qty,
-            quote.ts,
-        );
-        ctx.hedging_leg = ctx.opening_leg;
-        ctx.set_opening_symbol(&scheduled.symbol);
-        ctx.set_hedging_symbol(&scheduled.symbol);
-        ctx.set_side(scheduled.side);
-        ctx.set_order_type(OrderType::Limit);
-        let _ = ctx.set_price_with_tick_floor(level.aligned_price, price_tick);
-        let _ = ctx.set_amount_with_tick_floor(level.aligned_qty, qty_tick);
-        anyhow::ensure!(
-            ctx.price_count() > 0 && ctx.amount_count() > 0,
-            "failed to quantize level {}",
-            level.side_level_index
-        );
-        ctx.create_ts = now_us;
-        ctx.exp_time = now_us.saturating_add(
-            scheduled
-                .config
-                .execution
-                .maker_ttl_seconds
-                .saturating_mul(1_000_000),
-        );
-        ctx.price_offset = level.offset;
-        ctx.spread_rate = 0.0;
-        ctx.hedge_timeout_us = 0;
-        ctx.set_from_key(
-            format!(
-                "cta_special=1:cta_rule={}:cta_factor_exit={}:cta_exit_long={}:cta_exit_short={}:cta_trailing={}:cta_trigger={}:cta_move={}:cta_max_hold_s={}:model_ts_ms={}:level={}",
-                scheduled.config.rule_name,
-                u8::from(scheduled.config.execution.factor_exit_enabled),
-                scheduled.config.execution.factor_exit_quantile_long,
-                scheduled.config.execution.factor_exit_quantile_short,
-                u8::from(scheduled.config.execution.trailing_stop_enabled),
-                scheduled.config.execution.trailing_stop_trigger_step,
-                scheduled.config.execution.trailing_stop_move_step,
-                scheduled.config.execution.max_holding_seconds,
-                scheduled.model_ts_ms,
-                level.side_level_index,
-            )
-            .into_bytes(),
-        );
-        publisher.publish_trade_signal_parts(
-            SignalType::ArbOpen,
-            now_us,
-            0.0,
-            ctx.to_bytes().as_ref(),
-        )?;
-    }
-    info!(
-        "CTA special entry grid published symbol={} side={} levels={} model_ts_ms={}",
-        scheduled.symbol,
-        scheduled.side.as_str(),
-        specs.len(),
-        scheduled.model_ts_ms
-    );
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cta_special::config::{EntryConfig, ExecutionConfig};
-
-    #[test]
-    fn valid_ticks_produce_positive_context_counts() {
-        let mut ctx = ArbOpenCtx::new();
-        let _ = ctx.set_price_with_tick_floor(100.25, 0.01);
-        let _ = ctx.set_amount_with_tick_floor(0.123, 0.001);
-
-        assert!(ctx.price_count() > 0);
-        assert!(ctx.amount_count() > 0);
-    }
-
-    fn config(nq: bool) -> CtaSpecialConfig {
-        CtaSpecialConfig {
-            enabled: true,
-            rule_name: "tp_vpi_018".to_string(),
-            symbols: vec!["BTCUSDT".to_string()],
-            entry: EntryConfig {
-                nq_change_enabled: nq,
-                ..EntryConfig::default()
-            },
-            execution: ExecutionConfig {
-                order_notional_usdt: 100.0,
-                factor_exit_quantile_long: 0.3,
-                factor_exit_quantile_short: 0.7,
-                trailing_stop_trigger_step: 0.02,
-                trailing_stop_move_step: 0.01,
-                ..ExecutionConfig::default()
-            },
-        }
-    }
-
-    fn lookup() -> ModelOutputScoreLookupResult {
-        ModelOutputScoreLookupResult {
-            service_name: "model_output/one-binance-futures-1m-tp_vpi_018".to_string(),
-            symbol_key: "BTCUSDT".to_string(),
-            subscribed: true,
-            score: Some(2.0),
-            score_quantile: Some(0.95),
-            score_ready: true,
-            score_long_threshold: Some(1.0),
-            score_short_threshold: Some(-1.0),
-            filter_long_value: Some(0.2),
-            filter_long_threshold: Some(0.1),
-            filter_short_value: Some(-0.1),
-            filter_short_threshold: Some(-0.2),
-            filter_long_quantile: Some(0.75),
-            filter_short_quantile: Some(0.25),
-            filter_ready: true,
-            score_ts_ms: 60_000,
-            note: "ok".to_string(),
-        }
-    }
-
-    #[test]
-    fn long_uses_subscriber_factor_and_nq_quantiles() {
-        let mut value = lookup();
-        assert_eq!(entry_decision(&config(true), &value), Some(Side::Buy));
-        value.filter_long_quantile = Some(0.4);
-        assert_eq!(entry_decision(&config(true), &value), None);
-        assert_eq!(entry_decision(&config(false), &value), Some(Side::Buy));
-        value.score_quantile = Some(config(false).entry.factor_long_quantile);
-        assert_eq!(entry_decision(&config(false), &value), None);
-    }
-
-    #[test]
-    fn entry_decision_respects_configured_trade_sides() {
-        let value = lookup();
-        let mut short_only = config(false);
-        short_only.entry.trade_sides = "short".to_string();
-        assert_eq!(entry_decision(&short_only, &value), None);
-
-        let mut long_only = config(false);
-        long_only.entry.trade_sides = "long".to_string();
-        assert_eq!(entry_decision(&long_only, &value), Some(Side::Buy));
-    }
-
-    #[test]
-    fn each_subscriber_applies_its_own_factor_quantile() {
-        let value = lookup();
-        let mut permissive = config(false);
-        permissive.entry.factor_long_quantile = 0.9;
-        let mut restrictive = permissive.clone();
-        restrictive.entry.factor_long_quantile = 0.99;
-        assert_eq!(entry_decision(&permissive, &value), Some(Side::Buy));
-        assert_eq!(entry_decision(&restrictive, &value), None);
-    }
-
-    #[test]
-    fn historical_catchup_bars_cannot_become_live_entries() {
-        let now_us = 1_000_000_000;
-        assert!(model_bar_is_fresh(940_000, now_us, 120_000));
-        assert!(!model_bar_is_fresh(879_999, now_us, 120_000));
-        assert!(!model_bar_is_fresh(1_006_000, now_us, 120_000));
-        assert!(!model_bar_is_fresh(0, now_us, 120_000));
-    }
-
-    #[test]
-    fn cached_bar_at_signal_start_is_not_entry_eligible() {
-        let started_ms = 1_000_000;
-        assert!(!entry_bar_is_live(999_999, started_ms));
-        assert!(!entry_bar_is_live(started_ms, started_ms));
-        assert!(entry_bar_is_live(1_000_001, started_ms));
-    }
+fn signal_snapshot(bar: &WeightedBar, flag: i8) -> Value {
+    json!({"model_ts_ms":bar.model_ts_ms,"score":bar.value,"quantile":bar.quantile,"score_ready":true,"execution_coefficient":1.0,
+        "factor_votes":bar.votes,"position_flag":flag,"decision":if flag > 0 { "long" } else if flag < 0 { "short" } else { "flat" },
+        "nq_long_value":bar.nq.filter_long_value,"nq_short_value":bar.nq.filter_short_value,
+        "nq_long_quantile":bar.nq.filter_long_quantile,"nq_short_quantile":bar.nq.filter_short_quantile,"filter_ready":bar.nq.filter_ready})
 }

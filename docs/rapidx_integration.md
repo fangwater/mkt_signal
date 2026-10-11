@@ -45,11 +45,10 @@ not an account-mode switch. Unsupported venues and malformed backend maps fail
 startup. There is no fallback to native execution on RapidX errors.
 
 The account publisher is `rapidx_account_monitor --exchange binance` or
-`rapidx_account_monitor --exchange okex`. Exec startup wrappers select this
-named binary and pass the exchange when the backend is RapidX. Prepare
-`<env>/rapidx_account_monitor` before using `start-exec.sh`; this change does not
-automatically install it through deploy/publish wrappers. Other strategy wrappers
-are unchanged. REST and private WS source IPs use
+`rapidx_account_monitor --exchange okex`. Standard Exec deploy/publish wrappers
+install it as `<env>/rapidx_account_monitor` for RapidX accounts; startup wrappers
+select that binary and pass the exchange. Native accounts keep their monitor at
+`<env>/account_monitor`. REST and private WS source IPs use
 the existing trade-engine configuration; the monitor also accepts `--local-ip`.
 `LTP_REST_URL` and `LTP_WS_URL` override the private endpoints when needed.
 
@@ -57,6 +56,48 @@ Account IPC is isolated as `account_pubs/rapidx_<exchange>_<portfolioId>_pm`
 inside the existing namespace. Its publisher and consumers require
 `safe_overflow=false`; native account streams retain their existing policy.
 Run only one execution backend for a given exchange within an IPC namespace.
+
+## Standard Exec Deployment
+
+Each RX account uses one standard Exec environment. All factor strategies for
+that account publish into the same Exec strategy tables; separate Exec
+environments per factor are unnecessary. This account integration retains
+BatchExec/ChaseExec's existing position ledgers and execution algorithms. Numeric
+`qty` targets and the strategy-scoped `qty: "clear"` command use the same path.
+
+Initialize a new Binance RX environment with:
+
+```bash
+scripts/deploy_exec.sh --env-name binance_exec_rx01 \
+  --venue binance-futures --exec-backend rapidx
+```
+
+New environments default to native when the backend
+option is omitted. For an existing environment, the wrapper reads the backend
+from its `env.sh` and rejects a conflicting `--exec-backend`; it never rewrites
+the operator's account settings. RX requires `LTP_API_KEY`, `LTP_API_SECRET` and
+`LTP_PORTFOLIO_ID`, without native Binance/OKX credentials. Binance COIN-M remains
+unsupported by RX.
+
+Build release artifacts only in `/home/fanghaizhou/mkt_signal` on synchronized
+`arbmm`. `--scripts-only` initializes scripts/config without installing binaries;
+`--skip-build` also installs prebuilt artifacts. To initialize a production host,
+use `--scripts-only` there, configure its `env.sh` securely, then publish locally
+with `scripts/publish-exec.sh --host <host> --env-name binance_exec_rx01 --skip-build`.
+Publish reads the target's `env.sh` before selecting artifacts,
+requires its venue/namespace to match, checks that all target processes including
+the RX monitor are stopped, uploads to staging, verifies SHA-256, rechecks the
+backend and processes, and atomically replaces individual files. It preserves
+`env.sh` and operator configs. Deploy/publish start no processes and migrate no
+signals; the standard start/stop wrappers retain their environment-local script
+flow.
+
+Before starting execution, register the source in Manager so its market-rule
+cache matches the RX backend and portfolio. An absent or mismatched cache blocks
+Exec startup. `start-exec.sh --check-only` validates packaging and credentials
+without starting processes; it does not certify the live cache or account
+readiness. Starting Exec is a separate live action and does not start
+`trade_signal` or move CTA signals.
 
 ## Implemented
 

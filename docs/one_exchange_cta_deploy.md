@@ -1,24 +1,24 @@
 # 单所 CTA 部署（纯合约）
 
-最后更新：2026-09-22
+最后更新：2026-10-11 07:07 UTC
 
-本文是 V007 单所纯合约 CTA 的**唯一权威实现文档**：研究契约、参考
-notebook、部署因子、rx01 框架复用分析、代码级卡点、改造清单、部署
-参数和待定问题全部在此。两所版（rx01）契约见 `intra_factor_deploy.md`。
+本文说明 `cta_special_signal` 的单所纯合约 CTA 实现、按币独立因子配置和部署流程。两所版（rx01）见 `intra_factor_deploy.md`。以下研究来源保留用于核对基础因子与 NQ。历史网格、逐 lot 和移动止损规则不参与当前 special 路径；当前独立策略契约见下文。
 
-## 目标
+## 当前计算和交易范围
 
-部署两个互相独立的单所 CTA 环境（框架沿用 rx01，去掉价差/现货腿，
-只交易合约）：
+当前部署机上的 special publisher 计算 16 个 USDT 合约 × 6 个因子，共 96 个币种/因子组合：
 
-| env（拟定名） | 因子 | model service（拟定） |
-| --- | --- | --- |
-| `binance-cta-special-rx02` | `TP_VPI_018` | `model_output/one-binance-futures-1m-tp_vpi_018` |
-| `binance-cta-special-rx03` | `baseline_104` | `model_output/one-binance-futures-1m-baseline_104` |
+```text
+FIL AVAX LTC DASH ZEC NEAR AAVE UNI LINK XLM SOL BNB DOGE DOT XRP ETH
+factor_036 factor_051 factor_170 factor_004 TD_TI_002 baseline_004
+```
 
-两因子均为 baseline489 族成员，`BaselineReplayState` + `factor_plan_1m`
-现成求值，不需要 ICIR/gplearn 求值器。每个 env 只加载**一条规则、
-一组独立的信号、过滤和执行参数**。
+`intra_factor_model_1m_pub` 服务普通 CTA，`cta_special_factor_model_1m_pub` 提供独立的 `model_output/one-binance-futures-1m-<factor>` 服务。各 env 从 Redis 选择自己的币种与组合。因子名称必须有实际求值实现，且已由共享 publisher 发布；Redis 修改不会自动扩大 publisher 的计算范围，扩大范围需修改 `[universe]` 并重新发布 publisher。
+
+rx02 已配置指定的 16 币 32 项有符号权重，使用五个因子（不使用 `factor_004`）；
+rx03 已停盘，原配置和历史保留。RX02 的执行迁入标准 `binance_exec_trade05`，
+通过 Manager 跟随虚拟账户 `lgq_cta`，五个因子各一份、ctaker 执行。普通 CTA publisher 和 rx01 维持原部署，旧 TLen 元数据保留。
+部署脚本不会自动改写旧策略文件或初始化 Redis。
 
 ## 参考来源（只读）
 
@@ -55,7 +55,7 @@ notebook §4b 最新一轮（2026-09-20，`valid/test return>0.03 && auc<0.15`�
 - **每个因子仍有多组参数未定**——最终参数组要等费率复跑锁定
   （v005 流程是 §8 `fee_m0_t175` 复跑后定 `parameter_id`）
 
-## 回测契约
+## 历史研究回测契约（不代表当前 special 执行）
 
 ### 时间与信号
 
@@ -83,14 +83,14 @@ conflict policy      = flat
 
 ```text
 price                = mid（(bid+ask)/2 本合约盘口价）
-lookback_bars        = 1440 根有效 bar，包含当前 close
+lookback_bars        = 1440 个分钟槽位，包含当前 close；缺失值占位但不参与统计
 quantile_window      = 1440
 min_periods          = 720
 BUY_NQ_CHANGE        = (close - rolling_min(close, 1440)) / rolling_min
 SELL_NQ_CHANGE       = (close - rolling_max(close, 1440)) / rolling_max
 long/short quantile  = 0.5，包含当前值
-long allow           = BUY_NQ_CHANGE >= q0.5
-short allow          = SELL_NQ_CHANGE <= q0.5
+long allow           = BUY_NQ_CHANGE 的历史分位排名 >= 0.5
+short allow          = SELL_NQ_CHANGE 的历史分位排名 <= 0.5
 ```
 
 NQ 只放行/拦截开仓信号，不产生方向。
@@ -157,202 +157,120 @@ trade_sides 已移出搜索网格，固定 combine（代码仍支持 long/short/
 `take_profit_order_type`/`cancel_quantile_*` 作为策略参数，并校验
 `factor_exit_quantile_long < 0.9`、`factor_exit_quantile_short > 0.1`。
 
-## 当前实现：隔离的 `cta_special`
+## 当前实现：每因子独立策略
+
+rx02 使用五个因子策略：`factor_036`、`factor_051`、`factor_170`、`TD_TI_002`、`baseline_004`，16 币共 32 项绑定。每个 factor 是一个标准 Exec strategy；同 factor 的不同币种分别持仓。策略之间的账本、qty 和 PnL 独立，special 发布端不再做因子轧差或增量加仓。rx03 整套信号、配置、图表、监控和执行停止。
 
 ```text
-Kafka binance-futures PeriodMessage（因子和 futures-mid NQ 同源）
-        v
-cta_special_factor_model_1m_pub
-  raw -> clip + rolling z-score -> factor/NQ percentile
-  单个共享 publisher 同时发布 TP_VPI_018 与 baseline_104
-        v
-model_output/one-binance-futures-1m-<factor>
-        |-- cta_special_signal（只判定开仓）
-        |       `-- ArbOpen：配置化多档 futures maker
-        |
-        `-- pre_trade 直接订阅 1m ModelMsg
-                |-- 因子衰减撤销未成交 maker
-                |-- 因子退出
-                `-- BBO trailing + 逐 lot 状态
-                         v
-                 CtaSpecialStrategy
-        v
-ArbCloseStrategy（Market + reduce_only=true）
-        v
-trade_engine -> LTP/RapidX sub-portfolio -> Binance futures
+共享 special publisher（16 币 × 6 因子，原 rolling/NQ）
+  → cta_special_signal（按 factor/symbol 独立读取）
+  → Manager 仓位策略 lgq_cta_<factor>（数值 qty，退出为 0）
+  → 虚拟账户 lgq_cta（virtual02，五个因子各 1 份）
+  → RX02 / binance_exec_trade05（follow，multiplier=1，ctaker）
+  → Manager 发布独立 Redis BatchExec targets
+  → 标准 exec-pre-trade → 现有 trade_engine → RapidX Binance USDT PERP
 ```
 
-旧 `trade_signal` CTA 规则引擎、`ArbHedgeStrategy`、现货腿、spread
-overlay、旧 `cta_config_server.py` 和旧 viz 页面都不参与这条链路。
-`exec-pre-trade`/BatchExec 也不参与。
+RX02 当前 `enabled=true`，用户授权 trade05 实盘执行。signal 环境只运行共享 publisher、signal、config 和 dashboard；账户监控、持久化、trade_engine、exec-pre-trade、Viz、Exec Config 归 trade05。两个旧 companion 执行目录均停止，trade05 的普通 `trade_signal` 不启动。信号关闭发布时只维护观察状态，不主动清除已有执行目标；停交易或清仓须在 Manager/Exec 明确操作。
 
-### 代码边界
+### 信号与仓位
 
-| 部分 | 实现 |
-| --- | --- |
-| 开仓 IPC | 只复用标准 `SignalType::ArbOpen`；没有 CTA special 因子 signal type |
-| 因子 publisher | `src/factor_pub/cta_special_factor_model_1m_pub/` |
-| 开仓信号进程 | `src/cta_special/`、`src/bin/cta_special_signal.rs` |
-| pre-trade 因子订阅 | `src/pre_trade/cta_special_factor_channel.rs`，直接消费同一 `ModelMsg` |
-| 平仓与执行状态 | `src/strategy/cta_special_strategy.rs` |
-| pre-trade 模式 | `ArbMode::CtaSpecial`；目录必须为 `binance-cta-special-<tag>` |
-| 配置服务 | `scripts/cta_special_config_server.py` + `web/cta_special_config/` |
-| 只读 dashboard | `scripts/cta_special_dashboard.py` + `web/cta_special/` |
-| 部署/总控 | `scripts/deploy_cta_special.sh`、`scripts/{start,stop}_cta_special.sh` |
+`symbol → factor → signed weight` 的 Redis 整表保留，但独立策略只使用符号：正数取原分位，负数取 `1-q`，零禁用该项；绝对值不缩放、不归一化。保存检查因子实现及当前 publisher 的实际计算范围，重复 key、非法因子和币种均拒绝。
 
-配置服务只原子读写 `config/cta_special.json`，保存时做 revision 冲突
-检查。signal 和 pre-trade 都每秒检测同一文件；非法配置保留上一份有效配置。
-公共 factor publisher 不读取任何 env 策略配置。dashboard 只读 signal 状态
-和 pre-trade 执行状态，不具备交易写入口。
+```text
+空仓：修正 q > entry.long（当前 .9）并通过多 NQ → 满多
+空仓：修正 q < entry.short（当前 .1）并通过空 NQ → 满空
+多仓：修正 q < exit.long（当前 .3）→ clear
+空头仓位：修正 q > exit.short（当前 .7）→ clear
+其余：保持原 qty，不追加、不按价格或新额度重算
+```
 
-### 执行保护
+退出优先；一根 bar 上先发布 clear，下一根新 bar 才能重新开仓。NQ 只检查开仓，阈值仍为多 ≥ .5、空 ≤ .5，不限制平仓。rolling、NQ 的计算和预热窗口保持现有实现。一个因子未就绪不会阻塞其他因子的开平仓。
 
-- 只允许 `binance-futures`，且 `binance=ltp`；缺少
-  `LTP_PORTFOLIO_ID` 直接拒绝启动。
-- 专用 env 只接受带 `cta_special=1` 事实标记的 `ArbOpen`；其他模式
-  同时拒绝该标记，避免信号串环境。
-- publisher 回放历史只用于滚动窗口预热，追平 Kafka 高水位前不发布
-  ModelMsg。signal 和 pre-trade 都拒绝超过 120 秒或超前 5 秒以上的消息；
-  只有 signal 进程启动后新闭合的 bar 才能开仓，pre-trade 可消费启动时
-  缓存的新鲜 bar 来恢复因子退出状态。
-- 反向信号先撤对向未成交 maker；存在真实反向仓位时禁止新开仓。
-- 因子退出与 trailing 退出统一走 `ArbCloseStrategy`，数量不超过真实
-  仓位，向下按步长对齐，订单固定 `reduce_only=true`。
-- CTA pre-trade 每次启动都复用 Exec 的启动撤单门禁：先撤销当前 RapidX
-  portfolio 下全部 Binance PERP 挂单并确认 open orders 为空；撤单失败或
-  超时则拒绝启动，不进入策略处理。
-- pre-trade 重启后若本地 lot 账本为空但账户已有净仓位，会以当前 mark
-  price 作为总体入场价，将全部净仓合并成一个恢复 lot；该 lot 同时支持
-  因子退出和 trailing。mark price 尚不可用时不创建恢复 lot，也不使用
-  BBO mid 代替。
-- 默认 `enabled=false`；总控启动/停止脚本默认 dry-run，必须显式传
-  `--execute`。启动前先校验 futures/futures、`binance=ltp`、
-  `LTP_PORTFOLIO_ID` 和完整策略 JSON，失败时不会启动任何进程。
+满仓额度只在发布端使用：`max_pos_u=500` 是每个 symbol 的开仓预算上限。配置中该币有 N 个非零因子时，每因子固定分配 `500/N`；空仓因子的份额保留，不重新分给其他因子。多头 `qty=(500/N)/ask`，空头 `qty=-(500/N)/bid`，要求报价有效且新鲜。LINK 四因子各 125 USDT，LTC 三因子各 166.67 USDT，ETH 单因子 500 USDT。持仓 qty 固定，修改额度或因子组合在后续开仓生效；已有入场金额计入剩余预算，避免动态修改时新增仓位超额。市价变动会使当前持仓市值偏离开仓预算。
 
-### 配置与 Redis
+### Redis 配置和普通 Exec 合约
 
-`config/cta_special.json` 保留研究契约里对线上执行有意义的策略变量：
+信号参数统一保存在 `config/cta_special.json`，包含交易开关、单份满仓金额、四个开平仓分位及 NQ。币种与因子符号绑定仍为 Redis 整表 `<signal-env>:cta_symbol_factors`。旧 `<signal-env>:cta_factor_strategies` 金额表、逐因子金额 API 和对应脚本已移除，部署前在环境本地备份。
+
+配置页面保存时检查币种和因子可用性，revision CAS 防止覆盖并发编辑。信号约一秒刷新配置；真实交易关闭时只更新观察状态，不读取或修改 Exec 文档。Exec 订单参数由 CTA Manager 统一管理，信号端不能设置这些参数。
+
+满仓金额是每币的总开仓预算，由该币配置的非零因子平配。配置示例：
 
 ```json
 {
   "enabled": false,
-  "rule_name": "tp_vpi_018",
-  "symbols": ["BTCUSDT"],
+  "max_pos_u": 500,
   "entry": {
-    "trade_sides": "both",
     "factor_long_quantile": 0.9,
     "factor_short_quantile": 0.1,
-    "cooldown_seconds": 0,
-    "signal_delay_seconds": 1,
     "nq_change_enabled": true,
     "nq_long_quantile": 0.5,
     "nq_short_quantile": 0.5
   },
   "execution": {
-    "order_notional_usdt": 100.0,
-    "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
-    "maker_ttl_seconds": 120,
-    "factor_exit_enabled": true,
     "factor_exit_quantile_long": 0.3,
-    "factor_exit_quantile_short": 0.7,
-    "trailing_stop_enabled": true,
-    "trailing_stop_trigger_step": 0.02,
-    "trailing_stop_move_step": 0.01,
-    "max_holding_seconds": 0
+    "factor_exit_quantile_short": 0.7
   }
 }
 ```
 
-`trade_sides`、因子/NQ 入场分位、cooldown、signal delay、maker 网格与
-TTL、因子退出、trailing 和最长持仓均可配置。共享 publisher 只发布标准化
-score、factor percentile、NQ 原值及 NQ percentile；每个 signal subscriber
-使用自身配置的入场分位判断，pre-trade 使用自身配置的退出分位。新订单把
-退出参数写入 `from_key`，所以热更新不改已有 lot。venue、model service、
-60 秒频率、rolling window、min periods、maker/reduce-only、消息新鲜度和
-冲突策略仍是模式契约。`rule_name` 决定订阅的 model service，运行中不可
-修改；其余字段支持热加载。每个 factor service 保持一个权威 publisher，
-rx02/rx03 是互相独立配置的 subscriber。
-重复部署已有 env 时，部署脚本会原子迁移旧 JSON，只保留上述字段并立即
-用正式解析器校验。
+信号通过 `CTA_MANAGER_API_URL=http://127.0.0.1:4191/manager/api` 的仓位策略发布 API 更新 targets，不再直接写 Exec Redis 文档。`CTA_POSITION_STRATEGY_PREFIX=lgq_cta_`；Manager 持有订单参数、虚拟份数和跟随关系，再写 `<exec-env>:binance-futures:batch_exec:<strategy>` 与 `strategy_names`。同一 targets 不重复发布；失败在下一次刷新重试，并在首页显示 publication_error。移除的因子/币仍发送零目标以清掉原策略。五份策略共用执行模板 `lgq_cta_ctaker`，算法 `ctaker`；`targets` 例如：
 
-该模式不再使用旧 CTA 的 `cta_rules`、`cta_strategy_params`、symbol list
-或 spread Redis key。pre-trade 通用风控仍使用独立 env 前缀的唯一 hash：
-
-```text
-{env}:binance-futures:binance-futures:pre_trade_risk_params
+```json
+{"BNBUSDT":{"qty":0.3,"signal":0},"FILUSDT":{"qty":0,"signal":0}}
 ```
 
-首次部署后使用 `intra_scripts/sync_cta_risk_params.py` 初始化，默认
-`max_pos_u=1000`。该 key 只服务对应 `cta_special` env，不与 rx01 共用。
+Exec 的通用 `qty: "clear"` 约定仍保留。当前 Manager 只发布数值 qty，ctaker 对所有目标使用零 USDT 容差，因此退出目标 0 会按该策略实际已执行 qty 平仓；交易所量步长与最小量约束保留。ctaker 每次按完整仓位差直接提交 MARKET，不使用 maker，也不按 single_order_usdt 拆批。不同因子的执行账本和 PnL 保留，标准 Exec 仍负责账户级净执行。`+max_u_1000` 等字符串不属于执行合约。
 
-### 本地部署
+标准 Exec 运行目录为 `/home/ubuntu/binance_exec_trade05`，使用 RX02 RapidX 账户，IPC_NAMESPACE、Redis 前缀和持久化目录均独立。Manager 每 60 秒刷新 RapidX 合约规则，签名私有请求绑定该账户的 `.228` trading IP，不能使用 `.93` K 线公网缓存出口；Exec 只热加载完整缓存。RapidX 账户不调用 Binance 原生 Multi-Assets/Portfolio Margin 模式检查；真实账户风险仍由 RapidX account_monitor 与 Exec 检查。首次启动前用环境本地 `scripts/sync_exec_risk_params.py` 初始化标准挂单/频率风控表。
 
-```bash
-scripts/deploy_cta_special.sh \
-  --env-name binance-cta-special-rx02 \
-  --factor tp_vpi_018 \
-  --config-port 19182 \
-  --dashboard-port 10192 \
-  --factor-publisher
+配置页把 Strategy Params 合并到 CTA 信号，统一显示开多、开空、退多、退空四个分位和 NQ；删除 trade_sides、cooldown_seconds、signal_delay_seconds 与 factor_exit_enabled，方向始终允许多空，退出分位始终启用。Risk Params 和本地 Exec 参数编辑入口及对应 risk API 已移除，执行配置链接指向 `/manager/`。满仓金额直接在 CTA 信号设置一份，只负责 qty 换算；保存全部遇到校验失败会停止后续保存。现有 Exec 风控 Hash 和 Exec 算法没有修改。
 
-# --factor-publisher 只能配置在一个 env；该进程同时提供两个 factor service。
-# 其他 CTA special env 不启动 publisher，只按 rule_name 订阅对应 service。
-# publisher 使用全局进程名 cta_special_factor_shared_binance_futures。迁移旧
-# publisher 时可设置 CTA_SPECIAL_FACTOR_WAIT_FOR_PUBLISHERS=1 先完成 Kafka
-# 预热，释放旧 service 后由新进程立即接管。
+### 图表和历史模拟
 
-cd ~/binance-cta-special-rx02
-./intra_scripts/sync_cta_risk_params.py \
-  --env-name binance-cta-special-rx02 \
-  --open-venue binance-futures \
-  --hedge-venue binance-futures
-./scripts/start_cta_special.sh            # dry-run
-./scripts/start_cta_special.sh --execute  # live process mutation
-```
-
-部署脚本只允许干净且与 `origin/arbmm` 同步的 `arbmm` worktree，不启动
-任何进程，不覆盖已有 `env.sh`，新建策略配置始终为 disabled。
-
-## 已定边界与部署待办
-
-| # | 项目 | 当前结论 | 状态 |
+| 环境 | 配置页 | 信号与 PnL 页 | 服务端口 |
 | --- | --- | --- | --- |
-| 1 | 每 env 的执行参数组 | TP_VPI_018 有 22 组过线、baseline_104 有 3 组；代码不设隐式默认交易参数 | **费率复跑后填写 JSON** |
-| 2 | env 命名 | `binance-cta-special-rx02` / `binance-cta-special-rx03` | 已定 |
-| 3 | 单 venue 路由 | `ArbMode::CtaSpecial`，futures open + futures reduce-only exit | 已实现 |
-| 4 | exit 分位载体 | pre-trade 直接订阅 1m `ModelMsg`；不经过 trade signal | 已实现 |
-| 5 | 因子平仓粒度 | 按实际成交 lot 记账，同阈值的同向 lot 聚合平仓 | 已实现 |
-| 6 | model service | `one-binance-futures-1m-<factor>` | 已定 |
-| 7 | LTP portfolio | 每个 env 独立 `LTP_PORTFOLIO_ID` | **部署时分配** |
-| 8 | 端口/CPU | deploy 参数显式给出，不能与 rx01 冲突 | **部署时分配** |
-| 9 | reduce_only | 代码固定设置；仍需 LTP/Binance 实盘最小量验证 | **上线前实测** |
-| 10 | lot 参数快照 | 随 `ArbOpen.from_key` 进入成交 lot，热更新不改旧 lot | 已实现 |
+| rx02 | `/cta/binance-cta-special-rx02/config/` | `/cta/binance-cta-special-rx02/signals/` | config 19182 / dashboard 10192 |
+| rx03（停止） | `/cta/binance-cta-special-rx03/config/` | `/cta/binance-cta-special-rx03/signals/` | 原 config 19185 / dashboard 10193，无监听 |
+| trade05（RX02） | `/exec_trade05/config/` | `/exec_trade05/`（实际 Exec 仓位） | config 18165 / Viz 10045 |
 
-## 上线阻断项
+页面位于部署机，既有 Nginx `http://13.115.227.29:4191` 代理保持原地址。RX02 首页重做为 32 项 factor/symbol 当前生成仓位表，显示方向、qty、当前 USDT、入场金额、固定配额、分位和 NQ；另有每币预算与因子汇总。这是信号目标，真实成交仓位及 PnL 由 Manager/Exec 查看。信号页仍只看单因子配对 B/S，保留 NQ；图表脚本和历史接口支持 gzip。
 
-1. **逐 bar parity 报告**：固定 Kafka 历史逐 symbol 比较 research 与
-   live 的 raw、zscore、q90、q10、score_quantile、BUY/SELL NQ（futures mid）、
-   allow、direction、decision timestamp。
-2. **因子离场对账**：同一持仓在 research 与 live 的 factor_exit 触发
-   秒、撤单秒、trailing level 序列一致或可解释（浮点容差内）。
-3. **同 venue 开平核验**：open/exit 同走 binance-futures 时逐 lot
-   数量台账、client order id 空间、成交归并不混淆开平仓。
-4. **reduce_only 实测**：平仓单在账户层面确实只减仓、不穿仓。
-5. **费率口径**：Maker 0 / Taker 0.000175 与账户实际费率的偏差进入
-   slippage/fee attribution，不得改阈值补偿。
+K 线只标记模拟仓位实际变化，持仓期间重复的同向信号不生成 B/S。绿色 B 表示买入、红色 S 表示卖出，三角为开仓、圆点为平仓，同笔交易以虚线连接：多仓 B 开 → S 平，空仓 S 开 → B 平。交易账本一行对应一笔持仓，可点击账本或图中点查看开平快照、原 qty 和 PnL。尚未平仓的交易只保留开仓点，单独显示浮动 PnL，不虚构配对平仓点。不同交易之间可能连续出现相同字母，例如平多 S 后开空 S。
 
-## 验证命令
+下方显示满多/满空/空仓阶梯与 NQ 分位曲线；NQ 仍只过滤开仓，快照使用当时冻结的阈值。两环境 NQ 多空均为 q50，rolling 开多 q90、开空 q10 保持不变；各自原有退出分位也保留（rx02 退多 q30 / 退空 q70，rx03 退多 q70 / 退空 q30）。
+
+两环境回放参数为 `config/cta_special_replay.json`，从 2026-10-10 00:00 UTC 空仓开始；使用 publisher 落盘的因子/NQ 闭合历史和信号后首个有效 bid/ask，按无额外滑点 taker 模拟。默认统一满仓金额为 1000 USDT，每因子每币独立使用，手续费设置为零时明确显示毛收益、毛胜率。没有订单队列、网格或移动止损，同向不加仓，退出平原 qty。仅已平交易计入胜率，未平单计入未实现 PnL。不同因子的相反仓位仍各自存在，不用 symbol 净仓决定退出。
+
+rx03 只读共享 rx02 的 `data/cta_special/factor_history`，其 SQLite、实际发布记录和模拟结果独立。新版信号页展示历史模拟，使用当前配置重算；实际发布审计和 API 保留当时快照，不能把配置重算结果称为真实成交 PnL。
+
+### 构建、发布与启动
+
+本地 `/home/fanghaizhou/mkt_signal` 的 `arbmm` 同步 `origin/arbmm` 后构建 release，上传临时文件、校验 SHA-256，再原子安装。生产机不执行 Cargo。现有 env.sh、trade_engine.toml、publisher 和 CPU/source-IP 配置保留。
 
 ```bash
 cargo fmt --check
-cargo test --lib cta_special::
-cargo test --lib pre_trade::cta_special_factor_channel::
-cargo test --lib factor_pub::cta_special_factor_model_1m_pub::
-cargo test --bin pre_trade infer_arb_mode_uses_dir_namespace_before_venue_shape
-cargo check --bin cta_special_factor_model_1m_pub --bin cta_special_signal --bin pre_trade
-python3 -m unittest scripts.tests.test_cta_special_servers
-bash -n scripts/{deploy,start,stop}_cta_special.sh scripts/{start,stop}_cta_special_*.sh
+cargo test --lib
+cargo build --release --bin cta_special_signal --bin exec-pre-trade
+python3 -m unittest scripts.tests.test_cta_special_servers scripts.tests.test_cta_special_position_replay scripts.tests.test_cta_special_signal_history scripts.tests.test_exec_config_server
+node scripts/tests/test_cta_special_panel.js
 ```
 
-上线阻断项中的逐 bar parity、LTP reduce-only 实盘和成交归并对账不能由
-本地单元测试替代。
+`scripts/start_cta_special.sh --execute` 只启动 publisher、signal/config/dashboard；enabled=true 要求 Manager API 地址。标准 Exec 独立使用 `scripts/start-exec.sh --host jp-meta-elvpn --env-name binance_exec_trade05 --venue binance-futures`，内部调用环境本地脚本。旧 companion 准备脚本不属于当前启动路径。停盘 RX02 实盘必须单独停止 trade05；只停信号不会清仓。不要使用 raw pmdaemon/PM2 命令。
+
+本次产物和前端证据为 `artifacts/lgq_cta_release_manifest.json`、`artifacts/lgq_cta_browser_validation.json`；既往观察版记录见下方。
+
+2026-10-11 05:46 UTC trade05 修复发布：待下单数量按数量步长、minQty 和 minNotional 过滤，品种汇总采用执行端待下单量；不可执行余量显示“低于下单门槛”，真实仓位差额继续显示。修复 f32 账户数量造成的整手平仓尾差，仅在舍入后的策略账本总量等于真实账户仓位时恢复合法手数；AAVE 尾仓已清零。Manager 从专属 RapidX 账户 IPC 读取实际权益，公网页面及 WebSocket 更新验证通过。mkt_signal 1,241 项单元测试、Manager 284 项单元测试和 8 项集成测试通过。产物与线上证据：`artifacts/trade05_pending_equity_release_manifest.json`、`artifacts/trade05_pending_equity_live_validation.json`、`artifacts/trade05_pending_equity_live_browser.json`。
+
+2026-10-11 03:00 UTC 上线验证：RX02 信号在线、Manager 发布无错误，trade05 跟随 `virtual02/lgq_cta`，五份因子策略各 1 份、multiplier=1，配置发布队列为空；16 币 32 项目标的每币入场金额不超过 500 USDT。RapidX 仓位快照已补齐现有 `SNAPSHOT_COMPLETE` 标记，非空零仓位快照也能完成 Exec 账本初始化，解析失败不会发完成标记。核验 5 笔新订单均为 exchangeOrderType=MARKET、orderState=FILLED，涉及 AAVE/DOGE/XRP；执行与账户流水持久化待确认数量均为零。两个旧 companion 和 RX03 无执行进程，既有其他策略 PID 保留。测试通过：mkt_signal 1,238 项、trade_engine 356 项、Manager 283 项单元测试，以及 86 项 Python、图表与实机浏览器验证。在线证据为 `artifacts/lgq_cta_live_validation.json`、`artifacts/lgq_cta_fill_validation.json`、`artifacts/lgq_cta_manager_browser_validation.json`。
+
+2026-10-10 17:03 UTC 单份满仓金额发布：`max_pos_u` 统一放在 CTA 信号配置中，所有独立因子和币种使用同一金额，保留现有 1000 USDT。旧逐因子额度 Redis 表和接口移除，原始配置备份在各环境 `run/global_amount_backup_20261010T165827Z/`。本地 release 构建并校验 SHA-256 后原子安装，只重启 signal/config/dashboard（rx02 PID 2582314/2581462/2585918，rx03 PID 2587152/2587076/2587842）。1,237 项 Rust 单元测试通过（2 项忽略），46 项后端测试、配置与图表浏览器验证通过。相同历史输入的交易、qty、PnL 和胜率完全一致；原四个分位、NQ、币种因子绑定和 Manager Exec 文档保留，交易仍关闭。证据为 `artifacts/cta_special_global_amount_release_manifest.json`、`artifacts/cta_special_global_amount_live_validation.json`、`artifacts/cta_special_global_amount_live_browser.json`、`artifacts/cta_special_global_amount_chart_live_browser.json`。
+
+2026-10-10 16:39 UTC 配置简化发布：本地 release 构建后校验 SHA-256，原子替换 signal 与三个 Python 文件、配置前端；两个环境保留原四个分位和 NQ，将 Redis 因子额度整表中的 exec 字段移除。通过环境本地脚本只重启 signal/config/dashboard（rx02 PID 2561169/2560891/2561832，rx03 PID 2562970/2562876/2563089）。1,236 项 Rust 单元测试通过（2 项忽略）、44 项后端测试及本地配置浏览器验证通过。相同历史输入在清理前后产生完全一致的交易、qty、PnL 和胜率；既有 Exec 文档 SHA-256 保持原样，交易仍关闭。证据为 `artifacts/cta_special_simplified_release_manifest.json`、`artifacts/cta_special_simplified_live_validation.json`、`artifacts/cta_special_simplified_config_browser.json`；上线浏览器检查为 `artifacts/cta_special_simplified_live_browser.json`。
+
+2026-10-10 14:51 UTC 单因子交易面板发布：只更新 dashboard、position replay 和信号页两个前端文件，经 SHA-256 校验后原子安装，仅通过环境本地脚本重启 dashboard（rx02 PID 2456915、rx03 PID 2457787）。共享 publisher、signal、config 和执行进程均未启动或重启，交易配置原样保留 enabled=false。42 项后端测试及图表测试通过；线上逐项检查 32/52 项因子绑定，所有已平交易均有唯一开平动作且 qty 一致，开仓符合原 NQ 阈值。Nginx 地址下的图表点击、交易快照、因子切换及桌面/手机布局通过，无 JavaScript 错误。证据为 `artifacts/cta_special_factor_pairs_release_manifest.json`、`artifacts/cta_special_factor_pairs_live_validation.json`、`artifacts/cta_special_factor_pairs_live_browser.json`。
+
+2026-10-10 10:30 UTC 部署验证：rx02 32 项、rx03 52 项分位/NQ 与历史输入全部逐项一致；真实持仓和挂单为零，交易关闭以来没有新实际发布。两个环境均为 5 个独立策略，所有可执行 targets 都是 clear。配置页动态修改额度和 Exec maker timeout 后，标准 Exec 文档订单参数自动更新；测试修改已恢复为原值，targets 始终 clear。浏览器验证因子筛选、独立 PnL、B/S/全平点和 JSON 保存，桌面/手机无页面溢出，无 JavaScript 错误。
+
+2026-10-11 07:07 UTC trade05 完成状态修复：低于数量步长、minQty/minNotional 的余量统一显示“执行完成”，不再单列等待状态。修正执行器在仍有活动批次时因最小下单余量设置无限等待、最终成交后无法再次判断完成的问题；只有批次全部结束才停用新批次调度。空报单计划释放时也应用同一规则。覆盖 ctaker、Batch、POV 的成交回归测试，1,243 项单元测试通过；线上 8 项卡住记录已结束，全部 15 项后端记录完成。发布及验证：`artifacts/trade05_completion_release_manifest.json`、`artifacts/trade05_completion_live_validation.json`、`artifacts/trade05_completion_browser.json`。

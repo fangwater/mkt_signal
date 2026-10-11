@@ -1,0 +1,203 @@
+{
+  "stamp": "20261010T163542Z",
+  "branch": "arbmm",
+  "commit": "e37eeb208d8ae5c781c55f1354314a187e9c353b",
+  "environments": [
+    "binance-cta-special-rx02",
+    "binance-cta-special-rx03"
+  ],
+  "files": [
+    {
+      "source": "cta_special_signal",
+      "destination": "cta_special_signal",
+      "mode": 493,
+      "sha256": "2c302d5a690642be420056d0d241431a300fd08b2745a9919d233949a557496c"
+    },
+    {
+      "source": "cta_special_config_server.py",
+      "destination": "scripts/cta_special_config_server.py",
+      "mode": 493,
+      "sha256": "ce80f77df05428508b659f5c3766cbfc804a9204f266ef03f6676494b520296c"
+    },
+    {
+      "source": "cta_special_strategy_config.py",
+      "destination": "scripts/cta_special_strategy_config.py",
+      "mode": 493,
+      "sha256": "c7fc74b0ab20f80d929f9ad1337c7d2b85fa8190155de7a3f3571b25d922ef79"
+    },
+    {
+      "source": "cta_special_position_replay.py",
+      "destination": "scripts/cta_special_position_replay.py",
+      "mode": 493,
+      "sha256": "af91b5c6a98cc25b1a1a163063dae263b22053951c3c369c07865470fa7d0ae1"
+    },
+    {
+      "source": "index.html",
+      "destination": "web/cta_special_config/index.html",
+      "mode": 420,
+      "sha256": "7837e1080c9cdc7350e59371c24eea118adbc51247fa024eb764d158f08d6c9f"
+    }
+  ],
+  "guards": [
+    {
+      "env": "binance-cta-special-rx02",
+      "files": {
+        "cta_special_signal": "ded7741bbdfd97fb819ba2e7a8544838842d8e71fc0ceb2272edd0cde243773e",
+        "scripts/cta_special_config_server.py": "a883f92c5d508c82f05f24a21201eb6e6b0e846fbf6d910ad433dc2a10de9245",
+        "scripts/cta_special_strategy_config.py": "4ddf8d6b2c96ffb97cfe8f1ca30f0712cdb228ccbc550405bd7fdd691edc8dce",
+        "scripts/cta_special_position_replay.py": "8ea6fd5a7d800e5aabb1ea6ea1866350f6c05ecdff4cfad48a6a6cbb07f14890",
+        "web/cta_special_config/index.html": "9b03d716664508358076a810e13c1628e6bc4900eada0f1faeaf566141113f17",
+        "config/cta_special.json": "f822da9210a7607564b3b0bf735792bdb4f1f1cd80ac7bbe2bf1957a06736b1a"
+      },
+      "config": {
+        "enabled": false,
+        "entry": {
+          "trade_sides": "both",
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "cooldown_seconds": 0,
+          "signal_delay_seconds": 0,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_enabled": true,
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        }
+      },
+      "strategy_key": "binance-cta-special-rx02:cta_factor_strategies",
+      "strategy_raw": "{\"TD_TI_002\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"baseline_004\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_036\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_051\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_170\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}}}",
+      "exec_hashes": {
+        "binance-exec-cta-special-rx02:binance-futures:batch_exec:TD_TI_002": "42a18a61ac9691d0fbff35ef63418a768dccf76239dbac99efbe4e6dbc78d71f",
+        "binance-exec-cta-special-rx02:binance-futures:batch_exec:baseline_004": "6754553fa136c0e3b302cbf2fbaf10c6235c6934a7ad2a276dc351726fa23c1a",
+        "binance-exec-cta-special-rx02:binance-futures:batch_exec:factor_036": "98760b6f513f37470afe7c7755b44d3ea05fcd3cc1d7206dd7a7dda176988d29",
+        "binance-exec-cta-special-rx02:binance-futures:batch_exec:factor_051": "a48ab4440e98c08ca9c654b515b6f52c2b20c00b1d971ce2572bfbcd96def423",
+        "binance-exec-cta-special-rx02:binance-futures:batch_exec:factor_170": "6d3ab73490ede3217a5998ba5293a8124f65b64d2dd57af6f033c1ec2ae3de11"
+      },
+      "factor_raw_sha256": "10f2b449a8673e2b4fbdfd98529156155db5422dac901a594ba1af0ed3f789ac",
+      "processes": [
+        {
+          "pid": 1898311,
+          "comm": "account_monitor",
+          "script": ""
+        },
+        {
+          "pid": 1898714,
+          "comm": "persist_manager",
+          "script": ""
+        },
+        {
+          "pid": 1975542,
+          "comm": "cta_special_fac",
+          "script": ""
+        },
+        {
+          "pid": 2203766,
+          "comm": "python3",
+          "script": "cta_special_config_server.py"
+        },
+        {
+          "pid": 2203855,
+          "comm": "cta_special_sig",
+          "script": ""
+        },
+        {
+          "pid": 2456915,
+          "comm": "python3",
+          "script": "cta_special_dashboard.py"
+        },
+        {
+          "pid": 2558000,
+          "comm": "python3",
+          "script": "cta_simplified_preflight.py"
+        }
+      ],
+      "baseline": {
+        "closed_trades": 9,
+        "wins": 7,
+        "realized_pnl": 101.49267513180116,
+        "unrealized_pnl": -9.81878399469991
+      }
+    },
+    {
+      "env": "binance-cta-special-rx03",
+      "files": {
+        "cta_special_signal": "ded7741bbdfd97fb819ba2e7a8544838842d8e71fc0ceb2272edd0cde243773e",
+        "scripts/cta_special_config_server.py": "a883f92c5d508c82f05f24a21201eb6e6b0e846fbf6d910ad433dc2a10de9245",
+        "scripts/cta_special_strategy_config.py": "4ddf8d6b2c96ffb97cfe8f1ca30f0712cdb228ccbc550405bd7fdd691edc8dce",
+        "scripts/cta_special_position_replay.py": "8ea6fd5a7d800e5aabb1ea6ea1866350f6c05ecdff4cfad48a6a6cbb07f14890",
+        "web/cta_special_config/index.html": "9b03d716664508358076a810e13c1628e6bc4900eada0f1faeaf566141113f17",
+        "config/cta_special.json": "d76a8a05e102aef266de9fcbb633382d84cb8ca8f3e182459ff39ebd702dbe56"
+      },
+      "config": {
+        "enabled": false,
+        "entry": {
+          "trade_sides": "both",
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "cooldown_seconds": 0,
+          "signal_delay_seconds": 0,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_enabled": true,
+          "factor_exit_quantile_long": 0.7,
+          "factor_exit_quantile_short": 0.3
+        }
+      },
+      "strategy_key": "binance-cta-special-rx03:cta_factor_strategies",
+      "strategy_raw": "{\"TD_TI_002\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_004\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_036\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_051\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}},\"factor_170\":{\"exec\":{\"algorithm\":\"batch\",\"batch_interval_ms\":500,\"maker_price_anchor\":\"own_best\",\"maker_timeout_ms\":1000,\"max_batch\":20,\"max_maker_requotes\":2,\"orders_per_batch\":3,\"pov\":{\"duration_ms\":3600000,\"limit_price\":null,\"liquidity\":\"maker_then_taker\",\"max_batch_usdt\":300.0,\"max_carry_usdt\":600.0,\"participation_rate\":0.1,\"quote_stale_ms\":1000,\"volume_stale_ms\":5000},\"single_order_usdt\":100.0,\"target_tolerance_usdt\":10.0,\"tick_spacing\":1},\"max_pos_u\":1000.0,\"max_pos_u_overrides\":{}}}",
+      "exec_hashes": {
+        "binance-exec-cta-special-rx03:binance-futures:batch_exec:TD_TI_002": "3482d8d8cc465a975dd724801d72ff3ac706e456df823a302fcbb0130313d370",
+        "binance-exec-cta-special-rx03:binance-futures:batch_exec:factor_004": "5227ef387dbdb12c9e903a9e57c1244d1f267b8da1e6f7df7c50d641e23f3246",
+        "binance-exec-cta-special-rx03:binance-futures:batch_exec:factor_036": "ac64cc6cbb8589b303cb895a5ae5c6bac5a884b11791d7d1dabfc800b2fceadd",
+        "binance-exec-cta-special-rx03:binance-futures:batch_exec:factor_051": "5828155a3f4664634be3be4b21a84d0bf3f7484fb8020d9f8e9e9e97fb739ab9",
+        "binance-exec-cta-special-rx03:binance-futures:batch_exec:factor_170": "26c6a2f130e64ca6bf4ace48bc6f8d6c84bc660866f33bb43d9ba9fa90877291"
+      },
+      "factor_raw_sha256": "d4ecd411778a73b3024ae0c68e0ea21860ce9d846dff8827f3859ea1bbada075",
+      "processes": [
+        {
+          "pid": 1902298,
+          "comm": "account_monitor",
+          "script": ""
+        },
+        {
+          "pid": 1903557,
+          "comm": "persist_manager",
+          "script": ""
+        },
+        {
+          "pid": 2205550,
+          "comm": "python3",
+          "script": "cta_special_config_server.py"
+        },
+        {
+          "pid": 2205948,
+          "comm": "cta_special_sig",
+          "script": ""
+        },
+        {
+          "pid": 2457787,
+          "comm": "python3",
+          "script": "cta_special_dashboard.py"
+        },
+        {
+          "pid": 2558004,
+          "comm": "python3",
+          "script": "cta_simplified_preflight.py"
+        }
+      ],
+      "baseline": {
+        "closed_trades": 602,
+        "wins": 256,
+        "realized_pnl": -78.55355310699072,
+        "unrealized_pnl": -6.021225288206601
+      }
+    }
+  ],
+  "remote_stage": "/home/ubuntu/.cta_simplified_publish_20261010T163542Z"
+}

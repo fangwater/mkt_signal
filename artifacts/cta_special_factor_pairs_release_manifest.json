@@ -1,0 +1,42 @@
+{
+  "stamp": "20261010T144903Z",
+  "branch": "arbmm",
+  "commit": "e37eeb208d8ae5c781c55f1354314a187e9c353b",
+  "environments": [
+    "binance-cta-special-rx02",
+    "binance-cta-special-rx03"
+  ],
+  "files": [
+    {
+      "source": "cta_special_dashboard.py",
+      "destination": "scripts/cta_special_dashboard.py",
+      "mode": 755,
+      "sha256": "1b1407f69da968e41de638eda612e874dbaa11ce486a498f63ee1b69bf08db5a"
+    },
+    {
+      "source": "cta_special_position_replay.py",
+      "destination": "scripts/cta_special_position_replay.py",
+      "mode": 755,
+      "sha256": "8ea6fd5a7d800e5aabb1ea6ea1866350f6c05ecdff4cfad48a6a6cbb07f14890"
+    },
+    {
+      "source": "panel.js",
+      "destination": "web/cta_special_signals/panel.js",
+      "mode": 644,
+      "sha256": "c542fac6a07915897d5587ea850243fde97d9ea735bfa11c03f3b7372d13f1e2"
+    },
+    {
+      "source": "index.html",
+      "destination": "web/cta_special_signals/index.html",
+      "mode": 644,
+      "sha256": "8b91bc3d00e065e278cad2785be8486e03b1d98ee50dcfc18f9ac7320d652acf"
+    }
+  ],
+  "previous_hashes": {
+    "scripts/cta_special_dashboard.py": "fa8526fb8f562bdc7ee88d177bed892b78c2ae87231bc20f6a5df0b51d4badc9",
+    "scripts/cta_special_position_replay.py": "f4bf52ce969fddb3bc457715bae96f28934d7f302c7e582e3e3f07693ccd3afd",
+    "web/cta_special_signals/index.html": "c76c6d1e20ec4e71039347f20bdf84c4b4693e08b7501094f45ffb9df4ddabed",
+    "web/cta_special_signals/panel.js": "b877cf63e72ab6b2dcb1a8f9f186cae2123153e22800539488afb98a4df94510"
+  },
+  "remote_stage": "/home/ubuntu/.cta_factor_pairs_publish_20261010T144903Z"
+}

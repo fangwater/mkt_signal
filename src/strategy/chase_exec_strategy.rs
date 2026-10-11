@@ -942,7 +942,11 @@ impl ChaseExecStrategy {
                     } else {
                         quote.ask
                     };
-                    remaining_qty.abs() * reference_price <= self.config.target_tolerance_usdt
+                    let tolerance = self
+                        .current_target()
+                        .map(|t| t.tolerance_usdt(self.config.target_tolerance_usdt))
+                        .unwrap_or(self.config.target_tolerance_usdt);
+                    remaining_qty.abs() * reference_price <= tolerance
                 })
                 .unwrap_or(false);
             if !within_tolerance {
@@ -1352,7 +1356,11 @@ impl ChaseExecStrategy {
                 return;
             }
         };
-        if remaining_base * reference_price <= self.config.target_tolerance_usdt {
+        let tolerance = self
+            .current_target()
+            .map(|t| t.tolerance_usdt(self.config.target_tolerance_usdt))
+            .unwrap_or(self.config.target_tolerance_usdt);
+        if remaining_base * reference_price <= tolerance {
             // Within tolerance the target is declared done; abandon any
             // residual taker obligation so the strategy can complete.
             self.taker_pending_base_qty = 0.0;
@@ -2564,7 +2572,11 @@ mod tests {
     fn active_target(qty: f64, signal: i32, generation: i64) -> ActiveTarget {
         let release_side = if qty >= 0.0 { Side::Buy } else { Side::Sell };
         ActiveTarget {
-            target: BatchExecTarget { qty, signal },
+            target: BatchExecTarget {
+                clear: false,
+                qty,
+                signal,
+            },
             generation_time: generation,
             from_key: b"chase_alpha".to_vec(),
             release_side,
@@ -2709,6 +2721,7 @@ mod tests {
 
         strategy.update_target(
             BatchExecTarget {
+                clear: false,
                 qty: 2.0,
                 signal: 0,
             },
@@ -2734,6 +2747,7 @@ mod tests {
 
         strategy.update_target(
             BatchExecTarget {
+                clear: false,
                 qty: 2.0,
                 signal: 0,
             },
@@ -2744,6 +2758,7 @@ mod tests {
 
         strategy.update_target(
             BatchExecTarget {
+                clear: false,
                 qty: 2.0,
                 signal: 3,
             },

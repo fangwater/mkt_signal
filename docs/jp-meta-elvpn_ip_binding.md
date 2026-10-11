@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-09 03:10 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-11 07:07 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -33,7 +33,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`binance-cta-special-rx02`、`binance-cta-special-rx03`、`okex-intra-arb01`；Exec `trade02`–`trade04` `local_ips[0]` |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；`binance-cta-special-rx02` 信号发布到 Exec `trade05`（RX02 RapidX）；rx03 停盘；Exec `trade02`–`trade04` `local_ips[0]` |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
@@ -90,8 +90,8 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP
-binance-cta-special-rx02     172.31.35.228                  RapidX/LTP
-binance-cta-special-rx03     172.31.35.228                  RapidX/LTP
+binance-cta-special-rx02     172.31.35.228                  信号/config/dashboard；执行迁入 trade05
+binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230
 binance_fr_arb01             172.31.35.231, 172.31.35.231
@@ -109,6 +109,7 @@ binance_exec_trade01         0.0.0.0, 0.0.0.0
 binance_exec_trade02         172.31.35.228, 172.31.35.234
 binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
+binance_exec_trade05         172.31.35.228                  RX02 RapidX，follow lgq_cta，ctaker
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。
@@ -142,3 +143,14 @@ JP `~/retired_data/` 中仅保存以下 RocksDB 数据归档及各自 `.sha256` 
 2. `.228` 不要改作他用。
 3. `ens42` 的四个地址在写入任何 `trade_engine.toml` 之前先占表；`.234` 已由 Exec 环境共用配置。
 4. `okex_mm_alpha` 现独占 `.229/.230`（原共用的 `binance_mm_alpha` 已下线退役）。
+
+2026-10-10 06:42 UTC 有符号权重与 rx02 Kafka 仓位回放发布沿用现有本机服务和 Nginx
+4191 网关，未更改 source IP、ENI、local_ips 或路由。rx02/rx03 均继续关闭真实交易。
+
+2026-10-10 10:30 UTC 两个 special 环境改为独立因子策略，新增准备目录 `binance-exec-cta-special-rx02/rx03`，其 env.sh 引用原环境，trade_engine.toml 也引用原配置；执行进程没有启动。不分配额外 EIP 或 source IP，不改写 `.228`、ENI、local_ips、路由及既有 4191 Nginx 代理。真实交易关闭，零持仓/挂单，CPU 仍为 housekeeping 0-5。
+
+2026-10-11 RX02 执行迁入独立 `binance_exec_trade05`，只有一个 source IP `.228`，沿用既有 RapidX 账户白名单。Manager 的 RapidX sym/info 是签名私有请求，绑定该 source 的 trade_engine.toml 首地址；`.93` 仍只供非交易行情请求，未加入 RapidX 请求。新 trade05 配置加入 Manager Kline 交易 IP 排除清单。RX03 停止，原配置和历史保留。没有新增 EIP、ENI 地址、策略路由或 CPU pin。
+
+2026-10-11 05:46 UTC trade05 待执行量及权益修复只更新 exec-pre-trade、Viz 和 Manager 程序，未改动账户 source IP、ENI、EIP 或路由；RX02 执行继续使用 `.228`。
+
+2026-10-11 07:07 UTC trade05 完成状态修复仅替换 exec-pre-trade/Viz，source IP 继续使用 `.228`，未变更 ENI、EIP 或路由。

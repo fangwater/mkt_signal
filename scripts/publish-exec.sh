@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/ssh_remote_bash.sh
+source "$ROOT_DIR/scripts/lib/ssh_remote_bash.sh"
 SSH_HOST="${EXEC_PUBLISH_HOST:-cta_exec}"
 ENV_NAME="${EXEC_PUBLISH_ENV:-}"
 VENUE="${EXEC_PUBLISH_VENUE:-}"
@@ -21,7 +23,9 @@ Options:
   -h, --help            Show this help
 
 Unless --check-only or --skip-build is used, all required release binaries are
-built before the first remote process check.
+built locally before the first remote process check. The account backend is
+read from the target's env.sh; RapidX selects rapidx_account_monitor, while
+native selects the exchange's monitor installed as account_monitor.
 The publish aborts before SCP when any target process is running. It checks
 again immediately before replacing files to close the check/upload race.
 It never starts or stops a process and never rewrites env.sh or operator-owned
@@ -91,26 +95,6 @@ if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
   exit 2
 fi
 
-ACCOUNT_MONITOR_BIN="${EXCHANGE}_account_monitor"
-
-if [[ "$CHECK_ONLY" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
-  if ! command -v cargo >/dev/null 2>&1; then
-    echo "[ERROR] required command not found: cargo" >&2
-    exit 1
-  fi
-  echo "[INFO] building Exec release binaries for exchange=$EXCHANGE venue=$VENUE"
-  (
-    cd "$ROOT_DIR"
-    cargo build --release -p mkt_signal \
-      --bin exec-pre-trade \
-      --bin trade_engine \
-      --bin "$ACCOUNT_MONITOR_BIN"
-    cargo build --release -p trade_signal --bin trade_signal
-    cargo build --release -p viz_server --bin viz_server
-    cargo build --release -p persist_manager --features runtime --bin persist_manager
-  )
-fi
-
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15)
 SCP=(scp -o BatchMode=yes -o ConnectTimeout=15)
 
@@ -131,6 +115,76 @@ REMOTE_REAL="$("${SSH[@]}" "$SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
 if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
   echo "[ERROR] remote target mismatch: expected=$REMOTE_DIR resolved=$REMOTE_REAL" >&2
   exit 1
+fi
+
+read_remote_backend() {
+  {
+    cat "$ROOT_DIR/scripts/execution_backend_lib.sh"
+    cat <<'REMOTE_BACKEND'
+set -euo pipefail
+target="$1"
+exchange="$2"
+requested_venue="$3"
+if [[ ! -f "$target/env.sh" ]]; then
+  echo "[ERROR] target env.sh is required to select the Exec account backend" >&2
+  exit 1
+fi
+unset TRADE_ENGINE_EXEC_BACKEND TRADE_ENGINE_EXEC_BACKEND_MAP
+set +u
+source "$target/env.sh" >/dev/null 2>&1 || {
+  echo "[ERROR] cannot load target env.sh" >&2
+  exit 1
+}
+set -u
+if [[ "${EXEC_VENUE:-${VENUE:-}}" != "$requested_venue" || "${IPC_NAMESPACE:-}" != "$(basename "$target")" ]]; then
+  echo "[ERROR] target env.sh must retain the requested Exec market and namespace" >&2
+  exit 1
+fi
+backend="$(execution_backend_for_exchange "$exchange" 2>/dev/null)" || {
+  echo "[ERROR] invalid execution backend in target env.sh" >&2
+  exit 1
+}
+if [[ "$backend" == "ltp" && "$requested_venue" == "binance-coin-futures" ]]; then
+  echo "[ERROR] RapidX Exec supports Binance/OKX linear perpetual venues only" >&2
+  exit 1
+fi
+printf '%s\n' "$backend"
+REMOTE_BACKEND
+  } | ssh_remote_bash SSH "$SSH_HOST" "$REMOTE_DIR" "$EXCHANGE" "$VENUE"
+}
+
+EXEC_BACKEND="$(read_remote_backend)"
+ACCOUNT_MONITOR_BIN="${EXCHANGE}_account_monitor"
+ACCOUNT_MONITOR_DEST="account_monitor"
+case "$EXEC_BACKEND" in
+  native) ;;
+  ltp)
+    ACCOUNT_MONITOR_BIN="rapidx_account_monitor"
+    ACCOUNT_MONITOR_DEST="$ACCOUNT_MONITOR_BIN"
+    ;;
+  *) echo "[ERROR] invalid backend returned by target" >&2; exit 1 ;;
+esac
+
+if [[ "$CHECK_ONLY" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
+  if [[ "$ROOT_DIR" != /home/fanghaizhou/mkt_signal ]]; then
+    echo "[ERROR] build release artifacts in /home/fanghaizhou/mkt_signal; publish prebuilt artifacts with --skip-build" >&2
+    exit 1
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "[ERROR] required command not found: cargo" >&2
+    exit 1
+  fi
+  echo "[INFO] building Exec release binaries for exchange=$EXCHANGE venue=$VENUE backend=$EXEC_BACKEND"
+  (
+    cd "$ROOT_DIR"
+    cargo build --release -p mkt_signal \
+      --bin exec-pre-trade \
+      --bin trade_engine \
+      --bin "$ACCOUNT_MONITOR_BIN"
+    cargo build --release -p trade_signal --bin trade_signal
+    cargo build --release -p viz_server --bin viz_server
+    cargo build --release -p persist_manager --features runtime --bin persist_manager
+  )
 fi
 
 check_remote_stopped() {
@@ -160,6 +214,7 @@ target_executables=(
   "$target/account_monitor"
   "$target/binance_account_monitor"
   "$target/okex_account_monitor"
+  "$target/rapidx_account_monitor"
   "$target/viz_server"
   "$target/trade_engine"
   "$target/persist_manager"
@@ -209,7 +264,7 @@ REMOTE_CHECK
   return "$status"
 }
 
-echo "[INFO] publish target host=$SSH_HOST exchange=$EXCHANGE venue=$VENUE env=$ENV_NAME dir=$REMOTE_DIR"
+echo "[INFO] publish target host=$SSH_HOST exchange=$EXCHANGE venue=$VENUE backend=$EXEC_BACKEND env=$ENV_NAME dir=$REMOTE_DIR"
 if check_remote_stopped; then
   :
 else
@@ -231,6 +286,7 @@ LOCAL_RELATIVE=(
   "scripts/exec_config_server.py"
   "scripts/mm_process_name.sh"
   "scripts/process_match_lib.sh"
+  "scripts/execution_backend_lib.sh"
   "scripts/start_exec_config_server.sh"
   "scripts/stop_exec_config_server.sh"
   "scripts/start_exec_viz_server.sh"
@@ -264,6 +320,7 @@ UPLOAD_NAMES=(
   "exec_config_server.py"
   "mm_process_name.sh"
   "process_match_lib.sh"
+  "execution_backend_lib.sh"
   "start_exec_config_server.sh"
   "stop_exec_config_server.sh"
   "start_exec_viz_server.sh"
@@ -290,13 +347,14 @@ UPLOAD_NAMES=(
 DESTINATIONS=(
   "exec-pre-trade"
   "trade_signal"
-  "account_monitor"
+  "$ACCOUNT_MONITOR_DEST"
   "viz_server"
   "trade_engine"
   "persist_manager"
   "scripts/exec_config_server.py"
   "scripts/mm_process_name.sh"
   "scripts/process_match_lib.sh"
+  "scripts/execution_backend_lib.sh"
   "scripts/start_exec_config_server.sh"
   "scripts/stop_exec_config_server.sh"
   "scripts/start_exec_viz_server.sh"
@@ -431,6 +489,10 @@ if check_remote_stopped; then
 else
   check_status=$?
   exit "$check_status"
+fi
+if [[ "$(read_remote_backend)" != "$EXEC_BACKEND" ]]; then
+  echo "[ERROR] target account backend changed during publish; no files were replaced" >&2
+  exit 1
 fi
 
 "${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$REMOTE_STAGE" <<'REMOTE_PUBLISH'

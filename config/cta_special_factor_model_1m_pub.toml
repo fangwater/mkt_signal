@@ -1,3 +1,11 @@
+[universe]
+symbols = [
+  "FILUSDT", "AVAXUSDT", "LTCUSDT", "DASHUSDT", "ZECUSDT", "NEARUSDT",
+  "AAVEUSDT", "UNIUSDT", "LINKUSDT", "XLMUSDT", "SOLUSDT", "BNBUSDT",
+  "DOGEUSDT", "DOTUSDT", "XRPUSDT", "ETHUSDT",
+]
+factors = ["factor_036", "factor_051", "factor_170", "factor_004", "TD_TI_002", "baseline_004"]
+
 [tlen_server]
 base_url = "http://127.0.0.1:6322"
 request_timeout_ms = 5000

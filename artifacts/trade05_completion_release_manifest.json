@@ -1,0 +1,10 @@
+{
+  "release": "trade05_completion_20261011T070516Z",
+  "sha256": {
+    "exec-pre-trade": "43447b5b4fb46673626a5dd963c8d49f9ee3c850f482ae211edb90c86651549f",
+    "viz_server": "9b3560378e691bf0c69f8842fc1572a90b74d858a58c140bf2d9120fe7179ccd"
+  },
+  "branch": "arbmm",
+  "base_commit": "e37eeb208d8ae5c781c55f1354314a187e9c353b",
+  "tests": "1243 passed; 2 ignored; frontend browser passed"
+}

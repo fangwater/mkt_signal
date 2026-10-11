@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::common::min_qty_table::MinQtyTable;
+use crate::common::min_qty_table::{MarketType, MinQtyTable};
 use crate::pre_trade::net_position::NetPosition;
 use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use runtime_common::exchange::Exchange;
@@ -282,15 +282,50 @@ impl NetPosition for BasicUmManager {
             .unwrap_or(1.0);
 
         // 返回标的资产数量 = 净张数 × 合约乘数
-        (net_contracts as f64) * ct_mult
+        let contracts = min_qty_table
+            .and_then(|table| table.step_size(MarketType::Futures, symbol))
+            .map(|step| recover_position_contracts(net_contracts, step))
+            .unwrap_or(f64::from(net_contracts));
+        contracts * ct_mult
     }
+}
+
+fn recover_position_contracts(raw: f32, step: f64) -> f64 {
+    let qty = f64::from(raw);
+    // Position IPC uses f32. Recover a unique legal lot only when it rounds
+    // back to the same IPC value; never round a genuine fractional position.
+    if qty.is_finite() && step.is_finite() && step > qty.abs() * f64::from(f32::EPSILON) * 2.0 {
+        let rounded = (qty / step).round() * step;
+        if rounded as f32 == raw {
+            return rounded;
+        }
+    }
+    qty
 }
 
 #[cfg(test)]
 mod tests {
-    use super::BasicUmManager;
+    use super::{recover_position_contracts, BasicUmManager};
     use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
     use runtime_common::exchange::Exchange;
+
+    #[test]
+    fn restores_unique_position_lots_without_rounding_fractional_inventory() {
+        for qty in [-1.4, -0.1, 178.6, -178.6] {
+            let recovered = recover_position_contracts(qty as f32, 0.1);
+            assert!((recovered - qty).abs() < 1e-12);
+        }
+        let fractional = 0.12345_f32;
+        assert_eq!(
+            recover_position_contracts(fractional, 0.1),
+            f64::from(fractional)
+        );
+        // A lot smaller than IPC resolution cannot identify a unique quantity.
+        assert_eq!(
+            recover_position_contracts(100.01_f32, 1e-8),
+            f64::from(100.01_f32)
+        );
+    }
 
     #[test]
     fn removes_entry_after_zero_position_and_zero_pnl() {
