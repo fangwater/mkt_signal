@@ -24,6 +24,8 @@ pub struct ActiveIssue {
     sent_severity: Option<String>,
     #[serde(skip)]
     resolved: bool,
+    #[serde(skip)]
+    in_flight: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -37,7 +39,7 @@ pub struct Notice {
 
 impl Notice {
     pub fn market(&self) -> bool {
-        self.scope.ends_with("/market")
+        self.scope.starts_with("market/")
     }
 }
 
@@ -72,14 +74,18 @@ impl Tracker {
                         last_sent_ms: None,
                         sent_severity: None,
                         resolved: false,
+                        in_flight: false,
                     });
+                if state.resolved {
+                    state.first_seen_ms = now;
+                }
                 state.issue = issue.clone();
                 state.observed = true;
                 state.resolved = false;
             }
         }
         self.states
-            .retain(|_, s| !(s.resolved && s.last_sent_ms.is_none()));
+            .retain(|_, s| !(s.resolved && s.last_sent_ms.is_none() && !s.in_flight));
     }
 
     pub fn active(&self) -> Vec<ActiveIssue> {
@@ -94,6 +100,9 @@ impl Tracker {
         self.states
             .values()
             .filter(|s| {
+                if s.in_flight {
+                    return false;
+                }
                 if s.resolved {
                     return s.last_sent_ms.is_some();
                 }
@@ -121,13 +130,41 @@ impl Tracker {
     pub fn acknowledge(&mut self, notices: &[Notice], now: i64) {
         for n in notices {
             let key = (n.scope.clone(), n.key.clone());
-            if n.recovery {
+            if n.recovery && self.states.get(&key).is_some_and(|s| s.resolved) {
                 self.states.remove(&key);
             } else if let Some(s) = self.states.get_mut(&key) {
-                s.last_sent_ms = Some(now);
-                s.sent_severity = Some(n.severity.clone());
+                s.in_flight = false;
+                // A recurrence while its recovery was being sent is a new alert.
+                s.last_sent_ms = (!n.recovery).then_some(now);
+                s.sent_severity = (!n.recovery).then(|| n.severity.clone());
             }
         }
+    }
+
+    /// Reserve a bounded batch while collectors continue updating independently.
+    pub fn claim(&mut self, m: &Monitor, now: i64, market: bool) -> Vec<Notice> {
+        let pending: Vec<_> = self
+            .pending(m, now)
+            .into_iter()
+            .filter(|n| n.market() == market)
+            .take(4)
+            .collect();
+        for n in &pending {
+            if let Some(s) = self.states.get_mut(&(n.scope.clone(), n.key.clone())) {
+                s.in_flight = true;
+            }
+        }
+        pending
+    }
+
+    pub fn release(&mut self, notices: &[Notice]) {
+        for n in notices {
+            if let Some(s) = self.states.get_mut(&(n.scope.clone(), n.key.clone())) {
+                s.in_flight = false;
+            }
+        }
+        self.states
+            .retain(|_, s| !(s.resolved && s.last_sent_ms.is_none() && !s.in_flight));
     }
 }
 

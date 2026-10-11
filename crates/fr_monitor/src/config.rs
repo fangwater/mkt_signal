@@ -20,6 +20,7 @@ pub struct Monitor {
     pub bind: std::net::SocketAddr,
     pub host_tag: String,
     pub poll_secs: u64,
+    pub market_poll_secs: u64,
     pub stale_secs: u64,
     pub market_stale_secs: u64,
     pub order_stale_secs: u64,
@@ -40,6 +41,7 @@ impl Default for Monitor {
             bind: "127.0.0.1:18180".parse().unwrap(),
             host_tag: "FR".into(),
             poll_secs: 10,
+            market_poll_secs: 5,
             stale_secs: 90,
             market_stale_secs: 30,
             order_stale_secs: 300,
@@ -122,6 +124,7 @@ impl Config {
         ensure!(
             [
                 m.poll_secs,
+                m.market_poll_secs,
                 m.stale_secs,
                 m.market_stale_secs,
                 m.order_stale_secs,

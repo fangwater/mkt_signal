@@ -1,10 +1,12 @@
 # JP inventory observed read-only on 2026-10-08. No trading credentials here.
 # Exposure thresholds below are monitor defaults, not trading risk settings.
 # Market symbols are explicit BBO sentinels; extend them for per-symbol coverage.
+# sources.markets declares dependencies; shared venue/symbol checks run only once.
 [monitor]
 bind = "127.0.0.1:18180"
 host_tag = "jp-meta-elvpn"
 poll_secs = 10
+market_poll_secs = 5
 stale_secs = 90
 market_stale_secs = 30
 order_stale_secs = 300

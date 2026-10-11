@@ -237,3 +237,87 @@ fn external_endpoint_and_unknown_config_are_rejected() {
     assert!(cfg.validate().is_err());
     assert!(toml::from_str::<Config>("unknown=true\nsources=[]").is_err());
 }
+
+#[test]
+fn in_flight_alert_retains_its_recovery() {
+    let m = Monitor {
+        alert_delay_secs: 0,
+        ..Monitor::default()
+    };
+    let mut t = Tracker::default();
+    t.update(&[check(Some(Issue::warning("x", "risk")), true)], NOW);
+    let sent = t.claim(&m, NOW, false);
+    assert_eq!(sent.len(), 1);
+    assert!(t.claim(&m, NOW, false).is_empty());
+    t.update(&[check(None, true)], NOW + 1);
+    t.acknowledge(&sent, NOW + 2);
+    let recovery = t.claim(&m, NOW + 3, false);
+    assert_eq!(recovery.len(), 1);
+    assert!(recovery[0].recovery);
+}
+
+#[test]
+fn in_flight_recovery_does_not_erase_a_recurrence() {
+    let m = Monitor {
+        alert_delay_secs: 0,
+        ..Monitor::default()
+    };
+    let mut t = Tracker::default();
+    t.update(&[check(Some(Issue::warning("x", "risk")), true)], NOW);
+    let first = t.claim(&m, NOW, false);
+    t.acknowledge(&first, NOW);
+    t.update(&[check(None, true)], NOW + 1);
+    let recovery = t.claim(&m, NOW + 1, false);
+    assert!(recovery[0].recovery);
+    t.update(
+        &[check(Some(Issue::warning("x", "risk again")), true)],
+        NOW + 2,
+    );
+    t.acknowledge(&recovery, NOW + 3);
+    let next = t.claim(&m, NOW + 3, false);
+    assert_eq!(next.len(), 1);
+    assert!(!next[0].recovery);
+    assert_eq!(next[0].message, "risk again");
+}
+
+#[test]
+fn failed_claim_is_retried_without_a_phantom_recovery() {
+    let m = Monitor {
+        alert_delay_secs: 0,
+        ..Monitor::default()
+    };
+    let mut t = Tracker::default();
+    t.update(&[check(Some(Issue::warning("x", "risk")), true)], NOW);
+    let first = t.claim(&m, NOW, false);
+    t.release(&first);
+    let retry = t.claim(&m, NOW + 1, false);
+    assert_eq!(retry.len(), 1);
+    t.update(&[check(None, true)], NOW + 2);
+    t.release(&retry);
+    assert!(t.pending(&m, NOW + 3).is_empty());
+}
+
+#[test]
+fn shared_market_notices_only_use_market_channel() {
+    let m = Monitor {
+        alert_delay_secs: 0,
+        ..Monitor::default()
+    };
+    let mut t = Tracker::default();
+    t.update(
+        &[
+            Check::ok(
+                "market/gate-futures".into(),
+                vec![Issue::warning("bbo", "stale")],
+            ),
+            check(Some(Issue::warning("risk", "exposure")), true),
+        ],
+        NOW,
+    );
+    let market = t.claim(&m, NOW, true);
+    let trade = t.claim(&m, NOW, false);
+    assert_eq!(market.len(), 1);
+    assert_eq!(trade.len(), 1);
+    assert!(market[0].market());
+    assert!(!trade[0].market());
+}
