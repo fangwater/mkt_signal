@@ -148,14 +148,6 @@ fn product_spec(product: &str) -> Result<ProductSpec> {
         .ok_or_else(|| anyhow!("unsupported baseline product {product:?}"))
 }
 
-fn delivery_allowed_ll2(product: &str, day: NaiveDate) -> bool {
-    match day.year() {
-        2025 => false,
-        2026 => true,
-        _ => !matches!(product, "GC" | "YM"),
-    }
-}
-
 #[derive(Clone, Copy)]
 struct RawInterval {
     start: i64,
@@ -361,10 +353,9 @@ fn list_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<Job>> {
             let Ok(day) = NaiveDate::parse_from_str(stem, "%Y%m%d") else {
                 continue;
             };
-            if day < args.start
-                || day >= args.end
-                || (!args.trade_only && !delivery_allowed_ll2(spec.product, day))
-            {
+            // Availability comes from the selected LL2 source, not an old
+            // year/product exclusion. Missing books are audited in process_job.
+            if day < args.start || day >= args.end {
                 continue;
             }
             let output = args
@@ -1312,17 +1303,32 @@ mod tests {
     }
 
     #[test]
-    fn ll2_delivery_policy_keeps_gc_ym_only_in_2026() {
-        let y2024 = NaiveDate::from_ymd_opt(2024, 7, 11).unwrap();
-        let y2025 = NaiveDate::from_ymd_opt(2025, 1, 2).unwrap();
-        let y2026 = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
-        assert!(!delivery_allowed_ll2("GC", y2024));
-        assert!(!delivery_allowed_ll2("YM", y2024));
-        assert!(delivery_allowed_ll2("GC", y2026));
-        assert!(delivery_allowed_ll2("YM", y2026));
-        assert!(delivery_allowed_ll2("ES", y2024));
-        assert!(!delivery_allowed_ll2("ES", y2025));
-        assert!(delivery_allowed_ll2("ES", y2026));
+    fn ll2_jobs_are_not_excluded_by_old_coverage_policy() {
+        let root = tempfile::tempdir().unwrap();
+        for product in ["ES", "YM", "GC"] {
+            let spec = product_spec(product).unwrap();
+            let dir = root.path().join(spec.exchange).join(product);
+            fs::create_dir_all(&dir).unwrap();
+            for day in ["20240711", "20250102", "20250415", "20260102"] {
+                fs::write(dir.join(format!("{day}.parquet")), b"").unwrap();
+            }
+        }
+        let args = Args::parse_from([
+            "cme_baseline_1min",
+            "--summary-root",
+            root.path().to_str().unwrap(),
+            "--output-root",
+            root.path().join("out").to_str().unwrap(),
+            "--start",
+            "2024-01-01",
+            "--end",
+            "2026-06-01",
+            "--products",
+            "ES,YM,GC",
+        ]);
+        let jobs = list_jobs(&args, &validate_args(&args).unwrap()).unwrap();
+        assert_eq!(jobs.len(), 12);
+        assert_eq!(jobs.iter().filter(|j| j.day.year() == 2025).count(), 6);
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub struct Ll2MinuteKey {
     pub minute_utc_ns: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Ll2Minute {
     pub source_ts_utc_ns: u64,
     pub source_order: u64,

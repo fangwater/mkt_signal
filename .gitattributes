@@ -1,0 +1,2 @@
+# Raw exchange CSV fixtures retain original CRLF and field padding.
+crates/cme_tas_replay/tests/fixtures/*.csv -text -whitespace

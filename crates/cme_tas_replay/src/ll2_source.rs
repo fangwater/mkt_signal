@@ -141,7 +141,7 @@ pub fn validate_normalized_ll2_header(line: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn parse_count(raw: &[u8]) -> Result<u32> {
+pub(crate) fn parse_count(raw: &[u8]) -> Result<u32> {
     if raw.is_empty() {
         return Ok(MISSING_COUNT);
     }
@@ -160,7 +160,7 @@ fn parse_count(raw: &[u8]) -> Result<u32> {
     Ok(value)
 }
 
-fn parse_scaled(raw: &[u8], field: &str) -> Result<i64> {
+pub(crate) fn parse_scaled(raw: &[u8], field: &str) -> Result<i64> {
     if raw.is_empty() {
         return Ok(MISSING_PRICE);
     }
@@ -210,7 +210,7 @@ fn parse_scaled(raw: &[u8], field: &str) -> Result<i64> {
     i64::try_from(scaled).map_err(|_| anyhow!("LL2 {field} does not fit i64"))
 }
 
-fn parse_gmt_offset_minutes(raw: &[u8]) -> Result<i16> {
+pub(crate) fn parse_gmt_offset_minutes(raw: &[u8]) -> Result<i16> {
     if raw.is_empty() {
         bail!("LL2 GMT Offset is empty");
     }
@@ -228,7 +228,7 @@ fn parse_gmt_offset_minutes(raw: &[u8]) -> Result<i16> {
         .map_err(|_| anyhow!("LL2 GMT Offset does not fit i16 minutes"))
 }
 
-fn parse_extended_exch_time_ns(raw: &str) -> Result<u64> {
+pub(crate) fn parse_extended_exch_time_ns(raw: &str) -> Result<u64> {
     if raw.is_empty() {
         return Ok(u64::MAX);
     }

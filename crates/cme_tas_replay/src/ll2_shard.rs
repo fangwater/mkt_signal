@@ -43,6 +43,9 @@ pub struct Ll2ShardSource {
 pub struct Ll2ShardManifest {
     pub format_version: u32,
     pub period: String,
+    /// Exact source package directory; older manifests used the default name.
+    #[serde(default)]
+    pub source_directory: Option<String>,
     pub complete: bool,
     pub header: String,
     pub rows_per_shard: u64,
@@ -53,6 +56,22 @@ pub struct Ll2ShardManifest {
 
 pub fn ll2_period_dir_name(period: &str) -> String {
     format!("shanghai_evolution_futures_market_depth_ric_list_0_ll2_{period}")
+}
+
+/// Explicit package routing; never guess between original and supplement.
+pub fn ll2_source_dir_name(period: &str, source_dirs: &BTreeMap<String, String>) -> Result<String> {
+    crate::validate_period(period)?;
+    let name = source_dirs
+        .get(period)
+        .cloned()
+        .unwrap_or_else(|| ll2_period_dir_name(period));
+    if name.contains(['/', '\\'])
+        || !name.starts_with("shanghai_evolution_")
+        || !name.ends_with(&format!("_ll2_{period}"))
+    {
+        bail!("invalid LL2 source directory {name:?} for period {period}");
+    }
+    Ok(name)
 }
 
 pub fn ll2_shard_file_name(original_part: u16, shard_index: u32) -> String {
@@ -220,6 +239,7 @@ mod tests {
         Ll2ShardManifest {
             format_version: LL2_SHARD_MANIFEST_VERSION,
             period: "2026-01-01_2026-06-01".into(),
+            source_directory: None,
             complete: true,
             header: "#RIC,Domain,Date-Time".into(),
             rows_per_shard: 2,
@@ -284,5 +304,20 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("splits RIC/second"));
+    }
+
+    #[test]
+    fn routes_supplement_explicitly_without_changing_default() {
+        let period = "2025-01-01_2026-01-01";
+        let name = format!("shanghai_evolution_market_depth_ric_list_0_ll2_{period}");
+        let mut routes = BTreeMap::new();
+        assert_eq!(
+            ll2_source_dir_name(period, &routes).unwrap(),
+            ll2_period_dir_name(period)
+        );
+        routes.insert(period.into(), name.clone());
+        assert_eq!(ll2_source_dir_name(period, &routes).unwrap(), name);
+        routes.insert(period.into(), format!("../{name}"));
+        assert!(ll2_source_dir_name(period, &routes).is_err());
     }
 }

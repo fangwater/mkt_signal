@@ -12,7 +12,7 @@ use cme_tas_replay::ll2_1min::{
     encode_source_order, ll2_latest_merge, minute_key_for, Ll2Minute, LL2_MINUTE_KEY_LEN,
     NS_PER_MINUTE,
 };
-use cme_tas_replay::ll2_shard::{ll2_period_dir_name, Ll2ShardManifest};
+use cme_tas_replay::ll2_shard::{ll2_period_dir_name, ll2_source_dir_name, Ll2ShardManifest};
 use cme_tas_replay::ll2_source::{
     parse_normalized_ll2_line, strip_line_ending, validate_normalized_ll2_header,
 };
@@ -85,6 +85,8 @@ struct Config {
     period: String,
     #[serde(default)]
     periods: Vec<String>,
+    #[serde(default)]
+    source_dirs: BTreeMap<String, String>,
     rocksdb_dir: PathBuf,
     #[serde(default = "default_workers")]
     workers: usize,
@@ -186,12 +188,14 @@ fn resolved_periods(config: &Config, override_period: Option<&str>) -> Result<Ve
     Ok(periods)
 }
 
-fn period_dir(config: &Config, period: &str) -> PathBuf {
-    config.data_root.join(ll2_period_dir_name(period))
+fn period_dir(config: &Config, period: &str) -> Result<PathBuf> {
+    Ok(config
+        .data_root
+        .join(ll2_source_dir_name(period, &config.source_dirs)?))
 }
 
 fn report_census(config: &Config, period: &str) -> Result<ReportCensus> {
-    let path = period_dir(config, period).join("merged-Report.csv.gz");
+    let path = period_dir(config, period)?.join("merged-Report.csv.gz");
     let file = File::open(&path).with_context(|| format!("open LL2 report {}", path.display()))?;
     let decoder = MultiGzDecoder::new(BufReader::new(file));
     let mut reader = csv::ReaderBuilder::new()
@@ -253,6 +257,14 @@ fn load_shard_manifest(
     let dir = shard_period_dir(config, period);
     let manifest = Ll2ShardManifest::load(&dir)?;
     manifest.validate(period, require_complete)?;
+    let expected_source = ll2_source_dir_name(period, &config.source_dirs)?;
+    let manifest_source = manifest
+        .source_directory
+        .clone()
+        .unwrap_or_else(|| ll2_period_dir_name(period));
+    if manifest_source != expected_source {
+        bail!("LL2 manifest source {manifest_source:?} does not match configured source {expected_source:?}");
+    }
     validate_normalized_ll2_header(manifest.header.as_bytes())?;
     Ok(manifest)
 }
@@ -1276,12 +1288,24 @@ mod tests {
 
     #[test]
     fn fixture_replay_finishes_census_and_verifies() {
+        fixture_replay(false);
+    }
+
+    #[test]
+    fn supplement_routes_report_and_binds_manifest_source() {
+        fixture_replay(true);
+    }
+
+    fn fixture_replay(supplement: bool) {
         let root = tempdir().unwrap();
         let period = "2026-01-01_2026-06-01";
         let data_root = root.path().join("normalisedLL2");
-        let period_root = data_root.join(format!(
-            "shanghai_evolution_futures_market_depth_ric_list_0_ll2_{period}"
-        ));
+        let source_name = if supplement {
+            format!("shanghai_evolution_market_depth_ric_list_0_ll2_{period}")
+        } else {
+            ll2_period_dir_name(period)
+        };
+        let period_root = data_root.join(&source_name);
         fs::create_dir_all(&period_root).unwrap();
         write_gzip(
             &period_root.join("merged-Report.csv.gz"),
@@ -1320,6 +1344,7 @@ mod tests {
             format_version: LL2_SHARD_MANIFEST_VERSION,
             period: period.into(),
             complete: true,
+            source_directory: supplement.then(|| source_name.clone()),
             header: source_header(),
             rows_per_shard: 1,
             zstd_level: 1,
@@ -1373,6 +1398,11 @@ mod tests {
             shard_root,
             period: period.into(),
             periods: vec![],
+            source_dirs: if supplement {
+                BTreeMap::from([(period.into(), source_name)])
+            } else {
+                BTreeMap::new()
+            },
             rocksdb_dir: rocksdb_dir.clone(),
             workers: 1,
             progress_every: 0,
@@ -1390,6 +1420,15 @@ mod tests {
             rocksdb_dir: None,
             shard_root: None,
         };
+        preflight(&config, &[period.into()]).unwrap();
+        if supplement {
+            let mut wrong_config = config.clone();
+            wrong_config.source_dirs.clear();
+            assert!(load_shard_manifest(&wrong_config, period, true)
+                .unwrap_err()
+                .to_string()
+                .contains("manifest source"));
+        }
         run(&config, &args, &[period.into()]).unwrap();
         verify(&config, &args, &[period.into()]).unwrap();
 

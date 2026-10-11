@@ -3,8 +3,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use cme_tas_replay::ll2_shard::{
-    ll2_period_dir_name, ll2_shard_file_name, Ll2ShardEntry, Ll2ShardGroup, Ll2ShardManifest,
-    Ll2ShardSource, LL2_SHARD_MANIFEST_VERSION,
+    ll2_period_dir_name, ll2_shard_file_name, ll2_source_dir_name, Ll2ShardEntry, Ll2ShardGroup,
+    Ll2ShardManifest, Ll2ShardSource, LL2_SHARD_MANIFEST_VERSION,
 };
 use cme_tas_replay::ll2_source::{
     parse_normalized_ll2_group, strip_line_ending, validate_normalized_ll2_header,
@@ -46,6 +46,8 @@ struct ShardConfig {
     data_root: PathBuf,
     output_root: PathBuf,
     periods: Vec<String>,
+    #[serde(default)]
+    source_dirs: BTreeMap<String, String>,
     #[serde(default = "default_workers")]
     workers: usize,
     #[serde(default = "default_rows_per_shard")]
@@ -181,8 +183,10 @@ impl OpenShard {
     }
 }
 
-fn source_period_dir(config: &ShardConfig, period: &str) -> PathBuf {
-    config.data_root.join(ll2_period_dir_name(period))
+fn source_period_dir(config: &ShardConfig, period: &str) -> Result<PathBuf> {
+    Ok(config
+        .data_root
+        .join(ll2_source_dir_name(period, &config.source_dirs)?))
 }
 
 fn output_period_dir(config: &ShardConfig, period: &str) -> PathBuf {
@@ -205,13 +209,32 @@ fn discover_parts(dir: &Path) -> Result<Vec<PathBuf>> {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| {
-                    name.starts_with("merged-Data-part-") && name.ends_with(".csv.gz")
+                    name == "merged-Data.csv.gz"
+                        || (name.starts_with("merged-Data-part-") && name.ends_with(".csv.gz"))
                 })
         })
         .collect::<Vec<_>>();
     parts.sort();
     if parts.is_empty() {
         bail!("no LL2 gzip parts under {}", dir.display());
+    }
+    if parts.len() > 1
+        && parts
+            .iter()
+            .any(|p| p.file_name().is_some_and(|n| n == "merged-Data.csv.gz"))
+    {
+        bail!(
+            "LL2 directory {} mixes single-file and multipart data",
+            dir.display()
+        );
+    }
+    for (expected, path) in parts.iter().enumerate() {
+        if usize::from(part_number(path)?) != expected {
+            bail!(
+                "LL2 gzip parts in {} are not contiguous from part 0",
+                dir.display()
+            );
+        }
     }
     Ok(parts)
 }
@@ -221,6 +244,9 @@ fn part_number(path: &Path) -> Result<u16> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("LL2 part path {} has no UTF-8 name", path.display()))?;
+    if name == "merged-Data.csv.gz" {
+        return Ok(0);
+    }
     name.strip_prefix("merged-Data-part-")
         .and_then(|rest| rest.strip_suffix(".csv.gz"))
         .ok_or_else(|| anyhow!("unrecognized LL2 part name {name}"))?
@@ -425,7 +451,7 @@ fn run(config: &ShardConfig) -> Result<()> {
     let mut jobs = Vec::new();
     for period in &config.periods {
         validate_period(period)?;
-        let parts = discover_parts(&source_period_dir(config, period))?;
+        let parts = discover_parts(&source_period_dir(config, period)?)?;
         let part_zero = parts
             .iter()
             .find(|path| part_number(path).ok() == Some(0))
@@ -482,6 +508,7 @@ fn run(config: &ShardConfig) -> Result<()> {
         let manifest = Ll2ShardManifest {
             format_version: LL2_SHARD_MANIFEST_VERSION,
             period: period.clone(),
+            source_directory: Some(ll2_source_dir_name(period, &config.source_dirs)?),
             complete,
             header,
             rows_per_shard: config.rows_per_shard,
@@ -589,6 +616,7 @@ mod tests {
             data_root: temp.path().to_path_buf(),
             output_root: temp.path().join("unused"),
             periods: vec![],
+            source_dirs: BTreeMap::new(),
             workers: 1,
             rows_per_shard: 2,
             zstd_level: 1,
@@ -616,5 +644,66 @@ mod tests {
             recovered.extend_from_slice(&content[header_end..]);
         }
         assert_eq!(recovered, rows.concat());
+    }
+
+    #[test]
+    fn shards_single_file_supplement_and_records_source() {
+        let temp = TempDir::new().unwrap();
+        let period = "2025-01-01_2026-01-01";
+        let source_name = format!("shanghai_evolution_market_depth_ric_list_0_ll2_{period}");
+        let input = temp.path().join(&source_name);
+        fs::create_dir(&input).unwrap();
+        let file = File::create(input.join("merged-Data.csv.gz")).unwrap();
+        let mut gzip = GzEncoder::new(file, Compression::fast());
+        gzip.write_all(&header()).unwrap();
+        let rows = vec![
+            row("2025-01-01T00:00:00.100000000Z"),
+            row("2025-01-01T00:00:01.100000000Z"),
+        ];
+        for value in &rows {
+            gzip.write_all(value).unwrap();
+        }
+        gzip.finish().unwrap();
+        fs::write(
+            input.join("merged-Data-part-000001.csv.gz.part"),
+            b"unfinished",
+        )
+        .unwrap();
+        let config = ShardConfig {
+            data_root: temp.path().into(),
+            output_root: temp.path().join("shards"),
+            periods: vec![period.into()],
+            source_dirs: BTreeMap::from([(period.into(), source_name.clone())]),
+            workers: 1,
+            rows_per_shard: 1,
+            zstd_level: 1,
+            progress_every: 0,
+            max_source_rows: None,
+        };
+        run(&config).unwrap();
+        let output = output_period_dir(&config, period);
+        let manifest = Ll2ShardManifest::load(&output).unwrap();
+        manifest.validate(period, true).unwrap();
+        assert_eq!(
+            manifest.source_directory.as_deref(),
+            Some(source_name.as_str())
+        );
+        assert_eq!(manifest.sources[0].file, "merged-Data.csv.gz");
+        assert_eq!(manifest.sources[0].data_rows, 2);
+        let mut recovered = Vec::new();
+        for shard in &manifest.shards {
+            let mut decoder =
+                zstd::stream::read::Decoder::new(File::open(output.join(&shard.file)).unwrap())
+                    .unwrap();
+            let mut content = Vec::new();
+            decoder.read_to_end(&mut content).unwrap();
+            recovered.extend_from_slice(&content[header().len()..]);
+        }
+        assert_eq!(recovered, rows.concat());
+        fs::write(input.join("merged-Data-part-000000.csv.gz"), b"duplicate").unwrap();
+        assert!(discover_parts(&input)
+            .unwrap_err()
+            .to_string()
+            .contains("mixes"));
     }
 }

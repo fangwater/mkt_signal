@@ -6,6 +6,9 @@ pub mod ll2_1min;
 pub mod ll2_shard;
 pub mod ll2_source;
 pub mod product;
+pub mod raw_ll2;
+pub mod raw_ll2_io;
+pub mod raw_ll2_stage;
 pub mod shard;
 pub mod ylabel_1min;
 
