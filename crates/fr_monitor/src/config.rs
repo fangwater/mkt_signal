@@ -11,6 +11,9 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub monitor: Monitor,
+    /// Shared market feeds without an FR account dependency, such as OKX.
+    #[serde(default)]
+    pub markets: Vec<Market>,
     pub sources: Vec<Source>,
 }
 
@@ -79,6 +82,24 @@ pub struct Market {
     pub venue: String,
     /// Explicit symbols: one busy symbol must not hide another stopped stream.
     pub symbols: Vec<String>,
+}
+
+impl Market {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.venue.is_empty()
+                && self
+                    .venue
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
+            "invalid market venue"
+        );
+        ensure!(
+            !self.symbols.is_empty() && self.symbols.iter().all(|s| !s.trim().is_empty()),
+            "each market needs explicit symbols"
+        );
+        Ok(())
+    }
 }
 
 fn yes() -> bool {
@@ -152,6 +173,9 @@ impl Config {
         let mut ids = HashSet::new();
         let mut namespaces = HashSet::new();
         let mut stores = HashSet::new();
+        for market in &self.markets {
+            market.validate().context("invalid shared market")?;
+        }
         for s in &self.sources {
             ensure!(
                 !s.id.is_empty()
@@ -187,21 +211,9 @@ impl Config {
             );
             ensure!(!s.markets.is_empty(), "{}: markets are required", s.id);
             for market in &s.markets {
-                ensure!(
-                    !market.venue.is_empty()
-                        && market
-                            .venue
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
-                    "{}: invalid market venue",
-                    s.id
-                );
-                ensure!(
-                    !market.symbols.is_empty()
-                        && market.symbols.iter().all(|s| !s.trim().is_empty()),
-                    "{}: each market needs explicit symbols",
-                    s.id
-                );
+                market
+                    .validate()
+                    .with_context(|| format!("{}: invalid market", s.id))?;
             }
         }
         Ok(())

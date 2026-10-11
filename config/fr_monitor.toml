@@ -20,6 +20,15 @@ order_webhook_url_env = "CTA_DINGTALK_ORDER_WEBHOOK_URL"
 # market_secret_env = "CTA_DINGTALK_MARKET_SECRET"
 # order_secret_env = "CTA_DINGTALK_ORDER_SECRET"
 
+# Preserve the shared OKX feeds previously watched by NAV's network collector.
+# IPC BBO symbols are normalized by the publisher (BTC-USDT-SWAP -> BTCUSDT).
+[[markets]]
+venue = "okex"
+symbols = ["BTCUSDT", "ETHUSDT"]
+[[markets]]
+venue = "okex-swap"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
 [[sources]]
 id = "binance_fr_arb01"
 namespace = "binance_fr_arb01"

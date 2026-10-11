@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{
     checks::{Check, Issue},
-    config::{Monitor, Source},
+    config::{Market, Monitor, Source},
     now_ms,
 };
 
@@ -59,8 +59,17 @@ pub struct MarketWatch {
 }
 
 impl MarketWatch {
-    pub fn from_sources(sources: &[Source]) -> Vec<Self> {
+    pub fn from_sources(sources: &[Source], shared_markets: &[Market]) -> Vec<Self> {
         let mut venues = BTreeMap::<String, BTreeMap<String, BTreeSet<String>>>::new();
+        for market in shared_markets {
+            for symbol in &market.symbols {
+                venues
+                    .entry(market.venue.clone())
+                    .or_default()
+                    .entry(normalize_symbol(symbol))
+                    .or_default();
+            }
+        }
         for source in sources.iter().filter(|s| s.enabled) {
             for market in &source.markets {
                 for symbol in &market.symbols {
@@ -256,7 +265,7 @@ mod tests {
     #[test]
     fn nine_accounts_share_six_venue_checks() {
         let sources = sources();
-        let watches = MarketWatch::from_sources(&sources);
+        let watches = MarketWatch::from_sources(&sources, &[]);
         assert_eq!(watches.len(), 6);
         let feed = MarketFeed::default();
         for watch in &watches {
@@ -278,11 +287,40 @@ mod tests {
         sources[1].markets.truncate(1);
         sources[0].markets[0].symbols = vec!["BTC_USDT".into(), "BTCUSDT".into()];
         sources[1].markets[0].symbols = vec!["btc-usdt".into(), "ETHUSDT".into()];
-        let watches = MarketWatch::from_sources(&sources);
+        let watches = MarketWatch::from_sources(&sources, &[]);
         assert_eq!(watches.len(), 1);
         assert_eq!(watches[0].symbols.len(), 2);
         assert_eq!(watches[0].symbols["BTCUSDT"].len(), 2);
         assert_eq!(watches[0].symbols["ETHUSDT"].len(), 1);
+    }
+
+    #[test]
+    fn shared_markets_preserve_coverage_without_inventing_account_dependencies() {
+        let sources = sources();
+        let shared = vec![
+            Market {
+                venue: "okex-swap".into(),
+                symbols: vec!["BTCUSDT".into()],
+            },
+            Market {
+                venue: "binance-futures".into(),
+                symbols: vec!["BTCUSDT".into(), "SOLUSDT".into()],
+            },
+        ];
+        let watches = MarketWatch::from_sources(&sources, &shared);
+        assert_eq!(watches.len(), 7);
+        let okx = watches.iter().find(|w| w.venue == "okex-swap").unwrap();
+        let (view, check) = MarketFeed::default().check(okx, &Monitor::default(), NOW);
+        assert_eq!(view.healthy, Some(false));
+        assert!(view.source_ids.is_empty());
+        assert!(view.affected_sources.is_empty());
+        assert_eq!(check.issues.len(), 1);
+        let binance = watches
+            .iter()
+            .find(|w| w.venue == "binance-futures")
+            .unwrap();
+        assert_eq!(binance.symbols["BTCUSDT"].len(), 3);
+        assert!(binance.symbols["SOLUSDT"].is_empty());
     }
 
     #[test]
@@ -309,7 +347,7 @@ mod tests {
 
     #[test]
     fn receive_time_cannot_hide_stale_exchange_time_or_another_venue() {
-        let watches = MarketWatch::from_sources(&sources());
+        let watches = MarketWatch::from_sources(&sources(), &[]);
         let watch = &watches[0];
         let feed = MarketFeed::default();
         for symbol in watch.symbols.keys() {
@@ -343,7 +381,7 @@ mod tests {
     #[test]
     fn one_venue_incident_recovers_only_after_all_its_symbols_recover() {
         use crate::notices::Tracker;
-        let watches = MarketWatch::from_sources(&sources());
+        let watches = MarketWatch::from_sources(&sources(), &[]);
         let watch = &watches[0];
         let feed = MarketFeed::default();
         let m = Monitor {

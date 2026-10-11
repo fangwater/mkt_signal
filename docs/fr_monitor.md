@@ -16,9 +16,9 @@
 | Bitget | `bitget_fr_arb01`–`03` | 20151–20153 |
 
 `binance_fr_arb01` 保留为 `enabled=false`：核对时其 Viz 未响应，未找到该环境目录下的运行程序。
-这是配置观察结果，不代表 monitor 已部署。重新上线该盘子时应复核端口、namespace 和进程再启用。
+重新上线该盘子时应复核端口、namespace 和进程再启用。
 
-默认市场检查范围是每个交易所现货/合约两条 BBO 中的 `BTCUSDT`、`ETHUSDT`。
+默认市场检查范围是 Binance、Gate、Bitget、OKX 的现货/合约 BBO 中的 `BTCUSDT`、`ETHUSDT`。
 它检测这两个代表币种的行情链路；**不会宣称覆盖所有在线币种**。需要逐币检查时，
 在相应 `sources.markets.symbols` 中明确加入该 venue 的内部 symbol，使用其真实合约名称；
 不能从资产名推测带乘数的合约代码。每个 symbol 独立计时，不以其他活跃币种掩盖停更。
@@ -33,7 +33,7 @@
 
 - 行情以 venue 为单位，每 5 秒检查一次（`market_poll_secs`）。`sources.markets` 声明
   盘子依赖，启动时合并为 venue → symbol → 盘子集合；每个 venue 只订阅、检查和告警一次。
-  当前 9 个盘子共用 6 个行情源，现货和合约分别检查。逐币结果用于计算真正受影响的盘子，
+  当前 9 个盘子共用 6 个行情源，另通过顶层 `markets` 保留 OKX 现货/合约两路共享行情，共 8 路；现货和合约分别检查。逐币结果用于计算真正受影响的盘子，
   同一 venue 部分币种恢复时继续保留该行情事件，全部恢复后才发送恢复通知。
 - 每个盘子独立按 `poll_secs`（默认 10 秒）读取风险、敞口及订单，完成后立即更新看板。
   一个盘子 HTTP 超时或订单读取阻塞不会阻塞行情和其他盘子。巡检超过
@@ -90,6 +90,16 @@ cargo build -p fr_monitor
 快照缺失或账户数据过期时，总览合计留空，明细中的最后已知值明确标注。
 只允许绑定本机回环地址，默认 `127.0.0.1:18180`；通过 SSH 转发或已有鉴权网关访问。
 所有数据接口都只有 GET。
+
+2026-10-11 起，行情巡检由独立 FR Monitor 接管，NAV 移除行情网络页面，
+`public-infra-monitor.service` 停用以卸载常驻 BPF。FR Monitor 使用业务 BBO 的
+逐币新鲜度判断行情状态，不保留原采集器的 TCP/BPF 网络诊断和 24 小时网络历史。
+当前部署目录为 `/home/ubuntu/fr_monitor`，使用 `--dry-run` 常驻运行；用户明确
+要求暂不启用新告警，因此不读取 webhook、不发送钉钉消息。
+
+4191 网关通过 `deploy/nginx-fr-monitor.conf` 提供 `/fr-monitor/` 及其
+`api/status`、`healthz` 子路径，复用 NAV 管理员会话鉴权。先在 `/nav/` 登录管理员，
+再访问 `/fr-monitor/`；普通用户和未登录访问不获授权。
 
 ## 发布和启动
 

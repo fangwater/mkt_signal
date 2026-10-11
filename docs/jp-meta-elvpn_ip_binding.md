@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-11 07:07 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-11 09:53 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -154,3 +154,5 @@ JP `~/retired_data/` 中仅保存以下 RocksDB 数据归档及各自 `.sha256` 
 2026-10-11 05:46 UTC trade05 待执行量及权益修复只更新 exec-pre-trade、Viz 和 Manager 程序，未改动账户 source IP、ENI、EIP 或路由；RX02 执行继续使用 `.228`。
 
 2026-10-11 07:07 UTC trade05 完成状态修复仅替换 exec-pre-trade/Viz，source IP 继续使用 `.228`，未变更 ENI、EIP 或路由。
+
+2026-10-11 NAV 行情监控迁入独立 `fr_monitor`（只读 IPC/Viz/RocksDB，回环 18180），停用 `public-infra-monitor` 与常驻 BPF。未分配交易 source IP，未修改 ENI、EIP、trade_engine local_ips 或路由；NAV 中 RX02/RX03 退役数据由 `binance_exec_trade05`（别名 `lgq_cta`、既有 RapidX `.228`）替代。原交易目录及 RocksDB 保留。

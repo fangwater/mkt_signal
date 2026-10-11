@@ -401,7 +401,7 @@ async fn main() -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .build()?;
-    let watches = MarketWatch::from_sources(&cfg.sources);
+    let watches = MarketWatch::from_sources(&cfg.sources, &cfg.markets);
     let feed = MarketFeed::spawn(&watches)?;
     let sources: Vec<_> = cfg.sources.iter().filter(|s| s.enabled).cloned().collect();
     let runtime = SharedRuntime::default();
@@ -585,7 +585,7 @@ mod tests {
         let mut jobs = JoinSet::new();
         jobs.spawn(async move { axum::serve(listener, app).await.unwrap() });
         let sources = vec![source("slow", &origin), source("fast", &origin)];
-        let watches = MarketWatch::from_sources(&sources);
+        let watches = MarketWatch::from_sources(&sources, &[]);
         let m = Monitor {
             poll_secs: 1,
             market_poll_secs: 1,
