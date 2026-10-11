@@ -23,10 +23,10 @@ order_webhook_url_env = "CTA_DINGTALK_ORDER_WEBHOOK_URL"
 # Preserve the shared OKX feeds previously watched by NAV's network collector.
 # IPC BBO symbols are normalized by the publisher (BTC-USDT-SWAP -> BTCUSDT).
 [[markets]]
-venue = "okex"
+venue = "okex-margin"
 symbols = ["BTCUSDT", "ETHUSDT"]
 [[markets]]
-venue = "okex-swap"
+venue = "okex-futures"
 symbols = ["BTCUSDT", "ETHUSDT"]
 
 [[sources]]

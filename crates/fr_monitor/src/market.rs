@@ -299,7 +299,7 @@ mod tests {
         let sources = sources();
         let shared = vec![
             Market {
-                venue: "okex-swap".into(),
+                venue: "okex-futures".into(),
                 symbols: vec!["BTCUSDT".into()],
             },
             Market {
@@ -309,7 +309,7 @@ mod tests {
         ];
         let watches = MarketWatch::from_sources(&sources, &shared);
         assert_eq!(watches.len(), 7);
-        let okx = watches.iter().find(|w| w.venue == "okex-swap").unwrap();
+        let okx = watches.iter().find(|w| w.venue == "okex-futures").unwrap();
         let (view, check) = MarketFeed::default().check(okx, &Monitor::default(), NOW);
         assert_eq!(view.healthy, Some(false));
         assert!(view.source_ids.is_empty());
