@@ -606,6 +606,16 @@ fn exec_trade_request_allowed(
             request,
             OkexNewUMOrder | OkexCancelUMOrder | OkexModifyUMOrder
         ),
+        TradingVenue::BinanceMargin => matches!(
+            request,
+            BinanceNewMarginOrder
+                | BinanceCancelMarginOrder
+                | BinanceLtpNewSpotOrder
+                | BinanceLtpCancelSpotOrder
+                | BinanceWsNewMarginOrder
+                | BinanceWsCancelMarginOrder
+        ),
+        TradingVenue::OkexMargin => matches!(request, OkexNewMarginOrder | OkexCancelMarginOrder),
         _ => false,
     }
 }
@@ -637,6 +647,18 @@ fn exec_query_request_allowed(
                 | BinanceCmBalanceSnapshotStd
                 | BinanceCmAccountSnapshotStd
                 | BinancePmCmAccountSnapshot
+        ),
+        TradingVenue::BinanceMargin => matches!(
+            request,
+            BinanceMarginQuery
+                | BinanceWsMarginQuery
+                | BinancePmBalanceSnapshot
+                | BinancePmAccountSnapshot
+                | BinanceSpotAccountSnapshotStd
+        ),
+        TradingVenue::OkexMargin => matches!(
+            request,
+            OkexMarginQuery | OkexAccountBalanceSnapshot | OkexUsdtAvailableSnapshot
         ),
         TradingVenue::OkexFutures => matches!(
             request,
@@ -1566,6 +1588,11 @@ impl TradeEngine {
                 exchange
             ));
         }
+        // Resolve once at startup; the request hot path needs no allocation.
+        let exec_markets = exec_venue.map(|venue| {
+            let markets = runtime_common::exec_market::runtime_venues(venue, exec_backend);
+            [Some(venue), markets.get(1).copied()]
+        });
         let use_ltp_backend = exec_backend == ExecBackend::Ltp;
         anyhow::ensure!(
             !use_ltp_backend || exec_venue != Some(order_common::TradingVenue::BinanceCoinFutures),
@@ -2664,8 +2691,12 @@ impl TradeEngine {
                 };
                 idle_spin_count = 0;
                 routed_since_yield = true;
-                if exec_venue.is_some_and(|venue| !exec_trade_request_allowed(venue, msg.req_type))
-                {
+                if exec_markets.is_some_and(|markets| {
+                    !markets
+                        .into_iter()
+                        .flatten()
+                        .any(|market| exec_trade_request_allowed(market, msg.req_type))
+                }) {
                     let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
                         req_type: msg.req_type,
                         client_order_id: msg.client_order_id,
@@ -3209,9 +3240,12 @@ impl TradeEngine {
                     };
                     idle_spin_count = 0;
                     routed_since_yield = true;
-                    if exec_venue
-                        .is_some_and(|venue| !exec_query_request_allowed(venue, msg.req_type))
-                    {
+                    if exec_markets.is_some_and(|markets| {
+                        !markets
+                            .into_iter()
+                            .flatten()
+                            .any(|market| exec_query_request_allowed(market, msg.req_type))
+                    }) {
                         let _ = query_resp_sink.send(QueryExecOutcome {
                             req_type: msg.req_type,
                             client_query_id: msg.client_query_id,

@@ -988,7 +988,10 @@ impl ChaseExecStrategy {
             .children
             .iter()
             .filter_map(|(client_order_id, meta)| {
-                (!meta.cancel_requested && (meta.cancel_for_target || meta.maker_expired))
+                (!meta.cancel_requested
+                    && (meta.cancel_for_target
+                        || meta.maker_expired
+                        || (self.exec_venue.is_spot() && meta.reprice_pending)))
                     .then_some(*client_order_id)
             })
             .collect();
@@ -1091,6 +1094,17 @@ impl ChaseExecStrategy {
                     meta.pending_amend_price = None;
                     meta.reprice_pending = false;
                 }
+                continue;
+            }
+            // Cash has no native amend request in our IPC contract. Cancel
+            // and let confirmed terminal updates release the unfilled maker
+            // quantity for reposting; never submit its replacement early.
+            if self.exec_venue.is_spot() {
+                drop(order);
+                if let Some(meta) = self.children.get_mut(&client_order_id) {
+                    meta.reprice_pending = true;
+                }
+                self.request_cancel(client_order_id);
                 continue;
             }
             let Some(price_qv) = QuantizedValue::encode_floor(new_price, limits.price_tick) else {

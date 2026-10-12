@@ -134,9 +134,12 @@ Never copy passwords, API keys, or values from the remote `env.sh` into this fil
 
 ## Exec Delisting And Forced Close
 
-Exec deployments own one configured market. `binance-futures` accepts only
-USDT/USDC perpetuals; `binance-coin-futures` accepts only USD coin-margined
-perpetuals. Never automatically add COIN-M to a native USD-M Exec. Keep separate
+Native Exec deployments own one configured market. RapidX Binance/OKX linear
+Execs also own that exchange's USDT cash market: bare targets such as `BTC`
+mean spot, while `BTCUSDT` / `BTCUSDC` mean perpetuals. Cash and perpetual
+strategy indexes, rules and position ledgers remain venue-scoped; FIFO is
+computed per market before aggregation. `binance-coin-futures` accepts only USD
+coin-margined perpetuals. Never automatically add COIN-M to a native USD-M Exec. Keep separate
 environment directories, namespaces, Redis prefixes, persistence stores and
 Viz/Config listeners for each market. Exec Viz requires an explicit configured
 venue and uses independently maintained USD-M and COIN-M frontends. Shared

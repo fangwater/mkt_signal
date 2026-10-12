@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-10 UTC
+最后更新：2026-10-12 UTC
 
 ## 状态
 
@@ -341,3 +341,11 @@ curl -sS -D - -o /dev/null 'http://127.0.0.1:28902/api/v3/market/margin-loans?co
 应用侧先恢复公共基址直连并逐个重启相关进程；确认不再访问本地监听后，再移除或禁用
 Nginx server 配置并执行 `nginx -t` 和 reload。回滚不得修改私有 API 基址、账户凭据、
 交易源 IP 或交易进程的其他网络设置。
+
+## Manager 混合现货/合约估值
+
+CTA Manager 的现货理论估值新增 Binance 公共 `GET /api/v3/klines`，与
+原有 `GET /fapi/v1/klines` 共用 Manager 的请求权重预算、专用非交易出口绑定和
+仅补缺失分钟的本地缓存。现货使用裸币名缓存键，合约使用完整交易对缓存键。
+两者仍直连 Binance，不新增 Nginx 路由或把签名 RapidX `sym/info` 纳入公共缓存。
+此次仅代码接入，未变更线上代理部署。

@@ -53,6 +53,8 @@ impl ManagerMarketRulesReloader {
             TradingVenue::BinanceFutures
                 | TradingVenue::BinanceCoinFutures
                 | TradingVenue::OkexFutures
+                | TradingVenue::BinanceMargin
+                | TradingVenue::OkexMargin
         ) {
             bail!("Manager market-rules cache does not support venue {venue:?}");
         }
@@ -212,6 +214,7 @@ impl ManagerMarketRulesSnapshot {
         let market_type = match expected_venue {
             TradingVenue::BinanceFutures | TradingVenue::OkexFutures => MarketType::Futures,
             TradingVenue::BinanceCoinFutures => MarketType::CoinFutures,
+            TradingVenue::BinanceMargin | TradingVenue::OkexMargin => MarketType::Spot,
             _ => unreachable!(),
         };
         let mut filters = HashMap::with_capacity(self.symbols.len());
@@ -252,7 +255,7 @@ impl ManagerMarketRulesSnapshot {
                     symbol.clone(),
                     positive_decimal(&symbol, "contract_multiplier", value)?,
                 );
-            } else if self.execution_backend == "ltp" {
+            } else if self.execution_backend == "ltp" && expected_venue.is_futures() {
                 bail!("RapidX futures rule lacks contract multiplier: {symbol}");
             }
         }
@@ -262,10 +265,10 @@ impl ManagerMarketRulesSnapshot {
 
 fn status_is_tradable(venue: TradingVenue, status: &str) -> bool {
     match venue {
-        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
-            status.eq_ignore_ascii_case("TRADING")
-        }
-        TradingVenue::OkexFutures => status.eq_ignore_ascii_case("live"),
+        TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures
+        | TradingVenue::BinanceMargin => status.eq_ignore_ascii_case("TRADING"),
+        TradingVenue::OkexFutures | TradingVenue::OkexMargin => status.eq_ignore_ascii_case("live"),
         _ => false,
     }
 }
@@ -283,6 +286,29 @@ fn positive_decimal(symbol: &str, field: &str, value: &str) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cash_rule_snapshot_uses_spot_units_without_contract_multiplier() {
+        for venue in [TradingVenue::BinanceMargin, TradingVenue::OkexMargin] {
+            let mut snapshot = sample_snapshot();
+            snapshot.venue = venue.data_pub_slug().into();
+            snapshot.execution_backend = "ltp".into();
+            for rule in snapshot.symbols.values_mut() {
+                rule.contract_multiplier = None;
+                rule.status = if venue == TradingVenue::BinanceMargin {
+                    "TRADING"
+                } else {
+                    "live"
+                }
+                .into();
+            }
+            let (kind, filters, multipliers, active) = snapshot.into_tables(venue).unwrap();
+            assert!(matches!(kind, MarketType::Spot));
+            assert!(!filters.is_empty());
+            assert!(multipliers.is_empty());
+            assert_eq!(active.len(), filters.len());
+        }
+    }
 
     #[test]
     fn startup_requires_recent_positive_rule_timestamp() {

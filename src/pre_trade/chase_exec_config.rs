@@ -40,6 +40,41 @@ pub struct ChaseExecRedisValue {
 }
 
 impl ChaseExecRedisValue {
+    fn into_runtime(mut self, venue: TradingVenue) -> Result<Self> {
+        self.validate()?;
+        let targets = self.normalized_targets()?;
+        let overrides = self.normalized_symbol_overrides()?;
+        if venue.is_spot() {
+            for symbol in targets.keys().chain(overrides.keys()) {
+                anyhow::ensure!(
+                    !symbol.ends_with("USDT")
+                        && !symbol.ends_with("USDC")
+                        && !symbol.ends_with("USD"),
+                    "cash target must use a bare asset: {symbol}"
+                );
+            }
+            self.targets = targets
+                .into_iter()
+                .map(|(symbol, value)| {
+                    (
+                        runtime_common::exec_market::runtime_symbol(venue, &symbol),
+                        value,
+                    )
+                })
+                .collect();
+            self.symbol_overrides = overrides
+                .into_iter()
+                .map(|(symbol, value)| {
+                    (
+                        runtime_common::exec_market::runtime_symbol(venue, &symbol),
+                        value,
+                    )
+                })
+                .collect();
+        }
+        Ok(self)
+    }
+
     fn validate(&self) -> Result<()> {
         self.config.validate().map_err(anyhow::Error::msg)?;
         if self.updated_at_us.is_some_and(|timestamp| timestamp <= 0) {
@@ -123,7 +158,11 @@ const REMOVED_STRATEGY_NAMES_KEY: &str = "chase_exec:removed_strategy_names";
 fn chase_exec_venue_supported(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures | TradingVenue::OkexFutures
+        TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
+            | TradingVenue::OkexFutures
+            | TradingVenue::BinanceMargin
+            | TradingVenue::OkexMargin
     )
 }
 const POSITION_LEDGER_KEY: &str = "chase_exec_state:position_allocations";
@@ -201,10 +240,12 @@ impl ChaseExecLeverageInitState {
 impl ChaseExecLeverageInitScope {
     fn current(venue: TradingVenue) -> Result<Self> {
         let exchange = match venue {
-            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
-                runtime_common::exchange::Exchange::Binance
+            TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
+            | TradingVenue::BinanceMargin => runtime_common::exchange::Exchange::Binance,
+            TradingVenue::OkexFutures | TradingVenue::OkexMargin => {
+                runtime_common::exchange::Exchange::Okex
             }
-            TradingVenue::OkexFutures => runtime_common::exchange::Exchange::Okex,
             other => anyhow::bail!(
                 "unsupported ChaseExec futures venue for leverage-init scope: {other:?}"
             ),
@@ -759,6 +800,10 @@ impl ChaseExecConfigReloader {
         &mut self,
         required_symbols: &BTreeSet<String>,
     ) -> BTreeSet<String> {
+        // Cash positions have no contract leverage to initialize.
+        if self.venue.is_spot() {
+            return BTreeSet::new();
+        }
         let mut blocked = BTreeSet::new();
         let mut newly_initialized = BTreeSet::new();
         for (index, symbol) in required_symbols.iter().enumerate() {
@@ -1839,7 +1884,9 @@ impl ChaseExecConfigReloader {
                 .await
                 .with_context(|| format!("load Redis key {key}"))?;
             let payload = match payload {
-                Some(payload) => payload,
+                Some(payload) => payload
+                    .into_runtime(self.venue)
+                    .with_context(|| format!("invalid Exec target market key={key}"))?,
                 None => {
                     warn!("ChaseExec Redis key missing: {}", key);
                     self.snapshots
@@ -2120,11 +2167,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chase_exec_is_limited_to_linear_futures_venues() {
+    fn chase_exec_accepts_cash_and_supported_futures_venues() {
         assert!(chase_exec_venue_supported(TradingVenue::BinanceFutures));
         assert!(chase_exec_venue_supported(TradingVenue::OkexFutures));
         assert!(chase_exec_venue_supported(TradingVenue::BinanceCoinFutures));
-        assert!(!chase_exec_venue_supported(TradingVenue::BinanceMargin));
+        assert!(chase_exec_venue_supported(TradingVenue::BinanceMargin));
+        assert!(chase_exec_venue_supported(TradingVenue::OkexMargin));
+    }
+
+    #[test]
+    fn cash_targets_materialize_without_merging_with_perpetuals() {
+        let value = ChaseExecRedisValue {
+            config: Default::default(),
+            targets: serde_json::from_value(
+                serde_json::json!({"BTC":{"qty":1.0,"signal":1},"ETH":{"qty":"clear"}}),
+            )
+            .unwrap(),
+            symbol_overrides: BTreeMap::new(),
+            updated_at_us: Some(1),
+        };
+        let runtime = value
+            .clone()
+            .into_runtime(TradingVenue::BinanceMargin)
+            .unwrap();
+        assert_eq!(runtime.targets["BTCUSDT"].qty, 1.0);
+        assert_eq!(runtime.targets["BTCUSDT"].signal, 1);
+        assert!(runtime.targets["ETHUSDT"].clear);
+        assert_eq!(runtime.updated_at_us, Some(1));
+        let mut duplicate = value.clone();
+        duplicate
+            .targets
+            .insert("btc".into(), duplicate.targets["BTC"]);
+        assert!(duplicate.into_runtime(TradingVenue::BinanceMargin).is_err());
+        let mut quoted = value;
+        quoted
+            .targets
+            .insert("BTCUSDT".into(), quoted.targets["BTC"]);
+        assert!(quoted.into_runtime(TradingVenue::BinanceMargin).is_err());
     }
 
     #[test]

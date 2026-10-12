@@ -164,6 +164,18 @@ fn spawn_exec_state_listener(
                 }
             };
             if rows.iter().any(|row| {
+                let cash = !row.symbol.ends_with("USDT")
+                    && !row.symbol.ends_with("USDC")
+                    && !row.symbol.ends_with("USD");
+                if cash
+                    && matches!(
+                        venue,
+                        order_common::TradingVenue::BinanceFutures
+                            | order_common::TradingVenue::OkexFutures
+                    )
+                {
+                    return row.symbol.is_empty() || !row.symbol.chars().all(char::is_alphanumeric);
+                }
                 runtime_common::exec_market::validate_symbol(venue, &row.symbol).is_err()
             }) {
                 warn!(

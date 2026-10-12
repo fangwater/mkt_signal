@@ -475,7 +475,7 @@ def decode_stored_exec_config(
 
 
 def exec_markets(venue: str) -> List[str]:
-    if venue not in ("binance-futures", "binance-coin-futures"):
+    if venue not in ("binance-futures", "binance-coin-futures", "okex-futures"):
         return [venue]
 
     def backend(raw: str) -> str:
@@ -501,9 +501,11 @@ def exec_markets(venue: str) -> List[str]:
         if key in overrides:
             raise ValueError(f"duplicate execution backend mapping: {key}")
         overrides[key] = backend(value)
-    selected = overrides.get("binance", overrides.get("*", selected))
+    selected = overrides.get("okex" if venue == "okex-futures" else "binance", overrides.get("*", selected))
     if venue == "binance-coin-futures" and selected != "native":
         raise ValueError("COIN-M execution requires the native Binance backend")
+    if selected == "ltp":
+        return [venue, "okex-margin" if venue == "okex-futures" else "binance-margin"]
     return [venue]
 
 
@@ -543,16 +545,15 @@ class ExecConfigStore:
         ) for venue in self.markets]
 
     def _symbol_market(self, symbol: str) -> str:
-        if self.venue == "okex-futures":
-            return self.venue
+        exchange = "okex" if self.venue == "okex-futures" else "binance"
         if symbol.endswith(("USDT", "USDC")):
-            selected = "binance-futures"
+            selected = f"{exchange}-futures"
         elif symbol.endswith("USD"):
             selected = "binance-coin-futures"
         else:
-            raise ValueError(f"Binance perpetual symbol must end with USDT, USDC or USD: {symbol}")
+            selected = f"{exchange}-margin"
         if selected not in self.markets:
-            raise ValueError(f"symbol {symbol} does not belong to Exec market {self.venue}; use a separate Exec deployment")
+            raise ValueError(f"symbol {symbol} does not belong to Exec market {self.venue}; cash targets require RapidX")
         return selected
 
     @staticmethod

@@ -112,6 +112,28 @@ class ClearTargetTests(unittest.TestCase):
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_rapidx_mixed_cash_and_perp_publish_merge_clear_and_remove(self):
+        for venue, cash in [("binance-futures", "binance-margin"), ("okex-futures", "okex-margin")]:
+            for family, defaults in [("batch_exec", MODULE.DEFAULT_CONFIG), ("chase_exec", MODULE.DEFAULT_CHASE_CONFIG)]:
+                with self.subTest(venue=venue, family=family), mock.patch.dict(MODULE.os.environ, {
+                    "TRADE_ENGINE_EXEC_BACKEND": "rapidx", "TRADE_ENGINE_EXEC_BACKEND_MAP": ""
+                }):
+                    store = fake_store(venue)
+                    store.markets = MODULE.exec_markets(venue)
+                    targets = {"BTC": {"qty": 1, "signal": 1}, "BTCUSDT": {"qty": -1, "signal": 0}, "ETH": {"qty": "clear", "signal": 0}}
+                    saved = store.save("hedged", {**defaults, "targets": targets}, family)
+                    spot_config = json.loads(store.client.get(store.key("hedged", family, cash)))
+                    perp_config = json.loads(store.client.get(store.key("hedged", family, venue)))
+                    self.assertEqual(set(spot_config["targets"]), {"BTC", "ETH"})
+                    self.assertEqual(set(perp_config["targets"]), {"BTCUSDT"})
+                    self.assertEqual(store.load("hedged", family), saved)
+                    updated = store.save("hedged", {**defaults, "targets": {"BTCUSDT": 0}}, family)
+                    self.assertEqual(store.load("hedged", family), updated)
+                    self.assertEqual(json.loads(store.client.get(store.key("hedged", family, cash)))["targets"], {})
+                    self.assertTrue(store.remove("hedged", family))
+                    for market in store.markets:
+                        self.assertEqual(json.loads(store.client.get(f"{store.family_prefix(family, market)}removed_strategy_names")), ["hedged"])
+
     def test_independent_market_publish_update_and_remove(self):
         um = fake_store(env_name="exec_um")
         cm = fake_store("binance-coin-futures", "exec_cm")

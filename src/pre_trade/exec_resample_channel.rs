@@ -134,7 +134,10 @@ impl ExecResampleChannel {
                     pov: snapshot.pov,
                     strategy_name: snapshot.strategy_name,
                     source_updated_at_ms: snapshot.source_updated_at_ms,
-                    symbol: snapshot.symbol,
+                    symbol: runtime_common::exec_market::target_symbol(
+                        snapshot.exec_venue,
+                        &snapshot.symbol,
+                    ),
                     position_allocated: snapshot.position_allocated,
                     account_position_qty: snapshot.account_position_qty,
                     target_qty,
@@ -172,7 +175,10 @@ impl ExecResampleChannel {
                     pov: snapshot.pov,
                     strategy_name: snapshot.strategy_name,
                     source_updated_at_ms: snapshot.source_updated_at_ms,
-                    symbol: snapshot.symbol,
+                    symbol: runtime_common::exec_market::target_symbol(
+                        snapshot.exec_venue,
+                        &snapshot.symbol,
+                    ),
                     position_allocated: snapshot.position_allocated,
                     account_position_qty: snapshot.account_position_qty,
                     target_qty,

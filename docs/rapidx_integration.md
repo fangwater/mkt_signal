@@ -57,6 +57,39 @@ inside the existing namespace. Its publisher and consumers require
 `safe_overflow=false`; native account streams retain their existing policy.
 Run only one execution backend for a given exchange within an IPC namespace.
 
+## Mixed spot and perpetual targets
+
+RapidX Binance/OKX Exec owns both the configured linear perpetual market and
+its USDT cash market. Publish both legs in the same Manager strategy:
+
+```json
+{"strategy_name":"basis","targets":{"BTC":1,"BTCUSDT":-1,"ETH":{"qty":"clear"}}}
+```
+
+`BTC` means the BTC/USDT cash pair, `BTCUSDT` and `BTCUSDC` mean perpetuals.
+All quantities are base coins. Cash uses the existing Binance SPOT/MARGIN setting
+above (MARGIN permits borrowing); OKX uses SPOT. Native deployments retain their
+single-market scope, and COIN-M is never added to a RapidX deployment.
+Manager writes the two venue scopes in one Redis transaction, including empty
+scopes when a leg is removed. Exec expands bare assets only inside the cash
+reloader; order, quote, rule and ledger identities retain the native pair plus
+venue. Viz and Manager expose cash positions as bare assets. Batch, POV, CTaker
+and Chase all accept cash targets; Chase cancels and waits for terminal
+confirmation before reposting cash makers. Cash does not initialize contract
+leverage. Startup validates both Manager rule caches and cancels orders in each
+selected business type within the configured portfolio.
+
+Manager reconstructs factual FIFO independently by source, strategy, symbol and
+venue, then sums realized PnL, floating PnL and estimated fees. Cash fills and
+initial snapshots use the same bare-asset display identity as targets. Binance
+cash theoretical pricing uses spot minute candles with a separate cache key from
+perpetual candles; existing OKX theoretical pricing limitations remain.
+
+Publish Manager and Exec together before enabling mixed targets. Manager must
+publish both rule caches, and the account's market-data publisher must provide
+both markets (for Binance, `spread_pbs --venue binance-both`). This code change
+does not deploy binaries or submit live orders.
+
 ## Standard Exec Deployment
 
 Each RX account uses one standard Exec environment. All factor strategies for
@@ -344,8 +377,9 @@ path, defaults to dry-run, requires `--execute`, and enforces a maximum 10 USDT
 notional cap for placements.
 
 The leverage adapter sets the existing BatchExec default of 5 and reads the exact
-perpetual symbol back before activation. Only Binance/OKX USDT perpetual symbols
-are supported; this does not add inverse-futures support or change account mode.
+perpetual symbol back before activation. Binance/OKX USDT and USDC perpetual
+symbols with active Manager rules are supported. Cash targets skip contract
+leverage entirely. This does not add inverse-futures support or change account mode.
 The existing leverage marker is bound to venue/backend/portfolio. A scope change
 invalidates its symbol set. RapidX confirmations are process-local and must be
 renewed after restart; persisted markers alone cannot activate RapidX symbols.

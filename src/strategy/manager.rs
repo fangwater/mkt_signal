@@ -122,20 +122,22 @@ struct StrategyKindIndexFlags {
     is_mm_hedge: bool,
     is_arb_hedge: bool,
     is_cta_special: bool,
-    batch_exec_strategy_name: Option<String>,
-    chase_exec_strategy_name: Option<String>,
+    batch_exec_strategy_name: Option<(String, TradingVenue)>,
+    chase_exec_strategy_name: Option<(String, TradingVenue)>,
     has_order_terminal_recorder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ExecStrategyIndexKey {
+    venue: TradingVenue,
     strategy_name: String,
     symbol: String,
 }
 
 impl ExecStrategyIndexKey {
-    fn new(strategy_name: &str, symbol: &str) -> Self {
+    fn new(strategy_name: &str, symbol: &str, venue: TradingVenue) -> Self {
         Self {
+            venue,
             strategy_name: strategy_name.to_string(),
             symbol: symbol.to_string(),
         }
@@ -380,11 +382,11 @@ impl StrategyManager {
             batch_exec_strategy_name: strategy
                 .as_any()
                 .downcast_ref::<BatchExecStrategy>()
-                .map(|strategy| strategy.strategy_name().to_string()),
+                .map(|strategy| (strategy.strategy_name().to_string(), strategy.exec_venue())),
             chase_exec_strategy_name: strategy
                 .as_any()
                 .downcast_ref::<ChaseExecStrategy>()
-                .map(|strategy| strategy.strategy_name().to_string()),
+                .map(|strategy| (strategy.strategy_name().to_string(), strategy.exec_venue())),
             has_order_terminal_recorder: strategy.has_order_terminal_recorder(),
         }
     }
@@ -404,13 +406,13 @@ impl StrategyManager {
         if flags.is_cta_special {
             self.cta_special_index.insert(symbol.to_string(), id);
         }
-        if let Some(strategy_name) = flags.batch_exec_strategy_name {
+        if let Some((strategy_name, venue)) = flags.batch_exec_strategy_name {
             self.batch_exec_strategy_index
-                .insert(ExecStrategyIndexKey::new(&strategy_name, symbol), id);
+                .insert(ExecStrategyIndexKey::new(&strategy_name, symbol, venue), id);
         }
-        if let Some(strategy_name) = flags.chase_exec_strategy_name {
+        if let Some((strategy_name, venue)) = flags.chase_exec_strategy_name {
             self.chase_exec_strategy_index
-                .insert(ExecStrategyIndexKey::new(&strategy_name, symbol), id);
+                .insert(ExecStrategyIndexKey::new(&strategy_name, symbol, venue), id);
         }
         if flags.has_order_terminal_recorder {
             self.order_terminal_recorder_index
@@ -438,8 +440,8 @@ impl StrategyManager {
         {
             self.cta_special_index.remove(symbol);
         }
-        if let Some(strategy_name) = flags.batch_exec_strategy_name {
-            let key = ExecStrategyIndexKey::new(&strategy_name, symbol);
+        if let Some((strategy_name, venue)) = flags.batch_exec_strategy_name {
+            let key = ExecStrategyIndexKey::new(&strategy_name, symbol, venue);
             if self
                 .batch_exec_strategy_index
                 .get(&key)
@@ -448,8 +450,8 @@ impl StrategyManager {
                 self.batch_exec_strategy_index.remove(&key);
             }
         }
-        if let Some(strategy_name) = flags.chase_exec_strategy_name {
-            let key = ExecStrategyIndexKey::new(&strategy_name, symbol);
+        if let Some((strategy_name, venue)) = flags.chase_exec_strategy_name {
+            let key = ExecStrategyIndexKey::new(&strategy_name, symbol, venue);
             if self
                 .chase_exec_strategy_index
                 .get(&key)
@@ -1085,17 +1087,23 @@ impl StrategyManager {
     }
 
     /// 查询指定 symbol 的 Arb 对冲状态策略 id（symbol 不区分大小写）
-    pub fn find_batch_exec_strategy_id(&self, strategy_name: &str, symbol: &str) -> Option<i32> {
+    pub fn find_batch_exec_strategy_id(
+        &self,
+        strategy_name: &str,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        self.find_batch_exec_strategy_id_for_normalized_symbol(strategy_name, &symbol_upper)
+        self.find_batch_exec_strategy_id_for_normalized_symbol(strategy_name, &symbol_upper, venue)
     }
 
     pub fn find_batch_exec_strategy_id_for_normalized_symbol(
         &self,
         strategy_name: &str,
         symbol_upper: &str,
+        venue: TradingVenue,
     ) -> Option<i32> {
-        let key = ExecStrategyIndexKey::new(strategy_name, symbol_upper);
+        let key = ExecStrategyIndexKey::new(strategy_name, symbol_upper, venue);
         if let Some(id) = self.batch_exec_strategy_index.get(&key) {
             return Some(*id);
         }
@@ -1103,7 +1111,7 @@ impl StrategyManager {
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if let Some(exec) = strategy.as_any().downcast_ref::<BatchExecStrategy>() {
-                    if exec.strategy_name() == strategy_name {
+                    if exec.strategy_name() == strategy_name && exec.exec_venue() == venue {
                         return Some(*id);
                     }
                 }
@@ -1135,9 +1143,11 @@ impl StrategyManager {
         exec_venue: TradingVenue,
         config: BatchExecConfig,
     ) -> i32 {
-        if let Some(id) =
-            self.find_batch_exec_strategy_id_for_normalized_symbol(strategy_name, symbol_upper)
-        {
+        if let Some(id) = self.find_batch_exec_strategy_id_for_normalized_symbol(
+            strategy_name,
+            symbol_upper,
+            exec_venue,
+        ) {
             if let Some(mut strategy) = self.take(id) {
                 if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
                     if let Err(err) = exec.update_config(config) {
@@ -1203,17 +1213,23 @@ impl StrategyManager {
         snapshots
     }
 
-    pub fn find_chase_exec_strategy_id(&self, strategy_name: &str, symbol: &str) -> Option<i32> {
+    pub fn find_chase_exec_strategy_id(
+        &self,
+        strategy_name: &str,
+        symbol: &str,
+        venue: TradingVenue,
+    ) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        self.find_chase_exec_strategy_id_for_normalized_symbol(strategy_name, &symbol_upper)
+        self.find_chase_exec_strategy_id_for_normalized_symbol(strategy_name, &symbol_upper, venue)
     }
 
     pub fn find_chase_exec_strategy_id_for_normalized_symbol(
         &self,
         strategy_name: &str,
         symbol_upper: &str,
+        venue: TradingVenue,
     ) -> Option<i32> {
-        let key = ExecStrategyIndexKey::new(strategy_name, symbol_upper);
+        let key = ExecStrategyIndexKey::new(strategy_name, symbol_upper, venue);
         if let Some(id) = self.chase_exec_strategy_index.get(&key) {
             return Some(*id);
         }
@@ -1221,7 +1237,7 @@ impl StrategyManager {
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if let Some(exec) = strategy.as_any().downcast_ref::<ChaseExecStrategy>() {
-                    if exec.strategy_name() == strategy_name {
+                    if exec.strategy_name() == strategy_name && exec.exec_venue() == venue {
                         return Some(*id);
                     }
                 }
@@ -1253,9 +1269,11 @@ impl StrategyManager {
         exec_venue: TradingVenue,
         config: ChaseExecConfig,
     ) -> i32 {
-        if let Some(id) =
-            self.find_chase_exec_strategy_id_for_normalized_symbol(strategy_name, symbol_upper)
-        {
+        if let Some(id) = self.find_chase_exec_strategy_id_for_normalized_symbol(
+            strategy_name,
+            symbol_upper,
+            exec_venue,
+        ) {
             if let Some(mut strategy) = self.take(id) {
                 if let Some(exec) = strategy.as_any_mut().downcast_mut::<ChaseExecStrategy>() {
                     if let Err(err) = exec.update_config(config) {
@@ -2117,6 +2135,62 @@ mod tests {
     }
 
     #[test]
+    fn exec_identity_includes_venue_for_both_execution_families() {
+        let mut manager = StrategyManager::new();
+        let config: BatchExecConfig = serde_json::from_value(serde_json::json!({
+            "single_order_usdt":100.0,"orders_per_batch":3,"max_batch":20,
+            "maker_price_anchor":"own_best","tick_spacing":2,"batch_interval_ms":500,
+            "maker_timeout_ms":1000,"max_maker_requotes":2,"target_tolerance_usdt":10.0
+        }))
+        .unwrap();
+        let spot = manager.ensure_batch_exec_strategy(
+            "hedged",
+            "BTCUSDT",
+            TradingVenue::BinanceMargin,
+            config.clone(),
+        );
+        let perp = manager.ensure_batch_exec_strategy(
+            "hedged",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config.clone(),
+        );
+        assert_ne!(spot, perp);
+        assert_eq!(
+            manager.ensure_batch_exec_strategy(
+                "hedged",
+                "BTCUSDT",
+                TradingVenue::BinanceMargin,
+                config
+            ),
+            spot
+        );
+        manager.remove(perp);
+        assert_eq!(
+            manager.find_batch_exec_strategy_id("hedged", "BTCUSDT", TradingVenue::BinanceMargin),
+            Some(spot)
+        );
+        let cash_chase = manager.ensure_chase_exec_strategy(
+            "hedged",
+            "BTCUSDT",
+            TradingVenue::BinanceMargin,
+            crate::strategy::chase_exec::ChaseExecConfig::default(),
+        );
+        let perp_chase = manager.ensure_chase_exec_strategy(
+            "hedged",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            crate::strategy::chase_exec::ChaseExecConfig::default(),
+        );
+        assert_ne!(cash_chase, perp_chase);
+        manager.remove(cash_chase);
+        assert_eq!(
+            manager.find_chase_exec_strategy_id("hedged", "BTCUSDT", TradingVenue::BinanceFutures),
+            Some(perp_chase)
+        );
+    }
+
+    #[test]
     fn hedge_and_batch_exec_strategy_indexes_follow_lifecycle() {
         let mut manager = StrategyManager::new();
         let batch_exec_config = BatchExecConfig {
@@ -2167,26 +2241,46 @@ mod tests {
             Some(52)
         );
         assert_eq!(
-            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol(
+                "cta_alpha",
+                "SOLUSDT",
+                TradingVenue::GateFutures
+            ),
             Some(53)
         );
         assert_eq!(
-            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_beta", "SOLUSDT"),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol(
+                "cta_beta",
+                "SOLUSDT",
+                TradingVenue::GateFutures
+            ),
             Some(54)
         );
 
         let exec = manager.take(53).expect("batch exec strategy should exist");
         assert_eq!(
-            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol(
+                "cta_alpha",
+                "SOLUSDT",
+                TradingVenue::GateFutures
+            ),
             None
         );
         assert_eq!(
-            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_beta", "SOLUSDT"),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol(
+                "cta_beta",
+                "SOLUSDT",
+                TradingVenue::GateFutures
+            ),
             Some(54)
         );
         manager.insert(exec);
         assert_eq!(
-            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol(
+                "cta_alpha",
+                "SOLUSDT",
+                TradingVenue::GateFutures
+            ),
             Some(53)
         );
 

@@ -67,16 +67,23 @@ fn rapidx_perp_symbol(venue: TradingVenue, internal_symbol: &str) -> Result<Stri
         other => bail!("RapidX leverage does not support BatchExec venue {other:?}"),
     };
     let symbol = normalize_symbol_for_internal(internal_symbol);
-    let base = symbol
-        .strip_suffix("USDT")
-        .filter(|base| !base.is_empty())
-        .ok_or_else(|| anyhow!("RapidX perpetual leverage requires a USDT internal symbol"))?;
+    let (base, quote) = ["USDT", "USDC"]
+        .into_iter()
+        .find_map(|quote| {
+            symbol
+                .strip_suffix(quote)
+                .filter(|base| !base.is_empty())
+                .map(|base| (base, quote))
+        })
+        .ok_or_else(|| {
+            anyhow!("RapidX perpetual leverage requires a USDT or USDC internal symbol")
+        })?;
     anyhow::ensure!(
         base.bytes()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()),
         "RapidX perpetual leverage symbol must be ASCII uppercase alphanumeric"
     );
-    Ok(format!("{exchange}_PERP_{base}_USDT"))
+    Ok(format!("{exchange}_PERP_{base}_{quote}"))
 }
 
 fn ensure_rapidx_success(status: u16, body: &str, operation: &str) -> Result<()> {
@@ -141,6 +148,10 @@ mod tests {
         assert_eq!(
             rapidx_perp_symbol(TradingVenue::OkexFutures, "ETHUSDT").unwrap(),
             "OKX_PERP_ETH_USDT"
+        );
+        assert_eq!(
+            rapidx_perp_symbol(TradingVenue::BinanceFutures, "BTCUSDC").unwrap(),
+            "BINANCE_PERP_BTC_USDC"
         );
         assert!(rapidx_perp_symbol(TradingVenue::GateFutures, "BTCUSDT").is_err());
         assert!(rapidx_perp_symbol(TradingVenue::BinanceFutures, "BTCUSD").is_err());

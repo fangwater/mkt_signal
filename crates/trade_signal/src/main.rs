@@ -740,6 +740,13 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
+                let backend = runtime_common::execution_backend::ExecBackend::for_exchange(
+                    Exchange::from_str(exec_venue.trade_engine_exchange())
+                        .context("Exec exchange")?,
+                )?;
+                let cash_venue = *runtime_common::exec_market::runtime_venues(exec_venue, backend)
+                    .last()
+                    .expect("Exec always owns a market");
                 (
                     DecisionBranch::Exec,
                     None,
@@ -747,7 +754,7 @@ async fn main() -> Result<()> {
                     exec_venue.data_pub_slug().to_string(),
                     None,
                     exec_venue,
-                    exec_venue,
+                    cash_venue,
                 )
             }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("mm") => {

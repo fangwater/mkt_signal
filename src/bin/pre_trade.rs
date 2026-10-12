@@ -105,8 +105,13 @@ enum ExecVenue {
 const FR_STARTUP_STABILITY_DELAY: Duration = Duration::from_secs(3);
 type HmacSha256 = Hmac<Sha256>;
 
-fn exec_runtime_venues(venue: TradingVenue) -> Vec<TradingVenue> {
-    vec![venue]
+fn exec_runtime_venues(venue: TradingVenue) -> Result<Vec<TradingVenue>> {
+    let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
+        .context("invalid Exec exchange")?;
+    Ok(runtime_common::exec_market::runtime_venues(
+        venue,
+        runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?,
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -463,9 +468,11 @@ async fn cancel_all_orders_on_startup(
         == runtime_common::execution_backend::ExecBackend::Ltp
     {
         let wire_exchange = match venue {
-            TradingVenue::BinanceFutures => "BINANCE",
-            TradingVenue::OkexFutures => "OKX",
-            _ => anyhow::bail!("RapidX startup cancellation supports linear perpetual venues only"),
+            TradingVenue::BinanceFutures | TradingVenue::BinanceMargin => "BINANCE",
+            TradingVenue::OkexFutures | TradingVenue::OkexMargin => "OKX",
+            _ => anyhow::bail!(
+                "RapidX startup cancellation supports Binance/OKX linear and cash venues only"
+            ),
         };
         let timeout = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
             .ok()
@@ -473,14 +480,25 @@ async fn cancel_all_orders_on_startup(
             .unwrap_or(120)
             .max(1);
         let client = trade_engine::ltp_rest::LtpRestClient::from_env()?;
+        let business_type = match venue {
+            TradingVenue::BinanceMargin => {
+                match runtime_common::execution_backend::rapidx_binance_cash_business_type()? {
+                    runtime_common::execution_backend::RapidXCashBusinessType::Spot => "SPOT",
+                    runtime_common::execution_backend::RapidXCashBusinessType::Margin => "MARGIN",
+                }
+            }
+            TradingVenue::OkexMargin => "SPOT",
+            _ => "PERP",
+        };
         warn!(
-            "{} startup gate: cancelling RapidX {} PERP orders in portfolio {} and verifying empty",
+            "{} startup gate: cancelling RapidX {} {} orders in portfolio {} and verifying empty",
             gate_name,
             wire_exchange,
+            business_type,
             client.portfolio_id()
         );
         return client
-            .cancel_exec_orders_on_startup(wire_exchange, Duration::from_secs(timeout))
+            .cancel_open_orders(wire_exchange, business_type, Duration::from_secs(timeout))
             .await;
     }
     let cwd = std::env::current_dir().context("resolve current directory")?;
@@ -716,7 +734,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
     let exec_venues = if exec_pre_trade {
-        exec_runtime_venues(open_venue)
+        exec_runtime_venues(open_venue)?
     } else {
         vec![open_venue]
     };
@@ -744,12 +762,14 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             ),
             "RapidX Exec supports Binance/OKX linear perpetual venues only"
         );
-        let mut redis = RedisSettings::default();
-        redis.prefix = Some(exec_redis_prefix(
-            infer_dir_prefix_from_cwd().as_deref(),
-            open_venue,
-        ));
-        ManagerMarketRulesReloader::verify_startup(redis, open_venue).await?;
+        for venue in &exec_venues {
+            let mut redis = RedisSettings::default();
+            redis.prefix = Some(exec_redis_prefix(
+                infer_dir_prefix_from_cwd().as_deref(),
+                *venue,
+            ));
+            ManagerMarketRulesReloader::verify_startup(redis, *venue).await?;
+        }
     }
     let binance_account_mode = if need_binance {
         Some(if rapidx_binance {
@@ -1497,17 +1517,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exec_manages_only_its_configured_market() {
+    fn native_exec_manages_only_its_configured_market() {
         assert_eq!(
-            exec_runtime_venues(TradingVenue::BinanceFutures),
+            runtime_common::exec_market::runtime_venues(
+                TradingVenue::BinanceFutures,
+                runtime_common::execution_backend::ExecBackend::Native
+            ),
             vec![TradingVenue::BinanceFutures]
         );
         assert_eq!(
-            exec_runtime_venues(TradingVenue::BinanceCoinFutures),
+            runtime_common::exec_market::runtime_venues(
+                TradingVenue::BinanceCoinFutures,
+                runtime_common::execution_backend::ExecBackend::Native
+            ),
             vec![TradingVenue::BinanceCoinFutures]
         );
         assert_eq!(
-            exec_runtime_venues(TradingVenue::OkexFutures),
+            runtime_common::exec_market::runtime_venues(
+                TradingVenue::OkexFutures,
+                runtime_common::execution_backend::ExecBackend::Native
+            ),
             vec![TradingVenue::OkexFutures]
         );
     }
