@@ -18,9 +18,10 @@ class PositionReplayTests(unittest.TestCase):
         table={f:1 for f in 'ABCDE'}
         result=self.run_rows([self.row(0,{f:.99 if f in 'ABC' else .01 for f in table})],table)
         stats=result['summaries']['FILUSDT']['strategies']
-        self.assertEqual([stats[f]['position_qty'] for f in table],[2,2,2,-2,-2])
+        self.assertEqual([stats[f]['position_qty'] for f in table],[10,10,10,-10,-10])
         self.assertEqual(len(result['records']),5)
-        self.assertTrue(all(r['simulation']['actions'][0]['notional']==200 for r in result['records']))
+        self.assertTrue(all(r['simulation']['actions'][0]['notional']==1000 for r in result['records']))
+        self.assertEqual(result['allocation'], 'per_symbol_factor')
     def test_single_amount_applies_to_every_factor_and_symbol(self):
         self.config['max_pos_u'] = 2000
         fil = self.row(0, {'A': .99, 'B': .01})
@@ -28,8 +29,8 @@ class PositionReplayTests(unittest.TestCase):
         result = simulate([fil, eth], {'FILUSDT': {'A': 1, 'B': 1}, 'ETHUSDT': {'A': 1, 'B': 1}}, self.config, self.settings)
         opens = [a for row in result['records'] for a in row['simulation']['actions']]
         self.assertEqual(len(opens), 4)
-        self.assertEqual({a['notional'] for a in opens}, {1000})
-        self.assertEqual(sorted(a['qty'] for a in opens), [5, 5, 10, 10])
+        self.assertEqual({a['notional'] for a in opens}, {2000})
+        self.assertEqual(sorted(a['qty'] for a in opens), [10, 10, 20, 20])
         self.assertTrue(all(row['snapshot']['max_pos_u'] == 2000 for row in result['records']))
         self.assertNotIn('strategy_configs', result)
 
@@ -39,9 +40,9 @@ class PositionReplayTests(unittest.TestCase):
         result=self.run_rows(rows,table)
         self.assertEqual(result['closed_trades'],1)
         self.assertEqual(result['trades'][0]['strategy_name'],'D')
-        self.assertEqual(result['trades'][0]['qty'],2)
-        self.assertEqual(result['trades'][0]['pnl'],-40)
-        self.assertEqual(result['summaries']['FILUSDT']['strategies']['A']['position_qty'],2)
+        self.assertEqual(result['trades'][0]['qty'],10)
+        self.assertEqual(result['trades'][0]['pnl'],-200)
+        self.assertEqual(result['summaries']['FILUSDT']['strategies']['A']['position_qty'],10)
         self.assertEqual(result['records'][8]['simulation']['actions'][0]['target_qty'],'clear')
     def test_repeated_signal_and_price_change_never_add_or_resize(self):
         result=self.run_rows([self.row(0,{'A':.99}),self.row(1,{'A':.99},200,200),self.row(2,{'A':.5},300,300)],{'A':1})
@@ -49,8 +50,35 @@ class PositionReplayTests(unittest.TestCase):
         self.assertEqual(stats['position_qty'],10);self.assertEqual(stats['entry_actions'],1)
     def test_sign_only_no_amplitude_or_other_factor_normalization(self):
         result=self.run_rows([self.row(0,{'A':.01,'B':.99})],{'A':-20,'B':1})
-        self.assertEqual(result['summaries']['FILUSDT']['strategies']['A']['position_qty'],5)
-        self.assertEqual(result['summaries']['FILUSDT']['strategies']['B']['position_qty'],5)
+        self.assertEqual(result['summaries']['FILUSDT']['strategies']['A']['position_qty'],10)
+        self.assertEqual(result['summaries']['FILUSDT']['strategies']['B']['position_qty'],10)
+
+    def test_sparse_pairs_each_get_full_amount_despite_flat_disabled_or_unready_peers(self):
+        self.config['max_pos_u'] = 500
+        fil = self.row(0, {'A': .99, 'B': .01, 'C': .5, 'D': .99, 'E': .99})
+        fil['inputs']['E']['ready'] = False
+        eth = {**self.row(0, {'B': .01}, 200, 200), 'symbol': 'ETHUSDT'}
+        result = simulate([fil, eth], {'FILUSDT': {'A': 1, 'B': 1, 'C': 1, 'D': 0, 'E': 1},
+                                      'ETHUSDT': {'B': 1}}, self.config, self.settings)
+        held = {(p['symbol'], p['strategy_name']): p for p in result['open_positions']}
+        self.assertEqual(set(held), {('FILUSDT', 'A'), ('FILUSDT', 'B'), ('ETHUSDT', 'B')})
+        self.assertEqual({p['entry_notional'] for p in held.values()}, {500})
+        self.assertEqual(held['FILUSDT', 'A']['qty'], 5)
+        self.assertEqual(held['FILUSDT', 'B']['qty'], 5)
+        self.assertEqual(held['ETHUSDT', 'B']['qty'], 2.5)
+        self.assertEqual(result['summaries']['FILUSDT']['position_qty'], 0)
+        self.assertEqual(result['summaries']['FILUSDT']['position_notional'], 1000)
+
+    def test_later_factor_entry_does_not_share_budget_or_resize_existing_qty(self):
+        rows = [self.row(0, {'A': .99, 'B': .5}, 100, 100),
+                self.row(1, {'A': .99, 'B': .99}, 200, 200),
+                self.row(2, {'A': .2, 'B': .5}, 300, 300)]
+        result = self.run_rows(rows, {'A': 1, 'B': 1})
+        self.assertEqual(result['trades'][0]['qty'], 10)
+        self.assertEqual(result['trades'][0]['entry_notional'], 1000)
+        self.assertEqual(result['open_positions'][0]['strategy_name'], 'B')
+        self.assertEqual(result['open_positions'][0]['qty'], 5)
+        self.assertEqual(result['open_positions'][0]['entry_notional'], 1000)
     def test_taker_close_uses_original_qty_not_current_usdt_budget(self):
         result=self.run_rows([self.row(0,{'A':.99},99,101),self.row(1,{'A':.2},109,111)],{'A':1})
         trade=result['trades'][0]

@@ -2,15 +2,7 @@ use super::config::CtaSpecialConfig;
 use super::factors::WeightedBar;
 use anyhow::{ensure, Result};
 
-pub fn equal_allocation(symbol_max_u: f64, factor_count: usize) -> Result<f64> {
-    ensure!(
-        symbol_max_u.is_finite() && symbol_max_u > 0.0,
-        "invalid symbol amount"
-    );
-    ensure!(factor_count > 0, "symbol has no active factors");
-    Ok(symbol_max_u / factor_count as f64)
-}
-
+/// Size one independent symbol/factor entry from its full USDT allocation.
 pub fn full_qty(max_pos_u: f64, flag: i8, price: f64) -> Result<f64> {
     ensure!(
         flag == 1 || flag == -1,
@@ -127,19 +119,17 @@ mod tests {
     #[test]
     fn full_qty_is_computed_by_publisher() {
         let c = config();
-        assert_eq!(full_qty(c.max_pos_u, 1, 500.0).unwrap(), 1.0);
-        assert_eq!(full_qty(c.max_pos_u, -1, 500.0).unwrap(), -1.0);
+        assert_eq!(full_qty(c.max_pos_u, 1, 500.0).unwrap(), 0.4);
+        assert_eq!(full_qty(c.max_pos_u, -1, 500.0).unwrap(), -0.4);
         assert_eq!(full_qty(2000.0, 1, 100.0).unwrap(), 20.0);
     }
 
     #[test]
-    fn equal_shares_reserve_flat_factors_and_keep_signed_quantities() {
-        assert_eq!(equal_allocation(500.0, 4).unwrap(), 125.0);
-        assert_eq!(
-            full_qty(equal_allocation(500.0, 5).unwrap(), -1, 20.0).unwrap(),
-            -5.0
-        );
-        assert!(equal_allocation(500.0, 0).is_err());
-        assert!(equal_allocation(f64::NAN, 2).is_err());
+    fn full_qty_rejects_invalid_amount_direction_and_price() {
+        assert!(full_qty(0.0, 1, 20.0).is_err());
+        assert!(full_qty(f64::NAN, 1, 20.0).is_err());
+        assert!(full_qty(500.0, 0, 20.0).is_err());
+        assert!(full_qty(500.0, -1, 0.0).is_err());
+        assert!(full_qty(500.0, -1, f64::INFINITY).is_err());
     }
 }

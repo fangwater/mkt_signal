@@ -228,7 +228,7 @@ class CtaSpecialServerTests(unittest.TestCase):
 
     def test_global_amount_validates_and_rejects_factor_overrides(self):
         original = json.loads(self.config_path.read_text())
-        self.assertEqual(CONFIG_SERVER.normalize_config(original)["max_pos_u"], 500)
+        self.assertEqual(CONFIG_SERVER.normalize_config(original)["max_pos_u"], 200)
         for value in (0, -1, True, "1000", float("inf"), float("nan")):
             config = {**original, "max_pos_u": value}
             with self.subTest(value=value), self.assertRaises(ValueError):

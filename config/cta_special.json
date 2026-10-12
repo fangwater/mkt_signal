@@ -1,6 +1,6 @@
 {
   "enabled": false,
-  "max_pos_u": 500,
+  "max_pos_u": 200,
   "entry": {
     "factor_long_quantile": 0.9,
     "factor_short_quantile": 0.1,

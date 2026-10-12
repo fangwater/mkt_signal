@@ -12,7 +12,7 @@ pub const CTA_SPECIAL_MAX_MODEL_AGE_MS: u64 = 120_000;
 pub const CTA_SPECIAL_STATUS_PATH: &str = "run/cta_special_status.json";
 
 fn default_max_pos_u() -> f64 {
-    500.0
+    200.0
 }
 
 fn default_enabled() -> bool {
@@ -48,6 +48,7 @@ fn default_factor_exit_quantile_short() -> f64 {
 pub struct CtaSpecialConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// USDT entry amount for each enabled symbol/factor pair.
     #[serde(default = "default_max_pos_u")]
     pub max_pos_u: f64,
     #[serde(default)]

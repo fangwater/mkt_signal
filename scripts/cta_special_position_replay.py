@@ -72,7 +72,7 @@ def simulate(rows,table,config,settings):
                 del positions[key];position=None;record['reason']='factor_exit'
             side=1 if signal['decision']=='long' else -1 if signal['decision']=='short' else 0
             if position is None and side and not exit_ready:
-                price=ask if side>0 else bid;notional=float(amount)/sum(w!=0 for w in table[symbol].values());qty=notional/price;fee=notional*fee_rate
+                price=ask if side>0 else bid;notional=float(amount);qty=notional/price;fee=notional*fee_rate
                 trade_id=f'{factor}:{symbol}:{ts}'
                 fees_paid+=fee;position=dict(trade_id=trade_id,entry_signal_id=record['signal_id'],side=side,qty=qty,average_price=price,entry_ts_ms=ts,entry_notional=notional,entry_fees=fee)
                 positions[key]=position;record['reason']='full_position_entry'
@@ -109,7 +109,7 @@ def simulate(rows,table,config,settings):
                          average_entry_price=p['average_price'],qty=p['qty'],entry_notional=p['entry_notional'],
                          mark_price=marks[symbol],unrealized_pnl=p['side']*p['qty']*(marks[symbol]-p['average_price']),
                          entry_fees=p['entry_fees']) for (factor,symbol),p in positions.items()]
-    return dict(revision=revision,start_ms=start,end_ms=last_bar_ms,settings=settings,max_pos_u=amount,allocation='equal_per_symbol',
+    return dict(revision=revision,start_ms=start,end_ms=last_bar_ms,settings=settings,max_pos_u=amount,allocation='per_symbol_factor',
                 method='independent_factor_full_position_flags',price_method='first_post_bar_bid_ask_no_slippage',gross_results=fee_rate==0,
                 closed_trades=count,wins=wins,win_rate=wins/count if count else None,realized_pnl=realized-fees_paid,unrealized_pnl=unrealized,
                 equity=initial+realized-fees_paid+unrealized,fees=fees_paid,invalid_price_minutes=invalid_prices,

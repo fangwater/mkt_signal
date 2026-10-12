@@ -699,7 +699,7 @@ if (typeof document !== "undefined")
         `<div class="signal-top"><b>${esc(state.strategy)}</b><span>${time(record.model_ts_ms, true)} UTC</span></div>${pair}
       <div class="detail-grid"><div><small>该分钟持仓</small><b>${positionText(flag)}</b></div><div><small>修正后分位</small><b>${pct(signal.quantile)}</b></div>
       <div><small>开多 / 开空</small><b>${pct(entry.factor_long_quantile)} / ${pct(entry.factor_short_quantile)}</b></div><div><small>退多 / 退空</small><b>${pct(execution.factor_exit_quantile_long)} / ${pct(execution.factor_exit_quantile_short)}</b></div>
-      <div><small>方向修正</small><b>${esc(vote?.sign)}</b></div><div><small>满仓额度</small><b>${fmt(snapshot.max_pos_u ?? cfg.max_pos_u_overrides?.[record.symbol] ?? cfg.max_pos_u, 2)} USDT</b></div></div>
+      <div><small>方向修正</small><b>${esc(vote?.sign)}</b></div><div><small>配置金额</small><b>${fmt(snapshot.max_pos_u ?? cfg.max_pos_u_overrides?.[record.symbol] ?? cfg.max_pos_u, 2)} USDT</b></div></div>
       <div class="factor-snapshot"><span>原始值 ${fmt(vote?.score, 4)}</span><span>原分位 ${pct(vote?.quantile)}</span><span>修正值 ${fmt(vote?.corrected_score, 4)}</span></div>
       <p class="hint">同向重复触发保持原仓位，平仓使用原数量。</p>${nqInspector(record)}`;
     }

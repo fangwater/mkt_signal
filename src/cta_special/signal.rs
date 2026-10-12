@@ -5,7 +5,7 @@ use crate::cta_special::config::{
 use crate::cta_special::factor_channel::{IndependentFactorObservation, WeightedFactorChannel};
 use crate::cta_special::factors::{runtime_factor_config_key, WeightedBar};
 use crate::cta_special::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
-use crate::cta_special::positions::{equal_allocation, full_qty, next_position_flag};
+use crate::cta_special::positions::{full_qty, next_position_flag};
 use anyhow::{ensure, Context, Result};
 use log::{info, warn};
 use runtime_common::time_util::get_timestamp_us;
@@ -313,26 +313,7 @@ impl CtaSpecialSignalApp {
                         && now - quote.ts <= CTA_SPECIAL_MAX_QUOTE_AGE_MS as i64 * 1000,
                     "stale sizing BBO"
                 );
-                let count = self
-                    .factors
-                    .table()
-                    .get(&symbol)
-                    .context("missing factor allocation")?
-                    .weights
-                    .iter()
-                    .filter(|weight| **weight != 0.0)
-                    .count();
-                let used: f64 = self
-                    .positions
-                    .values()
-                    .filter_map(|rows| rows.get(&symbol))
-                    .map(|p| p.entry_notional)
-                    .sum();
-                let amount = equal_allocation(self.config.max_pos_u, count)?
-                    .min((self.config.max_pos_u - used).max(0.0));
-                if amount <= 0.0 {
-                    return Ok(());
-                }
+                let amount = self.config.max_pos_u;
                 position.entry_notional = amount;
                 position.qty =
                     full_qty(amount, flag, if flag > 0 { quote.ask } else { quote.bid })?;
@@ -370,8 +351,6 @@ impl CtaSpecialSignalApp {
         let mut strategies = self.observations.clone();
         let now = get_timestamp_us();
         for (symbol, row) in self.factors.table() {
-            let count = row.weights.iter().filter(|w| **w != 0.0).count();
-            let allocation = equal_allocation(self.config.max_pos_u, count)?;
             let quote = MktChannel::instance().get_quote(symbol, self.config.venue());
             let mark = quote
                 .filter(|q| {
@@ -391,7 +370,7 @@ impl CtaSpecialSignalApp {
                     .or_insert_with(|| json!({"score_ready":false,"position_flag":0,"position_qty":0.0,"entry_notional":0.0}));
                 let qty = item["position_qty"].as_f64().unwrap_or(0.0);
                 item["factor_sign"] = json!(if *weight > 0.0 { "+" } else { "-" });
-                item["allocation_usdt"] = json!(allocation);
+                item["allocation_usdt"] = json!(self.config.max_pos_u);
                 item["mark_price"] = json!(mark);
                 item["position_usdt"] = if qty == 0.0 {
                     json!(0.0)
@@ -404,7 +383,7 @@ impl CtaSpecialSignalApp {
             "publication_error":self.publication_error,"manager_strategy_prefix":self.strategy_prefix,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
             "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
-            "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":"equal_per_symbol","strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
+            "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":"per_symbol_factor","strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
         atomic_json(Path::new(CTA_SPECIAL_STATUS_PATH), &status)?;
         atomic_json(Path::new(SHADOW_PATH), &self.positions)
     }

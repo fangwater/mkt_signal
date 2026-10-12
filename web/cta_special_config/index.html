@@ -356,7 +356,7 @@
           "max_pos_u",
           "number",
           null,
-          "每币开仓总额上限（USDT），按该币已配置且启用的因子数固定平分。空仓份额不重分配；开仓换算 qty，退出平原 qty。",
+          "单份 USDT：每个已启用的 symbol × factor 组合独立使用此金额。开仓换算 qty，持仓保持原数量，退出平原 qty；修改金额在后续开仓生效。",
         ],
         [
           "enabled",
@@ -427,7 +427,7 @@
               : kind === "select"
                 ? selectHtml(key, options)
                 : `<input id="${key}" class="mono" inputmode="decimal">`;
-          return row(key, control, desc);
+          return row(key === "max_pos_u" ? "单份 USDT" : key, control, desc);
         })
         .join("");
       function setStatus(id, text, kind) {
@@ -481,7 +481,7 @@
         const amountText = byId("max_pos_u").value.trim(),
           amount = Number(amountText);
         if (!amountText || !Number.isFinite(amount) || amount <= 0)
-          throw new Error("满仓金额必须是大于 0 的有限数字");
+          throw new Error("单份 USDT 必须是大于 0 的有限数字");
         return {
           enabled: byId("enabled").value === "true",
           max_pos_u: amount,

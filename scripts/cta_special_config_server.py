@@ -71,7 +71,7 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     if "execution" not in root:
         raise ValueError("config.execution is required")
 
-    amount = _number(root.get("max_pos_u", 1000.0), "max_pos_u")
+    amount = _number(root.get("max_pos_u", 200.0), "max_pos_u")
     if amount <= 0:
         raise ValueError("max_pos_u must be a positive finite USDT amount")
 
