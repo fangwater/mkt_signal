@@ -28,6 +28,9 @@ use rocksdb::{
     ColumnFamilyDescriptor, DBWithThreadMode, Direction, IteratorMode, MultiThreaded, Options,
 };
 use serde::Serialize;
+
+#[path = "../baseline_raw.rs"]
+mod raw_baseline;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -92,6 +95,17 @@ struct Args {
     /// mid-price fields are null; no LL2 access is attempted.
     #[arg(long)]
     trade_only: bool,
+    /// Exact minute-end overlay from Raw 15s + quality CFs, on the official
+    /// session grid. Unknown/invalidated states remain null.
+    #[arg(long, conflicts_with = "trade_only")]
+    raw_ll2: bool,
+    /// Enumerate standard RIC contracts directly from TAS. Required for rates
+    /// not represented by the historical Summary routing subset.
+    #[arg(long)]
+    tas_contract_grid: bool,
+    /// Populate size buckets using verified prior-month TAS thresholds.
+    #[arg(long)]
+    size_buckets: bool,
     #[arg(long)]
     max_files: Option<usize>,
     #[arg(long, default_value = DEFAULT_PSQL)]
@@ -140,9 +154,48 @@ const PRODUCTS: &[ProductSpec] = &[
     },
 ];
 
+const RATE_PRODUCTS: &[ProductSpec] = &[
+    ProductSpec {
+        product: "TU",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+    ProductSpec {
+        product: "FV",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+    ProductSpec {
+        product: "TY",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+    ProductSpec {
+        product: "TN",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+    ProductSpec {
+        product: "US",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+    ProductSpec {
+        product: "AUL",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+    ProductSpec {
+        product: "FF",
+        exchange: "CBOT",
+        schedule_group: "interest_rates",
+    },
+];
+
 fn product_spec(product: &str) -> Result<ProductSpec> {
     PRODUCTS
         .iter()
+        .chain(RATE_PRODUCTS.iter())
         .copied()
         .find(|spec| spec.product == product)
         .ok_or_else(|| anyhow!("unsupported baseline product {product:?}"))
@@ -240,7 +293,7 @@ fn load_calendar(
     let query_start = start - Duration::days(2);
     let query_end = end + Duration::days(2);
     let sql = format!(
-        "SELECT schedule_group, utc_date, CASE WHEN is_trading THEN 1 ELSE 0 END, COALESCE(extract(epoch FROM open_utc)::bigint::text,''), COALESCE(extract(epoch FROM close_utc)::bigint::text,'') FROM public.cme_globex_daily_trading_intervals WHERE schedule_group IN ('equity_indices','metals','energy') AND utc_date BETWEEN DATE '{query_start}' AND DATE '{query_end}' ORDER BY schedule_group, utc_date, interval_index"
+        "SELECT schedule_group, utc_date, CASE WHEN is_trading THEN 1 ELSE 0 END, COALESCE(extract(epoch FROM open_utc)::bigint::text,''), COALESCE(extract(epoch FROM close_utc)::bigint::text,'') FROM public.cme_globex_daily_trading_intervals WHERE schedule_group IN ('equity_indices','metals','energy','interest_rates') AND utc_date BETWEEN DATE '{query_start}' AND DATE '{query_end}' ORDER BY schedule_group, utc_date, interval_index"
     );
     let command = Command::new(psql)
         .args([
@@ -305,6 +358,7 @@ struct Job {
     input: PathBuf,
     output: PathBuf,
     audit: PathBuf,
+    tas_grids: Option<Vec<RicGrid>>,
 }
 
 #[derive(Clone, Debug)]
@@ -329,6 +383,11 @@ struct DayAudit {
     special_rows: u64,
     invalid_special_rows: u64,
     exact_ll2_minutes: u64,
+    raw_bidirectional_minutes: u64,
+    raw_full_depth_minutes: u64,
+    raw_last_invalid_minutes: u64,
+    raw_no_snapshot_minutes: u64,
+    outside_session_trades: u64,
     rics_without_ll2: Vec<String>,
     calendar_closed: bool,
     published: bool,
@@ -378,6 +437,7 @@ fn list_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<Job>> {
                 input,
                 output,
                 audit,
+                tas_grids: None,
             });
         }
     }
@@ -536,9 +596,20 @@ fn scan_trades(
     cf: &impl rocksdb::AsColumnFamilyRef,
     grid: &RicGrid,
 ) -> Result<Vec<BaselineTrade>> {
+    Ok(scan_trades_audited(db, cf, grid, None)?.0)
+}
+
+fn scan_trades_audited(
+    db: &DB,
+    cf: &impl rocksdb::AsColumnFamilyRef,
+    grid: &RicGrid,
+    audit_day: Option<NaiveDate>,
+) -> Result<(Vec<BaselineTrade>, u64)> {
     let Some(&(start, _)) = grid.segments.first() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     };
+    let audit_window = audit_day.map(chicago_window).transpose()?;
+    let mut outside_session = 0;
     let end = grid.segments.last().unwrap().1 + 60;
     let padded_start =
         (u64::try_from(start)?.saturating_mul(NS_PER_SEC)).saturating_sub(HALF_DAY_NS);
@@ -560,6 +631,11 @@ fn scan_trades(
         let event_ns = event_time_ns(rec.ts_utc_ns, rec.exch_hms_ns)?;
         let minute = (event_ns / NS_PER_SEC / 60 * 60) as i64;
         if !minute_in_segments(minute, &grid.segments) {
+            if audit_window.is_some_and(|(lo, hi)| {
+                event_ns >= lo as u64 * NS_PER_SEC && event_ns < hi as u64 * NS_PER_SEC
+            }) {
+                outside_session += 1;
+            }
             continue;
         }
         let Some(price) = price_e9_to_f64(rec.price).filter(|price| *price > 0.0) else {
@@ -576,7 +652,7 @@ fn scan_trades(
             aggressor: rec.aggressor,
         });
     }
-    Ok(output)
+    Ok((output, outside_session))
 }
 
 fn scan_specials(
@@ -684,7 +760,7 @@ fn process_job(
     parquet_lock: &Mutex<()>,
 ) -> Result<DayAudit> {
     let started = Instant::now();
-    let mut grids = read_contracts(&job.input, &job.product, job.day)?;
+    let mut grids = raw_baseline::job_grids(job)?;
     let (window_start, window_end) = chicago_window_minutes(job.day)?;
     let multiplier = *multipliers
         .get(&job.product)
@@ -777,11 +853,13 @@ fn process_trade_only_job(
     tas: &DB,
     multipliers: &BTreeMap<String, f64>,
     calendar: &SessionCalendar,
+    ll2: Option<&DB>,
+    thresholds: Option<cme_tas_replay::baseline_1min::SizeThresholds>,
     args: &Args,
     parquet_lock: &Mutex<()>,
 ) -> Result<DayAudit> {
     let started = Instant::now();
-    let mut grids = read_contracts(&job.input, &job.product, job.day)?;
+    let mut grids = raw_baseline::job_grids(job)?;
     let spec = product_spec(&job.product)?;
     let segments = calendar.minute_segments_for(spec.schedule_group, job.day)?;
     let mut audit = DayAudit {
@@ -813,12 +891,13 @@ fn process_trade_only_job(
     for grid in &mut grids {
         grid.segments.clone_from(&segments);
         audit.grid_minutes += grid_minutes(&grid.segments);
-        let trades = scan_trades(tas, &tas_cf, grid)?;
+        let (trades, outside_session) = scan_trades_audited(tas, &tas_cf, grid, Some(job.day))?;
+        audit.outside_session_trades += outside_session;
         let (specials, invalid_specials) = scan_specials(tas, &tas_cf, grid)?;
         audit.trade_rows += trades.len() as u64;
         audit.special_rows += specials.len() as u64;
         audit.invalid_special_rows += invalid_specials;
-        let built = build_trade_only_minutes(
+        let mut built = build_trade_only_minutes(
             &grid.contract_id,
             &grid.ric,
             &grid.segments,
@@ -826,6 +905,29 @@ fn process_trade_only_job(
             &specials,
             multiplier,
         )?;
+        if args.raw_ll2 {
+            let ll2 = ll2.context("Raw LL2 not opened")?;
+            let cf_name = cme_tas_replay::raw_ll2::raw_cf(job.day.year() as u16, &job.product, 15)?;
+            let books = raw_baseline::scan_raw_books(ll2, &cf_name, grid)?;
+            audit.exact_ll2_minutes += books.len() as u64;
+            for row in &mut built {
+                if let Some(book) = books.get(&row.ts) {
+                    row.book = book.clone();
+                    row.mid_price = book.mid();
+                    audit.raw_bidirectional_minutes += u64::from(book.valid());
+                    audit.raw_full_depth_minutes += u64::from(raw_baseline::full_depth(book));
+                    audit.raw_last_invalid_minutes += u64::from(!book.valid());
+                } else {
+                    audit.raw_no_snapshot_minutes += 1;
+                }
+            }
+            if books.is_empty() {
+                audit.rics_without_ll2.push(grid.ric.clone());
+            }
+        }
+        if let Some(thresholds) = thresholds {
+            raw_baseline::apply_size_buckets(&mut built, &trades, multiplier, thresholds)?;
+        }
         audit.output_ric_count += 1;
         rows.extend(built);
     }
@@ -843,8 +945,13 @@ fn process_trade_only_job(
         audit.published = true;
     }
     write_json_atomic(&job.audit, &audit)?;
+    let label = if args.raw_ll2 {
+        "baseline_raw_done"
+    } else {
+        "baseline_trade_only_done"
+    };
     eprintln!(
-        "baseline_trade_only_done product={} day={} rics={} rows={} trades={} specials={} invalid_specials={} elapsed_s={:.2}",
+        "{label} product={} day={} rics={} rows={} trades={} specials={} invalid_specials={} elapsed_s={:.2}",
         job.product,
         job.day,
         audit.output_ric_count,
@@ -1013,7 +1120,18 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 fn load_multipliers(args: &Args, products: &[ProductSpec]) -> Result<BTreeMap<String, f64>> {
-    let query = "SELECT product_root, exchange, volume_multiple, verified FROM public.cme_research_product_multipliers WHERE product_root IN ('ES','NQ','RTY','YM','GC','CL') ORDER BY product_root";
+    let roots = products
+        .iter()
+        .map(|p| format!("'{}'", p.product))
+        .collect::<Vec<_>>()
+        .join(",");
+    let from = if args.size_buckets {
+        raw_baseline::previous_month_start(args.start)?
+    } else {
+        args.start
+    };
+    let until = args.end - Duration::days(1);
+    let query = format!("SELECT product_root, exchange, volume_multiple, verified FROM public.cme_research_product_multipliers WHERE product_root IN ({roots}) AND (effective_from IS NULL OR effective_from<=DATE '{from}') AND (effective_to IS NULL OR effective_to>=DATE '{until}') ORDER BY product_root");
     let output = Command::new(&args.psql)
         .args([
             "-h",
@@ -1028,7 +1146,7 @@ fn load_multipliers(args: &Args, products: &[ProductSpec]) -> Result<BTreeMap<St
             "-F",
             "\t",
             "-c",
-            query,
+            &query,
         ])
         .output()
         .with_context(|| format!("run {}", args.psql.display()))?;
@@ -1154,6 +1272,22 @@ fn validate_args(args: &Args) -> Result<Vec<ProductSpec>> {
     if products.is_empty() {
         bail!("no products selected");
     }
+    if products
+        .iter()
+        .any(|p| p.schedule_group == "interest_rates")
+        && (!args.raw_ll2
+            || !args.tas_contract_grid
+            || args.start < NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+            || args.end > NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
+    {
+        bail!("rates support is scoped to 2026 Jan-May with --raw-ll2 --tas-contract-grid");
+    }
+    if args.raw_ll2 && !args.tas_contract_grid {
+        bail!("--raw-ll2 requires --tas-contract-grid");
+    }
+    if args.size_buckets && !args.tas_contract_grid {
+        bail!("--size-buckets requires --tas-contract-grid");
+    }
     Ok(products)
 }
 
@@ -1161,14 +1295,21 @@ fn run() -> Result<()> {
     let args = Arc::new(Args::parse());
     let products = validate_args(&args)?;
     let multipliers = Arc::new(load_multipliers(&args, &products)?);
-    let jobs = list_jobs(&args, &products)?;
-    let years = jobs
-        .iter()
-        .map(|job| job.day.year())
-        .collect::<BTreeSet<_>>();
+    let years =
+        (args.start.year()..=(args.end - Duration::days(1)).year()).collect::<BTreeSet<_>>();
     let mut selected_cf_names = vec!["default".to_string(), CF_REPLAY_META.to_string()];
-    for job in &jobs {
-        selected_cf_names.push(product_cf_name(job.day.year() as u16, &job.product)?);
+    for year in &years {
+        for spec in &products {
+            selected_cf_names.push(product_cf_name(*year as u16, spec.product)?);
+        }
+    }
+    if args.size_buckets {
+        for spec in &products {
+            selected_cf_names.push(product_cf_name(
+                raw_baseline::previous_month_start(args.start)?.year() as u16,
+                spec.product,
+            )?);
+        }
     }
     selected_cf_names.sort();
     selected_cf_names.dedup();
@@ -1194,23 +1335,70 @@ fn run() -> Result<()> {
         Some(Arc::new(open_db(
             &args.ll2_rocksdb,
             &args.ll2_secondary,
-            &selected_cf_names,
+            &if args.raw_ll2 {
+                raw_baseline::raw_cf_names(&args, &products)?
+            } else {
+                selected_cf_names.clone()
+            },
             true,
-            ll2_options,
+            if args.raw_ll2 {
+                Options::default
+            } else {
+                ll2_options
+            },
         )?))
     };
-    for year in years {
-        let period = period_for_year(year)?;
+    for year in &years {
+        let period = period_for_year(*year)?;
         require_done(&tas, &period, "TAS")?;
         if let Some(ll2) = &ll2 {
             require_done(ll2, &period, "LL2")?;
         }
     }
-    let calendar = args
-        .trade_only
-        .then(|| load_calendar(&args.psql, &args.pg_socket, args.start, args.end))
+    if args.size_buckets {
+        require_done(
+            &tas,
+            &period_for_year(raw_baseline::previous_month_start(args.start)?.year())?,
+            "TAS size warmup",
+        )?;
+    }
+    let calendar = (args.trade_only || args.raw_ll2)
+        .then(|| {
+            load_calendar(
+                &args.psql,
+                &args.pg_socket,
+                if args.size_buckets {
+                    raw_baseline::previous_month_start(args.start).expect("valid month")
+                } else {
+                    args.start
+                },
+                args.end,
+            )
+        })
         .transpose()?
         .map(Arc::new);
+    let jobs = if args.tas_contract_grid {
+        raw_baseline::list_tas_jobs(
+            &tas,
+            ll2.as_deref().filter(|_| args.raw_ll2),
+            &args,
+            &products,
+            calendar.as_ref().context("calendar")?,
+        )?
+    } else {
+        list_jobs(&args, &products)?
+    };
+    let thresholds = if args.size_buckets {
+        raw_baseline::load_size_thresholds(
+            &tas,
+            &args,
+            &products,
+            &multipliers,
+            calendar.as_ref().context("calendar")?,
+        )?
+    } else {
+        BTreeMap::new()
+    };
     eprintln!(
         "baseline_start jobs={} products={} start={} end={} workers={} output={} audit_only={} trade_only={}",
         jobs.len(),
@@ -1234,12 +1422,16 @@ fn run() -> Result<()> {
     let results = pool.install(|| {
         jobs.par_iter()
             .map(|job| {
-                if args.trade_only {
+                if args.trade_only || args.raw_ll2 {
                     process_trade_only_job(
                         job,
                         &tas,
                         &multipliers,
-                        calendar.as_ref().expect("trade-only calendar loaded"),
+                        calendar.as_ref().expect("official calendar loaded"),
+                        ll2.as_deref(),
+                        thresholds
+                            .get(&(job.product.clone(), job.day.year(), job.day.month()))
+                            .copied(),
                         &args,
                         &parquet_lock,
                     )

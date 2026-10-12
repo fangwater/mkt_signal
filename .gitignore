@@ -126,3 +126,10 @@ local_binance_ed25519_test/
 /config/cme_raw_ll2_2025_15s.toml
 /config/cme_raw_ll2_2026_15s.toml
 /config/cme_raw_ll2_replay.toml
+/config/cme_raw_ll2_2024_15s.toml
+
+# Local replay reports, release staging and account reconciliation output.
+/artifacts/cme_rates_baseline_*/
+/artifacts/cta_special_per_pair_*_release/
+/artifacts/rx*_equity_reconciliation_*.json
+/artifacts/rx*_manager_fee_update_*.json

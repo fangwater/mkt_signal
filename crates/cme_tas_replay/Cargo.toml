@@ -83,6 +83,10 @@ path = "src/bin/cme_raw_ll2_shard.rs"
 name = "cme_ll2_contract_status"
 path = "src/bin/cme_ll2_contract_status.rs"
 
+[[bin]]
+name = "cme_tas_ll2_match"
+path = "src/bin/cme_tas_ll2_match.rs"
+
 [dependencies]
 anyhow = "1.0"
 bytes = { version = "1.0", features = ["serde"] }
