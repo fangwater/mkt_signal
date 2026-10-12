@@ -1,6 +1,6 @@
 # 单所 CTA 部署（纯合约）
 
-最后更新：2026-10-12（单份 USDT 算法已修改，尚未发布；下述线上部署记录仍以各自验证时间为准）
+最后更新：2026-10-12 06:05 UTC
 
 本文说明 `cta_special_signal` 的单所纯合约 CTA 实现、按币独立因子配置和部署流程。两所版（rx01）见 `intra_factor_deploy.md`。以下研究来源保留用于核对基础因子与 NQ。历史网格、逐 lot 和移动止损规则不参与当前 special 路径；当前独立策略契约见下文。
 
@@ -187,7 +187,7 @@ RX02 当前 `enabled=true`，用户授权 trade05 实盘执行。signal 环境�
 
 退出优先；一根 bar 上先发布 clear，下一根新 bar 才能重新开仓。NQ 只检查开仓，阈值仍为多 ≥ .5、空 ≤ .5，不限制平仓。rolling、NQ 的计算和预热窗口保持现有实现。一个因子未就绪不会阻塞其他因子的开平仓。
 
-代码中的 `max_pos_u` 表示每个已启用 `symbol × factor` 组合的单份 USDT 开仓金额。每份独立使用完整金额，不按币种因子数平分，也不扣减其他因子的入场金额。多头 `qty=max_pos_u/ask`，空头 `qty=-max_pos_u/bid`，要求报价有效且新鲜。RX02 的 16 币、5 因子完整笛卡尔积为 80 项，现有配置仅启用其中 32 项；修改算法不会扩展绑定。单份配置为 200 USDT，LINK 四份各 200、LTC 三份各 200、ETH 一份 200，32 份全部开仓的入场金额绝对值合计为 6,400 USDT；同币种的账户净仓仍由执行端合并。持仓 qty 固定，修改金额在后续开仓生效，退出平原 qty；已有持仓不会因切换算法而自动补足或缩减。市价变动会使当前市值偏离入场金额。2026-10-12 只读核验时线上仍运行旧的每币 500 USDT 平分算法，此修改尚未部署。
+代码中的 `max_pos_u` 表示每个已启用 `symbol × factor` 组合的单份 USDT 开仓金额。每份独立使用完整金额，不按币种因子数平分，也不扣减其他因子的入场金额。多头 `qty=max_pos_u/ask`，空头 `qty=-max_pos_u/bid`，要求报价有效且新鲜。RX02 的 16 币、5 因子完整笛卡尔积为 80 项，现有配置仅启用其中 32 项；修改算法不会扩展绑定。单份配置为 200 USDT，LINK 四份各 200、LTC 三份各 200、ETH 一份 200，32 份全部开仓的入场金额绝对值合计为 6,400 USDT；同币种的账户净仓仍由执行端合并。持仓 qty 固定，修改金额在后续开仓生效，退出平原 qty；已有持仓不会因切换算法而自动补足或缩减。市价变动会使当前市值偏离入场金额。2026-10-12 06:05 UTC 已部署至 RX02 实盘，单份 200 USDT；旧仓按原 qty 持有到退出，后续开仓使用新额度。
 
 ### Redis 配置和普通 Exec 合约
 
@@ -274,3 +274,5 @@ node scripts/tests/test_cta_special_panel.js
 2026-10-10 10:30 UTC 部署验证：rx02 32 项、rx03 52 项分位/NQ 与历史输入全部逐项一致；真实持仓和挂单为零，交易关闭以来没有新实际发布。两个环境均为 5 个独立策略，所有可执行 targets 都是 clear。配置页动态修改额度和 Exec maker timeout 后，标准 Exec 文档订单参数自动更新；测试修改已恢复为原值，targets 始终 clear。浏览器验证因子筛选、独立 PnL、B/S/全平点和 JSON 保存，桌面/手机无页面溢出，无 JavaScript 错误。
 
 2026-10-11 07:07 UTC trade05 完成状态修复：低于数量步长、minQty/minNotional 的余量统一显示“执行完成”，不再单列等待状态。修正执行器在仍有活动批次时因最小下单余量设置无限等待、最终成交后无法再次判断完成的问题；只有批次全部结束才停用新批次调度。空报单计划释放时也应用同一规则。覆盖 ctaker、Batch、POV 的成交回归测试，1,243 项单元测试通过；线上 8 项卡住记录已结束，全部 15 项后端记录完成。发布及验证：`artifacts/trade05_completion_release_manifest.json`、`artifacts/trade05_completion_live_validation.json`、`artifacts/trade05_completion_browser.json`。
+
+2026-10-12 06:05 UTC 单份 USDT 发布：代码 `47becad0`，RX02 的 `max_pos_u` 从每币 500 USDT 平分改为每个有效 `symbol × factor` 组合独立 200 USDT，现有 16 币、5 因子、32 项绑定保留。同步 signal、回放、配置服务与三个前端文件；本地 release 经 SHA-256 校验后原子安装，通过环境脚本重启 signal（PID 140816）、config（147320）、dashboard（152544）。停稳后备份并保留原仓位状态；共享 publisher 与 trade05 六个执行进程 PID 均保留。线上 `enabled=true`、`allocation=per_symbol_factor`，32 项额度和 Manager/Exec 目标逐项匹配，发布无错误；公网页面确认 LINK/LTC/ETH 全部组合开仓金额分别为 800/600/200 USDT，手机页面无溢出、无 JavaScript 错误。1,243 项 Rust 库测试通过（2 项忽略），49 项 Python 检查与图表检查通过。产物、安装备份和核验记录见 `artifacts/cta_special_per_pair_200_release/{manifest,install_result,validation,browser_validation}.json`；远端备份为 `run/deployment_backups/per_pair_200_20261012T060014Z/`。
