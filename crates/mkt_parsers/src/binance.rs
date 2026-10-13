@@ -7,6 +7,48 @@ pub const SBE_TEMPLATE_DEPTH_SNAPSHOT: u16 = 10002;
 pub const SBE_TEMPLATE_DEPTH_DIFF: u16 = 10003;
 pub const RAW_DEPTH_LEVEL_CAP: usize = 64;
 
+/// Preserve both original Binance timestamps for a frame already validated by
+/// the business parser. No fallback between E and T, reordering, or allocation.
+/// Called only for the benchmark symbol, after production deduplication.
+pub fn parse_event_times_us_raw(
+    raw: &[u8],
+    expected_event: &str,
+) -> Option<(Option<i64>, Option<i64>)> {
+    let mut payload = raw_payload_object(raw);
+    let (mut event, mut transaction) = (None, None);
+    let (mut seen_event, mut seen_transaction) = (false, false);
+    let mut matched_type = false;
+    while let Some((key, value)) = payload.next_field() {
+        match key {
+            b"e" => {
+                if value.string_str()? != expected_event {
+                    return None;
+                }
+                matched_type = true;
+            }
+            b"E" => {
+                seen_event = true;
+                event = value
+                    .i64()
+                    .filter(|v| *v > 0)
+                    .and_then(|v| v.checked_mul(1000));
+            }
+            b"T" => {
+                seen_transaction = true;
+                transaction = value
+                    .i64()
+                    .filter(|v| *v > 0)
+                    .and_then(|v| v.checked_mul(1000));
+            }
+            _ => {}
+        }
+        if seen_event && seen_transaction && matched_type {
+            break;
+        }
+    }
+    matched_type.then_some((event, transaction))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Level {
     pub price: f64,
@@ -3159,6 +3201,35 @@ mod tests {
         parse_incremental_raw_view, parse_kline_raw_borrowed, parse_trade_raw,
         parse_trade_raw_borrowed, raw_level_at, RawBookParse, RawDerivative, RAW_DEPTH_LEVEL_CAP,
     };
+
+    #[test]
+    fn benchmark_timestamps_preserve_native_fields_and_missing_values() {
+        let parse = |raw: &[u8]| super::parse_event_times_us_raw(raw, "trade");
+        assert_eq!(
+            parse(br#"{"e":"trade","E":1234,"T":1235}"#),
+            Some((Some(1_234_000), Some(1_235_000)))
+        );
+        assert_eq!(parse(br#"{"stream":"btcusdt@trade","data":{"T":1230,"s":"BTCUSDT","E":1234,"e":"trade"}}"#),
+                   Some((Some(1_234_000), Some(1_230_000))));
+        assert_eq!(
+            parse(br#"{"data":{"e":"trade","E":1234},"stream":"btcusdt@trade"}"#),
+            Some((Some(1_234_000), None))
+        );
+        assert_eq!(
+            parse(br#"{"e":"trade","E":null,"T":-1,"nested":{"E":1234,"T":1230}}"#),
+            Some((None, None))
+        );
+        assert_eq!(
+            parse(br#"{"e":"trade","E":9223372036854775807,"T":0}"#),
+            Some((None, None))
+        );
+        assert_eq!(
+            parse(br#"{"nested":{"E":1,"T":2},"T":1230,"E":1234,"e":"trade"}"#),
+            Some((Some(1_234_000), Some(1_230_000)))
+        );
+        assert_eq!(parse(br#"{"e":"aggTrade","E":1234,"T":1230}"#), None);
+        assert_eq!(parse(br#"{"E":1234,"T":1230}"#), None);
+    }
 
     fn raw_derivative_symbol(derivative: RawDerivative<'_>) -> &str {
         match derivative {

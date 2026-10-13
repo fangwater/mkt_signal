@@ -1137,6 +1137,14 @@ impl<const N: usize> SharedPublisherPool<N> {
 }
 
 impl SpreadPbsPublisherPool {
+    #[cfg(test)]
+    pub(crate) fn with_test_config(config: iceoryx2::config::Config) -> Self {
+        let mut pool = Self::default();
+        pool.small.node_config = Some(config.clone());
+        pool.incremental.node_config = Some(config);
+        pool
+    }
+
     pub fn bbo_for(&self, venue_slug: &str, root: &str) -> Result<SpreadPublisher> {
         let (publisher, service_name) =
             self.small

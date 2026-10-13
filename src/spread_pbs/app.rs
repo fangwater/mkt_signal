@@ -38,6 +38,7 @@ use crate::spread_pbs::ws::{
     run_public_ws, run_public_ws_with_ack_policy, FrameHandler, RollingRestartSpec, WsLoopParams,
 };
 
+use crate::spread_pbs::binance_latency::{BinanceFeedLatency, Channel};
 use crate::spread_pbs::latency::PublicationLatency;
 
 mod hyperliquid_shards;
@@ -887,6 +888,20 @@ impl SpreadPbsApp {
             bbo_dedup_policy: adapter.bbo_dedup_policy(),
             sbe_symbols: fast_hash_map_with_capacity(initial_symbols.len()),
             publication_latency: PublicationLatency::default(),
+            binance_feed_latency: if venue == TradingVenue::BinanceFutures
+                && market_data_provider == MarketDataProvider::Native
+            {
+                BinanceFeedLatency::from_env(
+                    get_timestamp_us(),
+                    [
+                        bbo_enabled,
+                        direct_incremental_enabled,
+                        direct_trade_enabled,
+                    ],
+                )?
+            } else {
+                None
+            },
             trade_publish_not_before_us: (adapter.trade_dedup_policy()
                 == TradeDedupPolicy::RecentIdentity)
                 .then_some(app_started_at_us),
@@ -969,6 +984,87 @@ impl SpreadPbsApp {
             parse_okex_notices: is_okex_venue(venue),
             hyperliquid_subscription_budget,
         };
+        if venue == TradingVenue::BinanceFutures
+            && market_data_provider == MarketDataProvider::Native
+            && binance_futures_role == BinanceFuturesRole::BookTicker
+        {
+            if let Some((path, settings)) = super::binance_bbo_selection::Settings::load_optional()?
+            {
+                anyhow::ensure!(
+                    ctx.url == binance_futures_standard_ws_url()
+                        && !binance_futures_mm_ws_race_enabled(venue),
+                    "BBO connection selection requires native public USD-M bookticker"
+                );
+                anyhow::ensure!(
+                    initial_symbols
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case("BTCUSDT")),
+                    "BBO connection selection requires BTCUSDT in the subscribed universe"
+                );
+                let bbo_publisher = publisher.clone().context("BBO selector publisher")?;
+                let publish = make_handler(
+                    "binance-bbo-selected".into(),
+                    adapter.clone(),
+                    bbo_publisher.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    state.clone(),
+                    MarketSource::Other,
+                );
+                let refresh_config = self.config.clone();
+                let refresh_adapter = adapter.clone();
+                let refresh_state = state.clone();
+                let refresh: super::binance_bbo_selection::Refresh = Rc::new(move || {
+                    let config = refresh_config.clone();
+                    let adapter = refresh_adapter.clone();
+                    let state = refresh_state.clone();
+                    let publisher = bbo_publisher.clone();
+                    Box::pin(async move {
+                        let mut symbols = apply_symbol_filter(
+                            get_symbols_for_scope(&config, false).await?,
+                            "binance-futures",
+                        );
+                        anyhow::ensure!(!symbols.is_empty(), "BBO selector symbol list empty");
+                        symbols.sort_unstable();
+                        symbols.dedup();
+                        publisher.seed_symbols(&symbols)?;
+                        state.borrow_mut().symbol_state.ensure_symbols(&symbols);
+                        adapter.seed_symbols(&symbols);
+                        Ok(adapter.build_subscribe(&symbols))
+                    })
+                });
+                let stats_state = state.clone();
+                let stats: Rc<dyn Fn()> = Rc::new(move || {
+                    let mut s = stats_state.borrow_mut();
+                    if let Some(latency) = &mut s.binance_feed_latency {
+                        latency.log_completed(get_timestamp_us());
+                    }
+                    log::info!(
+                        "spread_pbs[binance-futures] stats published={} dropped_by_seq={} symbols_seen={}",
+                        s.published, s.dropped_by_seq, s.symbol_state.bbo_seen(),
+                    );
+                });
+                let mut symbols = initial_symbols.clone();
+                symbols.sort_unstable();
+                symbols.dedup();
+                return super::binance_bbo_selection::run(
+                    path,
+                    settings,
+                    [primary_local_ip, secondary_local_ip],
+                    adapter.build_subscribe(&symbols),
+                    self.config.restart_duration_secs,
+                    super::binance_bbo_selection::Hooks {
+                        publish,
+                        refresh,
+                        stats,
+                    },
+                    shutdown_rx,
+                )
+                .await;
+            }
+        }
         let primary_url = ctx.url.clone();
         if let Some(sources) = hyperliquid_shards {
             return hyperliquid_shards::run(
@@ -1170,6 +1266,9 @@ impl SpreadPbsApp {
                 }
                 _ = stats_ticker.tick() => {
                     let mut s = state.borrow_mut();
+                    if let Some(latency) = &mut s.binance_feed_latency {
+                        latency.log_completed(get_timestamp_us());
+                    }
                     if self.futures_bbo_only {
                         log::info!(
                             "futures_bbo[{}] published={} dropped_by_seq={} symbols_seen={}",
@@ -2520,6 +2619,7 @@ struct SharedState {
     bbo_dedup_policy: BboDedupPolicy,
     sbe_symbols: FastHashMap<String, (Rc<str>, usize)>,
     publication_latency: PublicationLatency,
+    binance_feed_latency: Option<BinanceFeedLatency>,
     // Hyperliquid replays recent public trades in the first subscription batch
     // without an isSnapshot marker. Keep only trades at/after this process run.
     trade_publish_not_before_us: Option<i64>,
@@ -2904,10 +3004,11 @@ fn make_replacement_handler(
     incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
-    Rc::new(move |_recv_us: i64, raw: &[u8]| {
+    Rc::new(move |recv_us: i64, raw: &[u8]| {
         if process_raw_replacement_frame(
             adapter.as_ref(),
             raw,
+            recv_us,
             trade_publisher.as_ref(),
             incremental_publisher.as_ref(),
             derivatives_publisher.as_ref(),
@@ -2978,6 +3079,7 @@ fn make_replacement_handler(
 fn process_raw_replacement_frame(
     adapter: &dyn VenueAdapter,
     raw: &[u8],
+    recv_us: i64,
     trade_publisher: Option<&Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<&Rc<SpreadIncrementalPublisher>>,
     derivatives_publisher: Option<&Rc<SpreadDerivativesPublisher>>,
@@ -3001,6 +3103,7 @@ fn process_raw_replacement_frame(
                 RawIncremental::Parsed(book) => {
                     let slot_index = adapter.symbol_slot_index(book.symbol);
                     let mut s = state.borrow_mut();
+                    let published_before = s.incremental_published;
                     process_incremental_fields(
                         &mut s,
                         publisher,
@@ -3019,11 +3122,20 @@ fn process_raw_replacement_frame(
                         incremental_max_levels,
                         false,
                     );
+                    if s.incremental_published > published_before
+                        && book.symbol == "BTCUSDT"
+                        && s.symbol_state.incremental_slot(book.symbol).prev == book.seq_id
+                    {
+                        if let Some(latency) = &mut s.binance_feed_latency {
+                            latency.record_published(Channel::Depth, book.symbol, recv_us, raw);
+                        }
+                    }
                 }
                 RawIncremental::View(book) => {
                     let slot_index = adapter.symbol_slot_index(book.symbol);
                     let mut s = state.borrow_mut();
-                    process_incremental_view(
+                    let symbol = book.symbol;
+                    let published = process_incremental_view(
                         &mut s,
                         publisher,
                         slot_index,
@@ -3031,6 +3143,11 @@ fn process_raw_replacement_frame(
                         book,
                         incremental_max_levels,
                     );
+                    if published {
+                        if let Some(latency) = &mut s.binance_feed_latency {
+                            latency.record_published(Channel::Depth, symbol, recv_us, raw);
+                        }
+                    }
                 }
             }
             return true;
@@ -3041,6 +3158,7 @@ fn process_raw_replacement_frame(
         let mut emit = |trade: crate::spread_pbs::adapter::RawTradeFrame<'_>| {
             let slot_index = adapter.symbol_slot_index(trade.symbol);
             let mut s = state.borrow_mut();
+            let published_before = s.trades_published;
             process_trade_fields(
                 &mut s,
                 publisher,
@@ -3054,6 +3172,11 @@ fn process_raw_replacement_frame(
                 trade.price,
                 trade.amount,
             );
+            if s.trades_published > published_before {
+                if let Some(latency) = &mut s.binance_feed_latency {
+                    latency.record_published(Channel::Trade, trade.symbol, recv_us, raw);
+                }
+            }
         };
         if adapter.parse_trades_raw_borrowed(raw, &mut emit) {
             return true;
@@ -3101,6 +3224,7 @@ fn make_handler(
             let accepted_us = get_timestamp_us();
             let slot_index = adapter.symbol_slot_index(bbo.symbol);
             let mut s = state.borrow_mut();
+            let published_before = s.published;
             process_bbo_fields(
                 &mut s,
                 &publisher,
@@ -3117,11 +3241,17 @@ fn make_handler(
                 bbo.ask_amount,
                 source,
             );
+            if s.published > published_before {
+                if let Some(latency) = &mut s.binance_feed_latency {
+                    latency.record_published(Channel::Ticker, bbo.symbol, recv_us, raw);
+                }
+            }
             return Ok(());
         }
         if process_raw_replacement_frame(
             adapter.as_ref(),
             raw,
+            recv_us,
             trade_publisher.as_ref(),
             incremental_publisher.as_ref(),
             derivatives_publisher.as_ref(),
@@ -3501,16 +3631,16 @@ fn process_incremental_view(
     dedup_policy: IncrementalDedupPolicy,
     book: RawIncrementalView<'_>,
     max_levels: Option<usize>,
-) {
+) -> bool {
     let slot = slot_index
         .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
         .unwrap_or_else(|| state.symbol_state.incremental_slot(book.symbol));
     let recent_identity = if dedup_policy == IncrementalDedupPolicy::RecentSnapshotIdentity {
         let Some(bids) = mkt_parsers::raw_json_levels_iter(book.bids_raw) else {
-            return;
+            return false;
         };
         let Some(asks) = mkt_parsers::raw_json_levels_iter(book.asks_raw) else {
-            return;
+            return false;
         };
         Some(Rc::new(IncrementalSnapshotIdentity::from_levels(
             book.timestamp_us,
@@ -3526,7 +3656,7 @@ fn process_incremental_view(
             .is_some_and(|identity| state.contains_recent_incremental(slot.idx, identity))
     {
         state.incremental_dropped_by_seq += 1;
-        return;
+        return false;
     }
 
     if book.gap_check {
@@ -3542,10 +3672,10 @@ fn process_incremental_view(
 
     let total_levels = book.bids_count + book.asks_count;
     let Some(mut bids_iter) = mkt_parsers::raw_json_levels_iter(book.bids_raw) else {
-        return;
+        return false;
     };
     let Some(mut asks_iter) = mkt_parsers::raw_json_levels_iter(book.asks_raw) else {
-        return;
+        return false;
     };
     match max_levels {
         Some(max) if total_levels > max && max > 0 => {
@@ -3570,7 +3700,7 @@ fn process_incremental_view(
                     chunk_idx,
                     total_chunks,
                 ) {
-                    return;
+                    return false;
                 }
                 bids_start += bids_count;
                 asks_start += asks_count;
@@ -3589,7 +3719,7 @@ fn process_incremental_view(
                 0,
                 1,
             ) {
-                return;
+                return false;
             }
         }
     }
@@ -3597,6 +3727,7 @@ fn process_incremental_view(
         state.record_recent_incremental(slot.idx, identity);
     }
     state.symbol_state.set_incremental_slot(slot, book.seq_id);
+    true
 }
 
 fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
@@ -4063,6 +4194,7 @@ mod tests {
             bbo_dedup_policy: BboDedupPolicy::MonotonicSequence,
             sbe_symbols: fast_hash_map_with_capacity(16),
             publication_latency: PublicationLatency::default(),
+            binance_feed_latency: None,
             trade_publish_not_before_us: None,
             published: 0,
             trades_published: 0,
@@ -4083,6 +4215,93 @@ mod tests {
             trades_dropped_by_seq: 0,
             last_dedup_reset_us: now_us,
         }
+    }
+
+    #[test]
+    fn binance_benchmark_uses_first_published_frame_per_channel_not_depth_chunks() {
+        use crate::spread_pbs::binance::BinanceAdapter;
+        use iceoryx2::prelude::SemanticString;
+        // Unique IPC services: never connect this test to production publishers.
+        let root = format!("latency_test_{}_{}", std::process::id(), get_timestamp_us());
+        let directory = std::env::temp_dir().join(&root);
+        std::fs::create_dir(&directory).unwrap();
+        let mut config = iceoryx2::config::Config::default();
+        config.global.set_root_path(
+            &iceoryx2::prelude::Path::new(directory.as_os_str().as_encoded_bytes()).unwrap(),
+        );
+        let pool = SpreadPbsPublisherPool::with_test_config(config);
+        let bbo = Rc::new(pool.bbo_for("binance-futures", &root).unwrap());
+        let trade = Rc::new(pool.trade_for("binance-futures", &root).unwrap());
+        let depth = Rc::new(pool.incremental_for("binance-futures", &root).unwrap());
+        let adapter: Rc<dyn VenueAdapter> =
+            Rc::new(BinanceAdapter::new(TradingVenue::BinanceFutures));
+        let mut initial = test_state(0);
+        initial.binance_feed_latency = Some(BinanceFeedLatency::new(0, [true; 3]).unwrap());
+        let state = Rc::new(RefCell::new(initial));
+        let handler = make_handler(
+            "latency-test".into(),
+            adapter.clone(),
+            bbo,
+            None,
+            None,
+            None,
+            Some(1),
+            state.clone(),
+            MarketSource::Other,
+        );
+        let replacement = make_replacement_handler(
+            "latency-test-market".into(),
+            adapter,
+            Some(trade),
+            Some(depth),
+            None,
+            Some(1),
+            state.clone(),
+        );
+        let frames: [&[u8]; 3] = [
+            br#"{"e":"bookTicker","E":1000,"T":999,"s":"BTCUSDT","u":10,"b":"100","B":"1","a":"101","A":"2"}"#,
+            br#"{"e":"depthUpdate","E":1000,"T":999,"s":"BTCUSDT","U":10,"u":11,"pu":9,"b":[["100","1"],["99","2"]],"a":[["101","1"]]}"#,
+            br#"{"e":"trade","E":1000,"T":999,"s":"BTCUSDT","t":10,"p":"100","q":"1","b":1,"a":2,"m":false}"#,
+        ];
+        for (index, raw) in frames.into_iter().enumerate() {
+            let selected = if index == 0 { &handler } else { &replacement };
+            selected(1_002_000, raw).unwrap();
+            // The slower copy from the other leg must not affect P99.
+            selected(1_500_000, raw).unwrap();
+        }
+        handler(1_500_000, br#"{"e":"bookTicker","E":1000,"T":999,"s":"ETHUSDT","u":10,"b":"100","B":"1","a":"101","A":"2"}"#).unwrap();
+        let mut shared = state.borrow_mut();
+        assert_eq!(
+            (
+                shared.published,
+                shared.trades_published,
+                shared.incremental_published
+            ),
+            (2, 1, 3)
+        );
+        assert_eq!(
+            (
+                shared.dropped_by_seq,
+                shared.trades_dropped_by_seq,
+                shared.incremental_dropped_by_seq
+            ),
+            (1, 1, 1)
+        );
+        let latency = shared.binance_feed_latency.as_mut().unwrap();
+        for channel in [Channel::Ticker, Channel::Depth, Channel::Trade] {
+            let summary = latency.take_channel(channel, 60_000_000).unwrap();
+            assert_eq!((summary.event_count, summary.tx_count), (1, 1));
+            assert_eq!(
+                (summary.event_p99, summary.tx_p99),
+                (Some(2.0), Some(3.001))
+            );
+        }
+        drop(shared);
+        drop(handler);
+        drop(replacement);
+        drop(state);
+        drop(pool);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

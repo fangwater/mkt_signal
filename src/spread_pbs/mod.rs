@@ -11,7 +11,9 @@
 pub mod adapter;
 pub mod app;
 pub mod binance;
+pub mod binance_bbo_selection;
 pub mod binance_fix_sbe;
+pub mod binance_latency;
 pub mod bitget;
 pub mod bybit;
 pub mod gate;

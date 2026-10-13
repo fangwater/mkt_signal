@@ -1,7 +1,32 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 03:09 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 05:48 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 Binance USD-M ticker 双连接选优部署到既有 bookticker / CPU9：
+仍为两条发布连接，仅试验时额外开一条全订阅影子连接，不分配 CPU7 或新常驻进程。
+只通过环境内 `start_spread_pbs.sh --role bookticker` 切换该角色；
+market PID 1784924 / CPU14 和三个 Binance FR 原进程保持运行。
+运行配置 `~/spread_pbs/binance-futures/config/binance_bbo_selection.toml`，
+机制、阈值、热停用及验收结果见 `docs/binance_futures_latency.md`。
+原始二进制和脚本备份 `.before-selection-20261013`；构建与发布证据
+`../hfq_latency_lab/data/deploy/20261013-bbo-selection/`。源 IP 仍只用 ens42 的 .90/.91。
+
+2026-10-13 05:04 UTC 完成独立 `hfq_latency_lab` BTC ticker 临时连接试验：
+CPU7 临时运行限时探针，未注册常驻 supervisor；结束后复核无探针、旧 model_pub
+或单独绑定 CPU7 的进程，CPU7 恢复未分配。生产行情配置和 FR PID 均未修改，
+三个 Binance FR 波动率输入均为 372/372 fresh。结果位于独立项目
+`../hfq_latency_lab/docs/ticker_path_experiment.md`；候选节点未写入生产配置。
+
+2026-10-13 04:30 UTC 按用户要求停止全部旧 `model_pub`：
+在 `~/model_pub/binance-futures-mid-re-{30s,1m,5m}` 分别执行环境内
+`scripts/stop_model_pub.sh`，脚本完成 supervisor 条目删除及遗留进程清理。
+复核三个原 PID 1110763 / 1111090 / 1111465 均退出；现场无 `model_pub`、
+`model_1m_pub`，也无单独绑定 CPU7 的进程。原表中的十个 `model_1m_pub`
+本次操作前已不在线，因此同步修正 CPU7 为未分配。
+部署目录、配置和历史数据保留；普通 intra/CTA special 模型、tradeflow、
+fusion features 与三个 Binance FR trade_signal 继续运行，后者波动率输入均为
+372/372 fresh、stale=0。未处理缺 depth 问题，未改 source IP / ENI / 路由。
 
 2026-10-13 03:09 UTC 按用户要求暂停旧 RX01：通过
 `~/binance-cta-rx01/intra_scripts/stop_intra_{trade_engine,trade_signal,pre_trade}.sh`
@@ -10,6 +35,18 @@ source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 停机后 `rapidx_open_orders --exchange binance` 只读查询确认 SPOT/MARGIN/PERP
 挂单均为 0，未提交撤单或对冲交易。账户仍有方向敞口，尚未完成中性化；
 不得将本次进程停机视为空仓或仓位承接完成。新 CTA Spread 发布保持关闭。
+
+2026-10-13 04:04 UTC 发布 Binance USD-M BTCUSDT 轻量延迟观测：
+`~/spread_pbs/binance-futures` 的 market / bookticker 通过环境内脚本重启，
+实测 PID 分别为 1784924 / 1787779，仍绑定 CPU14 / CPU9。
+`~/spread_bbo_zmq_pub/binance-futures` relay PID 1792862，仍绑定 CPU5。
+新增三频道 Q−E/Q−T 的分钟 P50/P99，停用该 relay 的混币 ingress KLL。
+本地 `arbmm` release 产物上传、SHA-256 校验、原子安装；运行中 spread_pbs
+哈希为 `d501881e54bb7805eb806aae06153970e2aa8eda74f623a345befa89c1a2a314`。
+未新增行情核；统计复用现有接收时间、生产去重和 stats tick。
+研究机 `~/hfq_latency_lab` 每分钟只读 JP 分钟日志并与外部公开数据配对。
+详见 `docs/binance_futures_latency.md`；回退备份为原文件旁的 `.before-latency-20261013`。
+本次停止脚本耗时约 67 秒，启动约 76 秒，不能仅凭短超时判定操作未发生；须核验实际 PID。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
 
@@ -23,9 +60,9 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 |----|------|------|
 | 5 | spread_bbo_zmq_pub(binance-futures) | 绑在 housekeeping 边缘核 |
 | 6 | fusion_factor_pub(binance-futures) | |
-| 7 | model_1m_pub ×10 + model_pub ×3 | 13 个低频进程共享堆叠 |
+| 7 | 未分配 | 2026-10-13 停止旧 model_pub ×3；现场无 model_1m_pub 或单独绑定 CPU7 的进程 |
 | 8 | spread_pbs binance-margin | |
-| 9 | spread_pbs binance-futures bookticker | BBO 专核 |
+| 9 | spread_pbs binance-futures bookticker | BBO 专核；USD-M 双连接选优，试验时短暂增加一条影子连接 |
 | 10 | spread_pbs gate-both | |
 | 11 | spread_pbs bitget-both | 忙时单核饱和,候选拆分(margin/futures 两进程) |
 | 12 | spread_pbs okex-both | |

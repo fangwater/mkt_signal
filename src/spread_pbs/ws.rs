@@ -67,8 +67,16 @@ pub(crate) fn shared_rustls_config() -> Result<Arc<ClientConfig>> {
 }
 
 /// 帧处理回调：`(recv_us, payload_bytes)`。`recv_us` 是 `read.next()` 命中那一刻
-/// 立即抓的本地微秒时间戳，下游可用作"纯网络延迟"统计的端点。
+/// 立即抓的本地微秒时间戳。它是应用层 WS 接收端点，包含内核/TLS/调度影响，
+/// 不能解释为硬件收包时间或纯网络传播延迟。
 pub type FrameHandler = Rc<dyn Fn(i64, &[u8]) -> Result<()>>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConnectionEvent {
+    Connected(Option<IpAddr>),
+    Disconnected,
+}
+pub type ConnectionObserver = Rc<dyn Fn(ConnectionEvent)>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RollingRestartSpec {
@@ -198,8 +206,20 @@ pub async fn run_public_ws(
 pub async fn run_public_ws_with_ack_policy(
     params: WsLoopParams,
     handler: FrameHandler,
+    shutdown_rx: watch::Receiver<bool>,
+    subscription_ack_policy: SubscriptionAckPolicy,
+) {
+    run_public_ws_observed(params, handler, shutdown_rx, subscription_ack_policy, None).await;
+}
+
+/// Observed sessions also deliver otherwise-filtered text control frames to
+/// the handler, so the owner can validate subscription acknowledgements.
+pub async fn run_public_ws_observed(
+    params: WsLoopParams,
+    handler: FrameHandler,
     mut shutdown_rx: watch::Receiver<bool>,
     subscription_ack_policy: SubscriptionAckPolicy,
+    observer: Option<ConnectionObserver>,
 ) {
     let WsLoopParams {
         label,
@@ -246,7 +266,10 @@ pub async fn run_public_ws_with_ack_policy(
         )
         .await
         {
-            Ok((sink, read)) => {
+            Ok((sink, read, peer)) => {
+                if let Some(observer) = &observer {
+                    observer(ConnectionEvent::Connected(peer));
+                }
                 log::info!(
                     "spread_pbs ws[{}] connected to {} remote_ip={}",
                     label,
@@ -264,8 +287,12 @@ pub async fn run_public_ws_with_ack_policy(
                     business_idle_timeout,
                     rolling_deadline,
                     expected_subscription_acks.clone(),
+                    observer.is_some(),
                 )
                 .await;
+                if let Some(observer) = &observer {
+                    observer(ConnectionEvent::Disconnected);
+                }
                 if end == SessionEnd::Shutdown || *shutdown_rx.borrow() {
                     return;
                 }
@@ -307,8 +334,14 @@ async fn connect_and_subscribe(
     remote_ip: Option<&str>,
     headers: &[(String, String)],
     subscribe_msgs: &[serde_json::Value],
-) -> Result<(WsSink, WsRead)> {
+) -> Result<(WsSink, WsRead, Option<IpAddr>)> {
     let stream = open_ws(url, local_ip, remote_ip, headers).await?;
+    let peer = match stream.get_ref() {
+        MaybeTlsStream::Plain(tcp) => tcp.peer_addr().ok(),
+        MaybeTlsStream::Rustls(tls) => tls.get_ref().0.peer_addr().ok(),
+        _ => None,
+    }
+    .map(|addr| addr.ip());
     let (mut sink, read) = stream.split();
     for msg in subscribe_msgs {
         let payload = msg.to_string();
@@ -316,7 +349,7 @@ async fn connect_and_subscribe(
             .await
             .with_context(|| "send subscribe payload")?;
     }
-    Ok((sink, read))
+    Ok((sink, read, peer))
 }
 
 async fn open_ws(
@@ -466,6 +499,7 @@ async fn run_session(
     business_idle_timeout: Option<Duration>,
     rolling_deadline: Option<Instant>,
     mut pending_subscription_acks: Option<PendingSubscriptionAcks>,
+    deliver_control_frames: bool,
 ) -> SessionEnd {
     let interval = keepalive
         .map(|k| k.interval)
@@ -539,7 +573,7 @@ async fn run_session(
                 }
             }
             next = read.next() => {
-                // recv_us 必须在 await 落地后立刻抓——这是"纯网络延迟"统计的本地端点
+                // 应用层 WS 接收端点：必须在 await 落地后、解析和分发之前抓取。
                 let recv_us = get_timestamp_us();
                 match next {
                     Some(Ok(Message::Text(text))) => {
@@ -602,6 +636,13 @@ async fn run_session(
                             }
                         }
                         if is_keepalive_response(&text) {
+                            if deliver_control_frames {
+                                if let Err(err) = handler(recv_us, text.as_bytes()) {
+                                    log::error!("spread_pbs ws[{label}] control frame rejected: {err:#}");
+                                    let _ = sink.close().await;
+                                    return SessionEnd::HandlerRejected;
+                                }
+                            }
                             continue;
                         }
                         business_idle_deadline =
@@ -843,5 +884,57 @@ mod tests {
         assert!(pending.acknowledge(&key));
         assert!(pending.is_empty());
         assert!(!pending.acknowledge(&key));
+    }
+}
+
+#[cfg(test)]
+mod observed_tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use std::cell::Cell;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn observed_session_delivers_ack_and_peer_without_changing_legacy_filtering() {
+        tokio::task::LocalSet::new().run_until(async {
+            for observed in [false, true] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite_v030::accept_async(tcp).await.unwrap();
+                    ws.next().await.unwrap().unwrap();
+                    ws.send(Message::Text(r#"{"result":null,"id":1}"#.into())).await.unwrap();
+                    ws.send(Message::Text(r#"{"e":"bookTicker"}"#.into())).await.unwrap();
+                    while let Some(Ok(_)) = ws.next().await {}
+                });
+                let acks = Rc::new(Cell::new(0));
+                let connected = Rc::new(Cell::new(false));
+                let disconnected = Rc::new(Cell::new(false));
+                let (stop, rx) = watch::channel(false);
+                let count = acks.clone();
+                let handler: FrameHandler = Rc::new(move |_, raw| {
+                    if raw.starts_with(b"{\"result\"") { count.set(count.get() + 1); }
+                    else { stop.send(true).unwrap(); }
+                    Ok(())
+                });
+                let con = connected.clone();
+                let dis = disconnected.clone();
+                let observer: ConnectionObserver = Rc::new(move |event| match event {
+                    ConnectionEvent::Connected(peer) => { assert_eq!(peer, Some(address.ip())); con.set(true); }
+                    ConnectionEvent::Disconnected => dis.set(true),
+                });
+                tokio::time::timeout(Duration::from_secs(3), run_public_ws_observed(
+                    WsLoopParams { label: "test".into(), url: format!("ws://{address}/"),
+                        local_ip: "127.0.0.1".into(), remote_ip: None, headers: vec![],
+                        subscribe_msgs: vec![serde_json::json!({"method":"SUBSCRIBE","params":["btcusdt@bookTicker"],"id":1})],
+                        keepalive: None, parse_okex_notices: false, business_idle_timeout: None, rolling_restart: None },
+                    handler, rx, SubscriptionAckPolicy::None, observed.then_some(observer),
+                )).await.unwrap();
+                assert_eq!(acks.get(), usize::from(observed));
+                assert_eq!(connected.get(), observed);
+                assert_eq!(disconnected.get(), observed);
+                server.abort();
+            }
+        }).await;
     }
 }

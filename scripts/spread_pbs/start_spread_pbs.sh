@@ -9,7 +9,7 @@ VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin|both)|(binance|bitget)-coin-futures
 usage() {
   cat <<'USAGE'
 Usage:
-  start_spread_pbs.sh
+  start_spread_pbs.sh [--role market|bookticker|split]
 
 Behavior:
   - 必须在 venue 部署目录下执行（如 ~/spread_pbs/okex-futures 或 ~/spread_pbs/gate-both）。
@@ -21,7 +21,8 @@ Behavior:
   - binance-futures 可通过 SPREAD_PBS_BINANCE_FUTURES_ROLE=split|market|bookticker 选择进程角色。
     每个角色同时覆盖 USDT、USDC、USD 永续，内部连接 USD-M 和 COIN-M 两套行情。
     三类合约的 BBO/trade/incremental/derivatives IPC 统一使用 binance-futures 路径。
-    角色只选择数据流；所有角色复用统一的双路 WS 和错峰重连机制。
+    --role 覆盖 env.sh，只操作指定角色；默认沿用 env.sh。
+    USD-M bookticker 可通过独立配置启用双连接自动选优。
   - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
     Bybit-both 默认拆成 market/bookticker 两个进程，避免 JSON market 流和 BBO 流互相抢 CPU。
     启动 both 前需要先停止同 exchange 的单独 margin/futures spread_pbs 进程。
@@ -35,10 +36,13 @@ if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
   usage
   exit 0
 fi
+requested_role=""
 if [[ $# -gt 0 ]]; then
-  echo "[ERROR] 不支持参数: $*" >&2
-  usage >&2
-  exit 1
+  if [[ $# != 2 || "$1" != "--role" || ! "$2" =~ ^(market|bookticker|split)$ ]]; then
+    echo "[ERROR] expected --role market|bookticker|split" >&2
+    exit 1
+  fi
+  requested_role="$2"
 fi
 
 # 默认 core 映射（必须与 deploy 脚本里的字母序一致）。
@@ -104,6 +108,18 @@ fi
 if [[ -f "$BASE_DIR/env.sh" ]]; then
   # shellcheck source=/dev/null
   set -a; source "$BASE_DIR/env.sh"; set +a
+fi
+
+if [[ -n "$requested_role" ]]; then
+  [[ "$venue" == "binance-futures" ]] || { echo "[ERROR] --role requires binance-futures" >&2; exit 1; }
+  SPREAD_PBS_BINANCE_FUTURES_ROLE="$requested_role"
+fi
+
+if [[ "$venue" == "binance-futures" || "$venue" == "binance-both" ]]; then
+  case "${SPREAD_PBS_BINANCE_LATENCY_WINDOW_SECS:-60}" in
+    0|60) ;;
+    *) echo "[ERROR] SPREAD_PBS_BINANCE_LATENCY_WINDOW_SECS must be 0 or 60" >&2; exit 1 ;;
+  esac
 fi
 
 binance_spot_transport="${SPREAD_PBS_BINANCE_SPOT_TRANSPORT:-ws_sbe}"
@@ -251,15 +267,17 @@ trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 find_running_pids_for_venue() {
   local target_venue="${1,,}"
   local venue_arg="--venue ${target_venue}"
+  local selected_role="${2:-}"
   local pids=()
   while IFS= read -r pid; do
     if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,comm=,args= | awk -v venue_arg="$venue_arg" '
+    ps -eo pid=,comm=,args= | awk -v venue_arg="$venue_arg" -v selected_role="$selected_role" '
       $2 == "spread_pbs" &&
-      index($0, venue_arg) > 0 &&
+      index(" " $0 " ", " " venue_arg " ") > 0 &&
+      (selected_role == "" || index(" " $0 " ", " --binance-futures-role " selected_role " ") > 0) &&
       index($0, "awk -v ") == 0 &&
       index($0, "start_spread_pbs.sh") == 0 &&
       index($0, "stop_spread_pbs.sh") == 0 {
@@ -273,7 +291,11 @@ find_running_pids_for_venue() {
 }
 
 find_running_pids() {
-  find_running_pids_for_venue "$venue"
+  if [[ "$venue" == "binance-futures" && "$binance_futures_role" != "split" ]]; then
+    find_running_pids_for_venue "$venue" "$binance_futures_role"
+  else
+    find_running_pids_for_venue "$venue"
+  fi
 }
 
 check_conflicting_spread_pbs_processes() {
@@ -372,6 +394,18 @@ if [[ -n "${SPREAD_PBS_SYMBOLS:-}" ]]; then
         \"SPREAD_PBS_SYMBOLS\": \"${json_spread_pbs_symbols}\""
 fi
 
+binance_latency_env_line=""
+if [[ "$venue" == "binance-futures" || "$venue" == "binance-both" ]]; then
+  binance_latency_env_line=",
+        \"SPREAD_PBS_BINANCE_LATENCY_WINDOW_SECS\": \"${SPREAD_PBS_BINANCE_LATENCY_WINDOW_SECS:-60}\""
+fi
+
+if [[ -n "${SPREAD_PBS_BINANCE_BBO_SELECTION_CONFIG:-}" ]]; then
+  selection_config="$(json_escape "$SPREAD_PBS_BINANCE_BBO_SELECTION_CONFIG")"
+  binance_latency_env_line="${binance_latency_env_line},
+        \"SPREAD_PBS_BINANCE_BBO_SELECTION_CONFIG\": \"${selection_config}\""
+fi
+
 binance_futures_split_env_line=""
 if [[ "$venue" == "binance-futures" ]]; then
   json_bf_market_core="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE")"
@@ -416,7 +450,7 @@ if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.tom
 fi
 
 # pmdaemon args = ["-c", "<core>", "<bin>", "--venue", "<v>", "--core", "<core>"]
-common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_fix_md_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
+common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_fix_md_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${binance_latency_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
 if [[ "$venue" == "binance-futures" ]]; then
   if [[ "$binance_futures_role" == "market" ]]; then
     cat >"$cfg_file" <<JSON
@@ -563,8 +597,12 @@ fi
 echo "[INFO] Restarting ${name} (venue=${venue}, core=${CORE})"
 check_conflicting_spread_pbs_processes
 if [[ "$venue" == "binance-futures" ]]; then
-  "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
-  "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+  if [[ "$binance_futures_role" != "bookticker" ]]; then
+    "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
+  fi
+  if [[ "$binance_futures_role" != "market" ]]; then
+    "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+  fi
 elif [[ "$venue" == "bybit-both" ]]; then
   "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
   "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true

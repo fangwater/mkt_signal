@@ -1,6 +1,17 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 03:09 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 05:48 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 USD-M bookticker 增加双连接自动选优：启动仍使用现有 .90/.91 双路；
+候选 source pool 仅为 `172.31.46.90` / `172.31.46.91`，远端取实时 DNS。
+晋升后两条连接允许来自同一 source IP、不同远端；实际分配查看
+`binance_bbo_selection` 状态日志，不再把固定 primary/secondary 当作永远不变的 socket。
+不新增/重分配 EIP、私网 IP、ENI，不改路由、IRQ 或交易环境的 `local_ips`。
+COIN-M 与 market 角色继续原连接策略；详见 `docs/binance_futures_latency.md`。
+
+2026-10-13 04:04 UTC Binance futures 行情延迟观测发布：仅替换 spread_pbs、
+BBO relay 二进制及启动脚本中的观测开关透传；env.sh、ENI、EIP、路由、
+`local_ips` 与源 IP 分配未修改。三个进程继续使用既有环境；绑核见 core_allocation。
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 

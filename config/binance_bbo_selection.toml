@@ -1,0 +1,14 @@
+# Opt-in: copy this file into the Binance Futures runtime config directory.
+# No file means the legacy connection loop. off keeps the manager but stops
+# exploratory trials; ordinary DNS recovery/subscription/age maintenance remains.
+# observe evaluates only; auto also promotes the proven shadow TCP connection.
+mode = "observe"
+interval_secs = 900
+window_secs = 60
+min_matched = 500
+min_coverage = 0.98
+min_p50_gain_us = 10
+min_clipped_mean_gain_us = 5.0
+max_p99_regression_us = 50
+max_cpu_fraction = 0.85
+max_connection_age_secs = 21600
