@@ -1,8 +1,10 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-11 09:53 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 02:41 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
+
+2026-10-13 02:39 UTC RX02 图表 B/S 恢复仅更新历史导入脚本并重启 dashboard，继续使用本机 `127.0.0.1:10192` 和既有 4191 代理；source IP、`local_ips`、ENI、EIP 及路由均未变更。
 
 不要把公网 IP 直接加到 Linux 网卡上。验证出口用：
 

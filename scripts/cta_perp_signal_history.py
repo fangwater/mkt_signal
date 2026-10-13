@@ -150,8 +150,19 @@ class SignalHistoryStore:
         if not isinstance(publication, dict) or not isinstance(publication.get("levels"), list):
             raise ValueError("invalid signal publication")
         levels = publication["levels"]
-        if bool(levels) != (record["state"] in {"published", "partial"}):
-            raise ValueError("published signal must carry factual published levels")
+        target = publication.get("target")
+        if target is not None:
+            if not isinstance(target, dict):
+                raise ValueError("invalid published target")
+            qty = target.get("qty")
+            timestamp = target.get("published_ts_us")
+            if (not isinstance(target.get("strategy_name"), str) or not target["strategy_name"].strip()
+                    or not (qty == "clear" or (isinstance(qty, (int, float))
+                        and not isinstance(qty, bool) and math.isfinite(qty)))
+                    or not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp <= 0):
+                raise ValueError("invalid published target")
+        if (bool(levels) or target is not None) != (record["state"] in {"published", "partial"}):
+            raise ValueError("published signal must carry factual published levels or target")
         for level in levels:
             if (not isinstance(level, dict) or any(not isinstance(level.get(key), (int, float))
                     or not math.isfinite(level[key]) or level[key] <= 0 for key in ("price", "qty", "notional", "published_ts_us"))):

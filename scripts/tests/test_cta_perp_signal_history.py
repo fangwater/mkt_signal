@@ -166,6 +166,45 @@ class HistoryTests(unittest.TestCase):
         self.store.import_journal(self.journal,self.now)
         self.assertEqual(self.store.overview(["ETHUSDT"],self.now)["symbols"][0]["published"],1)
 
+    def test_target_publications_import_and_resume_after_restart(self):
+        for i, qty in enumerate([1.25, -1.25, 0.0, "clear"]):
+            item = record(self.bucket, event=f"target-{i}", signal=f"target-{i}")
+            item["publication"] = {"levels": [], "error": None, "target": {
+                "strategy_name": "lgq_cta_factor_036", "qty": qty,
+                "published_ts_us": item["event_ts_us"],
+            }}
+            self.append(item)
+        self.assertEqual(self.store.import_journal(self.journal, self.now), 4)
+        self.assertEqual(self.store.overview(["ETHUSDT"], self.now)["symbols"][0]["published"], 4)
+        saved = self.store.series("ETHUSDT", current_ms=self.now)["signals"]
+        self.assertCountEqual([r["publication"]["target"]["qty"] for r in saved], [1.25, -1.25, 0.0, "clear"])
+        self.store.close()
+        self.store = SignalHistoryStore(self.path)
+        self.assertEqual(self.store.import_journal(self.journal, self.now), 0)
+        self.append(record(self.bucket, "observed", "after-target", "after-target"))
+        self.assertEqual(self.store.import_journal(self.journal, self.now), 1)
+
+    def test_invalid_or_unpublished_targets_are_rejected(self):
+        target = {"strategy_name": "lgq_cta_factor_036", "qty": 0.0,
+                  "published_ts_us": (self.bucket + 1000) * 1000}
+        invalid = [None, {}, [], "target"]
+        for key, values in {
+            "qty": [None, True, float("nan"), float("inf"), "1.0"],
+            "published_ts_us": [None, True, 0, -1, "123"],
+            "strategy_name": [None, "", " ", 123],
+        }.items():
+            invalid.extend({**target, key: value} for value in values)
+        for value in invalid:
+            with self.subTest(target=value):
+                item = record(self.bucket)
+                item["publication"] = {"levels": [], "target": value}
+                with self.assertRaises(ValueError):
+                    self.store.validate_record(item)
+        item = record(self.bucket, "observed")
+        item["publication"]["target"] = target
+        with self.assertRaisesRegex(ValueError, "factual"):
+            self.store.validate_record(item)
+
     def test_retention_preserves_recent_signals_and_candles(self):
         for i,age in enumerate([3*DAY_MS,DAY_MS]):
             ts=self.bucket-age
