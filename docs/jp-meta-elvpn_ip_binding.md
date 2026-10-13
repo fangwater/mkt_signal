@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 08:26 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 09:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 08:57 UTC 操作者完成 RX02 切换，09:03 UTC 核验新 Perp 发布已启用。
+旧 special 配置/页面服务已停，Nginx 已安装切换配置；新页面沿用
+`/cta/binance-cta-perp-rx02/` 和 loopback19186/10196，旧页面路径跳转新入口。
+执行仍由 `binance_exec_trade05` 使用既有 `.228` 地址完成；没有改变 source IP、
+`local_ips`、EIP、ENI 或路由。旧共享因子 publisher 保留。
 
 08:25 UTC 新 Perp publisher 已在 CPU18 完成预热（PID 4133794）。四进程在线，
 发布保持关闭；本次只调整 CPU/预热超时，没有改变任何 source IP、EIP、ENI

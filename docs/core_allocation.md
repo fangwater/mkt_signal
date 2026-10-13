@@ -1,7 +1,16 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-13 08:43 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-13 09:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 08:57 UTC 操作者执行 RX02 正式切换，09:03 UTC 只读核验通过。
+`binance-cta-perp-rx02` signal/config/dashboard PID 为 421006/406886/411079，
+均使用 CPU0-5；publisher PID4133794 保持 CPU18。新发布 enabled=true，
+24/24 组合实时就绪、单份100 USDT、publication_error=null。
+旧 `binance-cta-special-rx02` signal/config/dashboard 已停，仅保留共享
+publisher PID1975542/CPU0-5。Exec trade05 未重启。切换 completed 标记已存在，
+四个新增因子策略已到达 Exec，检查时全部目标为零、无待执行量或活动订单量；
+账户仍有约16.53 USDT的旧零碎空仓。下方观察阶段 enabled=false/PID 为历史记录。
 
 2026-10-13 08:41:32 / 08:42:40 UTC，Binance Futures market / bookticker
 进一步更新为PID255763/CPU14、PID266181/CPU9，源码`37fd96a3`。
