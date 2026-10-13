@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-13 09:41 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-13 13:42 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 13:42 UTC RX01 已正式启用，独立执行环境 `binance_exec_trade06`，RapidX Binance
+现货开方向、退出时永续对冲；五因子、16币、46组合，单份100 USDT。
+六个Exec进程实测均使用 CPU mask `0-5,48-95`：persist_manager PID2987736、
+Exec Config PID2993382、viz_server PID3003411、rapidx_account_monitor PID3046353、
+exec-pre-trade PID3307344、trade_engine PID3381925。
+未新增隔离核绑定。Spread publisher PID663465 保持 CPU17；signal PID3132535
+使用 CPU0-5,48-95；配置/页面 PID3183433/3390010 使用 CPU0-5,48-95。
+旧RX01仅保留账户监控和历史持久化（后者CPU15），没有启动旧执行链。
+Manager source06 / virtual03 已建立，lgq 可见并可管理。现货与期货快照均就绪，
+12条旧库存腿由独立inventory策略承接；RX02保持启用。下方09:39预部署状态为历史。
+验收：`artifacts/cta_spread_rx01_activation/live_validation.json`。
 
 2026-10-13 09:20 UTC Spread RX01 更新为16币/5因子/46组合（配置480387a3）。
 操作前核查CPU17没有专用线程占用；通过环境本地start脚本重启因子发布器至

@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 09:41 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 13:42 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 13:42 UTC `binance_exec_trade06` 正式接管RX01现货/永续，使用已有
+`local_ips=["172.31.35.228"]`；未新增EIP/ENI或修改路由。
+Manager source06 别名 `lgq_cta_RX01`，跟随 `virtual03/cta_spread_rx01` 倍率1。
+Viz/Config分别监听loopback10046/18166，通过4191鉴权网关 `/exec_trade06/`
+和 `/exec_trade06/config/` 访问；lgq 已获配置管理权限。
+Spread 发布已启用、46/46组合实时就绪，旧库存独立承接。下方预部署状态为历史。
 
 2026-10-13 09:20 UTC Spread RX01清单更新为16币/46组合，publisher在CPU17
 重新预热；仓位发布保持关闭，未变更独立Redis环境、网页监听、网关路径、
@@ -182,7 +189,7 @@ binance_exec_trade02         172.31.35.228, 172.31.35.234
 binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，follow lgq_cta，ctaker
-binance_exec_trade06         172.31.35.228                  RX01 RapidX，运行包已安装，全部进程停止；尚未绑定virtual
+binance_exec_trade06         172.31.35.228                  RX01 RapidX，现货/永续在线，follow virtual03/cta_spread_rx01，ctaker
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。
