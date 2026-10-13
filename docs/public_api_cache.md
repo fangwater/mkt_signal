@@ -1,6 +1,10 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-12 UTC
+最后更新：2026-10-13 UTC
+
+2026-10-13 审核一次性运维工具 `scripts/neutralize_rapidx_binance.py`：
+Binance 实时 `/fapi/v1/depth` 直连官方 HTTPS，不进入缓存；RapidX 的所有
+账户、规则、订单查询及写请求均签名直连，不新增代理或缓存白名单。
 
 ## 状态
 
