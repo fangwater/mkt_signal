@@ -1,0 +1,54 @@
+# RX02 切换到 CTA Perp
+
+最后更新：2026-10-13
+
+目标主机 `jp-meta-elvpn`；旧目录 `~/binance-cta-special-rx02`，新目录
+`~/binance-cta-perp-rx02`。二进制来自本地 `arbmm` 提交 `976d557e`。
+新清单为 9 币、5 因子、24 项绑定，NQ 为 120/min60；单份沿用线上
+100 USDT，策略前缀沿用 `lgq_cta_`。Spread RX01 不在操作范围内。
+
+发布文件和因子预热不等于启用仓位发布。预备环境的配置必须保持
+`enabled=false`，不得启动仓位发布器。旧信号仍负责实时仓位。
+
+先只读检查安装内容与预热：
+
+```bash
+ssh jp-meta-elvpn 'cd ~/binance-cta-perp-rx02 && source env.sh && python3 scripts/activate_cta_perp_rx02.py'
+```
+
+需要操作者在自己的终端执行实际切换：
+
+```bash
+ssh -t jp-meta-elvpn 'cd ~/binance-cta-perp-rx02 && source env.sh && python3 scripts/activate_cta_perp_rx02.py --execute'
+```
+
+脚本现场询问 Manager 管理员用户名与密码，密码不回显、不写磁盘。默认运行
+不访问需登录的 Manager 配置；`--execute` 首先登录并只读核对全部绑定。
+若预热未追上实时、任一组合未就绪、文件校验失败、单份参数或 Manager 配置
+已变化，脚本在停旧信号之前退出。9 个币种的历史必须新鲜且配置的 24 个
+因子/NQ 均就绪。保持旧共享 special 因子发布器运行，避免影响其他消费者。
+
+切换步骤：
+
+1. 核对 `lgq_cta` 只有 `binance_exec_trade05` 一个跟随账户、乘数 1，旧五个
+   策略各一份，执行模板 `lgq_cta_ctaker`，没有待发布配置。
+2. 通过旧环境脚本停仓位发布器并确认退出；完整复制最终仓位状态，包括已被
+   移除的因子和币种。保留 NEAR × factor_036 的原数量和历史策略归属。
+3. 注册四个新因子策略的零目标；Manager 中保留旧绑定身份，将退出清单的
+   四个旧因子份数置零，新增四个因子各一份。此步骤可能立即触发真实平仓。
+4. 切换配置页、Dashboard 和仓位发布器；新发布器以 enabled=true 启动，
+   依靠历史分钟保护承接旧数量，只用启动后的新分钟产生新开仓信号。
+5. 检查仓位发布状态，再把 Nginx 路径迁移到 `/cta/binance-cta-perp-rx02/`；
+   旧页面路径重定向到新路径。实际成交仍由 Exec 决定。
+
+迁移没有承诺旧仓平仓与新策略开仓原子净额撮合；先到达的零目标可能先成交。
+保留原策略并发布零目标，不主动删除 Exec 策略或操作其持仓账本。
+
+脚本保存 `run/cutover_started.json`、完整旧仓位快照和 Nginx 备份。
+开始变更后若失败，将禁用并停止新仓位发布器，保留现场；不自动恢复旧发布器，
+因为部分新目标可能已成交。出现 started 标记后拒绝自动重跑，须核对 Manager
+实际配置、Exec 仓位和发布状态后制定恢复步骤。只有成功切换才写 completed 标记。
+
+切换后核验：新信号持续更新且无 publication_error、五个新因子策略按原份数
+跟随、四个旧因子为零份、旧 factor_036 退出币种为零目标、Manager 发布队列
+完成，并查看 Exec 实际持仓与订单。服务健康不等于交易已完成。
