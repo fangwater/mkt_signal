@@ -1,0 +1,207 @@
+{
+  "account": {
+    "source_id": "binance_exec_trade06",
+    "estimated_fee_rate": 0.000175,
+    "maker_fee_rate": -2e-05,
+    "taker_fee_rate": 0.000175,
+    "theoretical_twap_fee_rate": 0.0004,
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_baseline_141",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_baseline_164",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_factor_052",
+        "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_inventory",
+        "position_strategy_name": "binance_cta_spread_rx01_inventory",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "virtual_id": "virtual03",
+      "multiplier": 1.0
+    },
+    "pending_publishes": []
+  },
+  "virtual": [
+    {
+      "virtual_id": "virtual03",
+      "name": "cta_spread_rx01",
+      "bindings": [
+        {
+          "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+          "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+          "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+          "shares": 1.0
+        },
+        {
+          "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+          "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+          "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+          "shares": 1.0
+        },
+        {
+          "binding_name": "binance_cta_spread_rx01_baseline_141",
+          "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+          "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+          "shares": 1.0
+        },
+        {
+          "binding_name": "binance_cta_spread_rx01_baseline_164",
+          "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+          "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+          "shares": 1.0
+        },
+        {
+          "binding_name": "binance_cta_spread_rx01_factor_052",
+          "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+          "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+          "shares": 1.0
+        },
+        {
+          "binding_name": "binance_cta_spread_rx01_inventory",
+          "position_strategy_name": "binance_cta_spread_rx01_inventory",
+          "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+          "shares": 1.0
+        }
+      ],
+      "updated_at_us": 1791896854300292,
+      "followers": [
+        {
+          "source_id": "binance_exec_trade06",
+          "multiplier": 1.0,
+          "pending_publishes": []
+        }
+      ],
+      "created_by_user_id": 1,
+      "owner_username": "prc",
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "can_configure": true,
+      "can_manage_grants": false
+    }
+  ],
+  "access": [
+    {
+      "strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+      "created_by": "prc",
+      "publish_token_set": true,
+      "open_visibility": false,
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "grants": []
+    },
+    {
+      "strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+      "created_by": "prc",
+      "publish_token_set": true,
+      "open_visibility": false,
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "grants": []
+    },
+    {
+      "strategy_name": "binance_cta_spread_rx01_baseline_141",
+      "created_by": "prc",
+      "publish_token_set": true,
+      "open_visibility": false,
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "grants": []
+    },
+    {
+      "strategy_name": "binance_cta_spread_rx01_baseline_164",
+      "created_by": "prc",
+      "publish_token_set": true,
+      "open_visibility": false,
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "grants": []
+    },
+    {
+      "strategy_name": "binance_cta_spread_rx01_factor_052",
+      "created_by": "prc",
+      "publish_token_set": true,
+      "open_visibility": false,
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "grants": []
+    },
+    {
+      "strategy_name": "binance_cta_spread_rx01_inventory",
+      "created_by": "prc",
+      "publish_token_set": true,
+      "open_visibility": false,
+      "managers": [
+        {
+          "user_id": 3,
+          "username": "lgq"
+        }
+      ],
+      "grants": []
+    }
+  ]
+}

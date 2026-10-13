@@ -1,0 +1,2650 @@
+{
+  "validated_at": "2026-10-13T13:44:33.235124+00:00",
+  "signal": {
+    "config": {
+      "enabled": true,
+      "max_pos_u": 100.0,
+      "entry": {
+        "factor_long_quantile": 0.9,
+        "factor_short_quantile": 0.1,
+        "spread_lower_quantile": 0.3,
+        "spread_upper_quantile": 0.7
+      },
+      "execution": {
+        "factor_exit_quantile_long": 0.7,
+        "factor_exit_quantile_short": 0.3
+      }
+    },
+    "status": {
+      "allocation": "per_symbol_factor",
+      "enabled": true,
+      "factor_config_key": "binance-cta-spread-rx01:cta_symbol_factors",
+      "follower_source_id": "binance_exec_trade06",
+      "journal_healthy": true,
+      "manager_strategy_prefix": "binance_cta_spread_rx01_",
+      "max_pos_u": 100.0,
+      "publication_error": null,
+      "scheduled_entries": 0,
+      "strategies": {
+        "TD_TI_024": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 158.755,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.3925507900677201,
+                  "corrected_score": -0.18756253094837294,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6074492099322799,
+                  "score": 0.18756253094837294,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.3925507900677201,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9967013888888889,
+              "spread_value": 0.0009434258938960702
+            },
+            "updated_ts_us": 1791899051708484
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 49.445,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.2702031602708803,
+                  "corrected_score": -0.46827953673786316,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.7297968397291197,
+                  "score": 0.46827953673786316,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.2702031602708803,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9284722222222223,
+              "spread_value": 0.0008078360092902404
+            },
+            "updated_ts_us": 1791899046477087
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": -83.47245409015025,
+            "decision_reason": "hold",
+            "entry_notional": 100.0,
+            "factor_sign": "-",
+            "mark_price": 1.1982499999999998,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": -0.0,
+            "position_flag": -1,
+            "position_qty": -83.47245409015025,
+            "position_usdt": -100.02086811352252,
+            "score_ready": true,
+            "signal": {
+              "decision": "short",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.14288939051918736,
+                  "corrected_score": -1.1762764864666673,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.8571106094808126,
+                  "score": 1.1762764864666673,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": -1,
+              "quantile": 0.14288939051918736,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8147569444444445,
+              "spread_value": 0.0009595327492699076
+            },
+            "updated_ts_us": 1791899053971013
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1550500000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.3198645598194131,
+                  "corrected_score": -0.2729762826371932,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6801354401805869,
+                  "score": 0.2729762826371932,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.3198645598194131,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8895833333333333,
+              "spread_value": 0.0008644910309058429
+            },
+            "updated_ts_us": 1791899046029539
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 5.044499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7234762979683973,
+                  "corrected_score": 0.6269179611203328,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.2765237020316027,
+                  "score": -0.6269179611203328,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.7234762979683973,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.996875,
+              "spread_value": 0.000989413277925993
+            },
+            "updated_ts_us": 1791899050382317
+          }
+        },
+        "TD_TI_027": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 158.755,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.873069936421435,
+                  "corrected_score": 1.3028221781141567,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.12693006357856493,
+                  "score": -1.3028221781141567,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.873069936421435,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9967013888888889,
+              "spread_value": 0.0009434258938960702
+            },
+            "updated_ts_us": 1791899052055613
+          },
+          "ADAUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 0.23525000000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8244777475022707,
+                  "corrected_score": 1.0062022976526825,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.17552225249772935,
+                  "score": -1.0062022976526825,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.8244777475022707,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7805555555555556,
+              "spread_value": 0.0008490766291656888
+            },
+            "updated_ts_us": 1791899050316525
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 49.445,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7631698455949137,
+                  "corrected_score": 0.8074831607406988,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.23683015440508629,
+                  "score": -0.8074831607406988,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.7631698455949137,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9284722222222223,
+              "spread_value": 0.0008078360092902404
+            },
+            "updated_ts_us": 1791899046488853
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1982499999999998,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8458219800181653,
+                  "corrected_score": 1.4205731671511193,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.1541780199818347,
+                  "score": -1.4205731671511193,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.8458219800181653,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8147569444444445,
+              "spread_value": 0.0009595327492699076
+            },
+            "updated_ts_us": 1791899054089239
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1550500000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5701634877384196,
+                  "corrected_score": -0.006561357323550254,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4298365122615804,
+                  "score": 0.006561357323550254,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.5701634877384196,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8895833333333333,
+              "spread_value": 0.0008644910309058429
+            },
+            "updated_ts_us": 1791899046437621
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "spread_entry_blocked",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 5.044499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.9071298819255222,
+                  "corrected_score": 1.259485208746229,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.09287011807447774,
+                  "score": -1.259485208746229,
+                  "sign": "-",
+                  "vote": 1,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.9071298819255222,
+              "score": 1.0,
+              "score_ready": true,
+              "spread_quantile": 0.996875,
+              "spread_value": 0.000989413277925993
+            },
+            "updated_ts_us": 1791899050393640
+          },
+          "UNIUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 7.358499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8880563124432335,
+                  "corrected_score": 1.5897860513388484,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.11194368755676658,
+                  "score": -1.5897860513388484,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.8880563124432335,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7345486111111111,
+              "spread_value": 0.0006789327177675341
+            },
+            "updated_ts_us": 1791899046600076
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1193.125,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8585376930063578,
+                  "corrected_score": 1.3863944023238324,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.14146230699364215,
+                  "score": -1.3863944023238324,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.8585376930063578,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.26059027777777777,
+              "spread_value": 0.000393481600549413
+            },
+            "updated_ts_us": 1791899046535396
+          }
+        },
+        "baseline_141": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 158.755,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.45570500927643787,
+                  "corrected_score": -0.20636375085342862,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.45570500927643787,
+                  "score": -0.20636375085342862,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.45570500927643787,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9967013888888889,
+              "spread_value": 0.0009434258938960702
+            },
+            "updated_ts_us": 1791899052156623
+          },
+          "ADAUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.23525000000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4390074211502783,
+                  "corrected_score": -0.2624420399740937,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4390074211502783,
+                  "score": -0.2624420399740937,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.4390074211502783,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7805555555555556,
+              "spread_value": 0.0008490766291656888
+            },
+            "updated_ts_us": 1791899050328347
+          },
+          "AVAXUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 10.2865,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4037569573283859,
+                  "corrected_score": -0.2220147151761206,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4037569573283859,
+                  "score": -0.2220147151761206,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.4037569573283859,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.16961805555555556,
+              "spread_value": 0.0003886324993928915
+            },
+            "updated_ts_us": 1791899045565495
+          },
+          "BCHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 271.165,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6018089053803339,
+                  "corrected_score": 0.5944628789921387,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6018089053803339,
+                  "score": 0.5944628789921387,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6018089053803339,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.20399305555555555,
+              "spread_value": 0.0004606596646397641
+            },
+            "updated_ts_us": 1791899048101896
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 49.445,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.39587198515769945,
+                  "corrected_score": -0.3290792404605214,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.39587198515769945,
+                  "score": -0.3290792404605214,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.39587198515769945,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9284722222222223,
+              "spread_value": 0.0008078360092902404
+            },
+            "updated_ts_us": 1791899046500787
+          },
+          "DOGEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.084355,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.39169758812615957,
+                  "corrected_score": -0.32341179291048283,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.39169758812615957,
+                  "score": -0.32341179291048283,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.39169758812615957,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9713541666666666,
+              "spread_value": 0.0007106057914372533
+            },
+            "updated_ts_us": 1791899052979764
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1982499999999998,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4390074211502783,
+                  "corrected_score": -0.1765345033108618,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4390074211502783,
+                  "score": -0.1765345033108618,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.4390074211502783,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8147569444444445,
+              "spread_value": 0.0009595327492699076
+            },
+            "updated_ts_us": 1791899054145608
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1550500000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.18622448979591838,
+                  "corrected_score": -0.8235413045348601,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.18622448979591838,
+                  "score": -0.8235413045348601,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.18622448979591838,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8895833333333333,
+              "spread_value": 0.0008644910309058429
+            },
+            "updated_ts_us": 1791899046450319
+          },
+          "LTCUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 61.065,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.43390538033395176,
+                  "corrected_score": -0.06958554071902077,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.43390538033395176,
+                  "score": -0.06958554071902077,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.43390538033395176,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7267361111111111,
+              "spread_value": 0.000654396728016346
+            },
+            "updated_ts_us": 1791899050357958
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.044499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5674860853432282,
+                  "corrected_score": 0.09209005353895171,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5674860853432282,
+                  "score": 0.09209005353895171,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.5674860853432282,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.996875,
+              "spread_value": 0.000989413277925993
+            },
+            "updated_ts_us": 1791899050405006
+          },
+          "SOLUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 106.85499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.44039888682745826,
+                  "corrected_score": -0.11535929211233245,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.44039888682745826,
+                  "score": -0.11535929211233245,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.44039888682745826,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.840625,
+              "spread_value": 0.0005609311457018863
+            },
+            "updated_ts_us": 1791899050290807
+          },
+          "UNIUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 7.358499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4942022263450835,
+                  "corrected_score": -0.054986551912759606,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4942022263450835,
+                  "score": -0.054986551912759606,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.4942022263450835,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7345486111111111,
+              "spread_value": 0.0006789327177675341
+            },
+            "updated_ts_us": 1791899046617739
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.191225,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.43807977736549164,
+                  "corrected_score": -0.2518820549611243,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.43807977736549164,
+                  "score": -0.2518820549611243,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.43807977736549164,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9175347222222222,
+              "spread_value": 0.0009135995823543761
+            },
+            "updated_ts_us": 1791899054672258
+          },
+          "XRPUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.36435,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.43112244897959184,
+                  "corrected_score": -0.15953453085614847,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.43112244897959184,
+                  "score": -0.15953453085614847,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.43112244897959184,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8635416666666667,
+              "spread_value": 0.0006590268370373982
+            },
+            "updated_ts_us": 1791899056345332
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1193.125,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4144248608534323,
+                  "corrected_score": -0.25403515118557357,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4144248608534323,
+                  "score": -0.25403515118557357,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.4144248608534323,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.26059027777777777,
+              "spread_value": 0.000393481600549413
+            },
+            "updated_ts_us": 1791899046546986
+          }
+        },
+        "baseline_164": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 158.755,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6649130832570905,
+                  "corrected_score": 0.3748972653068715,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6649130832570905,
+                  "score": 0.3748972653068715,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6649130832570905,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9967013888888889,
+              "spread_value": 0.0009434258938960702
+            },
+            "updated_ts_us": 1791899052223324
+          },
+          "ADAUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.23525000000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6516468435498628,
+                  "corrected_score": 0.345523665774655,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6516468435498628,
+                  "score": 0.345523665774655,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6516468435498628,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7805555555555556,
+              "spread_value": 0.0008490766291656888
+            },
+            "updated_ts_us": 1791899050342296
+          },
+          "AVAXUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 10.2865,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6562214089661482,
+                  "corrected_score": 0.39922641298434736,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6562214089661482,
+                  "score": 0.39922641298434736,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6562214089661482,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.16961805555555556,
+              "spread_value": 0.0003886324993928915
+            },
+            "updated_ts_us": 1791899046006240
+          },
+          "BCHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 271.165,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7385635864592863,
+                  "corrected_score": 0.8977339479160752,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.7385635864592863,
+                  "score": 0.8977339479160752,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.7385635864592863,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.20399305555555555,
+              "spread_value": 0.0004606596646397641
+            },
+            "updated_ts_us": 1791899048182559
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 49.445,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6013266239707228,
+                  "corrected_score": 0.24908671830507217,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6013266239707228,
+                  "score": 0.24908671830507217,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6013266239707228,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9284722222222223,
+              "spread_value": 0.0008078360092902404
+            },
+            "updated_ts_us": 1791899046512629
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1982499999999998,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6237419945105215,
+                  "corrected_score": 0.42235040757778464,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6237419945105215,
+                  "score": 0.42235040757778464,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6237419945105215,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8147569444444445,
+              "spread_value": 0.0009595327492699076
+            },
+            "updated_ts_us": 1791899054175367
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1550500000000001,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.3790027447392498,
+                  "corrected_score": -0.3487953097816967,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.3790027447392498,
+                  "score": -0.3487953097816967,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.3790027447392498,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8895833333333333,
+              "spread_value": 0.0008644910309058429
+            },
+            "updated_ts_us": 1791899046463690
+          },
+          "LINKUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 12.9545,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5967520585544374,
+                  "corrected_score": 0.2884212950129556,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5967520585544374,
+                  "score": 0.2884212950129556,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.5967520585544374,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.39427083333333335,
+              "spread_value": 0.0006167366919785005
+            },
+            "updated_ts_us": 1791899056370197
+          },
+          "LTCUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 61.065,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6566788655077768,
+                  "corrected_score": 0.6931280077368751,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6566788655077768,
+                  "score": 0.6931280077368751,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6566788655077768,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7267361111111111,
+              "spread_value": 0.000654396728016346
+            },
+            "updated_ts_us": 1791899050369915
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.044499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7888838060384263,
+                  "corrected_score": 0.8418337898063567,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.7888838060384263,
+                  "score": 0.8418337898063567,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.7888838060384263,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.996875,
+              "spread_value": 0.000989413277925993
+            },
+            "updated_ts_us": 1791899050416623
+          },
+          "SOLUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 106.85499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6036139066788655,
+                  "corrected_score": 0.327376427462939,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6036139066788655,
+                  "score": 0.327376427462939,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6036139066788655,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.840625,
+              "spread_value": 0.0005609311457018863
+            },
+            "updated_ts_us": 1791899050304722
+          },
+          "UNIUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 7.358499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6914455626715462,
+                  "corrected_score": 0.5298117476401212,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6914455626715462,
+                  "score": 0.5298117476401212,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6914455626715462,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7345486111111111,
+              "spread_value": 0.0006789327177675341
+            },
+            "updated_ts_us": 1791899046630116
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.191225,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5940073193046661,
+                  "corrected_score": 0.18635948170665545,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5940073193046661,
+                  "score": 0.18635948170665545,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.5940073193046661,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9175347222222222,
+              "spread_value": 0.0009135995823543761
+            },
+            "updated_ts_us": 1791899055354314
+          },
+          "XRPUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.36435,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6328911253430924,
+                  "corrected_score": 0.36666140774532174,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6328911253430924,
+                  "score": 0.36666140774532174,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6328911253430924,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8635416666666667,
+              "spread_value": 0.0006590268370373982
+            },
+            "updated_ts_us": 1791899056357961
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1193.125,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6694876486733761,
+                  "corrected_score": 0.43051449664435854,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6694876486733761,
+                  "score": 0.43051449664435854,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.6694876486733761,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.26059027777777777,
+              "spread_value": 0.000393481600549413
+            },
+            "updated_ts_us": 1791899046558793
+          }
+        },
+        "factor_052": {
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 49.445,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5858559498956158,
+                  "corrected_score": -0.005975986248733399,
+                  "factor": "factor_052",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5858559498956158,
+                  "score": -0.005975986248733399,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.5858559498956158,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9284722222222223,
+              "spread_value": 0.0008078360092902404
+            },
+            "updated_ts_us": 1791899046523931
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1982499999999998,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7565240083507306,
+                  "corrected_score": 0.6603230705336364,
+                  "factor": "factor_052",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.7565240083507306,
+                  "score": 0.6603230705336364,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.7565240083507306,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8147569444444445,
+              "spread_value": 0.0009595327492699076
+            },
+            "updated_ts_us": 1791899054373630
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "hold",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.044499999999999,
+            "model_ts_ms": 1791899040000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8436847599164927,
+                  "corrected_score": 0.8263453000262821,
+                  "factor": "factor_052",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.8436847599164927,
+                  "score": 0.8263453000262821,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791899040000,
+              "position_flag": 0,
+              "quantile": 0.8436847599164927,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.996875,
+              "spread_value": 0.000989413277925993
+            },
+            "updated_ts_us": 1791899051094065
+          }
+        }
+      },
+      "symbol_factors": {
+        "AAVEUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "ADAUSDT": {
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "AVAXUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "BCHUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "DASHUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "factor_052": 1.0
+        },
+        "DOGEUSDT": {
+          "baseline_141": 1.0
+        },
+        "DOTUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "factor_052": 1.0
+        },
+        "FILUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "LINKUSDT": {
+          "baseline_164": 1.0
+        },
+        "LTCUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "NEARUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "factor_052": 1.0
+        },
+        "SOLUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "UNIUSDT": {
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "XLMUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "XRPUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "ZECUSDT": {
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        }
+      },
+      "updated_ts_us": 1791899071792807,
+      "venue": "binance-futures",
+      "virtual_account_name": "cta_spread_rx01"
+    },
+    "errors": [],
+    "server_ts_us": 1791899072401706,
+    "status_age_ms": 608,
+    "signal_state": "online"
+  },
+  "exec_snapshot": {
+    "ts_ms": 1791899072364,
+    "entries": [
+      {
+        "channel": "exec_pre_trade_state",
+        "entry": {
+          "position_ready": true,
+          "rows": [
+            {
+              "account_position_qty": -83.470148701805,
+              "account_position_usdt": -100.0389732191133,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "exchange_minimum",
+              "current_qty": -83.470148701805,
+              "current_usdt": -100.0389732191133,
+              "delta_qty": -0.002305388345249071,
+              "delta_usdt": -0.002763007931781012,
+              "effective_position_qty": -83.470148701805,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791898926787,
+              "strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+              "symbol": "DOT",
+              "target_qty": -83.47245409015025,
+              "target_usdt": -100.04173622704508
+            },
+            {
+              "account_position_qty": 1.2773739760310892,
+              "account_position_usdt": 947.1153213981312,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 1.2773739760310892,
+              "current_usdt": 947.1153213981312,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 1.2773739760310892,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "BNB",
+              "target_qty": 1.2773739760310892,
+              "target_usdt": 947.1153213981312
+            },
+            {
+              "account_position_qty": -1.27,
+              "account_position_usdt": -941.96535,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -1.27,
+              "current_usdt": -941.96535,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -1.27,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "BNBUSDT",
+              "target_qty": -1.27,
+              "target_usdt": -941.96535
+            },
+            {
+              "account_position_qty": 6.668401093008e-05,
+              "account_position_usdt": 5.556264163659241,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 6.668401093008e-05,
+              "current_usdt": 5.556264163659241,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 6.668401093008e-05,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "BTC",
+              "target_qty": 6.668401093008e-05,
+              "target_usdt": 5.556264163659241
+            },
+            {
+              "account_position_qty": 0.07917,
+              "account_position_usdt": 0.0269850945,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 0.07917,
+              "current_usdt": 0.0269850945,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 0.07917,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "CRV",
+              "target_qty": 0.07917,
+              "target_usdt": 0.0269850945
+            },
+            {
+              "account_position_qty": -13633.076456229412,
+              "account_position_usdt": -1150.8361490526056,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -13633.076456229412,
+              "current_usdt": -1150.8361490526056,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -13633.076456229412,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "DOGE",
+              "target_qty": -13633.076456229412,
+              "target_usdt": -1150.8361490526056
+            },
+            {
+              "account_position_qty": 13611.0,
+              "account_position_usdt": 1148.155905,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 13611.0,
+              "current_usdt": 1148.155905,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 13611.0,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "DOGEUSDT",
+              "target_qty": 13611.0,
+              "target_usdt": 1148.155905
+            },
+            {
+              "account_position_qty": 0.05162267304983476,
+              "account_position_usdt": 129.55509953288305,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 0.05162267304983476,
+              "current_usdt": 129.55509953288305,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 0.05162267304983476,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "ETH",
+              "target_qty": 0.05162267304983476,
+              "target_usdt": 129.55509953288305
+            },
+            {
+              "account_position_qty": -0.051,
+              "account_position_usdt": -127.925085,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -0.051,
+              "current_usdt": -127.925085,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -0.051,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "ETHUSDT",
+              "target_qty": -0.051,
+              "target_usdt": -127.925085
+            },
+            {
+              "account_position_qty": -9.78535783423339,
+              "account_position_usdt": -1046.2015328470627,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -9.78535783423339,
+              "current_usdt": -1046.2015328470627,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -9.78535783423339,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "SOL",
+              "target_qty": -9.78535783423339,
+              "target_usdt": -1046.2015328470627
+            },
+            {
+              "account_position_qty": 9.74,
+              "account_position_usdt": 1040.7677,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 9.74,
+              "current_usdt": 1040.7677,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 9.74,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "SOLUSDT",
+              "target_qty": 9.74,
+              "target_usdt": 1040.7677
+            },
+            {
+              "account_position_qty": -564.8728136389136,
+              "account_position_usdt": -771.2490961018906,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -564.8728136389136,
+              "current_usdt": -771.2490961018906,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -564.8728136389136,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "XRP",
+              "target_qty": -564.8728136389136,
+              "target_usdt": -771.2490961018906
+            },
+            {
+              "account_position_qty": 563.5,
+              "account_position_usdt": 768.8112249999999,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 563.5,
+              "current_usdt": 768.8112249999999,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 563.5,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "XRPUSDT",
+              "target_qty": 563.5,
+              "target_usdt": 768.8112249999999
+            }
+          ],
+          "ts_ms": 1791899072301
+        },
+        "namespace": "binance_exec_trade06",
+        "ts_ms": 1791899072364,
+        "type": "exec_pre_trade_state",
+        "venue": "binance-futures"
+      },
+      {
+        "channel": "exec_pre_trade_risk",
+        "entry": {
+          "equity_usdt": 19596.224425102577,
+          "gross_notional_usdt": 121.25574709911136,
+          "leverage": 0.0061877096561409,
+          "long_notional_usdt": 12.613115275848791,
+          "net_notional_usdt": -96.02951654741376,
+          "short_notional_usdt": 108.64263182326256,
+          "ts_ms": 1791899072301,
+          "venue": "binance-futures"
+        },
+        "namespace": "binance_exec_trade06",
+        "ts_ms": 1791899072364,
+        "type": "exec_pre_trade_risk",
+        "venue": "binance-futures"
+      }
+    ]
+  },
+  "account": {
+    "source_id": "binance_exec_trade06",
+    "estimated_fee_rate": 0.000175,
+    "maker_fee_rate": -2e-05,
+    "taker_fee_rate": 0.000175,
+    "theoretical_twap_fee_rate": 0.0004,
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_baseline_141",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_baseline_164",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_factor_052",
+        "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_inventory",
+        "position_strategy_name": "binance_cta_spread_rx01_inventory",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "virtual_id": "virtual03",
+      "multiplier": 1.0
+    },
+    "pending_publishes": []
+  },
+  "virtual": {
+    "virtual_id": "virtual03",
+    "name": "cta_spread_rx01",
+    "bindings": [
+      {
+        "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_baseline_141",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_baseline_164",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_factor_052",
+        "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_inventory",
+        "position_strategy_name": "binance_cta_spread_rx01_inventory",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      }
+    ],
+    "updated_at_us": 1791896854300292,
+    "followers": [
+      {
+        "source_id": "binance_exec_trade06",
+        "multiplier": 1.0,
+        "pending_publishes": []
+      }
+    ],
+    "created_by_user_id": 1,
+    "owner_username": "prc",
+    "managers": [
+      {
+        "user_id": 3,
+        "username": "lgq"
+      }
+    ],
+    "can_configure": true,
+    "can_manage_grants": false
+  },
+  "grants": [
+    {
+      "user_id": 3,
+      "username": "lgq",
+      "access_level": "configure"
+    }
+  ],
+  "target_checks": [
+    {
+      "factor": "TD_TI_024",
+      "venue": "binance-margin",
+      "targets": 5
+    },
+    {
+      "factor": "TD_TI_024",
+      "venue": "binance-futures",
+      "targets": 5
+    },
+    {
+      "factor": "TD_TI_027",
+      "venue": "binance-margin",
+      "targets": 8
+    },
+    {
+      "factor": "TD_TI_027",
+      "venue": "binance-futures",
+      "targets": 8
+    },
+    {
+      "factor": "baseline_141",
+      "venue": "binance-margin",
+      "targets": 15
+    },
+    {
+      "factor": "baseline_141",
+      "venue": "binance-futures",
+      "targets": 15
+    },
+    {
+      "factor": "baseline_164",
+      "venue": "binance-margin",
+      "targets": 15
+    },
+    {
+      "factor": "baseline_164",
+      "venue": "binance-futures",
+      "targets": 15
+    },
+    {
+      "factor": "factor_052",
+      "venue": "binance-margin",
+      "targets": 3
+    },
+    {
+      "factor": "factor_052",
+      "venue": "binance-futures",
+      "targets": 3
+    }
+  ],
+  "rx02_enabled": true,
+  "rx02_config": {
+    "enabled": true,
+    "max_pos_u": 100.0,
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.7,
+      "factor_exit_quantile_short": 0.3
+    }
+  },
+  "processes": {
+    "binance_exec_trade06": [
+      {
+        "pid": 2987736,
+        "comm": "persist_manager",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 2993382,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3003411,
+        "comm": "viz_server",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3046353,
+        "comm": "rapidx_account_",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3307344,
+        "comm": "exec-pre-trade",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3381925,
+        "comm": "trade_engine",
+        "cpu_mask": "0-5,48-95"
+      }
+    ],
+    "binance-cta-spread-rx01": [
+      {
+        "pid": 663465,
+        "comm": "cta_spread_fact",
+        "cpu_mask": "17"
+      },
+      {
+        "pid": 3132535,
+        "comm": "cta_spread_sign",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3183433,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3390010,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      }
+    ],
+    "binance_exec_trade05": [
+      {
+        "pid": 3028399,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3036362,
+        "comm": "persist_manager",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3038156,
+        "comm": "rapidx_account_",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3175453,
+        "comm": "trade_engine",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3477383,
+        "comm": "viz_server",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3477503,
+        "comm": "exec-pre-trade",
+        "cpu_mask": "0-5,48-95"
+      }
+    ],
+    "binance-cta-perp-rx02": [
+      {
+        "pid": 406886,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 411079,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 421006,
+        "comm": "cta_perp_signal",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 4133794,
+        "comm": "cta_perp_factor",
+        "cpu_mask": "18"
+      }
+    ]
+  }
+}

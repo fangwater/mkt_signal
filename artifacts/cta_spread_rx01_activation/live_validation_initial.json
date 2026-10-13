@@ -1,0 +1,2624 @@
+{
+  "validated_at": "2026-10-13T13:42:00.661584+00:00",
+  "signal": {
+    "config": {
+      "enabled": true,
+      "max_pos_u": 100.0,
+      "entry": {
+        "factor_long_quantile": 0.9,
+        "factor_short_quantile": 0.1,
+        "spread_lower_quantile": 0.3,
+        "spread_upper_quantile": 0.7
+      },
+      "execution": {
+        "factor_exit_quantile_long": 0.7,
+        "factor_exit_quantile_short": 0.3
+      }
+    },
+    "status": {
+      "allocation": "per_symbol_factor",
+      "enabled": true,
+      "factor_config_key": "binance-cta-spread-rx01:cta_symbol_factors",
+      "follower_source_id": "binance_exec_trade06",
+      "journal_healthy": true,
+      "manager_strategy_prefix": "binance_cta_spread_rx01_",
+      "max_pos_u": 100.0,
+      "publication_error": null,
+      "scheduled_entries": 0,
+      "strategies": {
+        "TD_TI_024": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 159.235,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.10917721518987344,
+                  "corrected_score": -1.1058427969758413,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.8908227848101266,
+                  "score": 1.1058427969758413,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.10917721518987344,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9928819444444444,
+              "spread_value": 0.0009102322661645337
+            },
+            "updated_ts_us": 1791898864900293
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 49.504999999999995,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.2208408679927667,
+                  "corrected_score": -0.6283089287408089,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.7791591320072333,
+                  "score": 0.6283089287408089,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.2208408679927667,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9730902777777778,
+              "spread_value": 0.0009087237479806484
+            },
+            "updated_ts_us": 1791898868981161
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1988500000000002,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.046790235081374365,
+                  "corrected_score": -2.0916674768257564,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.9532097649186256,
+                  "score": 2.0916674768257564,
+                  "sign": "-",
+                  "vote": -1,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.046790235081374365,
+              "score": -1.0,
+              "score_ready": true,
+              "spread_quantile": 0.007465277777777778,
+              "spread_value": 4.164931278624196e-05
+            },
+            "updated_ts_us": 1791898869368140
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1557499999999998,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.3578209764918626,
+                  "corrected_score": -0.19439591718260849,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.6421790235081374,
+                  "score": 0.19439591718260849,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.3578209764918626,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9890625,
+              "spread_value": 0.0009945515869583883
+            },
+            "updated_ts_us": 1791898869317425
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 5.0575,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.661618444846293,
+                  "corrected_score": 0.495375438601783,
+                  "factor": "TD_TI_024",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.33838155515370705,
+                  "score": -0.495375438601783,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.661618444846293,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9246527777777778,
+              "spread_value": 0.0007905919557267635
+            },
+            "updated_ts_us": 1791898869104563
+          }
+        },
+        "TD_TI_027": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 159.235,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6700773078672124,
+                  "corrected_score": 0.36483425492796534,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.32992269213278763,
+                  "score": -0.36483425492796534,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.6700773078672124,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9928819444444444,
+              "spread_value": 0.0009102322661645337
+            },
+            "updated_ts_us": 1791898868239917
+          },
+          "ADAUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 0.23585,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5600272851296044,
+                  "corrected_score": 0.0852107037647884,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.43997271487039563,
+                  "score": -0.0852107037647884,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.5600272851296044,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7684027777777778,
+              "spread_value": 0.0008469193309337529
+            },
+            "updated_ts_us": 1791898869431425
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 49.504999999999995,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7510231923601637,
+                  "corrected_score": 0.7405527476176261,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.2489768076398363,
+                  "score": -0.7405527476176261,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.7510231923601637,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9730902777777778,
+              "spread_value": 0.0009087237479806484
+            },
+            "updated_ts_us": 1791898868993123
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1988500000000002,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6855388813096862,
+                  "corrected_score": 0.5698316605702942,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.3144611186903138,
+                  "score": -0.5698316605702942,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.6855388813096862,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.007465277777777778,
+              "spread_value": 4.164931278624196e-05
+            },
+            "updated_ts_us": 1791898869381085
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1.1557499999999998,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.6014097316962256,
+                  "corrected_score": 0.09305136345283054,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.3985902683037744,
+                  "score": -0.09305136345283054,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.6014097316962256,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9890625,
+              "spread_value": 0.0009945515869583883
+            },
+            "updated_ts_us": 1791898869329084
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 5.0575,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8592542064574806,
+                  "corrected_score": 0.9215138726134628,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.14074579354251932,
+                  "score": -0.9215138726134628,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.8592542064574806,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9246527777777778,
+              "spread_value": 0.0007905919557267635
+            },
+            "updated_ts_us": 1791898869116245
+          },
+          "UNIUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 7.3725000000000005,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7987721691678036,
+                  "corrected_score": 1.0096819467810332,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.20122783083219645,
+                  "score": -1.0096819467810332,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.7987721691678036,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7286458333333333,
+              "spread_value": 0.0006778282383243942
+            },
+            "updated_ts_us": 1791898869231249
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1195.665,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8019554342883128,
+                  "corrected_score": 0.9838174961097961,
+                  "factor": "TD_TI_027",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.19804456571168713,
+                  "score": -0.9838174961097961,
+                  "sign": "-",
+                  "vote": 0,
+                  "weight": -1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.8019554342883128,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.19427083333333334,
+              "spread_value": 0.00036789451460922043
+            },
+            "updated_ts_us": 1791898869195382
+          }
+        },
+        "baseline_141": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 159.235,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.2812354853692522,
+                  "corrected_score": -0.6270817101977512,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.2812354853692522,
+                  "score": -0.6270817101977512,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.2812354853692522,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9928819444444444,
+              "spread_value": 0.0009102322661645337
+            },
+            "updated_ts_us": 1791898868449590
+          },
+          "ADAUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.23585,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.2784486762656758,
+                  "corrected_score": -0.6522722490022618,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.2784486762656758,
+                  "score": -0.6522722490022618,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.2784486762656758,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7684027777777778,
+              "spread_value": 0.0008469193309337529
+            },
+            "updated_ts_us": 1791898869443602
+          },
+          "AVAXUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 10.310500000000001,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.23664653971202973,
+                  "corrected_score": -0.7340614267815638,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.23664653971202973,
+                  "score": -0.7340614267815638,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.23664653971202973,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.32447916666666665,
+              "spread_value": 0.00048451959881802
+            },
+            "updated_ts_us": 1791898869172176
+          },
+          "BCHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 271.815,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4656293543892243,
+                  "corrected_score": 0.08269474610741266,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4656293543892243,
+                  "score": 0.08269474610741266,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.4656293543892243,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.20243055555555556,
+              "spread_value": 0.00045947436133063775
+            },
+            "updated_ts_us": 1791898869044446
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 49.504999999999995,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.3843474222015792,
+                  "corrected_score": -0.3615678694654963,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.3843474222015792,
+                  "score": -0.3615678694654963,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.3843474222015792,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9730902777777778,
+              "spread_value": 0.0009087237479806484
+            },
+            "updated_ts_us": 1791898869006955
+          },
+          "DOGEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.08452499999999999,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.2761263353460288,
+                  "corrected_score": -0.6325212771637163,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.2761263353460288,
+                  "score": -0.6325212771637163,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.2761263353460288,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8234375,
+              "spread_value": 0.0005912611600543309
+            },
+            "updated_ts_us": 1791898864885800
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1988500000000002,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.34718996748722714,
+                  "corrected_score": -0.529223599145023,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.34718996748722714,
+                  "score": -0.529223599145023,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.34718996748722714,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.007465277777777778,
+              "spread_value": 4.164931278624196e-05
+            },
+            "updated_ts_us": 1791898869393809
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1557499999999998,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.20831398049233626,
+                  "corrected_score": -0.7740633239013415,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.20831398049233626,
+                  "score": -0.7740633239013415,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.20831398049233626,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9890625,
+              "spread_value": 0.0009945515869583883
+            },
+            "updated_ts_us": 1791898869341539
+          },
+          "LTCUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 61.215,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.24965164886205296,
+                  "corrected_score": -0.7372727897059366,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.24965164886205296,
+                  "score": -0.7372727897059366,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.24965164886205296,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7194444444444444,
+              "spread_value": 0.0006524753282766356
+            },
+            "updated_ts_us": 1791898869292452
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.0575,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5074314909428704,
+                  "corrected_score": -0.05618266976039923,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5074314909428704,
+                  "score": -0.05618266976039923,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.5074314909428704,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9246527777777778,
+              "spread_value": 0.0007905919557267635
+            },
+            "updated_ts_us": 1791898869133707
+          },
+          "SOLUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 107.065,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.35090571295866235,
+                  "corrected_score": -0.4172817517399135,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.35090571295866235,
+                  "score": -0.4172817517399135,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.35090571295866235,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8319444444444445,
+              "spread_value": 0.0005600410696784643
+            },
+            "updated_ts_us": 1791898869081090
+          },
+          "UNIUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 7.3725000000000005,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.42289828146771946,
+                  "corrected_score": -0.3090507706739979,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.42289828146771946,
+                  "score": -0.3090507706739979,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.42289828146771946,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7286458333333333,
+              "spread_value": 0.0006778282383243942
+            },
+            "updated_ts_us": 1791898869244291
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.19156499999999999,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.31514166279609845,
+                  "corrected_score": -0.5686770548370298,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.31514166279609845,
+                  "score": -0.5686770548370298,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.31514166279609845,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8817708333333333,
+              "spread_value": 0.0008600469116497184
+            },
+            "updated_ts_us": 1791898869268544
+          },
+          "XRPUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.3667500000000001,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.34393869019972134,
+                  "corrected_score": -0.4682682547558709,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.34393869019972134,
+                  "score": -0.4682682547558709,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.34393869019972134,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8571180555555555,
+              "spread_value": 0.000658207481625131
+            },
+            "updated_ts_us": 1791898869467532
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1195.665,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.36205294937296795,
+                  "corrected_score": -0.4184731055309208,
+                  "factor": "baseline_141",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.36205294937296795,
+                  "score": -0.4184731055309208,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.36205294937296795,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.19427083333333334,
+              "spread_value": 0.00036789451460922043
+            },
+            "updated_ts_us": 1791898869207014
+          }
+        },
+        "baseline_164": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 159.235,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.41754466330737516,
+                  "corrected_score": -0.2748372312094236,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.41754466330737516,
+                  "score": -0.2748372312094236,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.41754466330737516,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9928819444444444,
+              "spread_value": 0.0009102322661645337
+            },
+            "updated_ts_us": 1791898868965966
+          },
+          "ADAUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.23585,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4207512597343106,
+                  "corrected_score": -0.27602097544650966,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4207512597343106,
+                  "score": -0.27602097544650966,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.4207512597343106,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7684027777777778,
+              "spread_value": 0.0008469193309337529
+            },
+            "updated_ts_us": 1791898869455692
+          },
+          "AVAXUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 10.310500000000001,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.35249656436097115,
+                  "corrected_score": -0.39155040815591696,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.35249656436097115,
+                  "score": -0.39155040815591696,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.35249656436097115,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.32447916666666665,
+              "spread_value": 0.00048451959881802
+            },
+            "updated_ts_us": 1791898869183864
+          },
+          "BCHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 271.815,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5123683005038937,
+                  "corrected_score": 0.09147259704950836,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5123683005038937,
+                  "score": 0.09147259704950836,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.5123683005038937,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.20243055555555556,
+              "spread_value": 0.00045947436133063775
+            },
+            "updated_ts_us": 1791898869056453
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 49.504999999999995,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.581539166284929,
+                  "corrected_score": 0.1995581299796226,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.581539166284929,
+                  "score": 0.1995581299796226,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.581539166284929,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9730902777777778,
+              "spread_value": 0.0009087237479806484
+            },
+            "updated_ts_us": 1791898869019265
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1988500000000002,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4596885020613834,
+                  "corrected_score": -0.13517439635194087,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4596885020613834,
+                  "score": -0.13517439635194087,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.4596885020613834,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.007465277777777778,
+              "spread_value": 4.164931278624196e-05
+            },
+            "updated_ts_us": 1791898869405916
+          },
+          "FILUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1557499999999998,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.41204764086120016,
+                  "corrected_score": -0.27752798675025,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.41204764086120016,
+                  "score": -0.27752798675025,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.41204764086120016,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9890625,
+              "spread_value": 0.0009945515869583883
+            },
+            "updated_ts_us": 1791898869356289
+          },
+          "LINKUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 12.9925,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.30668804397617955,
+                  "corrected_score": -0.5083964889213985,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.30668804397617955,
+                  "score": -0.5083964889213985,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.30668804397617955,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8694444444444445,
+              "spread_value": 0.0007686690495405673
+            },
+            "updated_ts_us": 1791898869068929
+          },
+          "LTCUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 61.215,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.3598259276225378,
+                  "corrected_score": -0.3612207064714666,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.3598259276225378,
+                  "score": -0.3612207064714666,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.3598259276225378,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7194444444444444,
+              "spread_value": 0.0006524753282766356
+            },
+            "updated_ts_us": 1791898869304213
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.0575,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.7272102611085662,
+                  "corrected_score": 0.608190339646028,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.7272102611085662,
+                  "score": 0.608190339646028,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.7272102611085662,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9246527777777778,
+              "spread_value": 0.0007905919557267635
+            },
+            "updated_ts_us": 1791898869147761
+          },
+          "SOLUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 107.065,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.43174530462666055,
+                  "corrected_score": -0.14926620649985237,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.43174530462666055,
+                  "score": -0.14926620649985237,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.43174530462666055,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8319444444444445,
+              "spread_value": 0.0005600410696784643
+            },
+            "updated_ts_us": 1791898869092726
+          },
+          "UNIUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 7.3725000000000005,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5746678882272103,
+                  "corrected_score": 0.1411969242020492,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5746678882272103,
+                  "score": 0.1411969242020492,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.5746678882272103,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.7286458333333333,
+              "spread_value": 0.0006778282383243942
+            },
+            "updated_ts_us": 1791898869256933
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.19156499999999999,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.4070087036188731,
+                  "corrected_score": -0.3252123566007253,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.4070087036188731,
+                  "score": -0.3252123566007253,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.4070087036188731,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8817708333333333,
+              "spread_value": 0.0008600469116497184
+            },
+            "updated_ts_us": 1791898869280596
+          },
+          "XRPUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.3667500000000001,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.49496106275767293,
+                  "corrected_score": -0.08557963044306546,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.49496106275767293,
+                  "score": -0.08557963044306546,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.49496106275767293,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.8571180555555555,
+              "spread_value": 0.000658207481625131
+            },
+            "updated_ts_us": 1791898869479289
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1195.665,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.581081081081081,
+                  "corrected_score": 0.15871806662532165,
+                  "factor": "baseline_164",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.581081081081081,
+                  "score": 0.15871806662532165,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.581081081081081,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.19427083333333334,
+              "spread_value": 0.00036789451460922043
+            },
+            "updated_ts_us": 1791898869219315
+          }
+        },
+        "factor_052": {
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 49.504999999999995,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.5737062205959227,
+                  "corrected_score": -0.03291433850859406,
+                  "factor": "factor_052",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.5737062205959227,
+                  "score": -0.03291433850859406,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.5737062205959227,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9730902777777778,
+              "spread_value": 0.0009087237479806484
+            },
+            "updated_ts_us": 1791898869032656
+          },
+          "DOTUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.1988500000000002,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.711186617877679,
+                  "corrected_score": 0.4344054554744281,
+                  "factor": "factor_052",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.711186617877679,
+                  "score": 0.4344054554744281,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.711186617877679,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.007465277777777778,
+              "spread_value": 4.164931278624196e-05
+            },
+            "updated_ts_us": 1791898869419009
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "cash_qty": 0.0,
+            "decision_reason": "publishing_disabled",
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.0575,
+            "model_ts_ms": 1791898860000,
+            "perpetual_qty": 0.0,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": true,
+            "signal": {
+              "decision": "flat",
+              "execution_coefficient": 1.0,
+              "factor_votes": [
+                {
+                  "corrected_quantile": 0.8371667537898588,
+                  "corrected_score": 0.7901958422007604,
+                  "factor": "factor_052",
+                  "normalized_weight": 1.0,
+                  "quantile": 0.8371667537898588,
+                  "score": 0.7901958422007604,
+                  "sign": "+",
+                  "vote": 0,
+                  "weight": 1.0
+                }
+              ],
+              "filter_ready": true,
+              "model_ts_ms": 1791898860000,
+              "position_flag": 0,
+              "quantile": 0.8371667537898588,
+              "score": 0.0,
+              "score_ready": true,
+              "spread_quantile": 0.9246527777777778,
+              "spread_value": 0.0007905919557267635
+            },
+            "updated_ts_us": 1791898869160020
+          }
+        }
+      },
+      "symbol_factors": {
+        "AAVEUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "ADAUSDT": {
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "AVAXUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "BCHUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "DASHUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "factor_052": 1.0
+        },
+        "DOGEUSDT": {
+          "baseline_141": 1.0
+        },
+        "DOTUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "factor_052": 1.0
+        },
+        "FILUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "LINKUSDT": {
+          "baseline_164": 1.0
+        },
+        "LTCUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "NEARUSDT": {
+          "TD_TI_024": -1.0,
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "factor_052": 1.0
+        },
+        "SOLUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "UNIUSDT": {
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "XLMUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "XRPUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "ZECUSDT": {
+          "TD_TI_027": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        }
+      },
+      "updated_ts_us": 1791898913632386,
+      "venue": "binance-futures",
+      "virtual_account_name": "cta_spread_rx01"
+    },
+    "errors": [],
+    "server_ts_us": 1791898914002888,
+    "status_age_ms": 370,
+    "signal_state": "online"
+  },
+  "exec_snapshot": {
+    "ts_ms": 1791898914054,
+    "entries": [
+      {
+        "channel": "exec_pre_trade_state",
+        "entry": {
+          "position_ready": true,
+          "rows": [
+            {
+              "account_position_qty": 1.2773739760310892,
+              "account_position_usdt": 947.9328407427912,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 1.2773739760310892,
+              "current_usdt": 947.9328407427912,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 1.2773739760310892,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "BNB",
+              "target_qty": 1.2773739760310892,
+              "target_usdt": 947.9328407427912
+            },
+            {
+              "account_position_qty": -1.27,
+              "account_position_usdt": -942.85435,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -1.27,
+              "current_usdt": -942.85435,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -1.27,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "BNBUSDT",
+              "target_qty": -1.27,
+              "target_usdt": -942.85435
+            },
+            {
+              "account_position_qty": 6.668401093008e-05,
+              "account_position_usdt": 5.567981878059875,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 6.668401093008e-05,
+              "current_usdt": 5.567981878059875,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 6.668401093008e-05,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "BTC",
+              "target_qty": 6.668401093008e-05,
+              "target_usdt": 5.567981878059875
+            },
+            {
+              "account_position_qty": 0.07917,
+              "account_position_usdt": 0.027088015500000003,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 0.07917,
+              "current_usdt": 0.027088015500000003,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 0.07917,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "CRV",
+              "target_qty": 0.07917,
+              "target_usdt": 0.027088015500000003
+            },
+            {
+              "account_position_qty": -13633.076456229412,
+              "account_position_usdt": -1153.017441285603,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -13633.076456229412,
+              "current_usdt": -1153.017441285603,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -13633.076456229412,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "DOGE",
+              "target_qty": -13633.076456229412,
+              "target_usdt": -1153.017441285603
+            },
+            {
+              "account_position_qty": 13611.0,
+              "account_position_usdt": 1150.4697749999998,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 13611.0,
+              "current_usdt": 1150.4697749999998,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 13611.0,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "DOGEUSDT",
+              "target_qty": 13611.0,
+              "target_usdt": 1150.4697749999998
+            },
+            {
+              "account_position_qty": 0.05162267304983476,
+              "account_position_usdt": 129.7946287358343,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 0.05162267304983476,
+              "current_usdt": 129.7946287358343,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 0.05162267304983476,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "ETH",
+              "target_qty": 0.05162267304983476,
+              "target_usdt": 129.7946287358343
+            },
+            {
+              "account_position_qty": -0.051,
+              "account_position_usdt": -128.163765,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -0.051,
+              "current_usdt": -128.163765,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -0.051,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "ETHUSDT",
+              "target_qty": -0.051,
+              "target_usdt": -128.163765
+            },
+            {
+              "account_position_qty": -9.78535783423339,
+              "account_position_usdt": -1048.354311570594,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -9.78535783423339,
+              "current_usdt": -1048.354311570594,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -9.78535783423339,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "SOL",
+              "target_qty": -9.78535783423339,
+              "target_usdt": -1048.354311570594
+            },
+            {
+              "account_position_qty": 9.74,
+              "account_position_usdt": 1042.8131,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 9.74,
+              "current_usdt": 1042.8131,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 9.74,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "SOLUSDT",
+              "target_qty": 9.74,
+              "target_usdt": 1042.8131
+            },
+            {
+              "account_position_qty": -564.8728136389136,
+              "account_position_usdt": -772.5483035732602,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": -564.8728136389136,
+              "current_usdt": -772.5483035732602,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": -564.8728136389136,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "XRP",
+              "target_qty": -564.8728136389136,
+              "target_usdt": -772.5483035732602
+            },
+            {
+              "account_position_qty": 563.5,
+              "account_position_usdt": 770.163625,
+              "active_batches": 0,
+              "algorithm": "ctaker",
+              "completion_reason": "target_reached",
+              "current_qty": 563.5,
+              "current_usdt": 770.163625,
+              "delta_qty": 0.0,
+              "delta_usdt": 0.0,
+              "effective_position_qty": 563.5,
+              "estimated_completion_ts_ms": 0,
+              "execution_complete": true,
+              "live_order_qty": -0.0,
+              "live_order_usdt": -0.0,
+              "pending_qty": 0.0,
+              "pending_usdt": 0.0,
+              "position_allocated": true,
+              "pov": null,
+              "remaining_batches": 0,
+              "source_updated_at_ms": 1791896969386,
+              "strategy_name": "binance_cta_spread_rx01_inventory",
+              "symbol": "XRPUSDT",
+              "target_qty": 563.5,
+              "target_usdt": 770.163625
+            }
+          ],
+          "ts_ms": 1791898913998
+        },
+        "namespace": "binance_exec_trade06",
+        "ts_ms": 1791898914012,
+        "type": "exec_pre_trade_state",
+        "venue": "binance-futures"
+      },
+      {
+        "channel": "exec_pre_trade_risk",
+        "entry": {
+          "equity_usdt": 19595.990874621497,
+          "gross_notional_usdt": 21.22985570978794,
+          "leverage": 0.0010833775054101724,
+          "long_notional_usdt": 12.630699613891252,
+          "net_notional_usdt": 4.031543517994562,
+          "short_notional_usdt": 8.59915609589669,
+          "ts_ms": 1791898913998,
+          "venue": "binance-futures"
+        },
+        "namespace": "binance_exec_trade06",
+        "ts_ms": 1791898914054,
+        "type": "exec_pre_trade_risk",
+        "venue": "binance-futures"
+      }
+    ]
+  },
+  "account": {
+    "source_id": "binance_exec_trade06",
+    "estimated_fee_rate": 0.000175,
+    "maker_fee_rate": -2e-05,
+    "taker_fee_rate": 0.000175,
+    "theoretical_twap_fee_rate": 0.0004,
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_baseline_141",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_baseline_164",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_factor_052",
+        "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      },
+      {
+        "source_id": "binance_exec_trade06",
+        "binding_name": "binance_cta_spread_rx01_inventory",
+        "position_strategy_name": "binance_cta_spread_rx01_inventory",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791896967504867
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "virtual_id": "virtual03",
+      "multiplier": 1.0
+    },
+    "pending_publishes": []
+  },
+  "virtual": {
+    "virtual_id": "virtual03",
+    "name": "cta_spread_rx01",
+    "bindings": [
+      {
+        "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+        "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_baseline_141",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_baseline_164",
+        "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_factor_052",
+        "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_spread_rx01_inventory",
+        "position_strategy_name": "binance_cta_spread_rx01_inventory",
+        "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+        "shares": 1.0
+      }
+    ],
+    "updated_at_us": 1791896854300292,
+    "followers": [
+      {
+        "source_id": "binance_exec_trade06",
+        "multiplier": 1.0,
+        "pending_publishes": []
+      }
+    ],
+    "created_by_user_id": 1,
+    "owner_username": "prc",
+    "managers": [
+      {
+        "user_id": 3,
+        "username": "lgq"
+      }
+    ],
+    "can_configure": true,
+    "can_manage_grants": false
+  },
+  "grants": [
+    {
+      "user_id": 3,
+      "username": "lgq",
+      "access_level": "configure"
+    }
+  ],
+  "target_checks": [
+    {
+      "factor": "TD_TI_024",
+      "venue": "binance-margin",
+      "targets": 5
+    },
+    {
+      "factor": "TD_TI_024",
+      "venue": "binance-futures",
+      "targets": 5
+    },
+    {
+      "factor": "TD_TI_027",
+      "venue": "binance-margin",
+      "targets": 8
+    },
+    {
+      "factor": "TD_TI_027",
+      "venue": "binance-futures",
+      "targets": 8
+    },
+    {
+      "factor": "baseline_141",
+      "venue": "binance-margin",
+      "targets": 15
+    },
+    {
+      "factor": "baseline_141",
+      "venue": "binance-futures",
+      "targets": 15
+    },
+    {
+      "factor": "baseline_164",
+      "venue": "binance-margin",
+      "targets": 15
+    },
+    {
+      "factor": "baseline_164",
+      "venue": "binance-futures",
+      "targets": 15
+    },
+    {
+      "factor": "factor_052",
+      "venue": "binance-margin",
+      "targets": 3
+    },
+    {
+      "factor": "factor_052",
+      "venue": "binance-futures",
+      "targets": 3
+    }
+  ],
+  "rx02_enabled": true,
+  "rx02_config": {
+    "enabled": true,
+    "max_pos_u": 100.0,
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.7,
+      "factor_exit_quantile_short": 0.3
+    }
+  },
+  "processes": {
+    "binance_exec_trade06": [
+      {
+        "pid": 2987736,
+        "comm": "persist_manager",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 2993382,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3003411,
+        "comm": "viz_server",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3046353,
+        "comm": "rapidx_account_",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3307344,
+        "comm": "exec-pre-trade",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3381925,
+        "comm": "trade_engine",
+        "cpu_mask": "0-5,48-95"
+      }
+    ],
+    "binance-cta-spread-rx01": [
+      {
+        "pid": 663465,
+        "comm": "cta_spread_fact",
+        "cpu_mask": "17"
+      },
+      {
+        "pid": 3132535,
+        "comm": "cta_spread_sign",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3183433,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3390010,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      }
+    ],
+    "binance_exec_trade05": [
+      {
+        "pid": 3028399,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3036362,
+        "comm": "persist_manager",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3038156,
+        "comm": "rapidx_account_",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3175453,
+        "comm": "trade_engine",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3477383,
+        "comm": "viz_server",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 3477503,
+        "comm": "exec-pre-trade",
+        "cpu_mask": "0-5,48-95"
+      }
+    ],
+    "binance-cta-perp-rx02": [
+      {
+        "pid": 406886,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 411079,
+        "comm": "python3",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 421006,
+        "comm": "cta_perp_signal",
+        "cpu_mask": "0-5,48-95"
+      },
+      {
+        "pid": 4133794,
+        "comm": "cta_perp_factor",
+        "cpu_mask": "18"
+      }
+    ]
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "ts_us": 1791896850441032,
+  "rows": [
+    {
+      "coin": "BNB",
+      "cash_qty": 1.2773739760310892,
+      "perp_qty": -1.27,
+      "mark": 740.36092932,
+      "net_usdt": 5.459403747160633
+    },
+    {
+      "coin": "BTC",
+      "cash_qty": 6.668401093008e-05,
+      "perp_qty": 0.0,
+      "mark": 83218.49652174,
+      "net_usdt": 5.549343131640534
+    },
+    {
+      "coin": "CRV",
+      "cash_qty": 0.07917,
+      "perp_qty": 0.0,
+      "mark": 0.3392799,
+      "net_usdt": 0.026860789683
+    },
+    {
+      "coin": "DOGE",
+      "cash_qty": -13633.076456229412,
+      "perp_qty": 13611.0,
+      "mark": 0.08391098,
+      "net_usdt": -1.852457077137064
+    },
+    {
+      "coin": "ETH",
+      "cash_qty": 0.05162267304983476,
+      "perp_qty": -0.051,
+      "mark": 2500.2827907,
+      "net_usdt": 1.5568587107345364
+    },
+    {
+      "coin": "SOL",
+      "cash_qty": -9.78535783423339,
+      "perp_qty": 9.74,
+      "mark": 106.32701179,
+      "net_usdt": -4.822762975302466
+    },
+    {
+      "coin": "XRP",
+      "cash_qty": -564.8728136389136,
+      "perp_qty": 563.5,
+      "mark": 1.3605936,
+      "net_usdt": -1.867841451098558
+    }
+  ],
+  "targets": {
+    "BNB": {
+      "qty": 1.2773739760310892,
+      "signal": 0
+    },
+    "BNBUSDT": {
+      "qty": -1.27,
+      "signal": 0
+    },
+    "BTC": {
+      "qty": 6.668401093008e-05,
+      "signal": 0
+    },
+    "CRV": {
+      "qty": 0.07917,
+      "signal": 0
+    },
+    "DOGE": {
+      "qty": -13633.076456229412,
+      "signal": 0
+    },
+    "DOGEUSDT": {
+      "qty": 13611.0,
+      "signal": 0
+    },
+    "ETH": {
+      "qty": 0.05162267304983476,
+      "signal": 0
+    },
+    "ETHUSDT": {
+      "qty": -0.051,
+      "signal": 0
+    },
+    "SOL": {
+      "qty": -9.78535783423339,
+      "signal": 0
+    },
+    "SOLUSDT": {
+      "qty": 9.74,
+      "signal": 0
+    },
+    "XRP": {
+      "qty": -564.8728136389136,
+      "signal": 0
+    },
+    "XRPUSDT": {
+      "qty": 563.5,
+      "signal": 0
+    }
+  },
+  "open_orders": 0,
+  "credentials_verified": true
+}
