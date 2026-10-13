@@ -6,6 +6,14 @@
 Binance 实时 `/fapi/v1/depth` 直连官方 HTTPS，不进入缓存；RapidX 的所有
 账户、规则、订单查询及写请求均签名直连，不新增代理或缓存白名单。
 
+2026-10-13 审核 CTA Spread 信号观察页：独立只读后台通过官方公共
+`GET /api/v3/klines` 补现货 1m 图表，默认直连 `https://api.binance.com`；
+不增加 Nginx 白名单，不调用私有接口。每次最多 1000 根，只补缺失分钟并刷新
+末两根，单线程最多 4 请求/秒，遇 418/429 全局退避 60–900 秒；
+本地 SQLite 缓存行情。可用 `BINANCE_SPOT_PUBLIC_API_BASE` 指定公共基址，
+不得复用交易凭据或私有 API 代理。
+官方契约：[Spot Klines](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints#klinecandlestick-data)。
+
 ## 状态
 
 本文是交易所公共 REST API 的主机级共享缓存规范。Bitget 是首个已接入的交易所。

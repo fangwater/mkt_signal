@@ -62,10 +62,8 @@ for directory in web/"cta_${FAMILY}"*; do
   mkdir -p "$TARGET_DIR/$directory"
   cp -a "$directory/." "$TARGET_DIR/$directory/"
 done
-if [[ "$FAMILY" == perp ]]; then
-  mkdir -p "$TARGET_DIR/web/vendor"
-  cp -a web/vendor/. "$TARGET_DIR/web/vendor/"
-fi
+mkdir -p "$TARGET_DIR/web/vendor"
+cp -a web/vendor/. "$TARGET_DIR/web/vendor/"
 if [[ ! -f "$TARGET_DIR/env.sh" ]]; then
   umask 077
   cat > "$TARGET_DIR/env.sh" <<ENV
