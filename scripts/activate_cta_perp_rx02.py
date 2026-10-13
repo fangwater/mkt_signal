@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime
 import fcntl
 import getpass
 import hashlib
@@ -87,12 +88,33 @@ def warm_rows(env, table):
     now = time.time() * 1000
     for symbol, factors in table.items():
         row = latest.get(symbol, {})
+        ts = row.get("model_ts_ms", 0)
+        stamp = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         require(0 <= now - row.get("model_ts_ms", 0) <= 180_000,
-                f"publisher is not live: {symbol}")
+                f"Kafka history not live: {symbol}; latest={stamp}; lag={(now-ts)/60000:.1f} min; wait for catch-up")
         require(row.get("nq", {}).get("ready"), f"NQ not ready: {symbol}")
         for factor in factors:
             require(row.get("inputs", {}).get(factor, {}).get("ready"),
                     f"factor not ready: {symbol}/{factor}")
+
+
+def check_preview(env):
+    require(read(env / "config/cta_perp.json")["enabled"] is False,
+            "new publication is already enabled")
+    if pids(env, "cta_perp_signal"):
+        require(read(env / "run/cta_perp_status.json")["enabled"] is False,
+                "running preview has not confirmed publication disabled")
+
+
+def inherit_positions(old, new):
+    require(not pids(new, "cta_perp_signal"), "stop the preview before replacing its positions")
+    require(not pids(old, "cta_special_signal"), "stop the old signal before taking its final positions")
+    state = positions(old / "run/cta_special_position_flags.json")
+    preview = new / "run/cta_perp_position_flags.json"
+    if preview.exists():
+        write(new / "run/cta_perp_position_flags.preview.json", read(preview))
+    write(new / "run/cta_special_position_flags.before.json", state)
+    write(preview, state)
 
 
 def binding_plan(account, factors, prefix):
@@ -139,7 +161,7 @@ def main():
             "live parameters changed since staging")
     require(os.getenv("CTA_POSITION_STRATEGY_PREFIX") == "lgq_cta_", "source the staged env.sh first")
     require(pids(old, "cta_special_signal"), "old RX02 signal is not running")
-    require(not pids(new, "cta_perp_signal"), "new signal is already running")
+    check_preview(new)
     state = positions(old / "run/cta_special_position_flags.json")
     factors = sorted({f for row in table.values() for f in row})
     print("[PLAN] JP RX02 Binance futures -> binance_exec_trade05; 9 symbols / 24 bindings; 100 USDT per binding")
@@ -202,11 +224,12 @@ def main():
             "Manager configuration changed during preflight")
     write(new / "run/cutover_started.json", {"time": time.time(), "manager_before": account, "manager_after": plan})
     try:
+        check_preview(new)
+        wrapper(new, "stop_cta_perp_signal")
+        wait_for(lambda: not pids(new, "cta_perp_signal"), "preview signal did not stop")
         wrapper(old, "stop_cta_special_signal")
         wait_for(lambda: not pids(old, "cta_special_signal"), "old signal did not stop")
-        state = positions(old / "run/cta_special_position_flags.json")
-        write(new / "run/cta_special_position_flags.before.json", state)
-        write(new / "run/cta_perp_position_flags.json", state)
+        inherit_positions(old, new)
         # Register only previously absent strategies at zero. Never overwrite retained NEAR inventory.
         for factor in factors:
             name = "lgq_cta_" + factor
@@ -253,4 +276,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as error:
+        raise SystemExit(f"[BLOCKED] {error}") from None

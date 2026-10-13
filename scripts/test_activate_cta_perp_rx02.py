@@ -4,11 +4,43 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
-from activate_cta_perp_rx02 import binding_plan, positions, warm_rows
+from activate_cta_perp_rx02 import binding_plan, check_preview, inherit_positions, positions, warm_rows
 
 
 class CutoverTests(unittest.TestCase):
+    def test_cutover_replaces_preview_with_final_old_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new = Path(tmp) / "old", Path(tmp) / "new"
+            for env in (old, new):
+                (env / "run").mkdir(parents=True)
+            state = {"factor_036": {"NEARUSDT": {"flag": -1, "qty": -31.25, "entry_notional": 100}}}
+            preview = {"baseline_141": {"AAVEUSDT": {"flag": 1, "qty": 1.5}}}
+            (old / "run/cta_special_position_flags.json").write_text(json.dumps(state))
+            (new / "run/cta_perp_position_flags.json").write_text(json.dumps(preview))
+            with patch("activate_cta_perp_rx02.pids", return_value=[123]):
+                with self.assertRaises(RuntimeError):
+                    inherit_positions(old, new)
+            with patch("activate_cta_perp_rx02.pids", return_value=[]):
+                inherit_positions(old, new)
+            self.assertEqual(json.loads((new / "run/cta_perp_position_flags.json").read_text()), state)
+            self.assertEqual(json.loads((new / "run/cta_perp_position_flags.preview.json").read_text()), preview)
+
+    def test_preview_requires_disabled_config_and_running_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp)
+            (env / "config").mkdir()
+            (env / "run").mkdir()
+            (env / "config/cta_perp.json").write_text('{"enabled": false}')
+            status = env / "run/cta_perp_status.json"
+            status.write_text('{"enabled": false}')
+            with patch("activate_cta_perp_rx02.pids", return_value=[123]):
+                check_preview(env)
+                status.write_text('{"enabled": true}')
+                with self.assertRaises(RuntimeError):
+                    check_preview(env)
+
     def account(self):
         return {"name": "lgq_cta", "can_configure": True,
                 "followers": [{"source_id": "binance_exec_trade05", "multiplier": 1, "pending_publishes": []}],
