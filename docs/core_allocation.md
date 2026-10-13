@@ -1,7 +1,15 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 02:41 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 03:09 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 03:09 UTC 按用户要求暂停旧 RX01：通过
+`~/binance-cta-rx01/intra_scripts/stop_intra_{trade_engine,trade_signal,pre_trade}.sh`
+停止三个交易进程并核验实际退出。账户监控、persist_manager（CPU15）、Viz、
+配置服务及普通共享因子 publisher 保持运行；隔离核分配不变。
+停机后 `rapidx_open_orders --exchange binance` 只读查询确认 SPOT/MARGIN/PERP
+挂单均为 0，未提交撤单或对冲交易。账户仍有方向敞口，尚未完成中性化；
+不得将本次进程停机视为空仓或仓位承接完成。新 CTA Spread 发布保持关闭。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
 
