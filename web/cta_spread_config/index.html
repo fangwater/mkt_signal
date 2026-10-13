@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CTA 配置中心</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1221;
+        --panel: #111a33;
+        --border: #223259;
+        --muted: #94a3b8;
+        --text: #e4ecff;
+        --accent: #38bdf8;
+        --accent-2: #2563eb;
+        --danger: #ef4444;
+        --ok: #34d399;
+        --warn: #fbbf24;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      header {
+        padding: 18px 20px;
+        background: linear-gradient(180deg, #0f1830, #0b1221);
+        border-bottom: 1px solid var(--border);
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 20px;
+        font-weight: 650;
+      }
+      main {
+        padding: 20px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+        margin-bottom: 18px;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: end;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 180px;
+      }
+      label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      input,
+      select,
+      button,
+      textarea {
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #2f4066;
+        background: #0f1c3b;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 13px;
+      }
+      input.mono,
+      textarea.mono,
+      .kv-key {
+        font-family: Menlo, Consolas, monospace;
+      }
+      textarea {
+        width: 100%;
+        min-height: 160px;
+        resize: vertical;
+      }
+      input[readonly],
+      select:disabled,
+      textarea[readonly] {
+        color: #cbd5e1;
+      }
+      button {
+        cursor: pointer;
+        border-color: var(--accent-2);
+        background: linear-gradient(90deg, var(--accent-2), var(--accent));
+        color: white;
+        font-weight: 650;
+      }
+      button.secondary {
+        background: #16213c;
+        border-color: #31446d;
+        color: #cbd5f5;
+      }
+      button.ghost {
+        background: transparent;
+        border-color: #2f4066;
+        color: #cbd5f5;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .section-header h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+        min-height: 16px;
+        margin-top: 8px;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.err {
+        color: var(--danger);
+      }
+      .status.warn {
+        color: var(--warn);
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .hint code {
+        color: #dbe7ff;
+      }
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 12px;
+      }
+      .kv-table {
+        display: grid;
+        grid-template-columns: 280px minmax(180px, 1fr) 1.6fr;
+        gap: 8px;
+        align-items: center;
+      }
+      .kv-key {
+        padding: 8px 10px;
+        background: #0c142b;
+        border: 1px solid #1b294c;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      .kv-input input,
+      .kv-input select {
+        width: 100%;
+      }
+      .kv-desc {
+        font-size: 12px;
+        color: var(--muted);
+        padding: 8px 4px;
+      }
+      .subnav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .subnav a {
+        color: #cbd5f5;
+        text-decoration: none;
+        padding: 6px 10px;
+        border: 1px solid #26375b;
+        border-radius: 999px;
+        font-size: 12px;
+      }
+      .badge {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      @media (max-width: 960px) {
+        .kv-table {
+          grid-template-columns: 1fr;
+        }
+        header,
+        main {
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>CTA 配置中心</h1>
+      <div class="toolbar">
+        <div class="field">
+          <label for="env-name">Env</label
+          ><input id="env-name" class="mono" readonly />
+        </div>
+        <div class="field">
+          <label for="open-venue">交易市场</label
+          ><input
+            id="open-venue"
+            class="mono"
+            readonly
+            value="binance-futures"
+          />
+        </div>
+        <div class="field">
+          <label for="factor-key">因子配置</label
+          ><input id="factor-key" class="mono" readonly />
+        </div>
+        <div class="field">
+          <label>Revision</label>
+          <div class="inline"><span id="revision" class="badge">-</span></div>
+        </div>
+        <a id="monitor-link" class="subnav" href="../"
+          ><span
+            style="
+              padding: 6px 10px;
+              border: 1px solid #26375b;
+              border-radius: 999px;
+            "
+            >监控</span
+          ></a
+        >
+        <button id="reload-all" class="ghost" type="button">读取全部</button>
+        <button id="save-all" type="button">保存全部</button>
+      </div>
+    </header>
+    <main>
+      <div class="subnav">
+        <a href="#cta-signal">CTA Spread 信号</a>
+        <a href="#symbol-lists">币种与独立因子策略</a>
+        <a href="/manager/">CTA Manager · 执行配置 ↗</a>
+      </div>
+
+      <section id="cta-signal" class="panel">
+        <div class="section-header">
+          <h2>CTA Spread 信号 <span class="badge" id="signal-key"></span></h2>
+          <div class="actions">
+            <button id="signal-load" class="secondary" type="button">
+              读取
+            </button>
+            <button id="signal-save" type="button">保存</button>
+          </div>
+        </div>
+        <div class="hint">
+          统一开多、开空、退多、退空分位和
+          价差过滤。同向保持原 qty；退出保留现货、以合约对冲；反向信号通过过滤时直接反转。保存后约 1
+          秒生效，下一根新闭合 bar 使用新设置。执行参数由 CTA Manager 管理。
+        </div>
+        <details class="hint" id="spread-help">
+          <summary>期现价差：过滤入场并选择市场</summary>
+          <p>spread = (现货 mid − 永续 mid) / 现货 mid。两市场按同一闭合分钟配对；2880 个分钟槽位，至少 1440 个有效样本，包含当前值。</p>
+          <p>低于 q30：多头买现货、空头卖永续。高于 q70：多头买永续、空头卖空现货。中间区间与边界不入场；缺失或未预热不入场。</p>
+          <p>价差不触发退出。因子退出时保留现货，合约目标为现货数量的相反数。反向因子通过价差过滤时直接发布反转后的完整目标；未通过时只退出旧方向。</p>
+        </details>
+        <div class="kv-table" id="signal-table"></div>
+        <div id="signal-status" class="status"></div>
+      </section>
+
+      <section id="symbol-lists" class="panel">
+        <div class="section-header">
+          <h2>
+            币种与独立因子策略 <span class="badge" id="symbol-count"></span>
+          </h2>
+          <div class="actions">
+            <button id="sym-add" class="ghost" type="button">校验 JSON</button>
+            <button id="sym-load" class="secondary" type="button">读取</button>
+            <button id="sym-save" type="button">保存</button>
+          </div>
+        </div>
+        <div class="hint">
+          整份 JSON 配置 symbol → factor →
+          方向。负数反转因子方向，正数保持方向，0
+          停用。每个因子独立形成满多、满空、空仓三种状态；数值幅度不参与仓位分配。保存时检查币种、因子和数值；不通过不会覆盖配置。交易开关关闭时只计算和观察信号。
+        </div>
+        <p class="hint" id="available-factors"></p>
+        <textarea
+          id="factor-json"
+          class="mono"
+          aria-label="完整币种因子 JSON"
+          spellcheck="false"
+          style="
+            width: 100%;
+            min-height: 380px;
+            margin-top: 12px;
+            resize: vertical;
+            box-sizing: border-box;
+          "
+          placeholder='{"FILUSDT":{"factor_036":-1,"factor_051":-1},"XRPUSDT":{"factor_170":-1,"TD_TI_002":1}}'
+        ></textarea>
+        <div id="sym-status" class="status"></div>
+      </section>
+    </main>
+    <script>
+      let revision = "";
+      let factorRevision = "";
+      let factorLoaded = false;
+      const byId = (id) => document.getElementById(id);
+      const envMatch = location.pathname.match(
+        /binance-cta-spread-[a-z0-9_-]+/,
+      );
+      const envName = envMatch ? envMatch[0] : "binance-cta-spread";
+      byId("env-name").value = envName;
+      byId("signal-key").textContent = "config/cta_spread.json";
+      const signalRows = [
+        [
+          "max_pos_u",
+          "number",
+          null,
+          "单份 USDT：每个已启用的 symbol × factor 组合独立使用此金额。开仓换算 qty，持仓保持原数量，退出平原 qty；修改金额在后续开仓生效。",
+        ],
+        [
+          "enabled",
+          "select",
+          [
+            ["false", "false"],
+            ["true", "true"],
+          ],
+          "true 向 CTA Manager 发布因子仓位；实际账户按 Virtual 配置跟随。",
+        ],
+        [
+          "factor_long_quantile",
+          "number",
+          null,
+          "修正后的因子分位严格大于该值时开满多。",
+        ],
+        [
+          "factor_short_quantile",
+          "number",
+          null,
+          "修正后的因子分位严格小于该值时开满空。",
+        ],
+        [
+          "factor_exit_quantile_long",
+          "number",
+          null,
+          "修正分位低于此值时退出该因子的多方向，保留现货并用合约对冲。",
+        ],
+        [
+          "factor_exit_quantile_short",
+          "number",
+          null,
+          "修正分位高于此值时退出该因子的空方向，保留现货并用合约对冲。",
+        ],
+        [
+          "spread_lower_quantile",
+          "number",
+          null,
+          "价差低于此分位才进入低端区间，默认 0.3。",
+        ],
+        [
+          "spread_upper_quantile",
+          "number",
+          null,
+          "价差高于此分位才进入高端区间，默认 0.7。",
+        ],
+      ];
+      function row(key, control, desc) {
+        return `<div class="kv-key">${key}</div><div class="kv-input">${control}</div><div class="kv-desc">${desc}</div>`;
+      }
+      function selectHtml(id, options) {
+        return `<select id="${id}">${options.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select>`;
+      }
+      byId("signal-table").innerHTML = signalRows
+        .map(([key, kind, options, desc]) => {
+          const control =
+            kind === "readonly"
+              ? `<input id="${key}" class="mono" readonly>`
+              : kind === "select"
+                ? selectHtml(key, options)
+                : `<input id="${key}" class="mono" inputmode="decimal">`;
+          return row(key === "max_pos_u" ? "单份 USDT" : key, control, desc);
+        })
+        .join("");
+      function setStatus(id, text, kind) {
+        const el = byId(id);
+        el.textContent = text;
+        el.className = "status" + (kind ? " " + kind : "");
+      }
+      function populate(config, nextRevision) {
+        revision = nextRevision;
+        byId("revision").textContent = revision.slice(0, 12);
+        byId("enabled").value = config.enabled ? "true" : "false";
+        byId("max_pos_u").value = config.max_pos_u ?? "";
+        const entry = config.entry || {};
+        for (const key of [
+          "factor_long_quantile",
+          "factor_short_quantile",
+          "spread_lower_quantile",
+          "spread_upper_quantile",
+        ]) {
+          byId(key).value = entry[key] ?? "";
+        }
+        const execution = config.execution || {};
+        for (const key of [
+          "factor_exit_quantile_long",
+          "factor_exit_quantile_short",
+        ])
+          byId(key).value = execution[key] ?? "";
+      }
+      function collect() {
+        const entry = {};
+        const execution = {};
+        for (const key of [
+          "factor_long_quantile",
+          "factor_short_quantile",
+          "spread_lower_quantile",
+          "spread_upper_quantile",
+          "factor_exit_quantile_long",
+          "factor_exit_quantile_short",
+        ]) {
+          const raw = byId(key).value.trim(),
+            value = Number(raw);
+          if (!raw || !Number.isFinite(value))
+            throw new Error(`${key} 必须是数字`);
+          (key.startsWith("factor_exit_") ? execution : entry)[key] = value;
+        }
+        const amountText = byId("max_pos_u").value.trim(),
+          amount = Number(amountText);
+        if (!amountText || !Number.isFinite(amount) || amount <= 0)
+          throw new Error("单份 USDT 必须是大于 0 的有限数字");
+        return {
+          enabled: byId("enabled").value === "true",
+          max_pos_u: amount,
+          entry,
+          execution,
+        };
+      }
+      async function load() {
+        setStatus("signal-status", "读取中...");
+        try {
+          const response = await fetch("api/config", { cache: "no-store" });
+          const body = await response.json();
+          if (!response.ok)
+            throw new Error(body.error || `HTTP ${response.status}`);
+          populate(body.config, body.revision);
+          setStatus("signal-status", "读取完成", "ok");
+        } catch (error) {
+          setStatus("signal-status", error.message, "err");
+        }
+      }
+      async function save() {
+        setStatus("signal-status", "保存中...");
+        try {
+          const response = await fetch("api/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              config: collect(),
+              expected_revision: revision,
+            }),
+          });
+          const body = await response.json();
+          if (!response.ok)
+            throw new Error(body.error || `HTTP ${response.status}`);
+          populate(body.config, body.revision);
+          setStatus("signal-status", "保存成功", "ok");
+          return true;
+        } catch (error) {
+          const kind = String(error.message).includes("reload")
+            ? "warn"
+            : "err";
+          setStatus("signal-status", error.message, kind);
+          return false;
+        }
+      }
+      let availableFactors = new Set(),
+        availableSymbols = new Set();
+      function populateFactors(body) {
+        factorRevision = body.revision;
+        factorLoaded = true;
+        byId("factor-key").value = body.key;
+        const table = body.symbol_factors || {};
+        byId("factor-json").value = JSON.stringify(table, null, 2);
+        availableFactors = new Set(body.available?.factors || []);
+        availableSymbols = new Set(body.available?.symbols || []);
+        byId("available-factors").textContent =
+          "可用因子：" + [...availableFactors].join(", ");
+        byId("symbol-count").textContent =
+          `${Object.keys(table).length} symbols`;
+      }
+      function collectFactors() {
+        const table = JSON.parse(byId("factor-json").value);
+        if (!table || Array.isArray(table) || typeof table !== "object")
+          throw new Error("根节点必须是 symbol 对象");
+        const normalizedSymbols = new Set();
+        for (const [rawSymbol, row] of Object.entries(table)) {
+          const symbol = rawSymbol.trim().toUpperCase();
+          if (!availableSymbols.has(symbol) || normalizedSymbols.has(symbol))
+            throw new Error("币种不可用或重复：" + symbol);
+          normalizedSymbols.add(symbol);
+          if (
+            !row ||
+            Array.isArray(row) ||
+            typeof row !== "object" ||
+            !Object.keys(row).length ||
+            Object.keys(row).length > 32
+          )
+            throw new Error(symbol + " 需要 1–32 个 factor → weight");
+          let nonzero = false;
+          const names = new Set();
+          for (const [name, weight] of Object.entries(row)) {
+            const factor = /^(td|tp)_/i.test(name.trim())
+              ? name.trim().toUpperCase()
+              : name.trim().toLowerCase();
+            if (!availableFactors.has(factor) || names.has(factor))
+              throw new Error(symbol + "/" + factor + "：因子不可用或重复");
+            names.add(factor);
+            if (typeof weight !== "number" || !Number.isFinite(weight))
+              throw new Error(symbol + "/" + factor + "：权重必须是有限数字");
+            nonzero ||= weight !== 0;
+          }
+          if (!nonzero) throw new Error(symbol + " 的权重不能全部为零");
+        }
+        return table;
+      }
+      async function loadFactors() {
+        setStatus("sym-status", "读取中...");
+        try {
+          const response = await fetch("api/symbol-factors", {
+            cache: "no-store",
+          });
+          const body = await response.json();
+          if (!response.ok)
+            throw new Error(body.error || `HTTP ${response.status}`);
+          populateFactors(body);
+          setStatus(
+            "sym-status",
+            body.exists ? "读取完成" : "尚未配置，请填写 JSON 后保存",
+            body.exists ? "ok" : "warn",
+          );
+        } catch (error) {
+          setStatus("sym-status", error.message, "err");
+        }
+      }
+      async function saveFactors() {
+        setStatus("sym-status", "保存中...");
+        try {
+          if (!factorLoaded) throw new Error("请先读取因子配置");
+          collectFactors();
+          const response = await fetch("api/symbol-factors", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body:
+              '{"symbol_factors":' +
+              byId("factor-json").value +
+              ',"expected_revision":' +
+              JSON.stringify(factorRevision) +
+              "}",
+          });
+          const body = await response.json();
+          if (!response.ok)
+            throw new Error(body.error || `HTTP ${response.status}`);
+          populateFactors(body);
+          setStatus("sym-status", "保存成功，下一根新 bar 使用新组合", "ok");
+          return true;
+        } catch (error) {
+          setStatus("sym-status", error.message, "err");
+          return false;
+        }
+      }
+      byId("reload-all").addEventListener("click", () => {
+        load();
+        loadFactors();
+      });
+      byId("save-all").addEventListener("click", async () => {
+        if (!(await save())) return;
+        if (!(await saveFactors())) return;
+      });
+      byId("signal-load").addEventListener("click", load);
+      byId("sym-load").addEventListener("click", loadFactors);
+      byId("sym-add").addEventListener("click", () => {
+        try {
+          collectFactors();
+          setStatus(
+            "sym-status",
+            "JSON 格式、因子和权重校验通过；保存时服务端再次检查",
+            "ok",
+          );
+        } catch (error) {
+          setStatus("sym-status", error.message, "err");
+        }
+      });
+      byId("signal-save").addEventListener("click", save);
+      byId("sym-save").addEventListener("click", saveFactors);
+      load();
+      loadFactors();
+    </script>
+  </body>
+</html>

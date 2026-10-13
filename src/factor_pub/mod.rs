@@ -3,7 +3,8 @@
 #[path = "futures_fusion_factor_pub.rs"]
 pub mod cn_features;
 pub(crate) mod cta_factor_universe;
-pub mod cta_special_factor_model_1m_pub;
+pub mod cta_perp_factor_model_1m_pub;
+pub mod cta_spread_factor_model_1m_pub;
 pub mod factor_test;
 pub mod fusion_factor_pub;
 pub mod intra_factor_model_1m_pub;

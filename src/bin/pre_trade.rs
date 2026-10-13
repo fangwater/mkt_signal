@@ -91,7 +91,7 @@ struct Args {
     core: Option<usize>,
 
     /// CTA special strategy/model configuration. Ignored outside cta_special mode.
-    #[arg(long, default_value = "config/cta_special.json")]
+    #[arg(long, default_value = "config/cta_perp.json")]
     cta_special_config: PathBuf,
 }
 

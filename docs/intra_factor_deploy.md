@@ -1,5 +1,7 @@
 # Intra CTA（V007 两市场期现）
 
+2026-10-13 代码与页面已统一为独立的 `cta_perp` / `cta_spread` 仓位发布套件，见 [当前命名与策略契约](cta_signal_families.md)。新 RX01 发布保持关闭，以下线上记录仍使用原部署名称；本次未执行线上迁移。
+
 最后更新：2026-10-09
 
 本文记录普通 intra CTA（`ArbMode::Cta`，不是 `cta_special`）的 V007 研究契约与

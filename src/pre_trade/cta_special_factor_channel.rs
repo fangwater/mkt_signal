@@ -1,6 +1,6 @@
-use crate::cta_special::config::CtaSpecialConfig;
-use crate::cta_special::factor_channel::WeightedFactorChannel;
-use crate::cta_special::factors::{runtime_factor_config_key, WEIGHTED_RULE_NAME};
+use crate::cta_perp::config::CtaPerpConfig;
+use crate::cta_perp::factor_channel::WeightedFactorChannel;
+use crate::cta_perp::factors::{runtime_factor_config_key, WEIGHTED_RULE_NAME};
 use crate::strategy::cta_special_strategy::CtaSpecialExitConfig;
 use anyhow::Result;
 use log::{info, warn};
@@ -25,7 +25,7 @@ pub struct CtaSpecialFactorUpdate {
 pub struct CtaSpecialFactorChannel {
     config_path: PathBuf,
     config_modified: Option<SystemTime>,
-    config: CtaSpecialConfig,
+    config: CtaPerpConfig,
     venue: TradingVenue,
     factors: WeightedFactorChannel,
     last_reload_check_us: i64,
@@ -34,7 +34,7 @@ pub struct CtaSpecialFactorChannel {
 impl CtaSpecialFactorChannel {
     pub async fn new(config_path: impl AsRef<Path>) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
-        let config = CtaSpecialConfig::load(&config_path)?;
+        let config = CtaPerpConfig::load(&config_path)?;
         let venue = config.venue();
         let factors = WeightedFactorChannel::new(
             runtime_factor_config_key()?,
@@ -92,7 +92,7 @@ impl CtaSpecialFactorChannel {
         if modified.is_none() || modified == self.config_modified {
             return;
         }
-        match CtaSpecialConfig::load(&self.config_path) {
+        match CtaPerpConfig::load(&self.config_path) {
             Ok(next) => {
                 self.config = next;
                 self.config_modified = modified;
@@ -109,7 +109,7 @@ impl CtaSpecialFactorChannel {
     }
 }
 
-fn exit_config(config: &CtaSpecialConfig) -> CtaSpecialExitConfig {
+fn exit_config(config: &CtaPerpConfig) -> CtaSpecialExitConfig {
     CtaSpecialExitConfig {
         rule_name: WEIGHTED_RULE_NAME.into(),
         factor_exit_enabled: true,
@@ -124,7 +124,7 @@ fn exit_config(config: &CtaSpecialConfig) -> CtaSpecialExitConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::cta_special::factors::model_bar_is_fresh;
+    use crate::cta_perp::factors::model_bar_is_fresh;
 
     #[test]
     fn model_freshness_rejects_old_and_future_bars() {

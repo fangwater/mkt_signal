@@ -263,12 +263,20 @@ name = "intra_factor_model_1m_pub"
 path = "src/bin/intra_factor_model_1m_pub.rs"
 
 [[bin]]
-name = "cta_special_signal"
-path = "src/bin/cta_special_signal.rs"
+name = "cta_spread_signal"
+path = "src/bin/cta_spread_signal.rs"
 
 [[bin]]
-name = "cta_special_factor_model_1m_pub"
-path = "src/bin/cta_special_factor_model_1m_pub.rs"
+name = "cta_spread_factor_model_1m_pub"
+path = "src/bin/cta_spread_factor_model_1m_pub.rs"
+
+[[bin]]
+name = "cta_perp_signal"
+path = "src/bin/cta_perp_signal.rs"
+
+[[bin]]
+name = "cta_perp_factor_model_1m_pub"
+path = "src/bin/cta_perp_factor_model_1m_pub.rs"
 
 [[bin]]
 name = "factor_test"
