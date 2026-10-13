@@ -1,7 +1,30 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 08:26 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-13 08:43 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 08:41:32 / 08:42:40 UTC，Binance Futures market / bookticker
+进一步更新为PID255763/CPU14、PID266181/CPU9，源码`37fd96a3`。
+最终release SHA-256 `b95c028636a752cb55de11734c8a1957873a74e8139a21871365c98a279b8c58`，
+两个实际运行进程的/proc/exe均校验一致。日志仍同步写有界tmpfs、无日志worker；
+fd1/fd2改为/dev/null，Rust panic通过同一个有界logger记录，消除直接打印无限增长旁路。
+下述初次tmpfs上线的PID及stdio安排已由本条替代；CPU、IP及其他进程不变。
+
+2026-10-13 08:27:23 / 08:29:59 UTC，Binance Futures market / bookticker
+分别更新为 PID117542 / CPU14、PID143132 / CPU9。发布源码`e98125c6`，release
+SHA-256 `3ecf140f46bc94a0e71ff7f265a99a99f426648f19d047b18405c31a5b53dc58`。
+删除专用`bbo-log-writer`，CPU0不再承担该日志worker；行情仍使用current_thread
+运行时，既有DNS/配置读取可能短暂出现Tokio阻塞worker，不是日志线程。
+首次上线logger/stdio写tmpfs；随后`37fd96a3`将原始stdio改为/dev/null，
+Rust panic经有界logger记录，关闭容量旁路。logger写`/dev/shm/spread_pbs-1000/`，每角色当前日志
+2MiB、上一份2MiB；常规状态300秒，HFQ延迟摘要仍60秒。JP swap未启用。
+经本机release构建、上传SHA校验、原子安装、环境角色启动脚本逐个重启；
+ZMQ PID1792862/CPU5与三个FR PID828134/1922219/2848056保持。
+未改env.sh、源IP、ENI、路由或IRQ，未启动旧model_pub/model_1m_pub。
+回退文件`spread_pbs.before-tmpfs-e98125c6`和同名start脚本备份留在环境目录；
+若回退还需配套恢复采集器日志路径，不能只换二进制。
+详见`docs/binance_futures_latency.md`及独立项目`docs/ticker_tmpfs_logs.md`。
+下面07:19–07:43的日志worker记录为历史方案，已被本次同步tmpfs方案替代。
 
 2026-10-13 08:09 UTC 经环境本地脚本重启新 Perp publisher 至 PID 4133794，
 CPU18。首次预热因旧 1800 秒上限退出，本次配置改为 3600 秒（`2a28edd2`），

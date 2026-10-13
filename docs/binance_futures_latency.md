@@ -1,15 +1,35 @@
 # Binance Futures 延迟观测
 
-最后更新：2026-10-13 07:43 UTC。
+最后更新：2026-10-13 08:43 UTC。
 
 ## 接收线程日志与双窗口选线
+
+最终补丁`37fd96a3`于08:41:32 / 08:42:40 UTC更新market PID255763/CPU14、
+bookticker PID266181/CPU9。两个实际进程的二进制SHA均与本地release一致：
+`b95c028636a752cb55de11734c8a1957873a74e8139a21871365c98a279b8c58`。
+fd1/fd2现场确认均为/dev/null，实际logger仍写tmpfs，panic受同一轮换上限约束。
+以下08:27/08:29记录为初次上线及其观测，原始stdio旁路已由最终补丁关闭。
+
+08:27:23已更新market（PID117542/CPU14），08:29:59更新bookticker（PID143132/CPU9）。
+源码`e98125c6`已推送arbmm；本机release校验后通过环境角色脚本逐个重启。
+首次上线两个进程的fd1/fd2指向tmpfs；后续`37fd96a3`进一步将原始stdio
+重定向到/dev/null、panic改走有界logger，关闭直接打印绕过容量检查的旁路。
+常规日志轮换、独占角色锁、轮换失败丢弃及恢复报告通过回归测试；
+另通过每个stdio输出6.25MiB仍不增长日志、panic受logger上限约束的子进程测试；
+采集器按inode补读上一份尾部，重启的不完整分钟继续排除。
+同时修复公开WS消息UTF-8前缀截取panic（中文symbol跨128/256字节边界），
+避免market连接任务因诊断过滤器异常退出。
+上线后market 240秒/4522次、bookticker 180秒/3556次主线程抽样均D=0；
+08:34:59两条BBO连接connected且ACK均4/4，分钟采集healthy，无日志丢失标记。
+这是短时观察，不代表所有延迟尾部已消除；详细证据在独立项目tmpfs报告。
 
 Binance Futures `market` / `bookticker` 角色改为同线程同步写 tmpfs，不创建日志
 worker 或日志队列。保留 current_thread 行情运行时；删除 `--log-writer-core`。
 默认目录 `/dev/shm/spread_pbs-<uid>/`，文件
 `binance-futures-market.log` / `binance-futures-bookticker.log`（test模式加`-test`）。
-启动校验文件系统确为tmpfs，同角色独占锁防止两个进程相互轮换；stdout/stderr也
-重定向到该内存文件，避免panic或直接打印仍落入pmdaemon的ext4文件。
+启动校验文件系统确为tmpfs，同角色独占锁防止两个进程相互轮换。
+原始stdout/stderr重定向到/dev/null，Rust panic hook通过有界logger记录；
+不保留绕过logger的直接打印，避免无限增长和pmdaemon的ext4写入。
 每个角色当前文件最多2MiB，保留`.log.1`上一份；正常logger记录共最多4MiB/角色。
 单条最多64KiB，超长或写入失败丢弃，恢复后输出`spread_log_loss`累积计数。
 不调用fsync，不回退磁盘。tmpfs数据重启丢失，长期HFQ数据由独立采集项目保存。
