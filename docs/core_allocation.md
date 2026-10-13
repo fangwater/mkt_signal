@@ -1,7 +1,14 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 08:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 08:26 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 08:09 UTC 经环境本地脚本重启新 Perp publisher 至 PID 4133794，
+CPU18。首次预热因旧 1800 秒上限退出，本次配置改为 3600 秒（`2a28edd2`），
+08:25:19 UTC 完成预热；08:25:56 现场 24/24 组合实时就绪、9/9 NQ 就绪，
+解析/计算错误为 0。新 signal/config/dashboard PID 3985389/3973622/3979991
+保持运行于 0-5，enabled=false；旧 RX02 四进程、RX01 及 trade05 六进程保留。
+证据：`artifacts/cta_perp_rx02_preview/live_validation.json`。
 
 2026-10-13 08:04 UTC 新 Perp publisher PID 3841796 的 5 个线程从
 housekeeping 0-5 原地迁到 CPU18，未重启、保留 Kafka 预热状态。操作前确认

@@ -64,6 +64,14 @@ K 线由独立只读后台直连 Binance 公共 Spot Klines 补缺，缺失时�
 
 ## RX02 Perp 新清单与 NQ 短窗口
 
+2026-10-13 08:25 UTC 新 Perp 已完成 Kafka 预热，24/24 组合实时就绪、
+9/9 NQ 就绪，仍为 enabled=false。首次预热触及旧 1800 秒上限，因此将
+上限改为 3600 秒并在独立 CPU18 重启 publisher；新 PID 4133794。
+发布器日志确认 `percentile=2880/1440 nq=120/120/60`、解析/计算错误为 0。
+桌面/手机已验证真实历史的 B 开多、S 开空、平仓标记及交易快照点击；这些是
+历史模拟，不是成交。新信号日志只有 observed，没有 published/partial；
+旧 RX02 仍负责实时仓位。验收见 `artifacts/cta_perp_rx02_preview/`。
+
 2026-10-13 07:52 UTC 新 RX02 四个进程均已启动，仓位发布保持关闭。
 配置服务 19186 / Dashboard 10196 与旧 RX02 端口独立，网关路径
 `/cta/binance-cta-perp-rx02/`、`config/`、`signals/` 已接通，旧页面仍保留。
