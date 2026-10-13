@@ -79,6 +79,15 @@ ETH 合约连续 9 笔 BUY，各 0.039，总计 0.351；10 月 13 日 00:38 UTC�
 是否因旧 CTA lot 退出重复/过量，尚未与完整 lot 记录闭合验证，不能据此断言根因。
 旧交易进程已停；该工具独立读取实际账户，不承接旧待对冲队列。
 
+2026-10-13 03:28 UTC，`91199769` 的工具及 `binance_local_ip.py` 已上传到
+RX01 `scripts/`，本地/远端 SHA-256 一致后安装。只执行了默认 dry-run（带
+`--ioc-fallback` 展示拟用策略，没有 `--execute`），普通及 algo 挂单为空，
+账户身份、NET 模式、现货负债、交易规则及实时 BBO 查询通过。
+计划为 SELL 0.323 ETH（穿零，非 reduce-only）及 SELL 0.007 BTC（reduce-only）；
+BNB/CRV 低于数量步长，DOGE/SOL/XRP 低于最小金额，跳过。尚未提交任何订单，
+执行命令会重新计算。20 项模拟单元测试通过，真实下单/撤单路径尚未实盘验证。
+本次仅安装脚本，交易进程保持停盘，CPU 绑定、source IP、env.sh 均未改动。
+
 接口依据：[RapidX 下单](https://apidocliquidity.readme.io/reference/place-order)、
 [撤单异步语义](https://apidocliquidity.readme.io/reference/cancel-order)、
 [订单查询](https://apidocliquidity.readme.io/reference/query-order)、
