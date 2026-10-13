@@ -684,10 +684,19 @@ fn parse_ltp_assets_snapshot(
     }
 
     match parse_ltp_asset_basic_msgs(body, ltp_exchange, portfolio_id) {
-        Ok(payloads) => payloads
-            .into_iter()
-            .map(|body| query_outcome(msg, logical_exchange, http_status, body))
-            .collect(),
+        Ok(payloads) => {
+            let mut outcomes: Vec<_> = payloads
+                .into_iter()
+                .map(|body| query_outcome(msg, logical_exchange, http_status, body))
+                .collect();
+            outcomes.push(query_outcome(
+                msg,
+                logical_exchange,
+                http_status,
+                Bytes::from_static(SNAPSHOT_COMPLETE_MARKER),
+            ));
+            outcomes
+        }
         Err(err) => vec![query_outcome(
             msg,
             logical_exchange,
@@ -1779,7 +1788,10 @@ mod tests {
             200,
             asset_body,
         );
-        assert_eq!(asset_out.len(), 1);
+        assert_eq!(asset_out.len(), 2);
+        assert!(crate::query_request::is_snapshot_complete_body(
+            &asset_out[1].body
+        ));
         assert_eq!(asset_out[0].status, 200);
         assert_eq!(
             asset_out[0].req_type,
@@ -1813,6 +1825,54 @@ mod tests {
         );
         let pos = BasicPositionMsg::from_bytes(&pos_out[0].body).expect("position");
         assert_eq!(pos.inst_id, "BTCUSDT");
+    }
+
+    #[test]
+    fn rapidx_asset_snapshot_completes_only_after_all_valid_rows() {
+        let request = GenericQueryRequest::create(
+            QueryRequestType::BinancePmBalanceSnapshot,
+            get_timestamp_us(),
+            46,
+            Bytes::new(),
+        );
+        let msg = QueryRequestMsg::parse(request.to_bytes().as_ref()).unwrap();
+        for body in [
+            json!({"code":200000,"data":[]}),
+            json!({"code":200000,"data":[{"exchangeType":"BINANCE","coin":"BTC","balance":"1"}]}),
+        ] {
+            let outcomes = parse_ltp_assets_snapshot(
+                &msg,
+                Exchange::Binance,
+                "BINANCE",
+                "",
+                200,
+                &body.to_string(),
+            );
+            assert_eq!(outcomes.len(), body["data"].as_array().unwrap().len() + 1);
+            assert!(crate::query_request::is_snapshot_complete_body(
+                &outcomes.last().unwrap().body
+            ));
+            assert!(outcomes
+                .iter()
+                .all(|out| out.client_query_id == 46 && out.status == 200));
+        }
+        let invalid = json!({"code":200000,"data":[
+            {"exchangeType":"BINANCE","coin":"BTC","balance":"1"},
+            {"exchangeType":"BINANCE","coin":"ETH","balance":"invalid"}
+        ]});
+        let outcomes = parse_ltp_assets_snapshot(
+            &msg,
+            Exchange::Binance,
+            "BINANCE",
+            "",
+            200,
+            &invalid.to_string(),
+        );
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].status, 400);
+        assert!(!crate::query_request::is_snapshot_complete_body(
+            &outcomes[0].body
+        ));
     }
 
     #[test]
