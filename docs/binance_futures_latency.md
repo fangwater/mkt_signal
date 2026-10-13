@@ -4,21 +4,29 @@
 
 ## 接收线程日志与双窗口选线
 
-Binance Futures `bookticker` 角色使用有界异步日志：接收线程保留 env_logger 的
-RUST_LOG 过滤、格式和记录时刻，磁盘写入由独立 `bbo-log-writer` 线程完成。
-`--log-writer-core` 默认 0，必须与接收线程不同；启动时显式重新设置 worker affinity，
-不会继承 taskset 的 CPU9。队列最多 1024 条，每条最多 64 KiB，队列满或超长记录
-直接丢弃，磁盘恢复后输出 `spread_async_log_loss` 累积丢失/写失败计数。
-出现该标记时诊断覆盖不完整，不得把缺少的分钟作为延迟改善；退出不等待磁盘线程，
-因此进程退出可丢失尚未写出的队尾。时间戳、BTC 统计范围与行情发布语义不变。
-market 及其他交易所角色不使用此 logger。
+Binance Futures `market` / `bookticker` 角色改为同线程同步写 tmpfs，不创建日志
+worker 或日志队列。保留 current_thread 行情运行时；删除 `--log-writer-core`。
+默认目录 `/dev/shm/spread_pbs-<uid>/`，文件
+`binance-futures-market.log` / `binance-futures-bookticker.log`（test模式加`-test`）。
+启动校验文件系统确为tmpfs，同角色独占锁防止两个进程相互轮换；stdout/stderr也
+重定向到该内存文件，避免panic或直接打印仍落入pmdaemon的ext4文件。
+每个角色当前文件最多2MiB，保留`.log.1`上一份；正常logger记录共最多4MiB/角色。
+单条最多64KiB，超长或写入失败丢弃，恢复后输出`spread_log_loss`累积计数。
+不调用fsync，不回退磁盘。tmpfs数据重启丢失，长期HFQ数据由独立采集项目保存。
+JP本次检查swap未启用；不能把tmpfs描述成绝对无调度/内存分配延迟。
+
+常规Binance状态和选线status由30秒降到300秒；USD-M BBO冗余计数改debug。
+BTC每分钟延迟摘要、连接错误、实际换路事件保留。统计/健康采样和选线决策频率不变。
+采集器打开当前文件并按inode识别轮换；补读`.1`未读尾部，再读新文件。
+落后超过保留代数、显式截断、读取跳字节或`spread_log_loss`都会标记覆盖不完整，
+不将缺失分钟解释为延迟改善。生产切换/验证记录见本节后续运维记录。
 
 候选首轮固定被替换 slot，第二轮验证同一替换方案是否仍通过原有阈值，
 不再要求它第二轮也排名第一。两轮 coverage、匹配数量、P50/配对收益、P99、
 连接代次、行情新鲜度、时钟和 CPU 保护仍生效；不允许第二轮临时换替换对象。
 
 07:19:41 UTC 已发布 `896de806` 到 JP bookticker（PID 3685126）：接收 CPU9，
-日志 writer TID 3685127 / CPU0；market、ZMQ 和三个 FR 未重启。首个不完整分钟
+当时日志 writer TID 3685127 / CPU0；market、ZMQ 和三个 FR 未重启。首个不完整分钟
 按原规则排除。独立采集器另保存 `spread_async_log_loss` 报告，在读取到丢失标记
 的采集批次标为 unhealthy，并在比较/HFQ 导出中附带 `log_loss_reports`；
 其时间是恢复后采集时刻，不冒充精确的丢失事件窗口，缺分钟不补值。

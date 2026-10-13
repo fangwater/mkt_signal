@@ -699,7 +699,7 @@ fn parse_subscription_control_frame(text: &str, enabled: bool) -> SubscriptionCo
     if !trimmed.starts_with('{') {
         return SubscriptionControlFrame::NotControl;
     }
-    let head = &trimmed[..trimmed.len().min(256)];
+    let head = utf8_prefix(trimmed, 256);
     if !head.contains("subscriptionResponse")
         && !(head.contains("\"channel\"") && head.contains("\"error\""))
     {
@@ -755,6 +755,14 @@ fn parse_subscription_control_frame(text: &str, enabled: bool) -> SubscriptionCo
 }
 
 /// 各家服务端 pong/事件 ack 的轻量识别——避免 parser 对它们报 error。
+fn utf8_prefix(text: &str, max_bytes: usize) -> &str {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 fn is_keepalive_response(text: &str) -> bool {
     let trimmed = text.trim_start();
     if trimmed == "pong" || trimmed == "\"pong\"" {
@@ -763,7 +771,7 @@ fn is_keepalive_response(text: &str) -> bool {
     if !trimmed.starts_with('{') {
         return false;
     }
-    let head = &trimmed[..trimmed.len().min(128)];
+    let head = utf8_prefix(trimmed, 128);
     if !(head.contains("\"event\"")
         || head.contains("\"op\"")
         || head.contains("\"channel\"")
@@ -812,6 +820,35 @@ mod tests {
         assert!(is_keepalive_response(
             r#"{"event":"subscribe","result":{"channel":"futures.book_ticker"}}"#
         ));
+    }
+
+    #[test]
+    fn control_filter_accepts_multibyte_market_symbols_at_scan_boundaries() {
+        for boundary in [128, 256] {
+            for split in [1, 2] {
+                let prefix = r#"{"e":"trade","s":""#;
+                let text = format!(
+                    "{}{}基础USDT\"}}",
+                    prefix,
+                    "a".repeat(boundary - split - prefix.len())
+                );
+                assert!(!is_keepalive_response(&text));
+                assert_eq!(
+                    parse_subscription_control_frame(&text, true),
+                    SubscriptionControlFrame::NotControl
+                );
+                let prefix = r#"{"channel":"error","data":""#;
+                let error = format!(
+                    "{}{}基础\"}}",
+                    prefix,
+                    "a".repeat(boundary - split - prefix.len())
+                );
+                assert!(matches!(
+                    parse_subscription_control_frame(&error, true),
+                    SubscriptionControlFrame::Rejected(_)
+                ));
+            }
+        }
     }
 
     #[test]

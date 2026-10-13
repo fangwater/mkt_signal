@@ -23,6 +23,8 @@ Behavior:
     三类合约的 BBO/trade/incremental/derivatives IPC 统一使用 binance-futures 路径。
     --role 覆盖 env.sh，只操作指定角色；默认沿用 env.sh。
     USD-M bookticker 可通过独立配置启用双连接自动选优。
+    Binance Futures 日志直接写 /dev/shm/spread_pbs-<uid>/binance-futures-<role>.log，
+    同线程同步写入；每文件2MiB、保留当前和前一份，不使用额外日志线程。
   - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
     Bybit-both 默认拆成 market/bookticker 两个进程，避免 JSON market 流和 BBO 流互相抢 CPU。
     启动 both 前需要先停止同 exchange 的单独 margin/futures spread_pbs 进程。
@@ -652,10 +654,10 @@ fi
 echo "Venue:  ${venue}"
 if [[ "$venue" == "binance-futures" ]]; then
   if [[ "$binance_futures_role" != "bookticker" ]]; then
-    echo "Logs:   ${PMDAEMON[*]} logs ${market_name} --follow"
+    echo "Logs:   tail -F /dev/shm/spread_pbs-$(id -u)/binance-futures-market.log"
   fi
   if [[ "$binance_futures_role" != "market" ]]; then
-    echo "Logs:   ${PMDAEMON[*]} logs ${bookticker_name} --follow"
+    echo "Logs:   tail -F /dev/shm/spread_pbs-$(id -u)/binance-futures-bookticker.log"
   fi
 elif [[ "$venue" == "bybit-both" ]]; then
   echo "Logs:   ${PMDAEMON[*]} logs ${market_name} --follow"

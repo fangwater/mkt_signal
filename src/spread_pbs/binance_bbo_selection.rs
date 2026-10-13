@@ -553,6 +553,7 @@ pub async fn run(
     let mut next_probe = Instant::now() + Duration::from_secs(30);
     let mut next_reload = Instant::now() + Duration::from_secs(30);
     let mut next_stats = Instant::now() + Duration::from_secs(30);
+    let mut next_status_log = Instant::now() + Duration::from_secs(300);
     let mut retry_after = Instant::now();
     let mut hot_ticks = 0usize;
     let mut last_now = Instant::now();
@@ -590,11 +591,14 @@ pub async fn run(
         };
         if now >= next_stats {
             (hooks.stats)();
+            next_stats = now + Duration::from_secs(30);
+        }
+        if now >= next_status_log {
             log::info!(
                 "binance_bbo_selection {}",
                 json!({"event":"status","mode":cfg.mode,"active":active.iter().map(Leg::route).collect::<Vec<_>>(),"candidate":trial.as_ref().map(|t|t.leg.route()),"cpu_fraction":cpu_fraction,"sampling":sampling.get()})
             );
-            next_stats = now + Duration::from_secs(30);
+            next_status_log = now + Duration::from_secs(300);
         }
         if now >= next_reload {
             let loaded = tokio::fs::read_to_string(&path)

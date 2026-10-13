@@ -1,5 +1,5 @@
-#[path = "spread_pbs/async_log.rs"]
-mod async_log;
+#[path = "spread_pbs/tmpfs_log.rs"]
+mod tmpfs_log;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -25,10 +25,6 @@ struct Args {
     #[arg(short, long)]
     core: usize,
 
-    /// Housekeeping CPU for the Binance Futures bookticker log writer.
-    #[arg(long, default_value_t = 0)]
-    log_writer_core: usize,
-
     /// Publish to isolated test channels instead of production market-data channels.
     #[arg(long)]
     test: bool,
@@ -49,12 +45,11 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    if args.binance_futures_role == BinanceFuturesRole::BookTicker {
-        anyhow::ensure!(
-            args.log_writer_core != args.core,
-            "log writer must use a separate housekeeping CPU"
-        );
-        async_log::init(args.log_writer_core)?;
+    if matches!(
+        args.venue,
+        SpreadVenueSelection::Single(TradingVenue::BinanceFutures)
+    ) {
+        tmpfs_log::init(args.binance_futures_role.as_str(), args.test)?;
     } else {
         env_logger::init();
     }

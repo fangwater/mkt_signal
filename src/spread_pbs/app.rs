@@ -1041,7 +1041,7 @@ impl SpreadPbsApp {
                     if let Some(latency) = &mut s.binance_feed_latency {
                         latency.log_completed(get_timestamp_us());
                     }
-                    log::info!(
+                    log::debug!(
                         "spread_pbs[binance-futures] stats published={} dropped_by_seq={} symbols_seen={}",
                         s.published, s.dropped_by_seq, s.symbol_state.bbo_seen(),
                     );
@@ -1227,6 +1227,7 @@ impl SpreadPbsApp {
         let mut restart_primary_for_stale = true;
         let mut last_health_sample_at = health_started_at;
         let mut last_health_wall_us = get_timestamp_us();
+        let mut next_stats_log = Instant::now() + Duration::from_secs(300);
         loop {
             tokio::select! {
                 changed = shutdown_rx.changed() => {
@@ -1268,6 +1269,15 @@ impl SpreadPbsApp {
                     let mut s = state.borrow_mut();
                     if let Some(latency) = &mut s.binance_feed_latency {
                         latency.log_completed(get_timestamp_us());
+                    }
+                    // Preserve minute latency windows and one-second health
+                    // checks, but emit routine Binance status only every 5 min.
+                    if matches!(venue, TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures) {
+                        let now = Instant::now();
+                        if now < next_stats_log {
+                            continue;
+                        }
+                        next_stats_log = now + Duration::from_secs(300);
                     }
                     if self.futures_bbo_only {
                         log::info!(
