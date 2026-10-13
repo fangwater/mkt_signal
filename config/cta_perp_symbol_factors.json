@@ -1,66 +1,44 @@
 {
   "AAVEUSDT": {
-    "factor_036": -1.0,
-    "factor_051": -1.0
-  },
-  "AVAXUSDT": {
-    "factor_036": -1.0
-  },
-  "BNBUSDT": {
-    "factor_051": -1.0,
-    "TD_TI_002": 1.0
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_164": 1,
+    "baseline_200": -1
   },
   "DASHUSDT": {
-    "factor_036": -1.0
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_164": 1,
+    "baseline_200": -1
   },
   "DOGEUSDT": {
-    "factor_170": -1.0,
-    "baseline_004": -1.0
-  },
-  "DOTUSDT": {
-    "factor_170": -1.0
+    "TD_TI_024": -1,
+    "baseline_200": -1
   },
   "ETHUSDT": {
-    "baseline_004": -1.0
-  },
-  "FILUSDT": {
-    "factor_036": -1.0,
-    "factor_051": -1.0
-  },
-  "LINKUSDT": {
-    "factor_036": -1.0,
-    "factor_051": -1.0,
-    "factor_170": -1.0,
-    "TD_TI_002": 1.0
-  },
-  "LTCUSDT": {
-    "factor_036": -1.0,
-    "factor_051": -1.0,
-    "factor_170": -1.0
+    "baseline_141": 1
   },
   "NEARUSDT": {
-    "factor_036": -1.0,
-    "factor_051": -1.0,
-    "factor_170": -1.0
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "factor_036": -1
   },
   "SOLUSDT": {
-    "factor_051": -1.0,
-    "TD_TI_002": 1.0
-  },
-  "UNIUSDT": {
-    "factor_036": -1.0,
-    "factor_170": -1.0
+    "baseline_141": 1,
+    "baseline_200": -1
   },
   "XLMUSDT": {
-    "factor_036": -1.0
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_200": -1
   },
   "XRPUSDT": {
-    "factor_170": -1.0,
-    "TD_TI_002": 1.0
+    "baseline_141": 1
   },
   "ZECUSDT": {
-    "factor_036": -1.0,
-    "factor_051": -1.0,
-    "factor_170": -1.0
+    "TD_TI_024": -1,
+    "baseline_141": 1,
+    "baseline_164": 1,
+    "baseline_200": -1
   }
 }

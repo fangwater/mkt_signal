@@ -205,19 +205,19 @@ class CtaPerpServerTests(unittest.TestCase):
         base = self.serve(CONFIG_SERVER.make_handler(store, self.index_path, redis, env))
         _, loaded = request_json(f'{base}/api/symbol-factors')
         self.assertFalse(loaded['exists'])
-        table = {'ethusdt': {'FACTOR_036':2, 'td_ti_002':-1}}
+        table = {'ethusdt': {'FACTOR_036':2, 'td_ti_024':-1}}
         _, saved = request_json(f'{base}/api/symbol-factors', method='POST', body={'symbol_factors':table, 'expected_revision':loaded['revision']})
         self.assertEqual(saved['key'], env + ':cta_symbol_factors')
-        self.assertEqual(saved['symbol_factors']['ETHUSDT'], {'factor_036':2,'TD_TI_002':-1})
+        self.assertEqual(saved['symbol_factors']['ETHUSDT'], {'factor_036':2,'TD_TI_024':-1})
         self.assertEqual(saved['available'], loaded['available'])
-        self.assertEqual(json.loads(redis.get(saved['key']))['ETHUSDT'], {'factor_036':2,'TD_TI_002':-1})
+        self.assertEqual(json.loads(redis.get(saved['key']))['ETHUSDT'], {'factor_036':2,'TD_TI_024':-1})
         _, reread = request_json(f'{base}/api/symbol-factors')
         self.assertEqual(reread['symbol_factors'], saved['symbol_factors'])
         with self.assertRaises(HTTPError) as conflict:
             request_json(f'{base}/api/symbol-factors', method='POST', body={'symbol_factors':{}, 'expected_revision':loaded['revision']})
         self.assertEqual(conflict.exception.code, 409)
         conflict.exception.close()
-        table['ethusdt']['TD_TI_002'] = 'invalid'
+        table['ethusdt']['TD_TI_024'] = 'invalid'
         with self.assertRaises(HTTPError) as invalid:
             request_json(f'{base}/api/symbol-factors', method='POST', body={'symbol_factors':table, 'expected_revision':saved['revision']})
         self.assertEqual(invalid.exception.code, 400)
@@ -259,10 +259,12 @@ class CtaPerpServerTests(unittest.TestCase):
     def test_factor_validator_rejects_bad_lists_and_supports_the_requested_universe(self):
         import cta_perp_factor_config as factors
         table = factors.normalize_table(json.loads((ROOT / 'config/cta_perp_symbol_factors.json').read_text()))
-        self.assertEqual(len(table), 16)
+        self.assertEqual(len(table), 9)
         self.assertEqual(len(set(f for row in table.values() for f in row)), 5)
         self.assertNotIn('BTCUSDT', table)
-        original = {'factor_036':-2, 'TD_TI_002':1}
+        factors.validate_available(table, factors.available_universe())
+        self.assertEqual(sum(len(row) for row in table.values()), 24)
+        original = {'factor_036':-2, 'TD_TI_024':1}
         for row in ({'factor_999':1},{'factor_036':1,'FACTOR_036':-1},{'factor_036':0},{'factor_036':float('nan')},{'factor_036':True},{'factor_036':'1'},{}):
             with self.subTest(row=row), self.assertRaises(ValueError):
                 factors.normalize_table({'ETHUSDT':row})
@@ -277,7 +279,7 @@ class CtaPerpServerTests(unittest.TestCase):
         completed = subprocess.run([sys.executable, str(ROOT / 'scripts/cta_perp_factor_config.py'), '--env-name', 'binance-cta-perp-test', '--config', str(ROOT / 'config/cta_perp_symbol_factors.json')], capture_output=True, text=True, check=True)
         plan = json.loads(completed.stdout)
         self.assertFalse(plan['execute'])
-        self.assertEqual(len(plan['symbol_factors']), 16)
+        self.assertEqual(len(plan['symbol_factors']), 9)
 
     def test_removed_risk_endpoints_cannot_mutate_exec(self):
         redis = FakeFactorRedis()

@@ -62,6 +62,35 @@ K 线由独立只读后台直连 Binance 公共 Spot Klines 补缺，缺失时�
 本地浏览器测试覆盖标记点击、反转双动作、负号、独立清单、移动端、反向代理
 路径和行情缺失；合成截图仅用于测试，不作为实盘信号证据。
 
+## RX02 Perp 新清单与 NQ 短窗口
+
+2026-10-13 更新仓库内 CTA Perp 配置与计算；尚未切换线上旧 RX02。
+NQ 的价格极值窗口和分位窗口均为 **120 个分钟槽位**，至少 **60 个有效
+NQ 样本**后就绪。缺失分钟占槽位、不过滤掉时间间隔，不计入有效样本，
+第 121 分钟开始淘汰最早样本。BUY_NQ/SELL_NQ 改为相对最近 2h 最低/最高
+mid 的变化率。分位仍包含当前值、采用中间排名；开仓阈值与退出规则不变。
+因子分位仍为 2880/min1440，归一化仍为 1440/min1000，Spread 不受影响。
+
+| Perp 因子 | sign | 币种 |
+|---|---:|---|
+| `baseline_141` | +1 | AAVE、DASH、ETH、NEAR、SOL、XLM、XRP、ZEC |
+| `baseline_200` | -1 | AAVE、DASH、DOGE、SOL、XLM、ZEC |
+| `TD_TI_024` | -1 | AAVE、DASH、DOGE、NEAR、XLM、ZEC |
+| `factor_036` | -1 | NEAR |
+| `baseline_164` | +1 | AAVE、DASH、ZEC |
+
+RX02 只读现场状态与旧仓库清单一致：16 币/32 个绑定 → 9 币/24 个绑定，
+没有新增币种，移除 AVAX、BNB、DOT、FIL、LINK、LTC、UNI。
+只有 NEAR × factor_036(-1) 原样保留；其余移除 31 个绑定、新增 23 个绑定。
+新清单和发布器 universe 同步维护在 `config/cta_perp_symbol_factors.json`
+和 `config/cta_perp_factor_model_1m_pub.toml`，未写入线上 Redis。
+
+零目标与删除策略含义不同：保留原策略并发布 qty=0 时，Exec 使用原策略的
+账本仓位执行目标调仓；删除策略或发现无法归属的账户余量时，剩余仓位可进入
+`SYSTEM_POSITION_CLOSE`。同币种已同时加载的新旧目标可通过内部交叉减少
+实际下单差额；先清零、后发布新目标不保证避免先平后开。线上旧 RX02 仍在
+发布且旧绑定有持仓，不能把直接覆盖清单描述为无交易影响的配置更新。
+
 ## 统一命名
 
 | 项目 | CTA Perp（原 special / RX02） | CTA Spread（新 RX01） |

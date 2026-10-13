@@ -670,7 +670,7 @@ if (typeof document !== "undefined")
         };
       return `<section class="nq-section"><div class="section-heading"><b>NQ change</b><span class="nq-state ${gate.mode === "passed" ? "positive" : gate.mode === "blocked" ? "negative" : "neutral"}" data-mode="${gate.mode}">${gate.text}</span></div>
       <p class="hint">只过滤开仓 · 使用当时的阈值</p>${row("BUY_NQ", gate.long, 1, "≥")}${row("SELL_NQ", gate.short, -1, "≤")}
-      <details class="nq-method"><summary>计算方式</summary><p>BUY_NQ = (P − 24h 最低 mid) / 最低 mid<br>SELL_NQ = (P − 24h 最高 mid) / 最高 mid</p><p>P 是本合约分钟最后一个有效盘口 mid。极值和分位窗口均为 1440 个分钟槽位，至少 720 个有效 NQ 样本后就绪。分位采用相同值的中间排名。</p><p>50% 是历史分位阈值。NQ 放行开仓，因子退出不受 NQ 限制。</p></details></section>`;
+      <details class="nq-method"><summary>计算方式</summary><p>BUY_NQ = (P − 2h 最低 mid) / 最低 mid<br>SELL_NQ = (P − 2h 最高 mid) / 最高 mid</p><p>P 是本合约分钟最后一个有效盘口 mid。极值和分位窗口均为 120 个分钟槽位，至少 60 个有效 NQ 样本后就绪。分位采用相同值的中间排名。</p><p>50% 是历史分位阈值。NQ 放行开仓，因子退出不受 NQ 限制。</p></details></section>`;
     }
     function inspector(record, action = null) {
       if (!record) {

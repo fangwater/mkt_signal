@@ -262,9 +262,9 @@ class HistoryTests(unittest.TestCase):
     def test_scope_hot_reload_empty_table_and_template_fallback(self):
         status=self.root/"status.json"
         config=ROOT/"config/cta_perp_symbol_factors.json"
-        self.assertEqual(len(configured_targets(status,config)),16)
+        self.assertEqual(len(configured_targets(status,config)),9)
         status.write_text("[]")
-        self.assertEqual(len(configured_targets(status,config)),16)
+        self.assertEqual(len(configured_targets(status,config)),9)
         status.write_text(json.dumps({"symbol_factors":{"ETHUSDT":{}}}))
         self.assertEqual(configured_targets(status,config),["ETHUSDT"])
         status.write_text(json.dumps({"symbol_factors":{}}))

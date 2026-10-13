@@ -31,9 +31,9 @@ use super::cfg::{CtaPerpFactorPubConfig, KafkaInputConfig, NormalizeConfig};
 
 const FACTOR_WINDOW: usize = 2_880;
 const FACTOR_MIN_SAMPLES: usize = 1_440;
-const NQ_LOOKBACK_BARS: usize = 1_440;
-const NQ_QUANTILE_WINDOW: usize = 1_440;
-const NQ_MIN_PERIODS: usize = 720;
+const NQ_LOOKBACK_BARS: usize = 120;
+const NQ_QUANTILE_WINDOW: usize = 120;
+const NQ_MIN_PERIODS: usize = 60;
 const BAR_MS: i64 = 60_000;
 const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
@@ -571,7 +571,7 @@ impl CtaPerpFactorModel1mPubApp {
         }
         app.publish_enabled = true;
         info!(
-            "CTA perp shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 nq=1440/1440/720",
+            "CTA perp shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 nq=120/120/60",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
@@ -1000,12 +1000,11 @@ mod tests {
             .map(|factor| output_service_path("binance-futures", factor))
             .collect::<Vec<_>>(),
             vec![
+                "model_output/cta_perp-binance-futures-1m-baseline_141",
+                "model_output/cta_perp-binance-futures-1m-baseline_200",
+                "model_output/cta_perp-binance-futures-1m-td_ti_024",
                 "model_output/cta_perp-binance-futures-1m-factor_036",
-                "model_output/cta_perp-binance-futures-1m-factor_051",
-                "model_output/cta_perp-binance-futures-1m-factor_170",
-                "model_output/cta_perp-binance-futures-1m-factor_004",
-                "model_output/cta_perp-binance-futures-1m-td_ti_002",
-                "model_output/cta_perp-binance-futures-1m-baseline_004",
+                "model_output/cta_perp-binance-futures-1m-baseline_164",
             ]
         );
     }
@@ -1024,9 +1023,9 @@ mod tests {
     }
 
     #[test]
-    fn nq_uses_1440_bar_min_max_and_median_gate() {
+    fn nq_is_ready_after_60_valid_minutes() {
         let mut state = NqState::default();
-        for _ in 0..719 {
+        for _ in 0..59 {
             state.current_close = 100.0;
             assert!(!state.close_bar().ready);
         }
@@ -1035,6 +1034,47 @@ mod tests {
         assert!(observation.ready);
         assert!(observation.long_quantile.is_some());
         assert!(observation.short_quantile.is_some());
+    }
+
+    #[test]
+    fn nq_expires_extremes_and_quantile_samples_after_120_minutes() {
+        let mut state = NqState::default();
+        state.current_close = 50.0;
+        state.close_bar();
+        state.current_close = 200.0;
+        state.close_bar();
+        state.current_close = 100.0;
+        for _ in 0..118 {
+            state.close_bar();
+        }
+        let first_expired = state.close_bar();
+        assert_eq!(first_expired.long_value, Some(0.0));
+        assert_eq!(first_expired.short_value, Some(-0.5));
+        let both_expired = state.close_bar();
+        assert_eq!(both_expired.long_value, Some(0.0));
+        assert_eq!(both_expired.short_value, Some(0.0));
+        assert_eq!(state.closes.len(), 120);
+        assert_eq!(state.long_window.len(), 120);
+        assert_eq!(state.short_window.len(), 120);
+        assert!((both_expired.long_quantile.unwrap() - 1.0 / 120.0).abs() < 1e-12);
+        assert!((both_expired.short_quantile.unwrap() - 119.5 / 120.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nq_missing_minutes_age_samples_without_counting_toward_readiness() {
+        let mut state = NqState::default();
+        state.current_close = 100.0;
+        for _ in 0..60 {
+            state.close_bar();
+        }
+        state.current_close = f64::NAN;
+        for _ in 0..61 {
+            assert!(!state.close_bar().ready);
+        }
+        state.current_close = 100.0;
+        assert!(!state.close_bar().ready);
+        assert_eq!(state.long_window.len(), 59);
+        assert_eq!(state.short_window.len(), 59);
     }
 
     #[test]

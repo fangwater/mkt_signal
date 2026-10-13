@@ -30,7 +30,8 @@ def main():
     first=end-60*MINUTE_MS
     config=json.loads((ROOT/'config/cta_perp.json').read_text())
     config['enabled']=False
-    table=json.loads((ROOT/'config/cta_perp_symbol_factors.json').read_text())
+    # Stable synthetic coverage is independent of the deployed trading universe.
+    table={s+'USDT':{'factor_036':1} for s in 'AAVE AVAX BNB DASH DOGE DOT ETH FIL LINK LTC NEAR SOL UNI XLM XRP ZEC'.split()}
     table['FILUSDT']={'factor_036':1,'factor_051':-1,'factor_170':1,'TD_TI_002':1,'baseline_004':-1}
     table['ETHUSDT']={'baseline_004':-1}
     with tempfile.TemporaryDirectory(prefix='cta-factor-panel-browser-') as temp:
@@ -105,7 +106,8 @@ def main():
                 assert '尚未平仓' in page.locator('.trade-detail').inner_text()
                 assert '分位 80% ≥ 阈值 50%' in page.locator('.nq-row[data-side="long"]').inner_text()
                 page.locator('.nq-method summary').click()
-                assert '720' in page.locator('.nq-method').inner_text()
+                assert '至少 60' in page.locator('.nq-method').inner_text()
+                assert '120 个分钟' in page.locator('.nq-method').inner_text()
                 page.locator('.observations > summary').click()
                 page.locator('.nq-timeline[data-mode="blocked"]').first.click()
                 assert page.locator('.nq-state[data-mode="blocked"]').inner_text()=='拦截'
