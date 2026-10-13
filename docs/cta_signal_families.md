@@ -3,7 +3,21 @@
 最后更新：2026-10-13
 
 本次为代码与页面改造，未部署、未重命名线上环境、未启动新交易。
-新 RX01 的 `config/cta_spread.json` 默认 `enabled=false`，币种/因子模板为空。
+新 RX01 的 `config/cta_spread.json` 保持 `enabled=false`。
+`config/cta_spread_symbol_factors.json` 已按确认名单配置 19 个币种、5 个因子，
+共 57 个 symbol × factor 组合；发布器 universe 同步覆盖全部币种和因子。
+这只是仓库配置，尚未写入线上 Redis 或启动发布。
+
+| Spread 因子 | sign | 币种数 |
+|---|---:|---:|
+| `baseline_164` | +1 | 18 |
+| `baseline_141` | +1 | 18 |
+| `factor_170` | -1 | 7 |
+| `factor_113` | -1 | 6 |
+| `factor_052` | +1 | 8 |
+
+币种映射使用 USDT 符号；负 sign 按 `1-q` 修正因子分位。价差过滤保持 q30/q70，
+单份金额保持现有 200 USDT，Manager 份数未变更。
 不能直接把旧 RX01 逐 lot 状态或 RX02 的状态文件复制成 Spread 状态。
 
 ## 统一命名

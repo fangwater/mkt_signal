@@ -557,11 +557,19 @@ mod tests {
         let duplicate =
             serde_json::json!({"ETHUSDT": table["ETHUSDT"], "ethusdt": table["ETHUSDT"]});
         assert!(parse_factor_table(&duplicate.to_string()).is_err());
-        assert!(
+        let configured =
             parse_factor_table(include_str!("../../config/cta_spread_symbol_factors.json"))
-                .unwrap()
-                .is_empty()
-        );
+                .unwrap();
+        let publisher: crate::factor_pub::cta_spread_factor_model_1m_pub::cfg::CtaSpreadFactorPubConfig =
+            toml::from_str(include_str!("../../config/cta_spread_factor_model_1m_pub.toml"))
+                .unwrap();
+        publisher.universe.validate().unwrap();
+        for (symbol, row) in configured {
+            assert!(publisher.universe.symbols.contains(&symbol));
+            for factor in row.factors {
+                assert!(publisher.universe.factors.contains(&factor));
+            }
+        }
     }
 
     #[tokio::test]

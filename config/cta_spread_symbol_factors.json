@@ -1,1 +1,97 @@
-{}
+{
+  "AAVEUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_113": -1
+  },
+  "ADAUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1,
+    "factor_113": -1,
+    "factor_052": 1
+  },
+  "AVAXUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1
+  },
+  "BCHUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1
+  },
+  "BTCUSDT": {
+    "baseline_141": 1
+  },
+  "DASHUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1,
+    "factor_113": -1,
+    "factor_052": 1
+  },
+  "DOGEUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1,
+    "factor_052": 1
+  },
+  "DOTUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1,
+    "factor_113": -1,
+    "factor_052": 1
+  },
+  "ETHUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1
+  },
+  "FILUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_113": -1,
+    "factor_052": 1
+  },
+  "LINKUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_052": 1
+  },
+  "LTCUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1
+  },
+  "NEARUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1,
+    "factor_113": -1,
+    "factor_052": 1
+  },
+  "SOLUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_052": 1
+  },
+  "TRXUSDT": {
+    "baseline_164": 1
+  },
+  "UNIUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1
+  },
+  "XLMUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1
+  },
+  "XRPUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1
+  },
+  "ZECUSDT": {
+    "baseline_164": 1,
+    "baseline_141": 1,
+    "factor_170": -1
+  }
+}
