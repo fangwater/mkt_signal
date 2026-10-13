@@ -20,7 +20,7 @@ from cta_spread_signal_history import SpreadHistory,MINUTE
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--browser-binary')
-    parser.add_argument('--output',type=Path,default=ROOT/'artifacts/cta_spread_signals')
+    parser.add_argument('--output',type=Path,default=Path('/tmp/cta-spread-panel-review'))
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     now=time.time_ns()//1_000_000;end=now//MINUTE*MINUTE
     config=json.loads((ROOT/'config/cta_spread.json').read_text())
@@ -73,7 +73,7 @@ def main():
                 page.locator('.symbol[data-symbol="ETHUSDT"]').click()
                 page.wait_for_function("document.querySelector('#instrument').textContent==='ETH / USDT' && document.querySelector('#events [data-event]')")
                 page.locator('[data-hours="1"]').click()
-                page.wait_for_function("echarts.getInstanceByDom(document.getElementById('chart')).getOption().xAxis[0].data.length===61")
+                page.wait_for_function("echarts.getInstanceByDom(document.getElementById('chart')).getOption()?.xAxis?.[0]?.data.length===61")
                 option=page.evaluate("echarts.getInstanceByDom(document.getElementById('chart')).getOption()")
                 assert option['series'][0]['type']=='candlestick'
                 assert option['series'][1]['data'] and option['series'][2]['data']

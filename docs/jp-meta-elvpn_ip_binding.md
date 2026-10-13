@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 06:28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 06:49 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 06:49 UTC 更新 Spread 只读 Dashboard，增加 signals 页面及现货
+公共 K 线后台。Spot API 默认路由实测仍经 `ens41` / `172.31.35.228`，
+未配置交易连接、独立 source IP、ENI、EIP 或新监听；10186/19174 与 4191
+网关路径继续沿用。RX01 发布关闭，Kafka publisher、RX02 和 trade05 未重启。
+
 
 2026-10-13 06:28 UTC 新增独立观察环境 `binance-cta-spread-rx01`，
 发布关闭；因子进程读取 Kafka 的两条 TCP 连接现场源地址均为 `172.31.35.228`。

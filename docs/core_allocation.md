@@ -1,7 +1,15 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 06:28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 06:49 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 06:49 UTC 仅更新 RX01 Spread 只读信号观察页：Dashboard PID
+由 3190607 更新为 3390010，CPU mask 仍为 `0-5`，监听仍为 `127.0.0.1:10186`。
+页面提交 `ff3a8082`，新增 `/cta/binance-cta-spread-rx01/signals/`，后台只读导入
+Kafka 因子历史并补现货公共 K 线。factor/config/signal PID 3150153/3183433/3199322
+保持不变，首次预热未重启；RX01 发布仍关闭，旧 RX01 账户监控/持久化、
+RX02 和 trade05 所有进程及账户配置均保持不变。
+证据：`artifacts/cta_spread_signals/validation.json`。
 
 2026-10-13 06:28 UTC 仅将 RX01 切换为独立 CTA Spread 观察环境：
 `~/binance-cta-spread-rx01` 的 factor publisher / config / dashboard / signal

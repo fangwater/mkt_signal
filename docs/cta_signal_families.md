@@ -29,6 +29,13 @@
 
 ## Spread 信号观察页
 
+2026-10-13 06:49 UTC 已部署页面提交 `ff3a8082`，仅重启 Spread Dashboard
+至 PID 3390010（CPU 0–5）；因子预热继续，RX02/Exec 不变，发布保持关闭。
+验收 57 个组合 API 全部可读、均有现货 K 线，行情无错误，价差历史就绪
+57/57、因子 0/57、实时 0/57（该时刻仍在首次 Kafka 回放中）。线上浏览器
+验证桌面/手机、factor 符号及币种切换通过，详见
+`artifacts/cta_spread_signals/{validation,browser_validation}.json`。
+
 `/cta/binance-cta-spread-rx01/signals/` 按 factor 独立切换其已配置币种，
 展示现货 1m K 线、修正因子分位、价差分位及方向变化 B/S 点。
 绿色/红色三角是现货开仓，金色菱形是合约对冲退出；允许反转时同一分钟
