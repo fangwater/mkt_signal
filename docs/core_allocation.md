@@ -11,6 +11,15 @@ Kafka 因子历史并补现货公共 K 线。factor/config/signal PID 3150153/31
 RX02 和 trade05 所有进程及账户配置均保持不变。
 证据：`artifacts/cta_spread_signals/validation.json`。
 
+2026-10-13 完成独立 ticker 诊断：CPU7/17 临时运行有截止时间的公共行情探针和
+只读接收队列观察，均已退出，恢复未分配；没有重启生产 publisher/relay/FR。
+ens42 短时进行 RX 中断合并 ABAB 实验，结束恢复 Adaptive RX on / rx-usecs 20 /
+tx-usecs 64，回退 timer 已停用；候选试探临时 off 后恢复原 auto 配置。
+未改 source IP、ENI、路由或常驻 CPU 分配。结果和恢复证据见独立项目
+`../hfq_latency_lab/docs/ticker_latency_diagnosis.md`、该项目的 `data/experiments/20261013-diagnosis/`。
+实测主接收线程曾在文件系统事务等待中停顿至少 2.6 秒；同步日志是强嫌疑，
+尚未捕获其具体阻塞 syscall。此结果不等于已经修复该问题。
+
 2026-10-13 06:28 UTC 仅将 RX01 切换为独立 CTA Spread 观察环境：
 `~/binance-cta-spread-rx01` 的 factor publisher / config / dashboard / signal
 PID 为 3150153 / 3183433 / 3190607 / 3199322，CPU mask 全为 `0-5`，

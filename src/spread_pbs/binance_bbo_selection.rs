@@ -281,6 +281,21 @@ struct Assessment {
     winner: Option<usize>,
 }
 
+impl Assessment {
+    // The first window fixes the replacement target. Its rank may change in
+    // window two, but the same replacement must still pass every threshold.
+    fn verified_victim(&self, cfg: &Settings, fixed: Option<usize>) -> Option<usize> {
+        if self.invalid || self.matched < cfg.min_matched || self.coverage < cfg.min_coverage {
+            return None;
+        }
+        let victim = fixed.or(self.winner)?;
+        self.comparisons
+            .iter()
+            .any(|c| c.victim == victim && c.qualifies)
+            .then_some(victim)
+    }
+}
+
 #[derive(Default)]
 struct Health {
     connected: Cell<bool>,
@@ -735,16 +750,13 @@ pub async fn run(
                 .is_some_and(|start| start.elapsed() >= Duration::from_secs(cfg.window_secs))
             {
                 let result = race.borrow().evaluate(&cfg);
+                let victim = result.verified_victim(&cfg, t.first_winner);
                 log::info!(
                     "binance_bbo_selection {}",
-                    json!({"event":"window","window":t.windows+1,"candidate":t.leg.route(),"assessment":result})
+                    json!({"event":"window","window":t.windows+1,"candidate":t.leg.route(),"assessment":result,"fixed_victim":t.first_winner,"verified_victim":victim})
                 );
-                let valid = !result.invalid
-                    && result.matched >= cfg.min_matched
-                    && result.coverage >= cfg.min_coverage;
-                let victim = result.winner;
                 t.windows += 1;
-                if !valid || victim.is_none() || (t.windows == 2 && victim != t.first_winner) {
+                if victim.is_none() {
                     sampling.set(false);
                     t.leg.close().await;
                     next_probe = now + Duration::from_secs(cfg.interval_secs);
@@ -969,6 +981,29 @@ mod tests {
         assert!(!old_enabled.get());
         old.task.abort();
         retired.task.abort();
+    }
+    #[test]
+    fn second_window_verifies_fixed_target_even_when_rank_changes() {
+        let cfg = settings();
+        let mut first = race_with(|_| [1200, 1100, 900]).evaluate(&cfg);
+        assert!(first.comparisons.iter().all(|c| c.qualifies));
+        first.winner = Some(0);
+        let fixed = first.verified_victim(&cfg, None);
+        assert_eq!(fixed, Some(0));
+        let mut second = race_with(|_| [1200, 1100, 900]).evaluate(&cfg);
+        second.winner = Some(1);
+        assert_eq!(second.verified_victim(&cfg, fixed), Some(0));
+        second.comparisons[0].qualifies = false;
+        assert_eq!(second.verified_victim(&cfg, fixed), None);
+        second.comparisons[0].qualifies = true;
+        second.invalid = true;
+        assert_eq!(second.verified_victim(&cfg, fixed), None);
+        second.invalid = false;
+        second.coverage = cfg.min_coverage - 0.01;
+        assert_eq!(second.verified_victim(&cfg, fixed), None);
+        second.coverage = 1.0;
+        second.matched = cfg.min_matched - 1;
+        assert_eq!(second.verified_victim(&cfg, fixed), None);
     }
     #[test]
     fn no_tiny_gain_or_invalid_settings() {
