@@ -42,6 +42,10 @@ Manager 的绑定/虚拟账户配置份数，Exec 执行聚合后的实际目标
 第二套份数或订单参数，也不直接下单。
 
 `{env}:cta_symbol_factors` 的 Redis 键后缀保持一致，环境名隔离两套绑定。
+两套 publisher 分别以各自 `config/cta_{perp,spread}_factor_model_1m_pub.toml`
+的 universe 决定币种和因子，不读取共享 `factor_plan_1m` 或
+`amount_thresholds_1m` 清单。TLen 的通用 `amount_thresholds` 仅提供回放所需
+的成交大小分类阈值；缺失阈值时启动校验报错，不扩大或借用另一套策略清单。
 Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 旧普通 CTA 因子发布器、CTA/CtaSpecial 专用执行分支、规则服务及页面入口已移除。
 通用 Intra 不再接受旧 CTA 环境，旧 CTA 开仓消息也会被拒绝；停止脚本仍可识别

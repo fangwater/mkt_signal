@@ -2,11 +2,10 @@ use anyhow::{ensure, Context, Result};
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::fusion_factor_pub::app::{load_online_symbols_from_tlen_server, BaselineReplayState};
 use super::fusion_factor_pub::cfg::TlenServerConfig;
-use super::fusion_factor_pub::plan::load_symbol_factor_plans_from_tlen_server;
 use super::fusion_factor_pub::SymbolFactorPlan;
 
 /// Explicit calculation scope; trading environments select their own subscriptions.
@@ -58,7 +57,7 @@ impl CtaFactorUniverse {
             .collect();
         ensure!(
             missing.is_empty(),
-            "CTA universe symbols missing online amount_thresholds_1m or required factor_plan_1m: {missing:?}"
+            "CTA universe symbols missing online amount_thresholds: {missing:?}"
         );
         Ok(())
     }
@@ -70,40 +69,30 @@ pub(crate) async fn load_enabled_symbols(
     venue_slug: &str,
     universe: &CtaFactorUniverse,
 ) -> Result<HashSet<String>> {
+    // Each CTA family owns its symbol/factor universe. Shared market metadata
+    // only supplies the trade-size thresholds needed to replay those symbols.
     let online =
-        load_online_symbols_from_tlen_server(tlen, venue, venue_slug, "amount_thresholds_1m")
-            .await?;
-    let plans =
-        load_symbol_factor_plans_from_tlen_server(tlen, venue_slug, "factor_plan_1m").await?;
-    Ok(select_enabled_symbols(venue, &online, &plans, universe))
+        load_online_symbols_from_tlen_server(tlen, venue, venue_slug, "amount_thresholds").await?;
+    Ok(select_enabled_symbols(venue, &online, universe))
 }
 
 fn select_enabled_symbols(
     venue: TradingVenue,
     online: &HashSet<String>,
-    plans: &HashMap<String, SymbolFactorPlan>,
     universe: &CtaFactorUniverse,
 ) -> HashSet<String> {
     universe
         .symbols
         .iter()
         .map(|symbol| normalize_symbol_for_venue(symbol, venue))
-        .filter(|symbol| {
-            online.contains(symbol)
-                && plans.get(symbol).is_some_and(|plan| {
-                    let names: HashSet<&str> = plan.factor_names().collect();
-                    universe
-                        .factors
-                        .iter()
-                        .all(|name| names.contains(name.as_str()))
-                })
-        })
+        .filter(|symbol| online.contains(symbol))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn universe() -> CtaFactorUniverse {
         CtaFactorUniverse {
@@ -113,31 +102,36 @@ mod tests {
     }
 
     #[test]
-    fn only_configured_online_symbols_with_complete_plans_are_enabled() {
-        let config = universe();
-        let complete =
-            SymbolFactorPlan::from_factor_names("complete", config.factors.clone()).unwrap();
-        let incomplete =
-            SymbolFactorPlan::from_factor_names("incomplete", vec!["factor_036".into()]).unwrap();
-        let online = HashSet::from(["FILUSDT".into(), "ETHUSDT".into(), "BTCUSDT".into()]);
-        let plans = HashMap::from([
-            ("FILUSDT".into(), complete.clone()),
-            ("ETHUSDT".into(), incomplete),
-            ("BTCUSDT".into(), complete),
+    fn each_family_uses_its_own_universe_with_shared_market_metadata() {
+        let perp = universe();
+        let spread = CtaFactorUniverse {
+            symbols: vec!["ETHUSDT".into(), "ADAUSDT".into()],
+            factors: vec!["baseline_164".into(), "factor_113".into()],
+        };
+        perp.validate().unwrap();
+        spread.validate().unwrap();
+        let online = HashSet::from([
+            "FILUSDT".into(),
+            "ETHUSDT".into(),
+            "ADAUSDT".into(),
+            "BTCUSDT".into(),
         ]);
-        let enabled =
-            select_enabled_symbols(TradingVenue::BinanceFutures, &online, &plans, &config);
-        assert_eq!(enabled, HashSet::from(["FILUSDT".into()]));
-        assert!(config
+        for config in [&perp, &spread] {
+            let enabled = select_enabled_symbols(TradingVenue::BinanceFutures, &online, config);
+            assert_eq!(enabled, config.symbols.iter().cloned().collect());
+            config
+                .require_complete(&enabled, TradingVenue::BinanceFutures)
+                .unwrap();
+        }
+        let incomplete = HashSet::from(["ETHUSDT".into()]);
+        let enabled = select_enabled_symbols(TradingVenue::BinanceFutures, &incomplete, &spread);
+        assert_eq!(enabled, incomplete);
+        assert!(spread
             .require_complete(&enabled, TradingVenue::BinanceFutures)
             .is_err());
-        assert!(select_enabled_symbols(
-            TradingVenue::BinanceFutures,
-            &HashSet::new(),
-            &plans,
-            &config
-        )
-        .is_empty());
+        assert!(
+            select_enabled_symbols(TradingVenue::BinanceFutures, &HashSet::new(), &perp).is_empty()
+        );
     }
 
     #[test]
