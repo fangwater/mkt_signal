@@ -45,7 +45,7 @@ usage() {
 用法: intra_scripts/start_intra_persist_manager.sh
 
 说明:
-  - 同所期现：从目录名 <exchange>-(intra|cta)-<tag> 推断 exchange / env_tag
+  - 同所期现：从目录名 <exchange>-intra-<tag> 推断 exchange / env_tag
   - 启动 1 个 pmdaemon 进程：intra_pm_<exchange>_<env>
   - 需要 env.sh 提供 IPC_NAMESPACE
   - 可选：env.sh 设置 PERSIST_MANAGER_CORE=<N> 绑定 persist_manager 单线程 runtime
@@ -72,11 +72,11 @@ dir_lc="${dir_name,,}"
 EXCHANGE=""
 ENV_TAG="intra"
 MODE="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
   MODE="${BASH_REMATCH[2]}"
   ENV_TAG="${BASH_REMATCH[3]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)$ ]]; then
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
   MODE="${BASH_REMATCH[2]}"
 fi
@@ -84,7 +84,7 @@ if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-(intra|cta)-<tag>"
+  echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
   exit 1
 fi
 

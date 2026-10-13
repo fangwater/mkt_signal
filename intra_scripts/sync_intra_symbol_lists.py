@@ -2,23 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-将 intra/cta（同所期现）交易对列表同步到 Redis 并打印（按 exchange 维度）。
+将 intra（同所期现）交易对列表同步到 Redis 并打印（按 exchange 维度）。
 
 写入的 Redis key（String 类型，JSON 数组，namespace 由 --namespace 或
-env-name/CWD 的 -intra-/-cta- 段推断，默认 intra）：
+env-name/CWD 的 -intra- 段推断，默认 intra）：
   - {env}:{ns}_dump_symbols:{exchange}        - 平仓列表
   - {env}:{ns}_fwd_trade_symbols:{exchange}   - 正套/开多建仓列表
   - {env}:{ns}_bwd_trade_symbols:{exchange}   - 反套/开空建仓列表
   - {env}:{ns}_vol_gate_symbols:{exchange}    - 需要应用 inline vol gate 的建仓列表
 
-cta 额外镜像：{env}:intra_bwd_trade_symbols:{exchange}（pre_trade 借贷白名单
-固定读该 key，跨模式共享约定）。
-
 注意：脚本内置列表为空的 key 不会写入（保留 Redis 线上现有值；key 缺失
 对消费端等价空列表）。dump/vol_gate 属运行时管理列表，请通过
 intra_config_server 的 /api/symbol-lists 维护（含清空）。
 
-推断规则：--exchange / --open-venue / --env-name / CWD（<exchange>-(intra|cta)-<tag>）
+推断规则：--exchange / --open-venue / --env-name / CWD（<exchange>-intra-<tag>）
 """
 
 from __future__ import annotations
@@ -63,7 +60,7 @@ def exchange_from_venue(venue: str) -> Optional[str]:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_](intra|cta)([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))
@@ -74,7 +71,7 @@ def infer_exchange_from_name(name: str) -> Optional[str]:
 
 def infer_namespace_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^[a-z0-9]+[-_](intra|cta)([_-].*)?$", n)
+    m = re.match(r"^[a-z0-9]+[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     return m.group(1)
@@ -89,11 +86,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--exchange", default=os.environ.get("EXCHANGE"))
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
-    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade / binance-cta-rx01）")
+    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
     p.add_argument(
         "--namespace",
-        choices=["intra", "cta"],
-        help="symbol list 命名空间（默认按 env-name/CWD 的 -intra-/-cta- 段推断）",
+        choices=["intra"],
+        help="symbol list 命名空间（默认按 env-name/CWD 的 -intra- 段推断）",
     )
     return p.parse_args()
 
@@ -297,29 +294,11 @@ def sync_symbol_lists(
     namespace: str = "intra",
 ) -> int:
     """同步交易对列表到 Redis（内置列表为空的 key 跳过，保留线上值）"""
+    if namespace != "intra":
+        raise ValueError("only the intra namespace is supported")
     dump_symbols = symbols_for_exchange(DUMP_SYMBOLS, exchange)
     dump_key = symbol_list_key(env_name, "dump_symbols", exchange, namespace)
     total = write_or_keep_symbol_list(rds, dump_key, dump_symbols, "平仓列表")
-
-    if namespace == "cta":
-        # cta 无正反/vol gate 概念：fwd∪bwd 合成单一交易宇宙
-        trade_symbols = sorted(
-            set(symbols_for_exchange(FWD_SYMBOLS, exchange))
-            | set(symbols_for_exchange(BWD_SYMBOLS, exchange))
-        )
-        trade_key = symbol_list_key(env_name, "trade_symbols", exchange, "cta")
-        total += write_or_keep_symbol_list(rds, trade_key, trade_symbols, "交易宇宙")
-
-        # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{exchange}
-        borrow_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, "intra")
-        if trade_symbols:
-            rds.set(borrow_key, json.dumps(trade_symbols, ensure_ascii=False))
-            print(f"✅ 已镜像 {len(trade_symbols)} 个交易对到 '{borrow_key}'（pre_trade 借贷白名单）")
-
-        # loader 不再读 cta fwd/bwd/vol_gate；清掉历史误写 key
-        for stale in ("fwd_trade_symbols", "bwd_trade_symbols", "vol_gate_symbols"):
-            rds.delete(symbol_list_key(env_name, stale, exchange, "cta"))
-        return total
 
     fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace)
     bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace)
@@ -343,7 +322,7 @@ def main() -> int:
     exchange = resolve_exchange(args)
     if not exchange or exchange not in SUPPORTED_EXCHANGES:
         print(
-            "❌ 需要 --exchange / --open-venue / --env-name，或在目录名包含 '<exchange>-(intra|cta)-...' 以自动推断",
+            "❌ 需要 --exchange / --open-venue / --env-name，或在目录名包含 '<exchange>-intra-...' 以自动推断",
             file=sys.stderr,
         )
         return 2

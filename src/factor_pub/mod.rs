@@ -7,7 +7,6 @@ pub mod cta_perp_factor_model_1m_pub;
 pub mod cta_spread_factor_model_1m_pub;
 pub mod factor_test;
 pub mod fusion_factor_pub;
-pub mod intra_factor_model_1m_pub;
 pub(crate) mod kline_factors;
 pub mod lseg_features;
 pub mod model_output_publisher;

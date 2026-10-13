@@ -29,9 +29,14 @@ Manager 的绑定/虚拟账户配置份数，Exec 执行聚合后的实际目标
 
 `{env}:cta_symbol_factors` 的 Redis 键后缀保持一致，环境名隔离两套绑定。
 Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
-旧普通 CTA 的 `intra_factor_model_1m_pub` / `trade_signal --arb-mode cta`
-仍是旧 RX01 的运行链路；本次没有停掉它或让新 Spread 与它共用账户执行。
-后续切换需要单独核对现有挂单、持仓、因子绑定及 Manager 份数。
+旧普通 CTA 因子发布器、CTA/CtaSpecial 专用执行分支、规则服务及页面入口已移除。
+通用 Intra 不再接受旧 CTA 环境，旧 CTA 开仓消息也会被拒绝；停止脚本仍可识别
+旧环境，便于关闭历史部署。当前仅维护 Perp 与 Spread 两套仓位发布链路。
+
+旧 RX01 的 trade_signal、pre_trade、trade_engine 已停；账户监控和持久化保留。
+用户已执行合约对冲，最近只读核对仅剩小于交易最小量/最小名义的净敞口。
+本次源码清理不替换线上已部署产物、不删除历史配置或状态，也不停止共享因子进程。
+后续切换仍须核对现有挂单、持仓、因子绑定及 Manager 份数，新 Spread 发布保持关闭。
 
 ## Spread 规则
 

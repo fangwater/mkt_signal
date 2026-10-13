@@ -199,8 +199,8 @@ impl SymbolList {
         }
 
         // 读取建仓列表
-        // mm/cta 只有单一交易宇宙：trade_symbols 同时映射到正反两个方向集合。
-        if ns == "mm" || ns == "cta" {
+        // mm 只有单一交易宇宙：trade_symbols 同时映射到正反两个方向集合。
+        if ns == "mm" {
             let trade_key =
                 symbol_list_redis_key(key_prefix.as_deref(), &ns, "trade_symbols", &key_suffix);
             match client.get_string(&trade_key).await {
@@ -226,13 +226,6 @@ impl SymbolList {
                         );
                     }
                 },
-                Ok(None) if ns == "cta" => {
-                    Self::with_inner_mut(|inner| {
-                        inner.fwd_trade_symbols.clear();
-                        inner.bwd_trade_symbols.clear();
-                    });
-                    info!("{} 交易列表 key='{}' 不存在，清空交易宇宙", ns, trade_key);
-                }
                 Ok(None) => {}
                 Err(err) => {
                     warn!(
@@ -243,8 +236,8 @@ impl SymbolList {
             }
         }
 
-        // 读取正套建仓列表（cta 无正反概念，唯一来源是 trade_symbols）
-        if ns != "cta" {
+        // 读取正反套建仓列表
+        {
             let fwd_trade_key =
                 symbol_list_redis_key(key_prefix.as_deref(), &ns, "fwd_trade_symbols", &key_suffix);
             if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
@@ -369,9 +362,9 @@ impl SymbolList {
             Self::with_inner_mut(|inner| inner.vol_gate_symbols.clear());
         }
 
-        // intra/cta: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
+        // intra: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
         // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
-        if ns == "intra" || ns == "cta" {
+        if ns == "intra" {
             Self::with_inner_mut(|inner| {
                 Self::canonicalize_filter_set(&mut inner.dump_symbols);
                 Self::canonicalize_filter_set(&mut inner.pos_dump_symbols);

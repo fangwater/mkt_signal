@@ -59,7 +59,7 @@ use super::mkt_channel::MktChannel;
 use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::rate_fetcher::RateFetcher;
 use super::rolling_threshold_sync::StoredFactorChainEntry;
-use super::symbol_list::{SymbolList, SymbolListMembership};
+use super::symbol_list::SymbolListMembership;
 
 pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
@@ -68,7 +68,6 @@ pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
 const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
-const CTA_SHELL_NAME: &str = "ArbDecision(cta)";
 const MISSING_TICK_RELOAD_COOLDOWN_US: i64 = 5_000_000;
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 // Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
@@ -369,15 +368,6 @@ fn apply_missing_tick_table_refresh(
     }
     if source == SPREAD_ARB_SHELL_NAME {
         return SPREAD_ARB_SHELL.with(|cell| {
-            let Some(shell) = cell.get() else {
-                return false;
-            };
-            let mut shell = shell.borrow_mut();
-            apply_refreshed_table(&mut shell.runtime, venue, table)
-        });
-    }
-    if source == CTA_SHELL_NAME {
-        return CTA_SHELL.with(|cell| {
             let Some(shell) = cell.get() else {
                 return false;
             };
@@ -796,41 +786,9 @@ struct SpreadArbShell {
     pub(crate) runtime: ArbShellRuntime,
 }
 
-/// cta 逐 (rule_id, symbol) 决策状态：网格发放去重、on_change 检测与冷却。
-#[derive(Debug, Default)]
-struct CtaRuleSymbolState {
-    /// 已消费的最近一条模型消息 ts_in_ms（each_bar 每根 bar 只评估一次）。
-    last_bar_ts_ms: i64,
-    /// 最近一次 vote（on_change 模式在 vote 变化沿触发）。
-    last_vote: i8,
-    /// 最近一次网格发放时间（us），对应 rule.cooldown_seconds。
-    last_open_emit_us: i64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CtaDecisionEvidence {
-    factor_ts_ms: i64,
-    score: f64,
-    score_quantile: Option<f64>,
-    long_threshold: f64,
-    short_threshold: f64,
-    filter_long_value: Option<f64>,
-    filter_long_threshold: Option<f64>,
-    filter_short_value: Option<f64>,
-    filter_short_threshold: Option<f64>,
-}
-
-struct CtaShell {
-    pub(crate) runtime: ArbShellRuntime,
-    /// (rule_id, open_symbol_key) -> 状态。rule 集合热更时保留，
-    /// 失效 rule 的状态不再被访问，量小不清理。
-    states: HashMap<(String, String), CtaRuleSymbolState>,
-}
-
 thread_local! {
     static FUNDING_ARB_SHELL: OnceCell<RefCell<FundingArbShell>> = const { OnceCell::new() };
     static SPREAD_ARB_SHELL: OnceCell<RefCell<SpreadArbShell>> = const { OnceCell::new() };
-    static CTA_SHELL: OnceCell<RefCell<CtaShell>> = const { OnceCell::new() };
 }
 
 impl FundingArbShell {
@@ -995,118 +953,6 @@ impl SpreadArbShell {
 
         log::info!(
             "{SPREAD_ARB_SHELL_NAME} singleton initialized, open={:?} hedge={:?}",
-            open_venue,
-            hedge_venue
-        );
-        Ok(())
-    }
-}
-
-fn build_cta_shell(venues: VenuePair) -> Result<CtaShell> {
-    let pnlu_settings = default_pnlu_redis_settings();
-    let pnlu_key_suffix = DEFAULT_PNLU_KEY_SUFFIX.to_string();
-    let (runtime, open_factor_value_hub, hedge_factor_value_hub) = create_arb_shell_runtime(
-        "arb_cta_shell",
-        CTA_SHELL_NAME,
-        DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
-        DEFAULT_ARBITRAGE_BACKWARD_CHANNEL,
-        venues,
-        false,
-        pnlu_settings.clone(),
-        pnlu_key_suffix.clone(),
-    )?;
-    log_shell_runtime_ready(CTA_SHELL_NAME);
-
-    let state = CtaShell {
-        runtime,
-        states: HashMap::new(),
-    };
-    let _ = ArbDecision::with_state_mut(|arb| {
-        arb.open_factor_value_hub = Some(open_factor_value_hub);
-        arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
-        arb.model_output_hub = Some(ModelOutputHub::new(venues.1));
-        // cta 的 model_output 订阅完全由 cta rules 配置驱动；
-        // return/environment 模型角色与 vol gate 不适用于 cta 决策路径。
-        arb.apply_shared_bootstrap(ArbDecisionState::default_shared_bootstrap(4));
-        arb.enable_environment_model = false;
-        arb.return_model_service = None;
-        arb.environment_model_service = None;
-        arb.funding_open_thresholds = HashMap::new();
-    });
-    Ok(state)
-}
-
-impl CtaShell {
-    pub async fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
-        let venues = (open_venue, hedge_venue);
-        init_shell_runtime(
-            &CTA_SHELL,
-            CTA_SHELL_NAME,
-            CTA_SHELL_NAME,
-            venues,
-            || build_cta_shell(venues),
-            |open_table, hedge_table| {
-                with_thread_local_shell_mut(&CTA_SHELL, CTA_SHELL_NAME, |decision| {
-                    if let Some(open_table) = open_table {
-                        decision.runtime.open_min_qty_table = open_table;
-                    }
-                    if let Some(hedge_table) = hedge_table {
-                        decision.runtime.hedge_min_qty_table = hedge_table;
-                    }
-                });
-            },
-            || {
-                CTA_SHELL.with(|cell| {
-                    let decision_ref = cell.get();
-                    if decision_ref.is_none() {
-                        return false;
-                    }
-                    let decision = decision_ref.unwrap().borrow_mut();
-                    let mut has_message = false;
-                    loop {
-                        ArbDecision::poll_input_updates();
-                        match decision.runtime.backward_sub.receive_msg() {
-                            Ok(Some(data)) => {
-                                has_message = true;
-                                if let Some(query) =
-                                    dispatch_arb_backward_query(CTA_SHELL_NAME, data)
-                                {
-                                    match query {
-                                        // cta 的挂单生命周期由 spread overlay
-                                        // 撤单与 per-lot 对冲管理，不响应 tlen
-                                        // cancel-candidate 轮询。
-                                        ArbBackwardQueryMsg::CancelCandidates(_) => {}
-                                        ArbBackwardQueryMsg::Hedge(_) => {
-                                            log::warn!("{CTA_SHELL_NAME}: unexpected hedge query; V007 only exits through pre-trade factor/trailing taker");
-                                        }
-                                    }
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(err) => {
-                                log::warn!("{CTA_SHELL_NAME}: backward_sub 接收错误: {}", err);
-                                break;
-                            }
-                        }
-                    }
-                    has_message
-                })
-            },
-            |now_us| {
-                try_with_thread_local_shell_mut(&CTA_SHELL, |decision| {
-                    (
-                        ArbDecision::with_state_mut(|arb| arb.tlen_threshold_reload_due(now_us))
-                            .unwrap_or(false),
-                        decision.runtime.venues.0,
-                    )
-                })
-            },
-            |_thresholds, _now_us| {},
-        )
-        .await?;
-
-        log::info!(
-            "{CTA_SHELL_NAME} singleton initialized, open={:?} hedge={:?}",
             open_venue,
             hedge_venue
         );
@@ -1279,13 +1125,6 @@ pub fn update_model_output_services_for_arb(node: &Node<ipc::Service>, services:
 
 pub fn try_update_arb_model_output_services(services: Vec<String>) -> bool {
     if try_with_thread_local_shell_mut(&SPREAD_ARB_SHELL, |decision| {
-        update_model_output_services_for_arb(&decision.runtime.node, services.clone());
-    })
-    .is_some()
-    {
-        return true;
-    }
-    if try_with_thread_local_shell_mut(&CTA_SHELL, |decision| {
         update_model_output_services_for_arb(&decision.runtime.node, services.clone());
     })
     .is_some()
@@ -1802,462 +1641,6 @@ fn drive_funding_decision(
     }
 
     Ok(emitted_signal)
-}
-
-/// cta 决策：逐 (rule_id, symbol) 评估模型分位 vote，命中即按 rule.open_offsets
-/// 在现货腿发一组 maker 网格挂单（每档 order_notional_usdt，TTL=open_ttl_seconds）。
-///
-/// 对齐 research 引擎语义：
-/// - each_bar：每根新模型 bar（msg.ts_in_ms 递增）评估一次；on_change：仅 vote
-///   变化沿触发。
-/// - spread overlay 开仓 gate 与撤单走 SpreadFactor 阈值（rolling_metrics 热加载）；
-///   撤单是 symbol+side 级广播（strategy_id=0, Spread reason）。
-/// - 仓位上限由 pre_trade max_pos_u 兜底执行；反向仓位互斥由 execution 层保证。
-/// - 现货 fill 后的因子/trailing 退出由 pre-trade 逐 lot 定向 taker 管理。
-fn drive_cta_decision(
-    decision: &mut CtaShell,
-    open_symbol: &str,
-    hedge_symbol: &str,
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-) -> Result<Option<SignalType>> {
-    let now_us = get_timestamp_us();
-    let open_symbol_key = normalize_arb_symbol_key_cow(open_symbol);
-    let membership = SymbolList::instance().membership_canonical(open_symbol_key.as_ref());
-    if !membership.is_online() {
-        return Ok(None);
-    }
-    let in_dump = membership.in_dump;
-
-    let rules = ArbDecision::with_state_mut(|arb| arb.cta_rules.clone()).unwrap_or_default();
-    if rules.is_empty() {
-        return Ok(None);
-    }
-
-    let spread_factor = super::spread_factor::SpreadFactor::instance();
-    let mut emitted: Option<SignalType> = None;
-    // spread 撤单为 symbol+side 级广播（strategy_id=0）；同次决策内按方向去重。
-    let mut cancel_sides: Vec<Side> = Vec::new();
-    let mut pending_opens: Vec<(usize, Side, CtaDecisionEvidence)> = Vec::new();
-
-    for (rule_idx, rule) in rules.iter().enumerate() {
-        if !rule.enabled {
-            continue;
-        }
-        let lookup = ArbDecision::with_state_mut(|arb| {
-            arb.model_output_hub
-                .as_ref()
-                .map(|hub| hub.cached_score(&rule.model_service, hedge_symbol, hedge_venue))
-        })
-        .flatten();
-        let Some(lookup) = lookup else {
-            continue;
-        };
-        if !lookup.subscribed || !lookup.score_ready {
-            continue;
-        }
-        let Some(score) = lookup.score.filter(|v| v.is_finite()) else {
-            continue;
-        };
-        let (Some(long_threshold), Some(short_threshold)) = (
-            lookup.score_long_threshold.filter(|v| v.is_finite()),
-            lookup.score_short_threshold.filter(|v| v.is_finite()),
-        ) else {
-            continue;
-        };
-        if rule.nq_change_enabled && !lookup.filter_ready {
-            continue;
-        }
-        if lookup.score_ts_ms <= 0 {
-            continue;
-        }
-        let evidence = CtaDecisionEvidence {
-            factor_ts_ms: lookup.score_ts_ms,
-            score,
-            score_quantile: lookup.score_quantile.filter(|v| v.is_finite()),
-            long_threshold,
-            short_threshold,
-            filter_long_value: lookup.filter_long_value,
-            filter_long_threshold: lookup.filter_long_threshold,
-            filter_short_value: lookup.filter_short_value,
-            filter_short_threshold: lookup.filter_short_threshold,
-        };
-
-        let state_key = (rule.rule_id.clone(), open_symbol_key.to_string());
-        let state = decision.states.entry(state_key).or_default();
-        let vote = rule.vote(
-            evidence.score,
-            evidence.long_threshold,
-            evidence.short_threshold,
-            evidence.filter_long_value,
-            evidence.filter_long_threshold,
-            evidence.filter_short_value,
-            evidence.filter_short_threshold,
-        );
-        let (new_bar, open_side) =
-            cta_rule_eval(rule, state, vote, lookup.score_ts_ms, in_dump, now_us);
-        if new_bar {
-            super::cta_signal_status::record(
-                &rule.rule_id,
-                open_symbol_key.as_ref(),
-                &lookup,
-                vote,
-            );
-        }
-
-        // spread overlay 撤单：与引擎一致按 bar 评估；同 bar 多 rule 去重。
-        if new_bar {
-            if spread_factor.satisfy_forward_cancel(
-                open_venue,
-                open_symbol,
-                hedge_venue,
-                hedge_symbol,
-            ) && !cancel_sides.contains(&Side::Buy)
-            {
-                cancel_sides.push(Side::Buy);
-            }
-            if spread_factor.satisfy_backward_cancel(
-                open_venue,
-                open_symbol,
-                hedge_venue,
-                hedge_symbol,
-            ) && !cancel_sides.contains(&Side::Sell)
-            {
-                cancel_sides.push(Side::Sell);
-            }
-        }
-
-        let Some(open_side) = open_side else {
-            continue;
-        };
-        let spread_ok = if open_side == Side::Buy {
-            spread_factor.satisfy_forward_open(open_venue, open_symbol, hedge_venue, hedge_symbol)
-        } else {
-            spread_factor.satisfy_backward_open(open_venue, open_symbol, hedge_venue, hedge_symbol)
-        };
-        if !spread_ok {
-            let _ = ArbDecision::with_state_mut(|arb| {
-                arb.record_intercept_summary("cta_spread_block_open")
-            });
-            continue;
-        }
-        pending_opens.push((rule_idx, open_side, evidence));
-    }
-
-    for side in cancel_sides {
-        emit_cta_spread_cancel(
-            decision,
-            open_symbol,
-            hedge_symbol,
-            open_venue,
-            hedge_venue,
-            side,
-        )?;
-        emitted = Some(SignalType::ArbCancel);
-    }
-    for (rule_idx, side, evidence) in pending_opens {
-        let rule = &rules[rule_idx];
-        if emit_cta_open_signals(
-            decision,
-            rule,
-            open_symbol,
-            hedge_symbol,
-            open_venue,
-            hedge_venue,
-            side,
-            evidence,
-            now_us,
-        )? {
-            if let Some(state) = decision
-                .states
-                .get_mut(&(rule.rule_id.clone(), open_symbol_key.to_string()))
-            {
-                state.last_open_emit_us = now_us;
-            }
-            emitted = Some(SignalType::ArbOpen);
-        }
-    }
-    Ok(emitted)
-}
-
-/// cta 单规则本轮触发判定（纯函数，无 IPC 依赖）：推进 state 的 bar/vote
-/// 游标，返回 (new_bar, open_side)。spread gate 由调用方在 fired 后评估。
-/// - each_bar：score_ts_ms 递增（新模型 bar）才评估；
-/// - on_change：vote 非 0 且与上轮不同才触发；
-/// - cooldown：距上次成功发放不足 cooldown_seconds 抑制；
-/// - in_dump：dump 名单币不开新仓。
-fn cta_rule_eval(
-    rule: &super::cta_config::CtaRule,
-    state: &mut CtaRuleSymbolState,
-    vote: i8,
-    score_ts_ms: i64,
-    in_dump: bool,
-    now_us: i64,
-) -> (bool, Option<Side>) {
-    let new_bar = score_ts_ms > state.last_bar_ts_ms;
-    if new_bar {
-        state.last_bar_ts_ms = score_ts_ms;
-    }
-    let fired = match rule.application {
-        super::cta_config::CtaApplication::EachBar => new_bar,
-        super::cta_config::CtaApplication::OnChange => vote != 0 && vote != state.last_vote,
-    };
-    state.last_vote = vote;
-    if !fired || vote == 0 || in_dump {
-        return (new_bar, None);
-    }
-    if rule.cooldown_seconds > 0
-        && state.last_open_emit_us > 0
-        && now_us.saturating_sub(state.last_open_emit_us)
-            < rule.cooldown_seconds.saturating_mul(1_000_000)
-    {
-        return (new_bar, None);
-    }
-    (new_bar, Some(if vote > 0 { Side::Buy } else { Side::Sell }))
-}
-
-/// 按 rule.open_offsets 在现货腿发一组网格 maker 挂单。
-/// 档价 = inner * (1 ∓ offset)，inner 为 touch 价（买单取 bid，卖单取 ask）。
-#[allow(clippy::too_many_arguments)]
-fn emit_cta_open_signals(
-    decision: &mut CtaShell,
-    rule: &super::cta_config::CtaRule,
-    open_symbol: &str,
-    hedge_symbol: &str,
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-    side: Side,
-    evidence: CtaDecisionEvidence,
-    now_us: i64,
-) -> Result<bool> {
-    if !arb_open_legs_tradable(
-        CTA_SHELL_NAME,
-        &mut decision.runtime,
-        open_venue,
-        open_symbol,
-        hedge_venue,
-        hedge_symbol,
-    ) {
-        return Ok(false);
-    }
-    let Some((open_quote, hedge_quote)) =
-        ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue)
-    else {
-        return Ok(false);
-    };
-    let inner_price = match side {
-        Side::Buy => open_quote.bid,
-        Side::Sell => open_quote.ask,
-    };
-    if !(inner_price.is_finite() && inner_price > 0.0) {
-        log::warn!(
-            "{CTA_SHELL_NAME}: cta open skipped invalid inner price={inner_price} symbol={open_symbol} rule={}",
-            rule.rule_id
-        );
-        return Ok(false);
-    }
-    let specs: Vec<quote_plan::quote_plan_levels::QuotePlanLevelSpec> = rule
-        .open_offsets
-        .iter()
-        .enumerate()
-        .map(
-            |(idx, offset)| quote_plan::quote_plan_levels::QuotePlanLevelSpec {
-                side,
-                side_level_index: idx + 1,
-                offset: *offset,
-                base_price: inner_price,
-            },
-        )
-        .collect();
-    let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
-    let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
-    let open_symbol_key = min_qty_symbol_key(open_venue, &open_trade_symbol);
-    let open_table = if open_venue == decision.runtime.venues.0 {
-        &decision.runtime.open_min_qty_table
-    } else {
-        &decision.runtime.hedge_min_qty_table
-    };
-    let hedge_table = if hedge_venue == decision.runtime.venues.0 {
-        &decision.runtime.open_min_qty_table
-    } else {
-        &decision.runtime.hedge_min_qty_table
-    };
-    let (_price_tick, _qty_tick, levels) =
-        match quote_plan::quote_plan_levels::build_quote_plan_levels(
-            open_venue,
-            &open_trade_symbol,
-            rule.order_notional_usdt,
-            &specs,
-            open_table,
-        ) {
-            Ok(v) => v,
-            Err(err) => {
-                log::warn!(
-                    "{CTA_SHELL_NAME}: build cta grid plan failed open={} rule={} err={}",
-                    open_symbol,
-                    rule.rule_id,
-                    err
-                );
-                return Ok(false);
-            }
-        };
-    if levels.is_empty() {
-        return Ok(false);
-    }
-    let from_key = super::common::append_key_value_fields(
-        super::common::build_decision_from_key_base(
-            now_us,
-            evidence.score_quantile,
-            None,
-            None,
-            None,
-            None,
-        ),
-        &[
-            ("cta_rule", rule.rule_id.clone()),
-            (
-                "cta_side",
-                if side == Side::Buy { "long" } else { "short" }.to_string(),
-            ),
-            ("cta_factor_ts_ms", evidence.factor_ts_ms.to_string()),
-            ("cta_factor_value", evidence.score.to_string()),
-            (
-                "cta_factor_threshold",
-                if side == Side::Buy {
-                    evidence.long_threshold
-                } else {
-                    evidence.short_threshold
-                }
-                .to_string(),
-            ),
-            (
-                "cta_nq_value",
-                if side == Side::Buy {
-                    evidence.filter_long_value
-                } else {
-                    evidence.filter_short_value
-                }
-                .filter(|value| value.is_finite())
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "NA".to_string()),
-            ),
-            (
-                "cta_nq_threshold",
-                if side == Side::Buy {
-                    evidence.filter_long_threshold
-                } else {
-                    evidence.filter_short_threshold
-                }
-                .filter(|value| value.is_finite())
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "NA".to_string()),
-            ),
-            ("cta_exit_long", rule.factor_exit_quantile_long.to_string()),
-            (
-                "cta_exit_short",
-                rule.factor_exit_quantile_short.to_string(),
-            ),
-            (
-                "cta_trailing",
-                if rule.trailing_stop_enabled { "1" } else { "0" }.to_string(),
-            ),
-            ("cta_trigger", rule.trailing_stop_trigger_step.to_string()),
-            ("cta_move", rule.trailing_stop_move_step.to_string()),
-        ],
-    );
-    let open_order_ttl_us = rule.open_ttl_seconds.saturating_mul(1_000_000);
-    let planned_levels = levels.len();
-    let contexts: Vec<_> = levels
-        .iter()
-        .map(|level| {
-            super::arb_open_context::build_arb_open_context_from_level_with_tables(
-                super::arb_open_context::ArbOpenContextTablesInput {
-                    open_trade_symbol: open_trade_symbol.as_str(),
-                    hedge_trade_symbol: hedge_trade_symbol.as_str(),
-                    open_symbol_key: open_symbol_key.as_str(),
-                    open_venue,
-                    hedge_venue,
-                    open_quote: &open_quote,
-                    hedge_quote: &hedge_quote,
-                    level,
-                    now: now_us,
-                    from_key: from_key.as_str(),
-                    open_order_ttl_us,
-                    hedge_timeout_mm_us: 0,
-                    factor_mode: super::common::FactorMode::MM,
-                    order_amount: rule.order_notional_usdt,
-                    open_table,
-                    hedge_table,
-                },
-            )
-        })
-        .collect();
-    let sent = super::arb_emit::emit_levels_as_signals(
-        &decision.runtime.signal_pub,
-        SignalType::ArbOpen,
-        now_us,
-        contexts,
-    )?;
-    log::info!(
-        "{CTA_SHELL_NAME}: emitted {}/{} ArbOpen cta grid open={} hedge={} side={:?} rule={} score_qtl={:.6} inner={:.8} offsets={:?} ttl_s={}",
-        sent,
-        planned_levels,
-        open_symbol,
-        hedge_symbol,
-        side,
-        rule.rule_id,
-        evidence.score_quantile.unwrap_or(f64::NAN),
-        inner_price,
-        rule.open_offsets,
-        rule.open_ttl_seconds
-    );
-    Ok(sent > 0)
-}
-
-/// spread overlay 撤单：广播 ArbCancel（strategy_id=0 + Spread reason →
-/// pre_trade 按 symbol+side 匹配所有 ArbOpenStrategy）。
-fn emit_cta_spread_cancel(
-    decision: &CtaShell,
-    open_symbol: &str,
-    hedge_symbol: &str,
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-    side: Side,
-) -> Result<()> {
-    let Some((open_quote, hedge_quote)) =
-        ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue)
-    else {
-        return Ok(());
-    };
-    let now_us = get_timestamp_us();
-    let from_key = super::common::append_suffix_token(
-        super::common::build_decision_from_key_base(now_us, None, None, None, None, None),
-        "cta_spread_cancel",
-    );
-    let sent = super::arb_cancel_emit::emit_precise_arb_cancel(
-        super::arb_cancel_emit::ArbCancelEmitInput {
-            signal_pub: &decision.runtime.signal_pub,
-            open_symbol,
-            hedge_symbol,
-            open_venue,
-            hedge_venue,
-            open_quote: &open_quote,
-            hedge_quote: &hedge_quote,
-            now: now_us,
-            from_key: &from_key,
-            reason: signal_common::cancel_signal::ArbCancelReason::Spread,
-            side,
-            strategy_id: 0,
-        },
-    );
-    if sent.is_ok() {
-        log::info!(
-            "{CTA_SHELL_NAME}: emitted ArbCancel cta spread overlay open={} side={:?}",
-            open_symbol,
-            side
-        );
-    }
-    sent
 }
 
 fn drive_spread_arb_decision(
@@ -4519,7 +3902,6 @@ thread_local! {
 pub(crate) enum ArbBackend {
     Funding,
     Spread,
-    Cta,
 }
 
 pub struct ArbDecision;
@@ -4748,9 +4130,6 @@ pub(crate) struct ArbDecisionState {
     pub last_tlen_cancel_log: Instant,
     /// 30s 窗口内资费 close 已命中、但 close spread gate 未通过的 symbol 级统计。
     pub funding_close_spread_blocks: HashMap<(String, ArbSignalKind), FundingCloseSpreadBlock>,
-    /// cta 模式规则集（`{env}:cta_rules:{key_suffix}` 热加载）。
-    /// 仅 `ArbMode::Cta` 下非空；每条 rule 是一条独立因子信号流。
-    pub cta_rules: Vec<super::cta_config::CtaRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -4867,7 +4246,6 @@ impl ArbDecisionState {
             tlen_cancel_summaries: HashMap::new(),
             last_tlen_cancel_log: Instant::now(),
             funding_close_spread_blocks: HashMap::new(),
-            cta_rules: Vec::new(),
         }
     }
 
@@ -5172,14 +4550,6 @@ impl ArbDecisionState {
             self.hedge_price_offset_limit_upper_overrides.len(),
             warned
         );
-    }
-
-    /// 应用一份已校验的 cta 规则集，返回去重后的 model_output 订阅列表。
-    /// 规则整体替换；每条 rule 的状态由消费侧（CtaShell）按 rule_id 隔离维护。
-    pub fn apply_cta_rules(&mut self, rule_set: super::cta_config::CtaRuleSet) -> Vec<String> {
-        let services = rule_set.model_services();
-        self.cta_rules = rule_set.rules().to_vec();
-        services
     }
 
     pub fn apply_shared_bootstrap(&mut self, bootstrap: ArbSharedBootstrap) {
@@ -6232,19 +5602,6 @@ impl ArbDecision {
         try_update_arb_model_output_services(services)
     }
 
-    /// cta 配置 server 的应用入口：替换规则集并同步 model_output 订阅。
-    /// 返回 false 表示 ArbDecision 尚未初始化（调用方应保留配置待重试）；
-    /// shell 尚未建好导致订阅失败时规则仍已落库，下一轮 reload 会补推订阅。
-    pub(crate) fn apply_cta_rule_set(rule_set: super::cta_config::CtaRuleSet) -> bool {
-        let Some(services) = Self::with_state_mut(|arb| arb.apply_cta_rules(rule_set)) else {
-            return false;
-        };
-        if !Self::try_update_model_output_services(services) {
-            log::debug!("ArbDecision: cta model_output subscription deferred (shell not ready)");
-        }
-        true
-    }
-
     pub(crate) fn try_configure_return_score_rolling(
         model_service: Option<&str>,
         rolling_mean_window: usize,
@@ -6304,8 +5661,6 @@ impl ArbDecision {
         match mode {
             ArbMode::FundingArb => ArbBackend::Funding,
             ArbMode::IntraArb | ArbMode::CrossArb => ArbBackend::Spread,
-            ArbMode::Cta => ArbBackend::Cta,
-            ArbMode::CtaSpecial => ArbBackend::Cta,
         }
     }
 
@@ -6334,7 +5689,6 @@ impl ArbDecision {
                 FundingArbShell::init_singleton(exchange).await
             }
             ArbBackend::Spread => SpreadArbShell::init_singleton(open_venue, hedge_venue).await,
-            ArbBackend::Cta => CtaShell::init_singleton(open_venue, hedge_venue).await,
         }
     }
 
@@ -6377,17 +5731,6 @@ impl ArbDecision {
                     );
                 });
             }
-            ArbBackend::Cta => {
-                with_thread_local_shell_mut(&CTA_SHELL, CTA_SHELL_NAME, |decision| {
-                    let _ = drive_cta_decision(
-                        decision,
-                        open_symbol,
-                        hedge_symbol,
-                        open_venue,
-                        hedge_venue,
-                    );
-                });
-            }
         }
     }
 
@@ -6411,7 +5754,6 @@ impl ArbDecision {
                     drive_spread_arb_cancel_trigger_interval(decision);
                 });
             }
-            ArbBackend::Cta => {}
         }
     }
 
@@ -7052,85 +6394,5 @@ mod hedge_offset_overrides_tests {
         assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 0.0, 250.0), 5.0);
         assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, 0.0), 5.0);
         assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, f64::NAN), 5.0);
-    }
-}
-
-#[cfg(test)]
-mod cta_decision_tests {
-    use super::*;
-    use crate::cta_config::CtaRuleSet;
-
-    fn cta_rule(json: &str) -> crate::cta_config::CtaRule {
-        let extra = if json.is_empty() {
-            String::new()
-        } else {
-            format!(",{json}")
-        };
-        let raw = format!(r#"[{{"rule_id":"r","model_service":"svc"{extra}}}]"#);
-        CtaRuleSet::parse(&raw).unwrap().rules()[0].clone()
-    }
-
-    #[test]
-    fn each_bar_fires_once_per_model_bar() {
-        let rule = cta_rule("");
-        let mut state = CtaRuleSymbolState::default();
-        // 新 bar + 多头 vote → 触发 Buy
-        let (new_bar, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_000_000);
-        assert!(new_bar);
-        assert_eq!(side, Some(Side::Buy));
-        // 同一 bar 再评估 → 不触发
-        let (new_bar, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_100_000);
-        assert!(!new_bar);
-        assert_eq!(side, None);
-        // 下一根 bar vote=0 → 不触发但推进游标
-        let (new_bar, side) = cta_rule_eval(&rule, &mut state, 0, 120_000, false, 1_200_000);
-        assert!(new_bar);
-        assert_eq!(side, None);
-        // 新 bar 空头 vote → 触发 Sell
-        let (new_bar, side) = cta_rule_eval(&rule, &mut state, -1, 180_000, false, 1_300_000);
-        assert!(new_bar);
-        assert_eq!(side, Some(Side::Sell));
-    }
-
-    #[test]
-    fn on_change_fires_only_on_vote_transition() {
-        let rule = cta_rule(r#""application":"on_change""#);
-        let mut state = CtaRuleSymbolState::default();
-        // 初始 vote=0 → +1 沿触发
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_000_000);
-        assert_eq!(side, Some(Side::Buy));
-        // vote 保持 +1（即使新 bar）→ 不重复触发
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 120_000, false, 2_000_000);
-        assert_eq!(side, None);
-        // 回到中性再转多 → 再次触发
-        let (_, side) = cta_rule_eval(&rule, &mut state, 0, 180_000, false, 3_000_000);
-        assert_eq!(side, None);
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 240_000, false, 4_000_000);
-        assert_eq!(side, Some(Side::Buy));
-        // 直接翻空（+1 → -1）→ 触发 Sell
-        let (_, side) = cta_rule_eval(&rule, &mut state, -1, 300_000, false, 5_000_000);
-        assert_eq!(side, Some(Side::Sell));
-    }
-
-    #[test]
-    fn cooldown_suppresses_until_window_elapsed() {
-        let rule = cta_rule(r#""cooldown_seconds":60"#);
-        let mut state = CtaRuleSymbolState::default();
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_000_000);
-        assert_eq!(side, Some(Side::Buy));
-        // 标记发放时间后，60s 内的新 bar 被抑制
-        state.last_open_emit_us = 1_000_000;
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 120_000, false, 30_000_000);
-        assert_eq!(side, None);
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 180_000, false, 61_000_000);
-        assert_eq!(side, Some(Side::Buy));
-    }
-
-    #[test]
-    fn dump_symbol_never_opens() {
-        let rule = cta_rule("");
-        let mut state = CtaRuleSymbolState::default();
-        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, true, 1_000_000);
-        assert_eq!(side, None);
     }
 }

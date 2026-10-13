@@ -37,14 +37,14 @@ EXCHANGE=""
 ENV_SUFFIX_EXPLICIT="0"
 EXEC_BACKEND="native"
 
-# 从 env_name 推 exchange + env_suffix（格式：<exchange>-(intra|cta)-<tag>）
+# 从 env_name 推 exchange + env_suffix（格式：<exchange>-intra-<tag>）
 infer_meta_from_env_name() {
   local name="${1,,}"
   local ex=""
   local mode=""
   local tag=""
 
-  if [[ "$name" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  if [[ "$name" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
     ex="${BASH_REMATCH[1]}"
     mode="${BASH_REMATCH[2]}"
     tag="${BASH_REMATCH[3]}"
@@ -101,7 +101,7 @@ if [[ -n "$ENV_NAME" ]]; then
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-(intra|cta)-<tag> 推断"
+  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-intra-<tag> 推断"
   usage
   exit 1
 fi
@@ -121,6 +121,11 @@ read -r OPEN_VENUE HEDGE_VENUE <<<"$(intra_venues_for_exchange "$EXCHANGE")"
 
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
+fi
+
+if [[ "${ENV_NAME,,}" =~ (^|[-_])cta([-_]|$) ]]; then
+  echo "[ERROR] Legacy CTA execution is retired; use CTA target publishers with Exec" >&2
+  exit 1
 fi
 
 if [[ -z "$NAMESPACE" ]]; then

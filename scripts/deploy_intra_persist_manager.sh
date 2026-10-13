@@ -45,13 +45,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$ENV_NAME" && -z "$EXCHANGE" ]]; then
-  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra|cta)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-(intra|cta)-<tag>"
+  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-intra-<tag>"
   usage; exit 1
 fi
 
@@ -60,6 +60,12 @@ EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
 fi
+
+if [[ "${ENV_NAME,,}" =~ (^|[-_])cta([-_]|$) ]]; then
+  echo "[ERROR] Legacy CTA execution is retired; use CTA target publishers with Exec" >&2
+  exit 1
+fi
+
 TARGET_DIR="$HOME/${ENV_NAME}"
 
 echo "[INFO] 构建 $BIN_NAME (release)"

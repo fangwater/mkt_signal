@@ -1,10 +1,6 @@
 use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll;
 use crate::pre_trade::auto_collection_service::AutoCollectionService;
 use crate::pre_trade::auto_repay_service::AutoRepayService;
-use crate::pre_trade::cta_factor_channel::{CtaFactorChannel, CtaFactorUpdate};
-use crate::pre_trade::cta_special_factor_channel::{
-    CtaSpecialFactorChannel, CtaSpecialFactorUpdate,
-};
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
@@ -22,14 +18,12 @@ use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use crate::pre_trade::trade_eng_channel::TradeEngHub;
 use crate::pre_trade::unimmr_force_close::UnimmrForceClose;
 use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
-use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
-use crate::strategy::cta_special_strategy::CtaSpecialStrategy;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use account_common::BinanceAccountMode;
 use anyhow::Result;
 use bytes::Bytes;
 use log::{debug, info, warn};
-use order_common::{Side, TradingVenue};
+use order_common::TradingVenue;
 use runtime_common::redis_client::RedisSettings;
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
@@ -179,8 +173,6 @@ pub struct PreTrade {
     intra_bwd_refresh: Option<IntraBwdRefreshConfig>,
     taker_decision_model_refresh: Option<TakerDecisionModelRefreshConfig>,
     snapshot_query: Option<SnapshotQueryConfig>,
-    cta_special_factor: Option<CtaSpecialFactorChannel>,
-    cta_factor: Option<CtaFactorChannel>,
     order_queue_position: Option<OrderQueuePositionChannel>,
     auto_repay: Option<AutoRepayService>,
     auto_collection: Option<AutoCollectionService>,
@@ -261,73 +253,6 @@ fn drive_orphan_manager_period_clock(now: i64) {
 fn drive_orphan_manager_period_clock_limit(now: i64, max_inspect: usize) -> usize {
     let orphan_strategy_mgr = MonitorChannel::instance().orphan_strategy_mgr();
     drive_orphan_manager_period_clock_rc_limit(&orphan_strategy_mgr, now, max_inspect)
-}
-
-fn apply_cta_special_factor_update(update: CtaSpecialFactorUpdate) -> bool {
-    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-    let strategy_id = strategy_mgr
-        .borrow_mut()
-        .ensure_cta_special_strategy_for_normalized_symbol(&update.symbol, update.venue);
-    let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) else {
-        return false;
-    };
-    let applied = strategy
-        .as_any_mut()
-        .downcast_mut::<CtaSpecialStrategy>()
-        .is_some_and(|strategy| {
-            strategy.apply_factor_update(
-                update.model_ts_ms,
-                update.score_quantile,
-                update.score_ready,
-                update.exit_config,
-            )
-        });
-    strategy_mgr.borrow_mut().insert(strategy);
-    applied
-}
-
-fn apply_cta_factor_update(update: CtaFactorUpdate) -> bool {
-    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-    let now_us = get_timestamp_us();
-    let quantile = update
-        .quantile
-        .filter(|value| update.ready && value.is_finite());
-    {
-        let mut manager = strategy_mgr.borrow_mut();
-        if quantile.is_some_and(|value| value < update.exit_long) {
-            manager.cancel_cta_opening_makers(
-                &update.symbol,
-                Side::Buy,
-                now_us,
-                "cta_factor_decay_long",
-            );
-        }
-        if quantile.is_some_and(|value| value > update.exit_short) {
-            manager.cancel_cta_opening_makers(
-                &update.symbol,
-                Side::Sell,
-                now_us,
-                "cta_factor_decay_short",
-            );
-        }
-    }
-    let Some(strategy_id) = strategy_mgr
-        .borrow()
-        .find_arb_hedge_id_for_normalized_symbol(&update.symbol)
-    else {
-        return false;
-    };
-    let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) else {
-        return false;
-    };
-    let applied = strategy
-        .as_any_mut()
-        .downcast_mut::<ArbHedgeStrategy>()
-        .is_some_and(|hedge| {
-            hedge.apply_cta_factor_update(update.model_ts_ms, update.quantile, update.ready)
-        });
-    strategy_mgr.borrow_mut().insert(strategy);
-    applied
 }
 
 pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
@@ -571,8 +496,6 @@ impl PreTrade {
             intra_bwd_refresh: None,
             taker_decision_model_refresh: None,
             snapshot_query: None,
-            cta_special_factor: None,
-            cta_factor: None,
             order_queue_position: None,
             auto_repay: None,
             auto_collection: None,
@@ -603,16 +526,6 @@ impl PreTrade {
         self
     }
 
-    pub fn with_cta_special_factor(mut self, channel: CtaSpecialFactorChannel) -> Self {
-        self.cta_special_factor = Some(channel);
-        self
-    }
-
-    pub fn with_cta_factor(mut self, channel: CtaFactorChannel) -> Self {
-        self.cta_factor = Some(channel);
-        self
-    }
-
     pub fn with_order_queue_position(mut self, channel: OrderQueuePositionChannel) -> Self {
         self.order_queue_position = Some(channel);
         self
@@ -639,8 +552,6 @@ impl PreTrade {
         let intra_bwd_refresh = self.intra_bwd_refresh;
         let taker_decision_model_refresh = self.taker_decision_model_refresh;
         let snapshot_query = self.snapshot_query;
-        let mut cta_special_factor = self.cta_special_factor;
-        let mut cta_factor = self.cta_factor;
         let mut order_queue_position = self.order_queue_position;
         let mut auto_repay = self.auto_repay;
         let mut auto_collection = self.auto_collection;
@@ -966,31 +877,6 @@ impl PreTrade {
             let force_close_activated = UnimmrForceClose::drive(get_timestamp_us());
             if force_close_activated > 0 {
                 has_work = true;
-            }
-
-            if let Some(channel) = cta_special_factor.as_mut() {
-                let updates = channel.poll_updates();
-                if !updates.is_empty() {
-                    has_work = true;
-                    for update in updates {
-                        let _ = apply_cta_special_factor_update(update);
-                    }
-                    if fast_poll {
-                        finish_fast_poll_work!(next_loop_open_drop_reason);
-                    }
-                }
-            }
-            if let Some(channel) = cta_factor.as_mut() {
-                let updates = channel.poll_updates().await;
-                if !updates.is_empty() {
-                    has_work = true;
-                    for update in updates {
-                        let _ = apply_cta_factor_update(update);
-                    }
-                    if fast_poll {
-                        finish_fast_poll_work!(next_loop_open_drop_reason);
-                    }
-                }
             }
 
             if let Some(transition) = PreTradeTakerDecisionModel::take_transition_global() {

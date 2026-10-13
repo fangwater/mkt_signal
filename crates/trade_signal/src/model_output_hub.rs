@@ -37,7 +37,7 @@ pub struct ModelOutputScoreLookupResult {
     pub filter_short_quantile: Option<f64>,
     pub filter_ready: bool,
     /// 最近一次该 (service, symbol) 模型消息的 ts_in_ms（bar 时间戳）；
-    /// 无数据/未订阅时为 0。cta each_bar 语义用它做 bar 去重。
+    /// 无数据/未订阅时为 0。
     pub score_ts_ms: i64,
     pub note: String,
 }

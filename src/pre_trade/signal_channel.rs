@@ -839,15 +839,23 @@ impl SignalChannel {
 mod tests {
     use super::{
         arb_open_latency_log_level, is_maker_signal_type, is_position_reducing,
-        normalize_fixed_symbol_for_internal, normalize_fixed_symbol_for_internal_cow,
-        should_drop_open_signal_for_slow_round, should_drop_startup_buffered_signal,
-        should_suppress_arb_open_inactive_warning, stale_arb_open_receive_lag_us,
-        OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
+        is_retired_cta_open, normalize_fixed_symbol_for_internal,
+        normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
+        should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
+        stale_arb_open_receive_lag_us, OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
     };
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
     use std::borrow::Cow;
     use trade_signal::ArbMode;
+
+    #[test]
+    fn retired_cta_signals_cannot_fall_back_to_intra_execution() {
+        assert!(is_retired_cta_open(b"model:cta_rule=rx01:long"));
+        assert!(is_retired_cta_open(b"model:cta_special=1"));
+        assert!(!is_retired_cta_open(b"intra:binance:long"));
+        assert!(!is_retired_cta_open(b""));
+    }
 
     fn fixed_symbol(value: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
@@ -1068,6 +1076,15 @@ fn handle_trade_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     }
 }
 
+fn is_retired_cta_open(from_key: &[u8]) -> bool {
+    from_key
+        .windows(b":cta_rule=".len())
+        .any(|part| part == b":cta_rule=")
+        || from_key
+            .windows(b"cta_special=1".len())
+            .any(|part| part == b"cta_special=1")
+}
+
 fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     if should_block_arb_signal_for_startup_net_gate(&signal.signal_type) {
         return;
@@ -1075,6 +1092,10 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
 
     match ArbOpenCtxView::from_bytes(signal.context) {
         Ok(open_ctx) => {
+            if is_retired_cta_open(&open_ctx.from_key) {
+                warn!("ArbOpen rejected: legacy CTA execution is retired; publish targets through Exec");
+                return;
+            }
             let handle_start_us = get_timestamp_us();
             let symbol = normalize_fixed_symbol_for_internal_cow(&open_ctx.opening_symbol);
             if symbol.is_empty() {
@@ -1379,54 +1400,6 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             }
 
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-            let is_cta_special_open = open_ctx
-                .from_key
-                .windows(b"cta_special=1".len())
-                .any(|window| window == b"cta_special=1");
-            let is_cta_open = open_ctx
-                .from_key
-                .windows(b":cta_rule=".len())
-                .any(|window| window == b":cta_rule=");
-            let special_mode = MonitorChannel::instance().arb_mode() == ArbMode::CtaSpecial;
-            if special_mode != is_cta_special_open {
-                warn!(
-                    "ArbOpen rejected by CTA special mode boundary symbol={} special_mode={} special_signal={}",
-                    symbol, special_mode, is_cta_special_open
-                );
-                return;
-            }
-            if is_cta_open {
-                let canceled = strategy_mgr
-                    .borrow_mut()
-                    .cancel_opposite_cta_opening_makers(&symbol, side, handle_start_us);
-                if canceled > 0 {
-                    info!(
-                        "ArbOpen: CTA opposite pending direction canceled old makers and dropped current signal symbol={} incoming_side={} canceled={}",
-                        symbol,
-                        side.as_str(),
-                        canceled
-                    );
-                    return;
-                }
-                let opposite_position = if is_cta_special_open {
-                    strategy_mgr
-                        .borrow()
-                        .has_opposite_cta_special_position_for_normalized_symbol(&symbol, side)
-                } else {
-                    strategy_mgr
-                        .borrow()
-                        .has_opposite_cta_position_for_normalized_symbol(&symbol, side)
-                };
-                if opposite_position {
-                    debug!(
-                        "ArbOpen: CTA opposite position gate blocked symbol={} side={}",
-                        symbol,
-                        side.as_str()
-                    );
-                    return;
-                }
-            }
-
             let mut pending_limit_prechecked = false;
             match open_ctx.get_order_type() {
                 Some(order_type) => {
@@ -1450,12 +1423,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let signal_spread_rate = open_ctx.spread_rate;
             {
                 let mut mgr = strategy_mgr.borrow_mut();
-                if is_cta_special_open {
-                    let _ = mgr
-                        .ensure_cta_special_strategy_for_normalized_symbol(&symbol, opening_venue);
-                } else {
-                    let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
-                }
+                let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
             }
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = ArbOpenStrategy::new(strategy_id);

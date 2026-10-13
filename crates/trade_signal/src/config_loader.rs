@@ -19,9 +19,6 @@ use order_common::TradingVenue;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 
 use super::arb_decision::ArbDecision;
-use super::cta_config::{
-    cta_rules_redis_key, cta_strategy_params_redis_key, CtaExecOverrides, CtaRuleSet,
-};
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
@@ -190,12 +187,6 @@ async fn reload_all_configs(
     reload_dynamic_thresholds(redis, namespace, open_venue, hedge_venue).await?;
     reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
 
-    // 4. cta 模式：env 作用域的信号配置（model/分位/方向）+ strategy hash
-    //    的执行/网格参数合并成规则集。
-    if normalize_namespace(namespace) == "cta" {
-        reload_cta_rules(redis, open_venue, hedge_venue).await?;
-    }
-
     info!("✅ 配置重载完成");
     Ok(())
 }
@@ -234,7 +225,7 @@ async fn reload_symbol_list(
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
             let ns = normalize_namespace(namespace);
-            let env_dir = if ns == "fr" || ns == "intra" || ns == "cta" {
+            let env_dir = if ns == "fr" || ns == "intra" {
                 Some(funding_env_dir_or_panic())
             } else {
                 None
@@ -270,100 +261,6 @@ async fn reload_symbol_list(
     Ok(())
 }
 
-/// 重载 cta 信号配置（`{env}:cta_rules`，单对象；兼容数组）。
-///
-/// - 执行/网格参数（open_offsets/单笔名义/因子退出/trailing 等）来自
-///   `{env}:cta_strategy_params:{open}:{hedge}` hash，加载时覆盖到规则上；
-///   hash 缺失/字段缺失时走规则默认值；未知或无效字段拒绝重载。
-/// - key 缺失 / Redis 失败 / 解析失败：warn 并保留上一份已应用配置；
-/// - key 存在且解析成功：原子替换规则集，并把去重后的 model_output
-///   service 列表推给 ArbDecision 的订阅 hub（空的 `[]` 会显式清空订阅）。
-async fn reload_cta_rules(
-    redis: &RedisSettings,
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-) -> Result<()> {
-    let env_dir = funding_env_dir_or_panic();
-    let redis_key = cta_rules_redis_key(&env_dir);
-    let strategy_key = cta_strategy_params_redis_key(&env_dir, open_venue, hedge_venue);
-
-    let mut client = match RedisClient::connect(redis.clone()).await {
-        Ok(client) => client,
-        Err(err) => {
-            warn!(
-                "cta rules 重载：连接 Redis 失败 (key={}): {:?}",
-                redis_key, err
-            );
-            return Ok(());
-        }
-    };
-    let raw = match client.get_string(&redis_key).await {
-        Ok(Some(raw)) => raw,
-        Ok(None) => {
-            warn!(
-                "cta rules key '{}' 不存在，保留现有配置（如需清空请写 []）",
-                redis_key
-            );
-            return Ok(());
-        }
-        Err(err) => {
-            warn!(
-                "cta rules 重载：读取 key '{}' 失败，保留现有配置: {:?}",
-                redis_key, err
-            );
-            return Ok(());
-        }
-    };
-    if raw.trim() == "[]" {
-        ArbDecision::apply_cta_rule_set(CtaRuleSet::parse(&raw)?);
-        return Ok(());
-    }
-    let exec = match client.hgetall_map(&strategy_key).await {
-        Ok(map) => match CtaExecOverrides::from_strategy_params(&map, &strategy_key) {
-            Ok(exec) => exec,
-            Err(err) => {
-                warn!(
-                    "cta exec params 拒绝重载 (key='{}'): {:#}",
-                    strategy_key, err
-                );
-                return Ok(());
-            }
-        },
-        Err(err) => {
-            warn!(
-                "cta exec params 读取失败 (key='{}')，保留上一配置: {:?}",
-                strategy_key, err
-            );
-            return Ok(());
-        }
-    };
-    match CtaRuleSet::parse_with_exec(&raw, Some(&exec)) {
-        Ok(rule_set) => {
-            let rule_count = rule_set.rules().len();
-            let services = rule_set.model_services();
-            let applied = ArbDecision::apply_cta_rule_set(rule_set);
-            if applied {
-                info!(
-                    "cta rules 重载成功 key='{}' rules={} services={:?}",
-                    redis_key, rule_count, services
-                );
-            } else {
-                warn!(
-                    "cta rules 已解析但 ArbDecision 未初始化，本轮丢弃 (key='{}' rules={})",
-                    redis_key, rule_count
-                );
-            }
-        }
-        Err(err) => {
-            warn!(
-                "cta rules 解析失败，保留上一份配置 (key='{}'): {:#}",
-                redis_key, err
-            );
-        }
-    }
-    Ok(())
-}
-
 async fn reload_dynamic_thresholds(
     redis: &RedisSettings,
     namespace: &str,
@@ -371,7 +268,7 @@ async fn reload_dynamic_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "fr" && ns != "intra" && ns != "cross" && ns != "cta" {
+    if ns != "fr" && ns != "intra" && ns != "cross" {
         if ns == "mm" {
             reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
         }
@@ -379,7 +276,7 @@ async fn reload_dynamic_thresholds(
     }
 
     match ns.as_str() {
-        "intra" | "cross" | "cta" => {
+        "intra" | "cross" => {
             reload_spread_thresholds_from_rolling(redis, &ns, open_venue, hedge_venue).await?
         }
         "fr" => reload_fr_dynamic_thresholds_from_rolling(redis, open_venue, hedge_venue).await?,

@@ -4,7 +4,6 @@ pub mod arb_open_strategy;
 pub mod batch_exec_strategy;
 pub mod chase_exec;
 pub mod chase_exec_strategy;
-pub mod cta_special_strategy;
 pub mod hedge_order_reconcile;
 pub mod hedge_orphan_order_strategy;
 pub mod hedge_strategy_common;

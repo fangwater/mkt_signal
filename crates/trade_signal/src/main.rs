@@ -634,24 +634,8 @@ async fn main() -> Result<()> {
                     hedge_venue,
                 )
             }
-            Some((ns, suffix)) if ns.eq_ignore_ascii_case("cta") => {
-                let (open_venue, hedge_venue) = infer_intra_venues_from_key_suffix(&suffix)
-                    .or_else(infer_arb_venues_from_env)
-                    .with_context(|| {
-                        format!(
-                            "failed to infer cta venues from CWD suffix='{}' or env OPEN_VENUE/HEDGE_VENUE",
-                            suffix
-                        )
-                    })?;
-                (
-                    DecisionBranch::Arb,
-                    Some(ArbMode::Cta),
-                    ns,
-                    suffix,
-                    None,
-                    open_venue,
-                    hedge_venue,
-                )
+            Some((ns, _)) if ns.eq_ignore_ascii_case("cta") => {
+                anyhow::bail!("Legacy CTA execution is retired; use cta_perp/cta_spread target publishers with Exec");
             }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("cross") => {
                 let (open_venue, hedge_venue) = infer_cross_venues_from_key_suffix(&suffix)

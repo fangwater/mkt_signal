@@ -60,7 +60,7 @@ usage() {
 说明:
   - 同所期现：从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE/IPC_NAMESPACE
   - 启动 1 个 pmdaemon 进程：intra_pt_<exchange>_<env>
-  - 建议先生成 env: scripts/deploy_setup_env_intra.sh --env-name <exchange>-(intra|cta)-<tag> --exchange <exchange>
+  - 建议先生成 env: scripts/deploy_setup_env_intra.sh --env-name <exchange>-intra-<tag> --exchange <exchange>
 USAGE
 }
 
@@ -86,18 +86,18 @@ done
 
 ensure_pmdaemon
 
-# 同所期现目录约定：<exchange>-(intra|cta)-<tag>
+# 同所期现目录约定：<exchange>-intra-<tag>
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 
 EXCHANGE=""
 ENV_TAG="intra"
 MODE="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
   MODE="${BASH_REMATCH[2]}"
   ENV_TAG="${BASH_REMATCH[3]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)$ ]]; then
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
   MODE="${BASH_REMATCH[2]}"
 fi
@@ -107,7 +107,7 @@ if [[ "$EXCHANGE" == "okx" ]]; then
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-(intra|cta)-<tag>"
+  echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
   exit 1
 fi
 

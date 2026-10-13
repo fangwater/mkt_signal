@@ -103,7 +103,6 @@ resolve_port() {
     binance:intra-arb01) echo "10180" ;;
     binance:intra-arb02) echo "10181" ;;
     binance:intra-arb03) echo "10182" ;;
-    binance:cta-rx01)    echo "10186" ;;
     bitget:intra-arb01)  echo "10183" ;;
     bitget:intra-arb02)  echo "10184" ;;
     bitget:intra-arb03)  echo "10185" ;;
@@ -112,13 +111,13 @@ resolve_port() {
 }
 
 if [[ -n "$ENV_NAME" && -z "$EXCHANGE" ]]; then
-  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra|cta)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-(intra|cta)-<tag>"
+  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-intra-<tag>"
   usage; exit 1
 fi
 
@@ -127,6 +126,12 @@ EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
 fi
+
+if [[ "${ENV_NAME,,}" =~ (^|[-_])cta([-_]|$) ]]; then
+  echo "[ERROR] Legacy CTA execution is retired; use CTA target publishers with Exec" >&2
+  exit 1
+fi
+
 ENV_NAME="${ENV_NAME,,}"
 
 PORT="$(resolve_port "$EXCHANGE" "$ENV_SUFFIX")"
@@ -138,7 +143,6 @@ mkdir -p "$TARGET_DIR"
 
 if [[ -z "$NGINX_PREFIX" ]]; then
   NS_PREFIX="intra"
-  [[ "$ENV_NAME" == *-cta-* ]] && NS_PREFIX="cta"
   NGINX_PREFIX="/${NS_PREFIX}/${ENV_NAME}"
 fi
 if [[ -z "$NGINX_MAPPING_FILE" ]]; then

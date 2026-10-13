@@ -704,15 +704,11 @@ fn online_symbol_keys(config: &GateFrRiskLimitConfig) -> Vec<String> {
             .map(|name| format!("{}:fr_{}:{}", env_name, name, venue_suffix))
             .collect()
         }
-        ArbMode::IntraArb | ArbMode::Cta | ArbMode::CtaSpecial => {
+        ArbMode::IntraArb => {
             let Some(env_name) = config.env_name.as_deref() else {
                 return Vec::new();
             };
-            let list_ns = match config.arb_mode {
-                ArbMode::Cta => "cta",
-                ArbMode::CtaSpecial => "cta_special",
-                _ => "intra",
-            };
+            let list_ns = "intra";
             let exchange_suffix = config.open_venue.trade_engine_exchange();
             vec![
                 format!("{env_name}:{list_ns}_dump_symbols:{exchange_suffix}"),

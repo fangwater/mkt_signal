@@ -5,11 +5,6 @@ pub enum ArbMode {
     FundingArb,
     IntraArb,
     CrossArb,
-    /// cta 模式：独立因子规则直接驱动单边 maker 开仓（version005 语义），
-    /// 由 env CWD 的 `cta` namespace 选择，不走 venue 推断。
-    Cta,
-    /// Disposable single-venue, futures-only CTA path.
-    CtaSpecial,
 }
 
 impl ArbMode {
@@ -18,8 +13,6 @@ impl ArbMode {
             Self::FundingArb => "funding_arb",
             Self::IntraArb => "intra_arb",
             Self::CrossArb => "cross_arb",
-            Self::Cta => "cta",
-            Self::CtaSpecial => "cta_special",
         }
     }
 

@@ -258,9 +258,6 @@ path = "src/bin/fusion_factor_pub.rs"
 name = "fusion_factor_1m_pub"
 path = "src/bin/fusion_factor_1m_pub.rs"
 
-[[bin]]
-name = "intra_factor_model_1m_pub"
-path = "src/bin/intra_factor_model_1m_pub.rs"
 
 [[bin]]
 name = "cta_spread_signal"

@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INTRA_RE = re.compile(r"^([a-z0-9]+)[-_](intra|cta)([_-].*)?$")
+INTRA_RE = re.compile(r"^([a-z0-9]+)[-_](intra)([_-].*)?$")
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S = 300
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 
@@ -1911,7 +1911,7 @@ def make_unimmr_close_key_suffix(open_venue: str, hedge_venue: str) -> str:
 
 
 def infer_namespace_from_name(name: str) -> Optional[str]:
-    """<exchange>-(intra|cta)-<tag> -> intra|cta。"""
+    """<exchange>-intra-<tag> -> intra。"""
     matched = INTRA_RE.match((name or "").strip().lower())
     if not matched:
         return None

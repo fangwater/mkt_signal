@@ -160,8 +160,11 @@ mod tests {
             TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
         };
 
-        let config: super::super::intra_factor_model_1m_pub::cfg::IntraFactorModelPubConfig =
-            toml::from_str(include_str!("../../config/intra_factor_model_1m_pub.toml")).unwrap();
+        let config: super::super::cta_perp_factor_model_1m_pub::cfg::CtaPerpFactorPubConfig =
+            toml::from_str(include_str!(
+                "../../config/cta_perp_factor_model_1m_pub.toml"
+            ))
+            .unwrap();
         config.universe.validate().unwrap();
         let plan =
             SymbolFactorPlan::from_factor_names("test", config.universe.factors.clone()).unwrap();
@@ -210,6 +213,8 @@ mod tests {
             ("factor_170", 104.99 / 103.79 - 1.0),
             ("factor_004", 0.03),
             ("TD_TI_002", 102.495),
+            // Six successive 30-bar means each lag this linear path by 0.145.
+            ("baseline_004", -3.0 * 104.99 + 21.0 * 0.145),
         ]);
         assert_eq!(raw.len(), config.universe.factors.len());
         for (name, actual) in config.universe.factors.iter().zip(raw) {

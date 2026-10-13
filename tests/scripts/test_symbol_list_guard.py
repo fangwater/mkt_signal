@@ -182,25 +182,13 @@ class SyncIntraSymbolListsTests(unittest.TestCase):
         self.assertIn(f"{env}:intra_fwd_trade_symbols:binance", rds.values)
         self.assertIn(f"{env}:intra_bwd_trade_symbols:binance", rds.values)
 
-    def test_cta_branch_preserves_dump_and_cleans_stale(self) -> None:
-        mod = self.mod
-        env = "binance-cta-test01"
-        dump_key = f"{env}:cta_dump_symbols:binance"
-        stale_key = f"{env}:cta_fwd_trade_symbols:binance"
-        rds = FakeRedis(
-            {
-                dump_key: json.dumps(["BTCUSDT"]),
-                stale_key: json.dumps(["STALEUSDT"]),
-            }
-        )
-        mod.sync_symbol_lists(
-            rds, "binance", env, "binance-margin", "binance-futures", "cta"
-        )
-        self.assertEqual(json.loads(rds.values[dump_key]), ["BTCUSDT"])
-        self.assertNotIn(stale_key, rds.values)
-        self.assertIn(f"{env}:cta_trade_symbols:binance", rds.values)
-        # pre_trade 借贷白名单镜像仍写入
-        self.assertIn(f"{env}:intra_bwd_trade_symbols:binance", rds.values)
+    def test_retired_namespace_is_rejected_without_writes(self) -> None:
+        rds = FakeRedis()
+        with self.assertRaises(ValueError):
+            self.mod.sync_symbol_lists(
+                rds, "binance", "binance-cta-rx01", "binance-margin", "binance-futures", "cta"
+            )
+        self.assertEqual(rds.values, {})
 
 
 # ---------- config server POST /api/symbol-lists ----------
@@ -382,65 +370,6 @@ class IntraConfigServerSymbolListsTests(unittest.TestCase):
         self.assertEqual(json.loads(rds.values[dump_key]), ["BTCUSDT"])
         self.assertEqual(json.loads(rds.values[fwd_key]), ["SOLUSDT"])
         self.assertEqual(body["vol_gate_count"], 1)
-
-
-class CtaConfigServerSymbolListsTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = load_script(
-            SCRIPTS / "cta_config_server.py", "cta_config_server",
-            extra_syspaths=[SCRIPTS, INTRA_SCRIPTS],
-        )
-
-    def _context(self, rds):
-        return types.SimpleNamespace(
-            redis_client=rds,
-            default_open_venue="binance-margin",
-            default_hedge_venue="binance-futures",
-        )
-
-    def _post(self, payload, rds):
-        handler = make_post_handler(
-            self.mod.RequestHandler,
-            path="/api/symbol-lists",
-            payload=payload,
-            context=self._context(rds),
-        )
-        handler.do_POST()
-        return handler.responses[-1]
-
-    def test_empty_payload_returns_400_and_writes_nothing(self) -> None:
-        rds = FakeRedis()
-        status, _ = self._post({}, rds)
-        self.assertEqual(status, 400)
-        self.assertEqual(rds.values, {})
-
-    def test_missing_dump_preserves_existing_and_cleans_stale(self) -> None:
-        mod = self.mod
-        env = mod.current_env_name()
-        suffix = "binance"
-        dump_key = mod.symbol_list_key(env, "dump_symbols", suffix)
-        trade_key = mod.symbol_list_key(env, "trade_symbols", suffix)
-        stale_key = mod.symbol_list_key(env, "fwd_trade_symbols", suffix)
-        rds = FakeRedis(
-            {
-                dump_key: json.dumps(["BTCUSDT"]),
-                stale_key: json.dumps(["STALEUSDT"]),
-            }
-        )
-        status, body = self._post({"trade_symbols": ["ETHUSDT"]}, rds)
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(rds.values[trade_key]), ["ETHUSDT"])
-        self.assertEqual(json.loads(rds.values[dump_key]), ["BTCUSDT"])
-        self.assertNotIn(stale_key, rds.values)
-        self.assertEqual(body["trade_count"], 1)
-        self.assertEqual(body["skipped_fields"], ["dump_symbols"])
-
-    def test_rejected_fields_still_rejected(self) -> None:
-        rds = FakeRedis()
-        status, _ = self._post({"fwd_trade_symbols": ["BTCUSDT"]}, rds)
-        self.assertEqual(status, 400)
-        self.assertEqual(rds.values, {})
 
 
 class MmConfigServerSymbolListTests(unittest.TestCase):

@@ -42,7 +42,7 @@ def normalize_exchange(ex: str) -> str:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_](intra|cta)([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))
@@ -53,7 +53,7 @@ def infer_exchange_from_name(name: str) -> Optional[str]:
 
 def infer_namespace_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^[a-z0-9]+[-_](intra|cta)([_-].*)?$", n)
+    m = re.match(r"^[a-z0-9]+[-_](intra)([_-].*)?$", n)
     if not m:
         return None
     return m.group(1)
@@ -64,15 +64,15 @@ def infer_exchange_from_cwd() -> Optional[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Sync intra/cta strategy params to Redis")
+    p = argparse.ArgumentParser(description="Sync intra strategy params to Redis")
     p.add_argument("--exchange", default=os.environ.get("EXCHANGE"))
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
-    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade / binance-cta-rx01）")
+    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
     p.add_argument(
         "--namespace",
-        choices=["intra", "cta"],
-        help="策略参数命名空间（默认按 env-name/CWD 的 -intra-/-cta- 段推断）",
+        choices=["intra"],
+        help="策略参数命名空间（默认按 env-name/CWD 的 -intra- 段推断）",
     )
     args = p.parse_args()
 
@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
             args.hedge_venue = f"{exchange}-futures"
 
     if not args.open_venue or not args.hedge_venue:
-        p.error("需要 --exchange 或同时提供 --open-venue/--hedge-venue，或使用 --env-name <exchange>-(intra|cta)-<tag>")
+        p.error("需要 --exchange 或同时提供 --open-venue/--hedge-venue，或使用 --env-name <exchange>-intra-<tag>")
 
     args.open_venue = args.open_venue.lower()
     args.hedge_venue = args.hedge_venue.lower()
