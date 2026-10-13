@@ -1,5 +1,5 @@
 //! Synchronous, bounded tmpfs logging on the market-data thread. No worker,
-//! queue, fsync, or disk fallback; stdout/stderr also point at the memory file.
+//! queue, fsync, or disk fallback. Raw stdio is discarded; panics use this logger.
 use anyhow::{Context, Result};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -37,12 +37,17 @@ fn open_memory_file(path: &Path, truncate: bool) -> io::Result<File> {
     Ok(file)
 }
 
-fn redirect_stdio(file: &File) -> io::Result<()> {
+fn install_process_hooks() -> io::Result<()> {
+    // A raw fd write cannot participate in our size checks without a reader
+    // thread. Discard that bypass; preserve Rust panic diagnostics via the
+    // same bounded logger instead of the default stderr hook.
+    let file = OpenOptions::new().write(true).open("/dev/null")?;
     for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
         if unsafe { libc::dup2(file.as_raw_fd(), fd) } == -1 {
             return Err(io::Error::last_os_error());
         }
     }
+    std::panic::set_hook(Box::new(|info| log::error!("spread_pbs panic: {info}")));
     Ok(())
 }
 
@@ -51,28 +56,23 @@ struct MemoryLog {
     file: File,
     _lock: File,
     max_bytes: u64,
-    redirect: bool,
     dropped: u64,
     write_errors: u64,
     reported: (u64, u64),
 }
 
 impl MemoryLog {
-    fn open(path: PathBuf, max_bytes: u64, redirect: bool) -> io::Result<Self> {
+    fn open(path: PathBuf, max_bytes: u64) -> io::Result<Self> {
         let lock = open_memory_file(&suffix(&path, ".lock"), false)?;
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
         let file = open_memory_file(&path, false)?;
-        if redirect {
-            redirect_stdio(&file)?;
-        }
         Ok(Self {
             path,
             file,
             _lock: lock,
             max_bytes,
-            redirect,
             dropped: 0,
             write_errors: 0,
             reported: (0, 0),
@@ -92,9 +92,6 @@ impl MemoryLog {
         }
         fs::hard_link(&self.path, &previous)?;
         fs::rename(&next, &self.path)?;
-        if self.redirect {
-            redirect_stdio(&replacement)?;
-        }
         self.file = replacement;
         Ok(())
     }
@@ -157,14 +154,15 @@ pub fn init(role: &str, test: bool) -> Result<()> {
         "binance-futures-{role}{}.log",
         if test { "-test" } else { "" }
     ));
-    let writer = MemoryLog::open(path.clone(), MAX_FILE_BYTES, true)
+    let writer = MemoryLog::open(path.clone(), MAX_FILE_BYTES)
         .context("open exclusive tmpfs market-data log")?;
     env_logger::Builder::from_default_env()
         .target(env_logger::Target::Pipe(Box::new(writer)))
         .try_init()
         .context("install synchronous tmpfs logger")?;
+    install_process_hooks().context("disable unbounded raw stdio and capture panic logs")?;
     log::info!(
-        "spread_pbs tmpfs_log path={} max_file_bytes={} retained_files=2 worker_threads=0",
+        "spread_pbs tmpfs_log path={} max_file_bytes={} retained_files=2 worker_threads=0 raw_stdio=discard panic=logger",
         path.display(),
         MAX_FILE_BYTES
     );
@@ -200,7 +198,7 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let dir = directory();
         let path = dir.path().join("market.log");
-        let mut log = MemoryLog::open(path.clone(), 12, false).unwrap();
+        let mut log = MemoryLog::open(path.clone(), 12).unwrap();
         log.write_all(b"first\n").unwrap();
         let inode = fs::metadata(&path).unwrap().ino();
         log.write_all(b"second\n").unwrap();
@@ -216,34 +214,55 @@ mod tests {
     fn only_one_process_can_own_a_role_log() {
         let dir = directory();
         let path = dir.path().join("market.log");
-        let writer = MemoryLog::open(path.clone(), 1024, false).unwrap();
-        assert!(MemoryLog::open(path.clone(), 1024, false).is_err());
+        let writer = MemoryLog::open(path.clone(), 1024).unwrap();
+        assert!(MemoryLog::open(path.clone(), 1024).is_err());
         drop(writer);
-        assert!(MemoryLog::open(path, 1024, false).is_ok());
+        assert!(MemoryLog::open(path, 1024).is_ok());
     }
 
     #[test]
-    fn stdout_stderr_follow_memory_log_rotation() {
+    fn raw_stdio_cannot_grow_logs_and_panics_use_bounded_logger() {
         const CHILD: &str = "SPREAD_TMPFS_LOG_TEST_CHILD";
         if let Some(path) = std::env::var_os(CHILD) {
             let path = PathBuf::from(path);
-            let mut log = MemoryLog::open(path.clone(), 32, true).unwrap();
+            let writer = MemoryLog::open(path.clone(), 512).unwrap();
+            env_logger::Builder::new()
+                .filter_level(log::LevelFilter::Error)
+                .target(env_logger::Target::Pipe(Box::new(writer)))
+                .try_init()
+                .unwrap();
+            install_process_hooks().unwrap();
+            let raw = vec![b'x'; 64 * 1024];
             for fd in [1, 2] {
-                assert_eq!(fs::read_link(format!("/proc/self/fd/{fd}")).unwrap(), path);
-                assert_eq!(unsafe { libc::write(fd, b"stdio\n".as_ptr().cast(), 6) }, 6);
+                assert_eq!(
+                    fs::read_link(format!("/proc/self/fd/{fd}")).unwrap(),
+                    Path::new("/dev/null")
+                );
+                for _ in 0..100 {
+                    assert_eq!(
+                        unsafe { libc::write(fd, raw.as_ptr().cast(), raw.len()) },
+                        raw.len() as isize
+                    );
+                }
             }
-            log.write_all(b"replacement-record-123456\n").unwrap();
-            for fd in [1, 2] {
-                assert_eq!(fs::read_link(format!("/proc/self/fd/{fd}")).unwrap(), path);
+            assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+            for i in 0..100 {
+                log::error!("bounded diagnostic {i}");
             }
-            assert_eq!(fs::read(suffix(&path, ".1")).unwrap(), b"stdio\nstdio\n");
+            assert!(std::panic::catch_unwind(|| panic!("bounded panic evidence")).is_err());
+            assert!(fs::read_to_string(&path)
+                .unwrap()
+                .contains("bounded panic evidence"));
+            for file in [&path, &suffix(&path, ".1")] {
+                assert!(fs::metadata(file).unwrap().len() <= 512);
+            }
             return;
         }
         let dir = directory();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "tmpfs_log::tests::stdout_stderr_follow_memory_log_rotation",
+                "tmpfs_log::tests::raw_stdio_cannot_grow_logs_and_panics_use_bounded_logger",
                 "--nocapture",
             ])
             .env(CHILD, dir.path().join("stdio.log"))
@@ -260,7 +279,7 @@ mod tests {
     fn rotation_failure_drops_and_reports_without_blocking_or_disk_fallback() {
         let dir = directory();
         let path = dir.path().join("market.log");
-        let mut log = MemoryLog::open(path.clone(), 256, false).unwrap();
+        let mut log = MemoryLog::open(path.clone(), 256).unwrap();
         log.write_all(&[b'x'; 250]).unwrap();
         // A replacement that cannot be opened simulates a failed rotation.
         fs::create_dir(suffix(&path, ".next")).unwrap();
