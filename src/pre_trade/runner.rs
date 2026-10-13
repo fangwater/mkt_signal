@@ -163,7 +163,8 @@ impl SnapshotQueryConfig {
             open_venue,
             hedge_venue,
             binance_account_mode,
-            include_binance_spot_snapshot: false,
+            include_binance_spot_snapshot: matches!(open_venue, TradingVenue::BinanceMargin)
+                || matches!(hedge_venue, TradingVenue::BinanceMargin),
         }
     }
 }
@@ -1192,13 +1193,27 @@ mod tests {
     }
 
     #[test]
-    fn exec_snapshot_skips_binance_spot_but_intra_keeps_it() {
+    fn exec_snapshot_includes_binance_spot_only_when_it_owns_cash() {
         let exec = SnapshotQueryConfig::new_exec(
             TradingVenue::BinanceFutures,
             TradingVenue::BinanceCoinFutures,
             Some(BinanceAccountMode::Standard),
         );
         assert!(!exec.include_binance_spot_snapshot);
+
+        let mixed_exec = SnapshotQueryConfig::new_exec(
+            TradingVenue::BinanceFutures,
+            TradingVenue::BinanceMargin,
+            Some(BinanceAccountMode::Standard),
+        );
+        assert!(mixed_exec.include_binance_spot_snapshot);
+
+        let cash_exec = SnapshotQueryConfig::new_exec(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceMargin,
+            Some(BinanceAccountMode::Standard),
+        );
+        assert!(cash_exec.include_binance_spot_snapshot);
 
         let intra = SnapshotQueryConfig::new(
             TradingVenue::BinanceMargin,
