@@ -5,10 +5,11 @@ use crate::cta_spread::config::{
 use crate::cta_spread::factor_channel::{IndependentFactorObservation, WeightedFactorChannel};
 use crate::cta_spread::factors::{runtime_factor_config_key, WeightedBar};
 use crate::cta_spread::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
-use crate::cta_spread::positions::{entry_venue, next_position_flag, StrategyPosition};
+use crate::cta_spread::positions::{next_position_flag, StrategyPosition};
 use anyhow::{ensure, Context, Result};
 use log::{info, warn};
 use order_common::TradingVenue;
+use quote_plan::Quote;
 use runtime_common::time_util::get_timestamp_us;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -122,7 +123,10 @@ impl CtaSpreadSignalApp {
         Ok(app)
     }
     fn sync_factor_scope(&mut self) {
-        // Keep retired quantities as zero targets so Manager clears their original strategies.
+        if !self.config.enabled {
+            return;
+        }
+        // Removing a binding exits its direction but preserves both hedged legs.
         for (factor, rows) in &mut self.positions {
             for (symbol, position) in rows {
                 let active = self.factors.table().get(symbol).is_some_and(|row| {
@@ -175,13 +179,13 @@ impl CtaSpreadSignalApp {
                 {
                     targets
                         .entry(symbol.clone())
-                        .or_insert_with(|| json!({"qty":0.0,"signal":0}));
+                        .or_insert_with(|| json!({"qty":0.0,"signal":1}));
                     targets
                         .entry(cash_symbol(symbol)?.to_string())
                         .or_insert_with(|| json!({"qty":0.0,"signal":0}));
                 }
             }
-            let payload = json!({"strategy_name":format!("{}{factor}",self.strategy_prefix),"targets":targets});
+            let payload = position_payload(format!("{}{factor}", self.strategy_prefix), &targets);
             if self.last_published.get(&factor) == Some(&payload) {
                 continue;
             }
@@ -211,7 +215,7 @@ impl CtaSpreadSignalApp {
                         "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
                             "signal":row["signal"],"entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
-                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"published_ts_us":now})), ..Default::default() });
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[cash_symbol(symbol)?]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now})), ..Default::default() });
                 }
             }
             self.last_published.insert(factor, payload);
@@ -296,83 +300,21 @@ impl CtaSpreadSignalApp {
             .and_then(|rows| rows.get(&symbol))
             .cloned()
             .unwrap_or_default();
-        let mut flag = bar
-            .as_ref()
-            .map(|bar| next_position_flag(position.flag, bar, &self.config))
-            .unwrap_or(position.flag);
-        let mut reason = if bar.is_none() {
-            "factor_unready"
-        } else {
-            "hold"
-        };
-        if !self.config.enabled {
-            flag = position.flag;
-            reason = "publishing_disabled";
-        }
-        if self.config.enabled && model_ts_ms <= self.entry_live_after_ms {
-            flag = position.flag;
-            reason = "historical_bar";
-        }
-        if flag != position.flag {
-            let previous_flag = position.flag;
-            if flag == 0 {
-                position.exit();
-                reason = "factor_exit";
-            } else {
-                let next = (|| -> Result<StrategyPosition> {
-                    let venue = entry_venue(
-                        flag,
-                        bar.as_ref().context("missing entry bar")?,
-                        &self.config,
-                    )
-                    .context("spread entry market unavailable")?;
-                    let quote = MktChannel::instance()
-                        .get_quote(&symbol, venue)
-                        .context("missing entry BBO")?;
-                    ensure!(
-                        quote.bid.is_finite()
-                            && quote.ask.is_finite()
-                            && quote.bid > 0.0
-                            && quote.ask >= quote.bid
-                            && quote.ts > 0
-                            && quote.ts <= now
-                            && now - quote.ts <= CTA_SPREAD_MAX_QUOTE_AGE_MS as i64 * 1000,
-                        "invalid or stale entry BBO"
-                    );
-                    let mut next = position.clone();
-                    next.exit();
-                    next.enter(
-                        flag,
-                        venue,
-                        self.config.max_pos_u,
-                        if flag > 0 { quote.ask } else { quote.bid },
-                    )?;
-                    Ok(next)
-                })();
-                match next {
-                    Ok(next) => {
-                        position = next;
-                        reason = if previous_flag == 0 {
-                            "full_position_entry"
-                        } else {
-                            "factor_reversal"
-                        };
-                    }
-                    Err(error) if previous_flag != 0 => {
-                        position.exit();
-                        reason = "reversal_entry_unavailable";
-                        warn!("CTA spread reversed entry unavailable; hedging old direction symbol={symbol} factor={factor}: {error:#}");
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
+        let reason = advance_position(
+            &mut position,
+            bar.as_ref(),
+            &self.config,
+            model_ts_ms,
+            self.entry_live_after_ms,
+            now,
+            MktChannel::instance().get_quote(&symbol, TradingVenue::BinanceMargin),
+        )?;
         let signal = bar.as_ref().map(|bar| signal_snapshot(bar, position.flag));
         let snapshot = json!({"enabled":self.config.enabled,"source":"independent_factor_strategy","strategy_name":factor,
-            "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u,"signal":signal,
+            "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u,"signal":signal,"decision_reason":reason,
             "position_flag":position.flag,"position_qty":position.qty,"cash_qty":position.cash_qty,"perpetual_qty":position.perpetual_qty});
         self.observations.entry(factor.clone()).or_default().insert(symbol.clone(), json!({"model_ts_ms":model_ts_ms,
-            "score_ready":bar.is_some(),"position_flag":position.flag,"position_qty":position.qty,"cash_qty":position.cash_qty,"perpetual_qty":position.perpetual_qty,"entry_notional":position.entry_notional,"signal":signal,"updated_ts_us":now}));
+            "score_ready":bar.is_some(),"position_flag":position.flag,"position_qty":position.qty,"cash_qty":position.cash_qty,"perpetual_qty":position.perpetual_qty,"entry_notional":position.entry_notional,"signal":signal,"decision_reason":reason,"updated_ts_us":now}));
         self.positions
             .entry(factor)
             .or_default()
@@ -410,7 +352,12 @@ impl CtaSpreadSignalApp {
             {
                 let item = strategies.entry(factor.clone()).or_default().entry(symbol.clone())
                     .or_insert_with(|| json!({"score_ready":false,"position_flag":0,"position_qty":0.0,"entry_notional":0.0}));
-                let qty = item["position_qty"].as_f64().unwrap_or(0.0);
+                let qty = self
+                    .positions
+                    .get(factor)
+                    .and_then(|rows| rows.get(symbol))
+                    .map(|position| position.qty)
+                    .unwrap_or(0.0);
                 item["factor_sign"] = json!(if *weight > 0.0 { "+" } else { "-" });
                 item["allocation_usdt"] = json!(self.config.max_pos_u);
                 item["mark_price"] = json!(mark);
@@ -444,6 +391,76 @@ impl CtaSpreadSignalApp {
         atomic_json(Path::new(SHADOW_PATH), &self.positions)
     }
 }
+/// Compute one absolute target transition; no exchange calls or partial updates.
+fn advance_position(
+    position: &mut StrategyPosition,
+    bar: Option<&WeightedBar>,
+    config: &CtaSpreadConfig,
+    model_ts_ms: i64,
+    live_after_ms: i64,
+    now_us: i64,
+    cash_quote: Option<Quote>,
+) -> Result<&'static str> {
+    position.validate()?;
+    if !config.enabled {
+        return Ok("publishing_disabled");
+    }
+    if model_ts_ms <= live_after_ms {
+        return Ok("historical_bar");
+    }
+    let Some(bar) = bar else {
+        return Ok("factor_unready");
+    };
+    let next_flag = next_position_flag(position.flag, bar, config);
+    if next_flag == position.flag {
+        return Ok(if position.flag == 0 && bar.value != 0.0 {
+            "spread_entry_blocked"
+        } else {
+            "hold"
+        });
+    }
+    if next_flag == 0 {
+        position.exit();
+        return Ok("factor_exit");
+    }
+    let previous_flag = position.flag;
+    let quote = cash_quote.filter(|quote| {
+        quote.bid.is_finite()
+            && quote.ask.is_finite()
+            && quote.bid > 0.0
+            && quote.ask >= quote.bid
+            && quote.ts > 0
+            && quote.ts <= now_us
+            && now_us - quote.ts <= CTA_SPREAD_MAX_QUOTE_AGE_MS as i64 * 1000
+    });
+    let Some(quote) = quote else {
+        if previous_flag != 0 {
+            position.exit();
+            return Ok("reversal_entry_unavailable");
+        }
+        return Ok("entry_quote_unavailable");
+    };
+    let mut next = position.clone();
+    next.exit();
+    if let Err(error) = next.enter_cash(
+        next_flag,
+        config.max_pos_u,
+        if next_flag > 0 { quote.bid } else { quote.ask },
+    ) {
+        if previous_flag != 0 {
+            position.exit();
+            return Ok("reversal_entry_unavailable");
+        }
+        return Err(error.context("size cash entry"));
+    }
+    *position = next;
+    Ok(if previous_flag == 0 {
+        "full_position_entry"
+    } else {
+        "factor_reversal"
+    })
+}
+
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     let mut file = fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
@@ -475,22 +492,312 @@ fn market_targets(symbol: &str, p: &StrategyPosition) -> [(String, Value); 2] {
         ),
         (
             symbol.to_string(),
-            json!({"qty":p.perpetual_qty,"signal":0}),
+            json!({"qty":p.perpetual_qty,"signal":1}),
         ),
     ]
 }
+const CASH_ORDER_STRATEGY: &str = "cta_spread_cash_maker";
+const PERPETUAL_ORDER_STRATEGY: &str = "cta_spread_perpetual_taker";
+
+fn position_payload(strategy_name: String, targets: &BTreeMap<String, Value>) -> Value {
+    // Always supply both market policies. Omitted overrides would reset the
+    // Manager mapping and allow the account binding's default algorithm to take over.
+    let overrides: BTreeMap<_, _> = targets
+        .keys()
+        .map(|symbol| {
+            (
+                symbol.clone(),
+                if symbol.ends_with("USDT") {
+                    PERPETUAL_ORDER_STRATEGY
+                } else {
+                    CASH_ORDER_STRATEGY
+                },
+            )
+        })
+        .collect();
+    json!({"strategy_name": strategy_name, "targets": targets,
+        "symbol_order_strategy_overrides": overrides})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cta_spread::factors::{aggregate_bar, SymbolFactors};
+    use crate::strategy::batch_exec_strategy::BatchExecConfig;
+    use crate::strategy::pov::{ExecAlgorithm, PovLiquidity};
+    use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
+    fn config() -> CtaSpreadConfig {
+        serde_json::from_str(include_str!("../../config/cta_spread.json")).unwrap()
+    }
+    fn bar(factor: f64, spread: Option<f64>) -> WeightedBar {
+        let input = ModelOutputScoreLookupResult {
+            service_name: String::new(),
+            symbol_key: "ETHUSDT".into(),
+            subscribed: true,
+            score: Some(1.0),
+            score_quantile: Some(factor),
+            score_ready: true,
+            score_long_threshold: None,
+            score_short_threshold: None,
+            filter_long_value: Some(0.001),
+            filter_long_threshold: None,
+            filter_short_value: Some(0.001),
+            filter_short_threshold: None,
+            filter_long_quantile: spread,
+            filter_short_quantile: spread,
+            filter_ready: spread.is_some(),
+            score_ts_ms: 60000,
+            note: String::new(),
+        };
+        aggregate_bar(
+            &SymbolFactors {
+                factors: vec!["factor_036".into()],
+                weights: vec![1.0],
+            },
+            &[input],
+            &config().entry,
+        )
+        .unwrap()
+    }
+
+    const NOW: i64 = 60_000_000;
+    fn quote() -> Quote {
+        Quote {
+            bid: 100.0,
+            ask: 100.0,
+            ts: NOW,
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn hedged_exit_publishes_both_nonzero_targets() {
+    fn complete_signal_lifecycle_keeps_inventory_and_publishes_absolute_targets() {
+        let mut c = config();
+        c.enabled = true;
         let mut p = StrategyPosition::default();
-        p.enter(1, TradingVenue::BinanceMargin, 200.0, 100.0)
-            .unwrap();
-        p.exit();
-        let targets: BTreeMap<_, _> = market_targets("ETHUSDT", &p).into_iter().collect();
-        assert_eq!(targets["ETH"]["qty"], 2.0);
-        assert_eq!(targets["ETHUSDT"]["qty"], -2.0);
+        assert_eq!(
+            advance_position(
+                &mut p,
+                Some(&bar(0.99, Some(0.2))),
+                &c,
+                60000,
+                0,
+                NOW,
+                Some(quote())
+            )
+            .unwrap(),
+            "full_position_entry"
+        );
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (2.0, 0.0, 2.0));
+        // Restart and a sizing change never resize an existing direction.
+        p = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        c.max_pos_u = 300.0;
+        assert_eq!(
+            advance_position(
+                &mut p,
+                Some(&bar(0.99, Some(0.2))),
+                &c,
+                60000,
+                0,
+                NOW,
+                Some(quote())
+            )
+            .unwrap(),
+            "hold"
+        );
+        assert_eq!(p.qty, 2.0);
+        assert_eq!(
+            advance_position(
+                &mut p,
+                Some(&bar(0.01, Some(0.8))),
+                &c,
+                60000,
+                0,
+                NOW,
+                Some(quote())
+            )
+            .unwrap(),
+            "factor_reversal"
+        );
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-1.0, -2.0, -3.0));
+        let targets = market_targets("ETHUSDT", &p);
+        assert_eq!(
+            advance_position(
+                &mut p,
+                Some(&bar(0.01, Some(0.8))),
+                &c,
+                60000,
+                0,
+                NOW,
+                Some(quote())
+            )
+            .unwrap(),
+            "hold"
+        );
+        assert_eq!(market_targets("ETHUSDT", &p), targets);
+        // Exit works without any price or spread observations.
+        assert_eq!(
+            advance_position(&mut p, Some(&bar(0.8, None)), &c, 60000, 0, NOW, None).unwrap(),
+            "factor_exit"
+        );
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-1.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn disabled_historical_and_unready_observations_never_change_positions() {
+        let mut c = config();
+        let mut p = StrategyPosition::default();
+        p.enter_cash(1, 200.0, 100.0).unwrap();
+        let saved = p.clone();
+        let reverse = bar(0.01, Some(0.8));
+        assert_eq!(
+            advance_position(&mut p, Some(&reverse), &c, 60000, 0, NOW, Some(quote())).unwrap(),
+            "publishing_disabled"
+        );
+        assert_eq!(p, saved);
+        c.enabled = true;
+        assert_eq!(
+            advance_position(&mut p, Some(&reverse), &c, 60000, 60000, NOW, Some(quote())).unwrap(),
+            "historical_bar"
+        );
+        assert_eq!(p, saved);
+        assert_eq!(
+            advance_position(&mut p, None, &c, 60000, 0, NOW, Some(quote())).unwrap(),
+            "factor_unready"
+        );
+        assert_eq!(p, saved);
+    }
+
+    #[test]
+    fn invalid_cash_quote_blocks_entries_but_only_exits_reversals() {
+        let mut c = config();
+        c.enabled = true;
+        for invalid in [
+            None,
+            Some(Quote {
+                ts: NOW - 5_000_001,
+                ..quote()
+            }),
+            Some(Quote {
+                ts: NOW + 1,
+                ..quote()
+            }),
+            Some(Quote {
+                bid: f64::NAN,
+                ..quote()
+            }),
+            Some(Quote {
+                ask: 99.0,
+                ..quote()
+            }),
+            Some(Quote {
+                bid: 0.0,
+                ..quote()
+            }),
+        ] {
+            for (factor, spread, old_direction) in [(0.99, 0.2, -1), (0.01, 0.8, 1)] {
+                let b = bar(factor, Some(spread));
+                let mut p = StrategyPosition::default();
+                assert_eq!(
+                    advance_position(&mut p, Some(&b), &c, 60000, 0, NOW, invalid).unwrap(),
+                    "entry_quote_unavailable"
+                );
+                assert_eq!(p, StrategyPosition::default());
+                p.enter_cash(old_direction, 200.0, 100.0).unwrap();
+                let old_cash = p.cash_qty;
+                assert_eq!(
+                    advance_position(&mut p, Some(&b), &c, 60000, 0, NOW, invalid).unwrap(),
+                    "reversal_entry_unavailable"
+                );
+                assert_eq!(
+                    (p.cash_qty, p.perpetual_qty, p.qty),
+                    (old_cash, -old_cash, 0.0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unrepresentable_reverse_quantity_still_hedges_old_cash() {
+        let mut c = config();
+        c.enabled = true;
+        let mut p = StrategyPosition::default();
+        p.enter_cash(1, 200.0, 100.0).unwrap();
+        let tiny = Quote {
+            bid: 1e-308,
+            ask: 1e-308,
+            ..quote()
+        };
+        assert_eq!(
+            advance_position(
+                &mut p,
+                Some(&bar(0.01, Some(0.8))),
+                &c,
+                60000,
+                0,
+                NOW,
+                Some(tiny)
+            )
+            .unwrap(),
+            "reversal_entry_unavailable"
+        );
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (2.0, -2.0, 0.0));
+    }
+
+    #[test]
+    fn entry_exit_and_reversal_publish_cash_maker_and_contract_taker() {
+        for direction in [-1, 1] {
+            let mut p = StrategyPosition::default();
+            p.enter_cash(direction, 200.0, 100.0).unwrap();
+            for stage in 0..3 {
+                if stage == 1 {
+                    p.exit();
+                }
+                if stage == 2 {
+                    p.enter_cash(-direction, 300.0, 100.0).unwrap();
+                }
+                let payload = position_payload(
+                    "factor_170".into(),
+                    &market_targets("ETHUSDT", &p).into_iter().collect(),
+                );
+                assert_eq!(payload["targets"]["ETH"]["qty"], p.cash_qty);
+                assert_eq!(payload["targets"]["ETHUSDT"]["qty"], p.perpetual_qty);
+                assert_eq!(payload["targets"]["ETH"]["signal"], 0);
+                assert_eq!(payload["targets"]["ETHUSDT"]["signal"], 1);
+                assert_eq!(
+                    payload["symbol_order_strategy_overrides"]["ETH"],
+                    CASH_ORDER_STRATEGY
+                );
+                assert_eq!(
+                    payload["symbol_order_strategy_overrides"]["ETHUSDT"],
+                    PERPETUAL_ORDER_STRATEGY
+                );
+            }
+        }
         assert!(cash_symbol("ETHUSDC").is_err());
+    }
+
+    #[test]
+    fn prepared_manager_templates_enforce_market_liquidity_policies() {
+        let templates: Vec<Value> = serde_json::from_str(include_str!(
+            "../../config/cta_spread_order_strategies.json"
+        ))
+        .unwrap();
+        let templates: BTreeMap<_, BatchExecConfig> = templates
+            .into_iter()
+            .map(|row| {
+                (
+                    row["strategy_name"].as_str().unwrap().to_string(),
+                    serde_json::from_value(row["order_parameters"].clone()).unwrap(),
+                )
+            })
+            .collect();
+        let cash = &templates[CASH_ORDER_STRATEGY];
+        cash.validate().unwrap();
+        assert_eq!(cash.algorithm, ExecAlgorithm::Pov);
+        assert_eq!(cash.pov.liquidity, PovLiquidity::MakerOnly);
+        let perpetual = &templates[PERPETUAL_ORDER_STRATEGY];
+        perpetual.validate().unwrap();
+        assert_eq!(perpetual.algorithm, ExecAlgorithm::Ctaker);
     }
 }

@@ -1,7 +1,6 @@
 use super::config::CtaSpreadConfig;
 use super::factors::WeightedBar;
 use anyhow::{ensure, Result};
-use order_common::TradingVenue;
 use serde::{Deserialize, Serialize};
 
 /// A factor's targets include the carried basis position after a directional exit.
@@ -46,18 +45,11 @@ impl StrategyPosition {
         Ok(())
     }
 
-    pub fn enter(&mut self, flag: i8, venue: TradingVenue, amount: f64, price: f64) -> Result<()> {
+    pub fn enter_cash(&mut self, flag: i8, amount: f64, price: f64) -> Result<()> {
         self.validate()?;
         ensure!(
             self.flag == 0,
             "cannot add to an active directional position"
-        );
-        ensure!(
-            matches!(
-                venue,
-                TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
-            ),
-            "unsupported entry market"
         );
         ensure!(
             matches!(flag, -1 | 1)
@@ -69,11 +61,7 @@ impl StrategyPosition {
         );
         let qty = f64::from(flag) * amount / price;
         let mut next = self.clone();
-        if venue == TradingVenue::BinanceMargin {
-            next.cash_qty += qty;
-        } else {
-            next.perpetual_qty += qty;
-        }
+        next.cash_qty += qty;
         next.flag = flag;
         next.qty = qty;
         next.entry_notional = amount;
@@ -90,24 +78,20 @@ impl StrategyPosition {
     }
 }
 
-pub fn entry_venue(flag: i8, bar: &WeightedBar, config: &CtaSpreadConfig) -> Option<TradingVenue> {
+pub fn cash_entry_allowed(flag: i8, bar: &WeightedBar, config: &CtaSpreadConfig) -> bool {
     if !matches!(flag, -1 | 1) || !bar.spread.filter_ready {
-        return None;
+        return false;
     }
-    let q = bar
+    let Some(q) = bar
         .spread
         .filter_long_quantile
-        .filter(|q| q.is_finite() && (0.0..=1.0).contains(q))?;
-    let low = config.entry.spread_lower_quantile - q > 4.0 * f64::EPSILON;
-    let high = q - config.entry.spread_upper_quantile > 4.0 * f64::EPSILON;
-    if !low && !high {
-        return None;
-    }
-    Some(if (flag > 0 && low) || (flag < 0 && high) {
-        TradingVenue::BinanceMargin
-    } else {
-        TradingVenue::BinanceFutures
-    })
+        .filter(|q| q.is_finite() && (0.0..=1.0).contains(q))
+    else {
+        return false;
+    };
+    // Every directional entry uses cash. The basis must favour that cash side.
+    (flag > 0 && config.entry.spread_lower_quantile - q > 4.0 * f64::EPSILON)
+        || (flag < 0 && q - config.entry.spread_upper_quantile > 4.0 * f64::EPSILON)
 }
 
 pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaSpreadConfig) -> i8 {
@@ -121,7 +105,7 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaSpreadConf
     // Opposite entry votes can reverse immediately. A blocked new entry still
     // exits the old direction, leaving its cash inventory hedged by perpetuals.
     if current != 0 && vote == -current {
-        return if entry_venue(vote, bar, config).is_some() {
+        return if cash_entry_allowed(vote, bar, config) {
             vote
         } else {
             0
@@ -137,7 +121,7 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaSpreadConf
     if current != 0 {
         return current;
     }
-    if entry_venue(vote, bar, config).is_some() {
+    if cash_entry_allowed(vote, bar, config) {
         vote
     } else {
         0
@@ -183,20 +167,28 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn factor_and_spread_select_all_four_entry_markets() {
+    fn cash_entries_require_spread_favouring_the_factor_direction() {
         let c = config();
-        for (f, q, flag, venue) in [
-            (0.99, 0.2, 1, TradingVenue::BinanceMargin),
-            (0.99, 0.8, 1, TradingVenue::BinanceFutures),
-            (0.01, 0.2, -1, TradingVenue::BinanceFutures),
-            (0.01, 0.8, -1, TradingVenue::BinanceMargin),
+        for (factor, q, expected) in [
+            (0.99, 0.2, 1),
+            (0.99, 0.8, 0),
+            (0.01, 0.2, 0),
+            (0.01, 0.8, -1),
         ] {
-            let b = bar(f, Some(q));
-            assert_eq!(next_position_flag(0, &b, &c), flag);
-            assert_eq!(entry_venue(flag, &b, &c), Some(venue));
+            assert_eq!(next_position_flag(0, &bar(factor, Some(q)), &c), expected);
         }
-        for q in [Some(0.3), Some(0.5), Some(0.7), None, Some(f64::NAN)] {
-            assert_eq!(next_position_flag(0, &bar(0.99, q), &c), 0);
+        for factor in [0.99, 0.01] {
+            for q in [
+                Some(0.3),
+                Some(0.5),
+                Some(0.7),
+                None,
+                Some(f64::NAN),
+                Some(-0.1),
+                Some(1.1),
+            ] {
+                assert_eq!(next_position_flag(0, &bar(factor, q), &c), 0);
+            }
         }
     }
     #[test]
@@ -210,86 +202,66 @@ mod tests {
     #[test]
     fn cash_exit_is_hedged_and_restart_and_later_entries_keep_inventory() {
         let mut p = StrategyPosition::default();
-        p.enter(1, TradingVenue::BinanceMargin, 200.0, 100.0)
-            .unwrap();
+        p.enter_cash(1, 200.0, 100.0).unwrap();
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (2.0, 0.0, 2.0));
         p.exit();
         assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (2.0, -2.0, 0.0));
         p = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         p.validate().unwrap();
-        p.enter(-1, TradingVenue::BinanceFutures, 200.0, 100.0)
-            .unwrap();
-        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (2.0, -4.0, -2.0));
+        p.enter_cash(-1, 200.0, 100.0).unwrap();
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (0.0, -2.0, -2.0));
         p.exit();
-        assert_eq!((p.cash_qty, p.perpetual_qty), (2.0, -2.0));
-        p.enter(-1, TradingVenue::BinanceMargin, 200.0, 100.0)
-            .unwrap();
-        p.exit();
-        assert_eq!((p.cash_qty, p.perpetual_qty), (0.0, 0.0));
-        assert!(p.enter(1, TradingVenue::BinanceMargin, 1.0, 0.0).is_err());
+        assert_eq!(p, StrategyPosition::default());
+        let saved = p.clone();
+        assert!(p.enter_cash(1, 1.0, 0.0).is_err());
+        assert_eq!(p, saved);
     }
     #[test]
-    fn reversals_are_immediate_but_missing_spread_only_exits() {
+    fn reversals_require_new_cash_side_spread_otherwise_only_exit() {
         let c = config();
-        for (current, factor) in [(1, 0.01), (-1, 0.99)] {
-            for q in [0.2, 0.8] {
-                assert_eq!(
-                    next_position_flag(current, &bar(factor, Some(q)), &c),
-                    -current
-                );
-            }
-            for q in [Some(0.5), None] {
+        for (current, factor, allowed, blocked) in [(1, 0.01, 0.8, 0.2), (-1, 0.99, 0.2, 0.8)] {
+            assert_eq!(
+                next_position_flag(current, &bar(factor, Some(allowed)), &c),
+                -current
+            );
+            for q in [Some(blocked), Some(0.3), Some(0.5), Some(0.7), None] {
                 assert_eq!(next_position_flag(current, &bar(factor, q), &c), 0);
             }
         }
     }
     #[test]
-    fn reversed_targets_include_old_hedge_and_new_direction_once() {
+    fn reversed_targets_include_old_contract_hedge_and_new_cash_once() {
         for direction in [-1, 1] {
-            for entry_market in [TradingVenue::BinanceMargin, TradingVenue::BinanceFutures] {
-                for reverse_market in [TradingVenue::BinanceMargin, TradingVenue::BinanceFutures] {
-                    let mut p = StrategyPosition::default();
-                    p.enter(direction, entry_market, 200.0, 100.0).unwrap();
-                    let old_cash = p.cash_qty;
-                    p.exit();
-                    p.enter(-direction, reverse_market, 300.0, 100.0).unwrap();
-                    p.validate().unwrap();
-                    assert_eq!(p.qty, -3.0 * f64::from(direction));
-                    assert_eq!(
-                        p.cash_qty,
-                        old_cash
-                            + if reverse_market == TradingVenue::BinanceMargin {
-                                -3.0 * f64::from(direction)
-                            } else {
-                                0.0
-                            }
-                    );
-                    assert_eq!(p.cash_qty + p.perpetual_qty, p.qty);
-                    // A repeated same-direction bar must keep fixed quantities.
-                    let saved = p.clone();
-                    assert_eq!(
-                        next_position_flag(
-                            p.flag,
-                            &bar(if direction > 0 { 0.01 } else { 0.99 }, Some(0.8)),
-                            &config()
-                        ),
-                        p.flag
-                    );
-                    assert_eq!(p, saved);
-                }
-            }
+            let d = f64::from(direction);
+            let mut p = StrategyPosition::default();
+            p.enter_cash(direction, 200.0, 100.0).unwrap();
+            p.exit();
+            p.enter_cash(-direction, 300.0, 100.0).unwrap();
+            p.validate().unwrap();
+            assert_eq!(
+                (p.cash_qty, p.perpetual_qty, p.qty),
+                (-d, -2.0 * d, -3.0 * d)
+            );
+            let saved = p.clone();
+            assert_eq!(
+                next_position_flag(
+                    p.flag,
+                    &bar(if direction > 0 { 0.01 } else { 0.99 }, Some(0.5)),
+                    &config()
+                ),
+                p.flag
+            );
+            assert!(p.enter_cash(-direction, 300.0, 100.0).is_err());
+            assert_eq!(p, saved);
+            p.exit();
+            assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-d, d, 0.0));
         }
     }
     #[test]
-    fn short_cash_and_perpetual_only_exits() {
+    fn short_cash_exits_with_long_contract_without_buying_back_cash() {
         let mut p = StrategyPosition::default();
-        p.enter(-1, TradingVenue::BinanceMargin, 200.0, 100.0)
-            .unwrap();
+        p.enter_cash(-1, 200.0, 100.0).unwrap();
         p.exit();
-        assert_eq!((p.cash_qty, p.perpetual_qty), (-2.0, 2.0));
-        let mut p = StrategyPosition::default();
-        p.enter(1, TradingVenue::BinanceFutures, 200.0, 100.0)
-            .unwrap();
-        p.exit();
-        assert_eq!(p, StrategyPosition::default());
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-2.0, 2.0, 0.0));
     }
 }

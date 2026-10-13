@@ -48,7 +48,9 @@ done
 for file in scripts/start_"cta_${FAMILY}"*.sh scripts/stop_"cta_${FAMILY}"*.sh scripts/"cta_${FAMILY}"*.py scripts/process_match_lib.sh scripts/factor_validation_allowlist.txt; do
   install -m 755 "$file" "$TARGET_DIR/scripts/$(basename "$file")"
 done
-for suffix in .json _symbol_factors.json _factor_model_1m_pub.toml; do
+config_suffixes=(.json _symbol_factors.json _factor_model_1m_pub.toml)
+[[ "$FAMILY" == spread ]] && config_suffixes+=(_order_strategies.json)
+for suffix in "${config_suffixes[@]}"; do
   file="config/cta_${FAMILY}${suffix}"
   [[ -f "$TARGET_DIR/$file" ]] || install -m 644 "$file" "$TARGET_DIR/$file"
 done

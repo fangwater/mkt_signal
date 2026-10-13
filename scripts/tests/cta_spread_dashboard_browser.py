@@ -24,7 +24,7 @@ def main():
         status=root/'status.json'
         status.write_text(json.dumps({'updated_ts_us':time.time_ns()//1000,'symbol_factors':{'ETHUSDT':{'factor_036':1},'SOLUSDT':{'factor_036':-1}},'strategies':{'factor_036':{
             'ETHUSDT':{'score_ready':True,'position_flag':0,'position_qty':0,'cash_qty':2,'perpetual_qty':-2,'entry_notional':0,'position_usdt':0,'signal':{'quantile':.2,'spread_quantile':.5,'spread_value':.001}},
-            'SOLUSDT':{'score_ready':True,'position_flag':-1,'position_qty':-3,'cash_qty':2,'perpetual_qty':-5,'entry_notional':200,'position_usdt':-200,'signal':{'quantile':.05,'spread_quantile':.2,'spread_value':-.002}},
+            'SOLUSDT':{'decision_reason':'factor_reversal','score_ready':True,'position_flag':-1,'position_qty':-3,'cash_qty':-1,'perpetual_qty':-2,'entry_notional':200,'position_usdt':-200,'signal':{'quantile':.05,'spread_quantile':.8,'spread_value':.002}},
         }}}))
         server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(config,status,ROOT/'web/cta_spread/index.html'))
         threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -36,7 +36,10 @@ def main():
                 page.goto(f'http://127.0.0.1:{server.server_port}/')
                 page.wait_for_function("document.querySelector('#rows').children.length === 2")
                 assert '已对冲' in page.locator('#rows').inner_text()
-                assert '-5.00000000' in page.locator('#rows').inner_text()
+                assert '现货反转' in page.locator('#rows').inner_text()
+                assert '现货开多需价差' in page.locator('#params').inner_text()
+                assert '-1.00000000' in page.locator('#rows').inner_text()
+                assert '-2.00000000' in page.locator('#rows').inner_text()
                 assert '仅观察' in page.locator('#publishing').inner_text()
                 page.locator('#hide-flat').check()
                 assert page.locator('#rows tr').count()==2

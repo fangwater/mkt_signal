@@ -589,7 +589,7 @@ impl CtaSpreadFactorModel1mPubApp {
         }
         app.publish_enabled = true;
         info!(
-            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=1440/1440/720",
+            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
@@ -1046,12 +1046,11 @@ mod tests {
             .map(|factor| output_service_path("binance-futures", factor))
             .collect::<Vec<_>>(),
             vec![
-                "model_output/cta_spread-binance-futures-1m-factor_036",
-                "model_output/cta_spread-binance-futures-1m-factor_051",
+                "model_output/cta_spread-binance-futures-1m-baseline_164",
+                "model_output/cta_spread-binance-futures-1m-baseline_141",
                 "model_output/cta_spread-binance-futures-1m-factor_170",
-                "model_output/cta_spread-binance-futures-1m-factor_004",
-                "model_output/cta_spread-binance-futures-1m-td_ti_002",
-                "model_output/cta_spread-binance-futures-1m-baseline_004",
+                "model_output/cta_spread-binance-futures-1m-factor_113",
+                "model_output/cta_spread-binance-futures-1m-factor_052",
             ]
         );
     }

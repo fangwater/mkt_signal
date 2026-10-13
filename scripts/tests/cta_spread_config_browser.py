@@ -27,9 +27,9 @@ def main():
             (directory / name).write_bytes((ROOT / 'config' / name).read_bytes())
         redis = FakeFactorRedis()
         env = 'binance-cta-spread-test'
-        redis.values[env + ':cta_symbol_factors'] = json.dumps({'FILUSDT': {'factor_036': -1}})
-        redis.values[env + ':cta_factor_strategies'] = json.dumps({'factor_036': {'max_pos_u': 1000, 'max_pos_u_overrides': {}}})
-        manager_key = 'binance-exec-cta-spread-test:binance-futures:batch_exec:factor_036'
+        redis.values[env + ':cta_symbol_factors'] = json.dumps({'FILUSDT': {'factor_113': -1}})
+        redis.values[env + ':cta_factor_strategies'] = json.dumps({'factor_113': {'max_pos_u': 1000, 'max_pos_u_overrides': {}}})
+        manager_key = 'binance-exec-cta-spread-test:binance-futures:batch_exec:factor_113'
         redis.values[manager_key] = '{"maker_timeout_ms":4321,"targets":{"FILUSDT":{"qty":"clear","signal":0}}}'
         original_exec = redis.values[manager_key]
         store = ConfigStore(directory / 'cta_spread.json')
@@ -66,7 +66,7 @@ def main():
                 saved_sizing = redis.values[env + ':cta_factor_strategies']
                 saved_factors = redis.values[env + ':cta_symbol_factors']
                 page.locator('#factor_exit_quantile_long').fill('.95')
-                page.locator('#factor-json').fill('{"FILUSDT":{"factor_036":1}}')
+                page.locator('#factor-json').fill('{"FILUSDT":{"factor_113":1}}')
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT') as rejected:
                     page.locator('#save-all').click()
                 assert rejected.value.status == 400
