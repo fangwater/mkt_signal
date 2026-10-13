@@ -7,6 +7,25 @@
 新清单为 9 币、5 因子、24 项绑定，NQ 为 120/min60；单份沿用线上
 100 USDT，策略前缀沿用 `lgq_cta_`。Spread RX01 不在操作范围内。
 
+只清理旧组合、暂不启用新策略时，使用独立的操作者脚本：
+
+```bash
+ssh jp-meta-elvpn 'cd ~/binance-cta-perp-rx02 && source env.sh && python3 scripts/retire_cta_rx02_bindings.py'
+ssh -t jp-meta-elvpn 'cd ~/binance-cta-perp-rx02 && source env.sh && python3 scripts/retire_cta_rx02_bindings.py --execute'
+```
+
+第一条只读；第二条由操作者执行，会触发真实平仓。按新 symbol × factor 清单
+保留 `NEARUSDT / factor_036`，移除其余 31 个旧组合，不因为币种仍在新清单中
+而保留旧因子仓位。脚本备份旧清单与目标仓位，通过现有配置 helper 原子缩减
+旧 Redis 清单，再同步旧配置文件；旧信号继续运行，为退出组合持续发布零目标。
+保留组合继续按原信号运行，新 Perp 发布保持关闭。不会删除持仓账本、改 Manager
+份数、启动新策略或重启 Exec。默认模式不写任何远端状态。
+
+`[TARGETS ZERO]` 仅表示旧发布器已加载缩减清单、目标归零且未报告发布错误；
+必须另外检查 Manager 投递和 Exec 实际仓位/成交。异常时不自动恢复旧清单，
+以免已经平掉的旧组合重新开仓。此次退休不生成切换 started 标记，后续正式
+切换仍从旧发布器读取最终状态，保留已退出组合的零目标。
+
 08:25 UTC 新版预热完成，24/24 组合实时就绪、9/9 NQ 就绪；四个进程在线，
 新仓位发布保持关闭。publisher PID 4133794 位于 CPU18，另外三个进程位于
 0-5。新旧 RX02 及 Exec 仍各自独立运行，没有执行仓位切换。B/S 页面已验证
