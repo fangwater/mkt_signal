@@ -1,0 +1,85 @@
+{
+  "observed_utc": "2026-10-13 07:37:27 UTC",
+  "new_enabled": false,
+  "old_enabled": true,
+  "cutover_started": false,
+  "processes": [
+    {
+      "pid": 140816,
+      "env": "binance-cta-special-rx02",
+      "exe": "cta_special_signal",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 147320,
+      "env": "binance-cta-special-rx02",
+      "exe": "python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 945585,
+      "env": "binance-cta-special-rx02",
+      "exe": "python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1975542,
+      "env": "binance-cta-special-rx02",
+      "exe": "cta_special_factor_model_1m_pub",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3841796,
+      "env": "binance-cta-perp-rx02",
+      "exe": "cta_perp_factor_model_1m_pub",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "readiness": {
+    "bindings": 24,
+    "factors_ready": 0,
+    "nq_ready_symbols": 9,
+    "latest_model_ts_ms": 1791719940000,
+    "history_bytes": 1713388
+  },
+  "binaries": {
+    "cta_perp_signal": "e4600b7948abd8aabe9e50817d9dfe1574e6cf2185bac333843a55df0b511081",
+    "cta_perp_factor_model_1m_pub": "b238b5a28b82532c041e2ae746ffff1b1456418c8519d62e2db763c3e2ab087e"
+  },
+  "nginx_unchanged": true
+}

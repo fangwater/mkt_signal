@@ -64,7 +64,14 @@ K 线由独立只读后台直连 Binance 公共 Spot Klines 补缺，缺失时�
 
 ## RX02 Perp 新清单与 NQ 短窗口
 
-2026-10-13 更新仓库内 CTA Perp 配置与计算；尚未切换线上旧 RX02。
+2026-10-13 07:35 UTC 已将本地 release 二进制 `976d557e` 与切换脚本
+`f72ab0e4` 校验后安装到 JP `~/binance-cta-perp-rx02`。只启动新 Kafka 因子
+发布器 PID 3841796（CPU 0-5）；新配置保持 enabled=false、单份 100 USDT，
+新仓位发布器及两个页面服务均未启动。独立 Redis 清单已初始化。07:36 UTC
+仍在历史预热，尚未切换旧 RX02、未发布新仓位目标。Nginx 候选配置测试通过但
+没有安装。用户执行的切换命令与状态承接详见 [RX02 切换说明](cta_perp_rx02_cutover.md)。
+
+2026-10-13 更新 CTA Perp 配置与计算；尚未切换线上旧 RX02。
 NQ 的价格极值窗口和分位窗口均为 **120 个分钟槽位**，至少 **60 个有效
 NQ 样本**后就绪。缺失分钟占槽位、不过滤掉时间间隔，不计入有效样本，
 第 121 分钟开始淘汰最早样本。BUY_NQ/SELL_NQ 改为相对最近 2h 最低/最高
@@ -83,7 +90,7 @@ RX02 只读现场状态与旧仓库清单一致：16 币/32 个绑定 → 9 币/
 没有新增币种，移除 AVAX、BNB、DOT、FIL、LINK、LTC、UNI。
 只有 NEAR × factor_036(-1) 原样保留；其余移除 31 个绑定、新增 23 个绑定。
 新清单和发布器 universe 同步维护在 `config/cta_perp_symbol_factors.json`
-和 `config/cta_perp_factor_model_1m_pub.toml`，未写入线上 Redis。
+和 `config/cta_perp_factor_model_1m_pub.toml`，已写入新环境独立 Redis，旧环境清单未改。
 
 零目标与删除策略含义不同：保留原策略并发布 qty=0 时，Exec 使用原策略的
 账本仓位执行目标调仓；删除策略或发现无法归属的账户余量时，剩余仓位可进入

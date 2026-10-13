@@ -1,6 +1,11 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 06:49 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 07:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 07:35 UTC 新增 `binance-cta-perp-rx02` 预备目录，仅启动 Kafka
+因子预热；仓位发布保持关闭。它不部署交易引擎、不复制 LTP 凭证、不申请独立
+source IP，没有 `local_ips`、EIP、ENI 或路由变更。旧 RX02 与 trade05 原配置
+保持不变；新页面 Nginx 候选文件仅验证、尚未安装。
 
 2026-10-13 06:49 UTC 更新 Spread 只读 Dashboard，增加 signals 页面及现货
 公共 K 线后台。Spot API 默认路由实测仍经 `ens41` / `172.31.35.228`，
