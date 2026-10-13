@@ -1,11 +1,10 @@
 [universe]
 symbols = [
-  "AAVEUSDT", "ADAUSDT", "AVAXUSDT", "BCHUSDT", "BTCUSDT", "DASHUSDT",
-  "DOGEUSDT", "DOTUSDT", "ETHUSDT", "FILUSDT", "LINKUSDT", "LTCUSDT",
-  "NEARUSDT", "SOLUSDT", "TRXUSDT", "UNIUSDT", "XLMUSDT", "XRPUSDT",
-  "ZECUSDT",
+  "AAVEUSDT", "ADAUSDT", "AVAXUSDT", "BCHUSDT", "DASHUSDT", "DOGEUSDT",
+  "DOTUSDT", "FILUSDT", "LINKUSDT", "LTCUSDT", "NEARUSDT", "SOLUSDT",
+  "UNIUSDT", "XLMUSDT", "XRPUSDT", "ZECUSDT",
 ]
-factors = ["baseline_164", "baseline_141", "factor_170", "factor_113", "factor_052"]
+factors = ["baseline_141", "baseline_164", "TD_TI_027", "TD_TI_024", "factor_052"]
 
 [tlen_server]
 base_url = "http://127.0.0.1:6322"

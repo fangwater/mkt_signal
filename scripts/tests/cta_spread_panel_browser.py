@@ -66,12 +66,14 @@ def main():
                 page.goto(f'http://127.0.0.1:{server.server_port}/cta/test/signals/')
                 page.wait_for_selector('#events [data-event]')
                 assert page.locator('.factor').count()==5
-                assert page.locator('.symbol').count()==18
+                page.locator('.factor[data-factor="baseline_141"]').click()
+                page.wait_for_function("document.querySelector('#factor-name').textContent==='baseline_141'")
+                assert page.locator('.symbol').count()==15
                 assert '发布关闭' in page.locator('#publishing').inner_text()
-                assert '5 / 57' in page.locator('#combinations').inner_text()
-                assert page.locator('#live-ready').inner_text()=='0 / 57'
-                page.locator('.symbol[data-symbol="ETHUSDT"]').click()
-                page.wait_for_function("document.querySelector('#instrument').textContent==='ETH / USDT' && document.querySelector('#events [data-event]')")
+                assert '5 / 46' in page.locator('#combinations').inner_text()
+                assert page.locator('#live-ready').inner_text()=='0 / 46'
+                page.locator('.symbol[data-symbol="BCHUSDT"]').click()
+                page.wait_for_function("document.querySelector('#instrument').textContent==='BCH / USDT' && document.querySelector('#events [data-event]')")
                 page.locator('[data-hours="1"]').click()
                 page.wait_for_function("echarts.getInstanceByDom(document.getElementById('chart')).getOption()?.xAxis?.[0]?.data.length===61")
                 option=page.evaluate("echarts.getInstanceByDom(document.getElementById('chart')).getOption()")
@@ -89,19 +91,19 @@ def main():
                 page.locator('#events tr').filter(has_text='合约对冲退出').first.click()
                 assert '合约' in page.locator('#inspector-title').inner_text()
                 # Different bindings/sign must change both chart and symbol universe.
-                page.locator('.factor[data-factor="factor_170"]').click()
-                page.wait_for_function("document.querySelector('#factor-name').textContent==='factor_170' && document.querySelectorAll('.symbol').length===7")
-                assert page.locator('.symbol[data-symbol="ETHUSDT"]').count()==0
+                page.locator('.factor[data-factor="TD_TI_027"]').click()
+                page.wait_for_function("document.querySelector('#factor-name').textContent==='TD_TI_027' && document.querySelectorAll('.symbol').length===8")
+                assert page.locator('.symbol[data-symbol="BCHUSDT"]').count()==0
                 page.wait_for_function("document.querySelector('#sign').textContent.includes('1−q')")
-                page.locator('.symbol[data-symbol="LTCUSDT"]').click()
-                page.wait_for_function("document.querySelector('#instrument').textContent==='LTC / USDT' && document.querySelector('#events [data-event]')")
-                page.locator('#search').fill('LTC');assert page.locator('.symbol').count()==1
+                page.locator('.symbol[data-symbol="FILUSDT"]').click()
+                page.wait_for_function("document.querySelector('#instrument').textContent==='FIL / USDT' && document.querySelector('#events [data-event]')")
+                page.locator('#search').fill('FIL');assert page.locator('.symbol').count()==1
                 page.locator('#search').fill('')
                 page.locator('.factor[data-factor="baseline_141"]').click()
                 page.wait_for_function("document.querySelector('#factor-name').textContent==='baseline_141' && document.querySelector('#sign').textContent==='sign +1'")
-                assert page.locator('.symbol.active').get_attribute('data-symbol')=='LTCUSDT'
-                page.locator('.symbol[data-symbol="ETHUSDT"]').click()
-                page.wait_for_function("document.querySelector('#instrument').textContent==='ETH / USDT' && document.querySelector('#events [data-event]')")
+                assert page.locator('.symbol.active').get_attribute('data-symbol')=='FILUSDT'
+                page.locator('.symbol[data-symbol="BCHUSDT"]').click()
+                page.wait_for_function("document.querySelector('#instrument').textContent==='BCH / USDT' && document.querySelector('#events [data-event]')")
                 page.evaluate("document.querySelector('#account').textContent='LOCAL TEST FIXTURE · synthetic data'")
                 page.screenshot(path=str(args.output/'desktop_fixture.png'),full_page=True)
                 page.set_viewport_size(dict(width=390,height=844))
@@ -117,7 +119,7 @@ def main():
                 assert not errors,errors
                 browser.close()
             assert before==(cfg.read_bytes(),status.read_bytes(),factors.read_bytes())
-            print(json.dumps(dict(result='passed',strategies=5,bindings=57,js_errors=errors,
+            print(json.dumps(dict(result='passed',strategies=5,bindings=46,js_errors=errors,
                                   checks=['spot_and_hedge_markers','marker_click','reversal','signed_factor_switch','symbol_scope','time_range','proxy_prefix','responsive','missing_candles','read_only']),indent=2))
         finally:server.shutdown();server.server_close();history.close()
 
