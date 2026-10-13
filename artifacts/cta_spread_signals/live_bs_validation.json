@@ -1,0 +1,31 @@
+{
+  "url": "http://13.115.227.29:4191/cta/binance-cta-spread-rx01/signals/?factor=baseline_164",
+  "symbol": "ETHUSDT",
+  "factor": "baseline_164",
+  "publication": "仓位发布关闭 · 仅观察",
+  "history_ready": "42 / 57",
+  "live_ready": "0 / 57",
+  "model_time": "10-12 23:33",
+  "buy_marker_clicked_at": "2026-10-12 22:03 UTC",
+  "hedge_marker_inspected_at": "2026-10-12 22:14 UTC",
+  "plotted_marker_counts": [
+    {
+      "name": "现货 B",
+      "count": 1
+    },
+    {
+      "name": "现货 S",
+      "count": 0
+    },
+    {
+      "name": "合约对冲 B",
+      "count": 0
+    },
+    {
+      "name": "合约对冲 S",
+      "count": 1
+    }
+  ],
+  "js_errors": [],
+  "checked_at": "2026-10-13T06:56:01.898450+00:00"
+}

@@ -36,6 +36,12 @@
 验证桌面/手机、factor 符号及币种切换通过，详见
 `artifacts/cta_spread_signals/{validation,browser_validation}.json`。
 
+后续线上 B/S 验证：历史回放推进到 10-12 23:33 UTC，42/57 个组合因子
+已就绪。已实际点击 ETH × baseline_164 的 10-12 22:03 现货 B 标记，
+并检查 22:14 合约 S 对冲退出；图表均有行情价格，浏览器无错误。
+这仍是历史信号回放，不是成交，实时就绪当时为 0/57，发布持续关闭。
+证据：`artifacts/cta_spread_signals/live_bs_validation.json`。
+
 `/cta/binance-cta-spread-rx01/signals/` 按 factor 独立切换其已配置币种，
 展示现货 1m K 线、修正因子分位、价差分位及方向变化 B/S 点。
 绿色/红色三角是现货开仓，金色菱形是合约对冲退出；允许反转时同一分钟
