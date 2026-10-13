@@ -67,7 +67,7 @@ Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 | q > .90 做多 | 买现货 | 不开仓 | 不开仓 |
 | q < .10 做空 | 不开仓 | 不开仓 | 卖空现货 |
 
-开仓始终使用现货 maker：因子多头仅在低价差分位开仓，因子空头仅在高价差分位开仓。
+开仓始终使用现货目标：因子多头仅在低价差分位开仓，因子空头仅在高价差分位开仓。
 方向不匹配或价差未就绪不入场。使用当前有效且不超过 5 秒的现货 BBO 换算数量。
 即使现货流缺失，因子仍可用于退出：实时缺少配对超过 5 秒时发布带
 `filter_ready=false` 的因子 bar，不以旧价差替代。因子本身未就绪时保持状态。
@@ -79,17 +79,18 @@ exit long / exit short 仍由修正后的因子分位触发，价差不触发或
 实际成交、两市场独立 FIFO 和 PnL 使用 Manager；Spread 页面展示信号目标，
 不套用 Perp 单市场的模拟回测。
 
-每次发布都通过 Manager 现有 `symbol_order_strategy_overrides` 绑定两条腿：
-裸币种现货 → `cta_spread_cash_maker`，USDT 永续 → `cta_spread_perpetual_taker`。
-现货使用现有 POV `maker_only`，不因超时转 taker；永续使用 `ctaker`，目标的
-`signal=1` 表示 taker 执行方式，买卖方向仍由目标减实际仓位决定。现货目标为 `signal=0`。
-这两个模板覆盖账户绑定的默认执行模板，不能统一绑定 ctaker 后让现货也吃单。
+两套 CTA 使用同一仓位发布请求：`strategy_name` 和 `targets`，
+每个目标包含绝对 `qty` 和与 Perp 相同的 `signal=0`。
+Spread 发布裸币种现货和 USDT 永续两个目标；Perp 发布合约目标。
+信号服务不携带订单模板覆盖，不指定 maker/taker，也不创建执行模板。
+份数和执行策略由 Manager 配置，Exec 按分配后的目标执行。
+目标数量换算与 Perp 一致：开多参考当前 ask，开空参考当前 bid；
+参考价只用于将单份 USDT 换算成数量，不是委托价格或执行方式指令。
 
-`config/cta_spread_order_strategies.json` 是两个 Manager 订单模板的准备文件；
-各对象对应现有 `POST /api/catalog/order-strategies` 请求体。启用前需由管理员在
-Manager 注册同名模板；信号服务不创建或覆盖订单模板。缺少模板时 Manager 拒绝
-整份仓位发布，不会退回默认算法。本次仅准备配置，未写入线上 Manager。
-POV 的成交量预算与行情就绪检查仍生效。
+两套 config server 独立维护，配置读取、保存、版本冲突校验和 symbol × factor
+编辑流程一致。共用相同的发布开关、单份 USDT 和因子开仓/退出参数结构，
+Perp 使用 NQ 开仓过滤参数，Spread 使用历史 mid 价差分位过滤参数。
+执行配置入口统一位于 Manager。
 
 反向开仓信号同时通过价差过滤时，直接反转，不等待下一根 bar：
 先在目标账本中用永续对冲旧方向，再在现货加入新方向的一份数量，

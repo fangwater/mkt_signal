@@ -179,7 +179,7 @@ impl CtaSpreadSignalApp {
                 {
                     targets
                         .entry(symbol.clone())
-                        .or_insert_with(|| json!({"qty":0.0,"signal":1}));
+                        .or_insert_with(|| json!({"qty":0.0,"signal":0}));
                     targets
                         .entry(cash_symbol(symbol)?.to_string())
                         .or_insert_with(|| json!({"qty":0.0,"signal":0}));
@@ -445,7 +445,7 @@ fn advance_position(
     if let Err(error) = next.enter_cash(
         next_flag,
         config.max_pos_u,
-        if next_flag > 0 { quote.bid } else { quote.ask },
+        if next_flag > 0 { quote.ask } else { quote.bid },
     ) {
         if previous_flag != 0 {
             position.exit();
@@ -492,39 +492,18 @@ fn market_targets(symbol: &str, p: &StrategyPosition) -> [(String, Value); 2] {
         ),
         (
             symbol.to_string(),
-            json!({"qty":p.perpetual_qty,"signal":1}),
+            json!({"qty":p.perpetual_qty,"signal":0}),
         ),
     ]
 }
-const CASH_ORDER_STRATEGY: &str = "cta_spread_cash_maker";
-const PERPETUAL_ORDER_STRATEGY: &str = "cta_spread_perpetual_taker";
-
 fn position_payload(strategy_name: String, targets: &BTreeMap<String, Value>) -> Value {
-    // Always supply both market policies. Omitted overrides would reset the
-    // Manager mapping and allow the account binding's default algorithm to take over.
-    let overrides: BTreeMap<_, _> = targets
-        .keys()
-        .map(|symbol| {
-            (
-                symbol.clone(),
-                if symbol.ends_with("USDT") {
-                    PERPETUAL_ORDER_STRATEGY
-                } else {
-                    CASH_ORDER_STRATEGY
-                },
-            )
-        })
-        .collect();
-    json!({"strategy_name": strategy_name, "targets": targets,
-        "symbol_order_strategy_overrides": overrides})
+    json!({"strategy_name": strategy_name, "targets": targets})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cta_spread::factors::{aggregate_bar, SymbolFactors};
-    use crate::strategy::batch_exec_strategy::BatchExecConfig;
-    use crate::strategy::pov::{ExecAlgorithm, PovLiquidity};
     use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
     fn config() -> CtaSpreadConfig {
         serde_json::from_str(include_str!("../../config/cta_spread.json")).unwrap()
@@ -745,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_exit_and_reversal_publish_cash_maker_and_contract_taker() {
+    fn entry_exit_and_reversal_publish_only_position_targets() {
         for direction in [-1, 1] {
             let mut p = StrategyPosition::default();
             p.enter_cash(direction, 200.0, 100.0).unwrap();
@@ -760,17 +739,15 @@ mod tests {
                     "factor_170".into(),
                     &market_targets("ETHUSDT", &p).into_iter().collect(),
                 );
-                assert_eq!(payload["targets"]["ETH"]["qty"], p.cash_qty);
-                assert_eq!(payload["targets"]["ETHUSDT"]["qty"], p.perpetual_qty);
-                assert_eq!(payload["targets"]["ETH"]["signal"], 0);
-                assert_eq!(payload["targets"]["ETHUSDT"]["signal"], 1);
                 assert_eq!(
-                    payload["symbol_order_strategy_overrides"]["ETH"],
-                    CASH_ORDER_STRATEGY
-                );
-                assert_eq!(
-                    payload["symbol_order_strategy_overrides"]["ETHUSDT"],
-                    PERPETUAL_ORDER_STRATEGY
+                    payload,
+                    json!({
+                        "strategy_name": "factor_170",
+                        "targets": {
+                            "ETH": {"qty": p.cash_qty, "signal": 0},
+                            "ETHUSDT": {"qty": p.perpetual_qty, "signal": 0}
+                        }
+                    })
                 );
             }
         }
@@ -778,26 +755,28 @@ mod tests {
     }
 
     #[test]
-    fn prepared_manager_templates_enforce_market_liquidity_policies() {
-        let templates: Vec<Value> = serde_json::from_str(include_str!(
-            "../../config/cta_spread_order_strategies.json"
-        ))
-        .unwrap();
-        let templates: BTreeMap<_, BatchExecConfig> = templates
-            .into_iter()
-            .map(|row| {
-                (
-                    row["strategy_name"].as_str().unwrap().to_string(),
-                    serde_json::from_value(row["order_parameters"].clone()).unwrap(),
-                )
-            })
-            .collect();
-        let cash = &templates[CASH_ORDER_STRATEGY];
-        cash.validate().unwrap();
-        assert_eq!(cash.algorithm, ExecAlgorithm::Pov);
-        assert_eq!(cash.pov.liquidity, PovLiquidity::MakerOnly);
-        let perpetual = &templates[PERPETUAL_ORDER_STRATEGY];
-        perpetual.validate().unwrap();
-        assert_eq!(perpetual.algorithm, ExecAlgorithm::Ctaker);
+    fn cash_entry_sizing_uses_same_reference_side_as_perp_cta() {
+        let mut c = config();
+        c.enabled = true;
+        let sizing_quote = Quote {
+            bid: 100.0,
+            ask: 125.0,
+            ..quote()
+        };
+        for (factor, spread, expected_qty) in [(0.99, 0.2, 1.6), (0.01, 0.8, -2.0)] {
+            let mut p = StrategyPosition::default();
+            advance_position(
+                &mut p,
+                Some(&bar(factor, Some(spread))),
+                &c,
+                60000,
+                0,
+                NOW,
+                Some(sizing_quote),
+            )
+            .unwrap();
+            assert_eq!(p.cash_qty, expected_qty);
+            assert_eq!(p.perpetual_qty, 0.0);
+        }
     }
 }
