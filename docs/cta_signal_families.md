@@ -2,26 +2,39 @@
 
 最后更新：2026-10-13
 
-2026-10-13 06:28 UTC 已在 JP 部署并启动 `binance-cta-spread-rx01` 四个
-信号/页面进程；二进制 `456be044`，脚本/页面 `470af607`。仅迁移 RX01，
-线上 RX02 原 special 服务与 trade05 保持不变；CTA Perp 的新名称和代码暂未部署。
-新 RX01 的 `config/cta_spread.json` 保持 `enabled=false`，未启动交易执行。
-`config/cta_spread_symbol_factors.json` 已按确认名单配置 19 个币种、5 个因子，
-共 57 个 symbol × factor 组合；发布器 universe 同步覆盖全部币种和因子。
-该清单已写入独立 Redis 键 `binance-cta-spread-rx01:cta_symbol_factors`。
-06:28 验收时四进程在线，页面/API 正常，首次 Kafka 历史回放仍在推进，
-因子与价差均未就绪（0/57）；待追上实时后再核验连续闭合分钟，当前不宣称信号已稳定。
-页面 `/cta/binance-cta-spread-rx01/`，配置 `/cta/binance-cta-spread-rx01/config/`，
-均通过既有 JP 4191 网关访问；旧 RX01 页面地址跳转到新地址。
-现场证据见 `artifacts/cta_spread_rx01_deployment/validation.json`。
+2026-10-13 09:20 UTC 更新 JP `binance-cta-spread-rx01` 最新清单，配置提交
+`480387a3`。独立 Redis、磁盘 signal 清单、publisher universe 同步为16币、
+5因子、46个 symbol × factor 组合。`+/-` 映射为有符号权重 `+1/-1`。
+不新增币种，移出 BTC、ETH、TRX；保留33个旧组合，移出24个旧组合，新增13个。
 
 | Spread 因子 | sign | 币种数 |
 |---|---:|---:|
-| `baseline_164` | +1 | 18 |
-| `baseline_141` | +1 | 18 |
-| `factor_170` | -1 | 7 |
-| `factor_113` | -1 | 6 |
-| `factor_052` | +1 | 8 |
+| `baseline_141` | +1 | 15 |
+| `baseline_164` | +1 | 15 |
+| `TD_TI_027` | -1 | 8 |
+| `TD_TI_024` | -1 | 5 |
+| `factor_052` | +1 | 3 |
+
+publisher 经环境本地脚本重启到 PID663465/CPU17；09:40 UTC Kafka 双市场
+历史已追至实时，46/46组合因子与价差就绪。
+原二进制不变。signal/config/dashboard 保持 PID3199322/3183433/3390010，
+实时热加载配置，发布保持 `enabled=false`，单份200 USDT、价差q30/q70不变。
+没有启用RX01交易，没有变更RX02 Perp的清单、virtual组合或Exec。
+环境备份为 `run/scope_before_20261013T091935Z`；release.json单独记录config_commit。
+页面 `/cta/binance-cta-spread-rx01/`，配置页为其 `config/`，B/S页为其 `signals/`。
+当前验收记录见 `artifacts/cta_spread_rx01_latest/`。
+
+最终执行账户明确为 **RX01**。09:39 UTC已预部署专用 `binance_exec_trade06`
+运行包（本地arbmm release，逐文件SHA-256校验后安装）；远端凭据核对属于
+旧RX01且不同于RX02。全部Exec进程停止，尚未注册Manager source或绑定virtual。
+计划使用独立 `cta_spread_rx01` virtual、五个因子策略和一份库存承接策略；
+库存需以正式切换时的实际现货净资产与合约仓位重新读取，不能用本次快照
+或旧策略状态直接填入新因子。旧账户仍有已对冲库存，不能当作空仓启动Exec。
+本次完成的是信号观察上线与执行包预部署，尚未启用实盘仓位发布。
+
+首次部署历史：06:28 UTC安装19币/57组合的旧清单，二进制`456be044`、
+脚本/页面`470af607`，当时尚在预热。该清单已由上述最新配置替代。
+原验收记录见 `artifacts/cta_spread_rx01_deployment/validation.json`。
 
 币种映射使用 USDT 符号；负 sign 按 `1-q` 修正因子分位。价差过滤保持 q30/q70，
 单份金额保持现有 200 USDT，Manager 份数未变更。
@@ -63,6 +76,10 @@ K 线由独立只读后台直连 Binance 公共 Spot Klines 补缺，缺失时�
 路径和行情缺失；合成截图仅用于测试，不作为实盘信号证据。
 
 ## RX02 Perp 新清单与 NQ 短窗口
+
+当前 RX02 已在08:57 UTC正式启用，24组合通过virtual02/lgq_cta发布到
+trade05，倍率1；09:14 UTC旧special因子发布器已退役。实际组合/投递核验见
+[RX02切换说明](cta_perp_rx02_cutover.md)。下方为预热和切换前的历史记录。
 
 2026-10-13 08:25 UTC 新 Perp 已完成 Kafka 预热，24/24 组合实时就绪、
 9/9 NQ 就绪，仍为 enabled=false。首次预热触及旧 1800 秒上限，因此将

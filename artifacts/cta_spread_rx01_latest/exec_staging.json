@@ -1,0 +1,17 @@
+{
+  "account": "RX01",
+  "credentials_match_rx01": true,
+  "different_from_rx02": true,
+  "source": "binance_exec_trade06",
+  "venue": "binance-futures",
+  "cash_support": true,
+  "processes": [],
+  "binaries": {
+    "exec-pre-trade": "45784074ec55295ef23abd397aa763c5db91dd35ca84a10d927fbebfb2528257",
+    "trade_engine": "fabe02f5c0d70fdf1614d201b848b915f108f9bebcdd1a3b958fdd0b7b123255",
+    "rapidx_account_monitor": "4df25da7df0e5cc62b5240e694311f63bc3a7485c497de0a339c9efdd04ef126",
+    "trade_signal": "03f8caf06ca7891fb5872014391407c532cc13464019ba1d19df413527f148d3",
+    "viz_server": "e9bf12ee92d3c4413b34ddaedfc4e6f8170820cdd1806bd842cd3e7ad2055cdb",
+    "persist_manager": "dddc3859060588e3f53c737eb0229c1166ef3d767a3879231cf522cc282d9e5c"
+  }
+}

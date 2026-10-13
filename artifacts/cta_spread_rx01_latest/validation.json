@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "ready": 46,
+  "latest_model_ms": 1791884400000,
+  "enabled": false,
+  "markers": {
+    "现货 B": 0,
+    "现货 S": 3,
+    "合约对冲 B": 3,
+    "合约对冲 S": 0
+  },
+  "inspector": "合约 B · 对冲退出",
+  "browser_errors": [],
+  "mobile_overflow": false,
+  "warmup": {
+    "first_live_ms": 1791884340000,
+    "second_live_ms": 1791884400000,
+    "pairs_ready": 46,
+    "publication_error": null
+  }
+}

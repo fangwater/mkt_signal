@@ -1,0 +1,25 @@
+{
+  "state": "staged_not_activated",
+  "account": "RX01",
+  "signal_env": "binance-cta-spread-rx01",
+  "exec_env": "binance_exec_trade06",
+  "manager_virtual_name": "cta_spread_rx01",
+  "strategy_prefix": "binance_cta_spread_rx01_",
+  "factor_counts": {
+    "TD_TI_024": 5,
+    "TD_TI_027": 8,
+    "baseline_141": 15,
+    "baseline_164": 15,
+    "factor_052": 3
+  },
+  "pair_count": 46,
+  "symbol_count": 16,
+  "max_pos_u": 200,
+  "publication_enabled": false,
+  "manager_registered": false,
+  "virtual_bound": false,
+  "inventory_adopted": false,
+  "inventory_plan": "fresh signed cash and perpetual account snapshot in a separate inventory strategy; do not seed into factor state",
+  "activation": "operator-run; no Exec startup until complete inventory targets and virtual deliveries are verified",
+  "updated_at": "2026-10-13T09:40:10.557598+00:00"
+}

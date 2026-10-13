@@ -1,7 +1,20 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-13 09:14 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-13 09:41 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 09:20 UTC Spread RX01 更新为16币/5因子/46组合（配置480387a3）。
+操作前核查CPU17没有专用线程占用；通过环境本地start脚本重启因子发布器至
+PID663465，5线程全部CPU17，env.sh持久化核绑定。其余signal/config/dashboard
+PID3199322/3183433/3390010保持CPU0-5，仓位发布关闭。双市场Kafka历史重新
+预热；09:40 UTC已追至实时，46/46组合就绪。新Perp/Exec未重启、未改配置。
+CPU17原空闲登记由本条替代。
+
+09:39 UTC新增RX01专用Exec运行目录 `binance_exec_trade06`，本地arbmm
+release构建后经publish-exec逐文件SHA-256校验安装，六个二进制与脚本已齐备。
+凭据在远端内部核对为旧RX01，且与RX02不同，未输出秘密。全部进程仍停，
+尚未占用新CPU或监听10046/18166；未建立Manager source、virtual跟随或库存承接。
+此次仅上线Spread信号观察，仓位发布仍关闭；不得直接启动空目标Exec接管旧库存。
 
 2026-10-13 09:14 UTC 按操作者要求退役旧 special 因子发布器。通过 RX02
 环境本地 stop 脚本移除 supervisor 登记并停止 PID1975542；全机已无
@@ -193,7 +206,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | (空) | 原 binance-intra-arb01 已下线退役 |
+| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-13 新清单已实时就绪，PID663465/5线程；CTA_SPREAD_FACTOR_MODEL_1M_CORE=17 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-13 原地迁入，5 线程；CTA_PERP_FACTOR_MODEL_1M_CORE=18 |
 | 19 | (空) | 原 binance-intra-arb01 已下线退役 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
