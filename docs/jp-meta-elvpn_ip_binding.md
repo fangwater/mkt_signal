@@ -1,6 +1,15 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 05:48 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 06:28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 06:28 UTC 新增独立观察环境 `binance-cta-spread-rx01`，
+发布关闭；因子进程读取 Kafka 的两条 TCP 连接现场源地址均为 `172.31.35.228`。
+新配置/观察页仅监听 `127.0.0.1:19174` / `127.0.0.1:10186`，经现有 4191
+网关的 `/cta/binance-cta-spread-rx01/` 访问，旧 RX01 入口跳转到新入口。
+未新增交易连接、EIP、ENI 或路由；旧 RX01/RX02 的 env.sh 和 trade_engine.toml
+哈希保持一致。旧 RX01 保留账户监控、持久化和 .228 配置，未迁移账户持仓。
+RX02 及 trade05 未重启、未改配置。新环境独立使用 Spread universe/Redis 清单，
+未写入 RX02 或 TLen 的共享因子计划。
 
 2026-10-13 USD-M bookticker 增加双连接自动选优：启动仍使用现有 .90/.91 双路；
 候选 source pool 仅为 `172.31.46.90` / `172.31.46.91`，远端取实时 DNS。
@@ -107,7 +116,8 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 交易栈仍停止，不依赖已删除的目录。
 
 ```text
-binance-cta-rx01             172.31.35.228                  RapidX/LTP（交易进程停盘，监控保留）
+binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
+binance-cta-spread-rx01      172.31.35.228                  独立 Spread 信号/页面，发布关闭；Kafka 默认出口
 binance-cta-special-rx02     172.31.35.228                  信号/config/dashboard；执行迁入 trade05
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228

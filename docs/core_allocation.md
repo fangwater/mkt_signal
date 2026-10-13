@@ -1,7 +1,21 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 05:48 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 06:28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 06:28 UTC 仅将 RX01 切换为独立 CTA Spread 观察环境：
+`~/binance-cta-spread-rx01` 的 factor publisher / config / dashboard / signal
+PID 为 3150153 / 3183433 / 3190607 / 3199322，CPU mask 全为 `0-5`，
+未分配额外隔离核。二进制来自本地 `arbmm` release `456be044`，页面/脚本
+命名更新为 `470af607`；上传 SHA-256 校验后原子安装，通过环境内脚本启动。
+19 个币种、5 个因子、57 个组合，`enabled=false`；06:28 验收时历史回放仍在
+推进，因子和价差就绪均为 0/57，不能视为实时信号验收完成。
+旧 RX01 config / Viz 已通过其环境脚本停止；交易进程继续停盘，
+account_monitor PID 2394028（0-5）与 persist_manager PID 2392640（15）保留。
+RX02 四进程、trade05 六进程 PID 全部保持，旧 RX01/RX02 的 env.sh 和
+trade_engine.toml 校验不变。新页面使用回环 10186，配置页 19174，4191 网关
+入口为 `/cta/binance-cta-spread-rx01/`；旧 RX01 页面入口跳转到新环境。
+验证记录：`artifacts/cta_spread_rx01_deployment/validation.json`。
 
 2026-10-13 Binance USD-M ticker 双连接选优部署到既有 bookticker / CPU9：
 仍为两条发布连接，仅试验时额外开一条全订阅影子连接，不分配 CPU7 或新常驻进程。

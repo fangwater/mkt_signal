@@ -2,11 +2,18 @@
 
 最后更新：2026-10-13
 
-本次为代码与页面改造，未部署、未重命名线上环境、未启动新交易。
-新 RX01 的 `config/cta_spread.json` 保持 `enabled=false`。
+2026-10-13 06:28 UTC 已在 JP 部署并启动 `binance-cta-spread-rx01` 四个
+信号/页面进程；二进制 `456be044`，脚本/页面 `470af607`。仅迁移 RX01，
+线上 RX02 原 special 服务与 trade05 保持不变；CTA Perp 的新名称和代码暂未部署。
+新 RX01 的 `config/cta_spread.json` 保持 `enabled=false`，未启动交易执行。
 `config/cta_spread_symbol_factors.json` 已按确认名单配置 19 个币种、5 个因子，
 共 57 个 symbol × factor 组合；发布器 universe 同步覆盖全部币种和因子。
-这只是仓库配置，尚未写入线上 Redis 或启动发布。
+该清单已写入独立 Redis 键 `binance-cta-spread-rx01:cta_symbol_factors`。
+06:28 验收时四进程在线，页面/API 正常，首次 Kafka 历史回放仍在推进，
+因子与价差均未就绪（0/57）；待追上实时后再核验连续闭合分钟，当前不宣称信号已稳定。
+页面 `/cta/binance-cta-spread-rx01/`，配置 `/cta/binance-cta-spread-rx01/config/`，
+均通过既有 JP 4191 网关访问；旧 RX01 页面地址跳转到新地址。
+现场证据见 `artifacts/cta_spread_rx01_deployment/validation.json`。
 
 | Spread 因子 | sign | 币种数 |
 |---|---:|---:|
@@ -53,8 +60,9 @@ Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 
 旧 RX01 的 trade_signal、pre_trade、trade_engine 已停；账户监控和持久化保留。
 用户已执行合约对冲，最近只读核对仅剩小于交易最小量/最小名义的净敞口。
-本次源码清理不替换线上已部署产物、不删除历史配置或状态，也不停止共享因子进程。
-后续切换仍须核对现有挂单、持仓、因子绑定及 Manager 份数，新 Spread 发布保持关闭。
+旧 RX01 的配置页和 Viz 已下线，账户监控、持久化及历史目录保留。
+新 Spread 没有复制旧 lot 仓位，也没有配置 Manager 发布连接或账户绑定。
+未来启用前仍须核对现有挂单、持仓承接、因子绑定及 Manager 份数；当前发布保持关闭。
 
 ## Spread 规则
 
