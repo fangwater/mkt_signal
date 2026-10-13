@@ -1,7 +1,17 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 06:49 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 07:20 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 07:19:41 UTC 更新 Binance Futures bookticker：PID 3685126，
+主接收线程 CPU9；新增同进程 `bbo-log-writer` TID 3685127 显式固定 housekeeping
+CPU0，使用有界非阻塞队列隔离磁盘写入。发布源码 `896de806`，本地 release
+SHA-256 `c3f5a1eda2cc70095c5ddbca011dd56f5cbe9773e0a124335f9607b379069ef7`，
+上传校验后原子安装，通过环境 `scripts/start_spread_pbs.sh --role bookticker` 启动。
+两条 USD-M 发布连接均 4/4 ACK，COIN-M 持续发布；market 1784924 / CPU14、
+ZMQ 1792862 / CPU5、三个 Binance FR 828134/1922219/2848056 均保留。
+model_pub/model_1m_pub 仍停用。未改 source IP、ENI、路由；证据见
+`../hfq_latency_lab/data/experiments/20261013-async-bbo/`。
 
 2026-10-13 06:49 UTC 仅更新 RX01 Spread 只读信号观察页：Dashboard PID
 由 3190607 更新为 3390010，CPU mask 仍为 `0-5`，监听仍为 `127.0.0.1:10186`。
