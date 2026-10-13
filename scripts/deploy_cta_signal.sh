@@ -26,7 +26,6 @@ if [[ "$SKIP_BUILD" != 1 ]]; then
   [[ "$ROOT_DIR" == /home/fanghaizhou/mkt_signal ]] || { echo '[ERROR] build only in the maintained local worktree' >&2; exit 1; }
   cargo build --release --bin "cta_${FAMILY}_signal" --bin "cta_${FAMILY}_factor_model_1m_pub"
 fi
-source "$ROOT_DIR/scripts/deploy_intra_lib.sh"
 if [[ "$SKIP_BUILD" == 1 ]]; then
   [[ -n "$ARTIFACT_DIR" ]] || { echo '[ERROR] --skip-build requires --artifact-dir containing uploaded local release artifacts' >&2; exit 1; }
   RELEASE_DIR="$ARTIFACT_DIR"
@@ -42,8 +41,14 @@ if [[ -f "$TARGET_DIR/config/cta_${FAMILY}.json" ]]; then
 fi
 mkdir -p "$TARGET_DIR" "$TARGET_DIR/scripts" "$TARGET_DIR/config" "$TARGET_DIR/run" "$TARGET_DIR/web"
 for name in "cta_${FAMILY}_signal" "cta_${FAMILY}_factor_model_1m_pub"; do
-  intra_atomic_install "$RELEASE_DIR/$name" "$TARGET_DIR/$name"
-  [[ "$(sha256sum "$RELEASE_DIR/$name" | cut -d' ' -f1)" == "$(sha256sum "$TARGET_DIR/$name" | cut -d' ' -f1)" ]] || { echo "[ERROR] artifact checksum mismatch: $name" >&2; exit 1; }
+  artifact_tmp="$(mktemp "$TARGET_DIR/.${name}.XXXXXX")"
+  install -m 755 "$RELEASE_DIR/$name" "$artifact_tmp"
+  if [[ "$(sha256sum "$RELEASE_DIR/$name" | cut -d' ' -f1)" != "$(sha256sum "$artifact_tmp" | cut -d' ' -f1)" ]]; then
+    rm -f "$artifact_tmp"
+    echo "[ERROR] artifact checksum mismatch: $name" >&2
+    exit 1
+  fi
+  mv -f "$artifact_tmp" "$TARGET_DIR/$name"
 done
 for file in scripts/start_"cta_${FAMILY}"*.sh scripts/stop_"cta_${FAMILY}"*.sh scripts/"cta_${FAMILY}"*.py scripts/process_match_lib.sh scripts/factor_validation_allowlist.txt; do
   install -m 755 "$file" "$TARGET_DIR/scripts/$(basename "$file")"

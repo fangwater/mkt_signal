@@ -16,9 +16,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-_INTRA_SCRIPTS = Path(__file__).resolve().parents[1] / "intra_scripts"
-if str(_INTRA_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_INTRA_SCRIPTS))
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
