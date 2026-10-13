@@ -1,7 +1,18 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-13 09:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-13 09:14 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 09:14 UTC 按操作者要求退役旧 special 因子发布器。通过 RX02
+环境本地 stop 脚本移除 supervisor 登记并停止 PID1975542；全机已无
+`cta_special_factor_model_1m_pub` 进程。RX02/RX03 的对应二进制、配置和启停
+脚本共9个文件归档至 `/home/ubuntu/retired_cta_publishers/20261013T091434Z`，
+两旧环境设置 `CTA_SPECIAL_RUN_FACTOR_PUBLISHER=0`，历史数据、仓位记录保留。
+新 Perp/Spread 与 Exec trade05 的 PID、CPU pin 均保持，Perp 全24组合从
+09:13分钟继续更新至09:14分钟。旧环境不再有运行进程；下方保留共享publisher
+的记录已被本条替代。virtual02/lgq_cta 的5个新因子各1份、4个退出因子0份，
+trade05倍率1；实际绑定、Manager目标与Exec目标核对一致，待投递队列为空。
+证据：`artifacts/cta_rx02_virtual_validation/after_retirement.json`。
 
 2026-10-13 08:57 UTC 操作者执行 RX02 正式切换，09:03 UTC 只读核验通过。
 `binance-cta-perp-rx02` signal/config/dashboard PID 为 421006/406886/411079，

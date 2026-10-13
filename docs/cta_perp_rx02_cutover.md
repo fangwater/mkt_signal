@@ -7,6 +7,20 @@
 新清单为 9 币、5 因子、24 项绑定，NQ 为 120/min60；单份沿用线上
 100 USDT，策略前缀沿用 `lgq_cta_`。Spread RX01 不在操作范围内。
 
+09:14 UTC 已按要求退役旧共享 special 因子发布器：旧 RX02/RX03 对应运行
+文件移出环境目录并归档，启动开关关闭，全机无旧因子发布进程。新 Perp、Spread、
+Exec 进程不变，新 Perp 全24组合继续分钟更新。历史数据与仓位记录保留。
+
+只读查询 Manager 实际持久配置并比对 Exec 接收配置：`virtual02 / lgq_cta`
+包含 baseline_141、baseline_200、TD_TI_024、baseline_164、factor_036 各1份；
+TD_TI_002、baseline_004、factor_051、factor_170 为0份。唯一跟随账户为
+`binance_exec_trade05`，倍率1，执行策略统一 `lgq_cta_ctaker`；9项绑定与真实
+账户生效绑定一致，投递队列为空，各策略目标逐项匹配。factor_036中的9个历史
+币种仍以零目标保留用于清理，唯一活跃配置为NEAR，不计入新24组合。
+证据：`artifacts/cta_rx02_virtual_validation/validation.json` 及
+`artifacts/cta_rx02_virtual_validation/after_retirement.json`。检查时所有目标为零，
+该核验确认组合配置与投递成功，不声称已验证新策略非零目标成交。
+
 **当前状态：已正式启用。** 操作者在 08:45 UTC 先退休31个旧组合，08:57 UTC
 完成正式切换；`run/cutover_completed.json` 已写入，不要重复运行切换命令。
 09:03 UTC 只读核验：enabled=true、24/24实时就绪、发布无错误，旧仓位信号已停，

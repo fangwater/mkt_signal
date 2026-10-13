@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 09:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 09:14 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 09:14 UTC 旧 special 因子发布器已停并归档部署文件，旧 RX02/RX03
+均无运行进程。新 Perp 通过 virtual02/lgq_cta 组合、由 trade05 倍率1跟随；
+Manager与Exec的绑定/目标一致、投递队列为空。Exec及新Perp/Spread未重启，
+没有更改source IP、local_ips、ENI、EIP、路由或监听地址。下方旧publisher
+保留记录为历史状态。
 
 2026-10-13 08:57 UTC 操作者完成 RX02 切换，09:03 UTC 核验新 Perp 发布已启用。
 旧 special 配置/页面服务已停，Nginx 已安装切换配置；新页面沿用
