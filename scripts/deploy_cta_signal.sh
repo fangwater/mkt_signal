@@ -57,6 +57,9 @@ for suffix in .json _symbol_factors.json _factor_model_1m_pub.toml; do
   file="config/cta_${FAMILY}${suffix}"
   [[ -f "$TARGET_DIR/$file" ]] || install -m 644 "$file" "$TARGET_DIR/$file"
 done
+if [[ "$FAMILY" == perp && ! -f "$TARGET_DIR/config/cta_perp_replay.json" ]]; then
+  install -m 644 config/cta_perp_replay.json "$TARGET_DIR/config/cta_perp_replay.json"
+fi
 [[ -f "$TARGET_DIR/config/iceoryx2.toml" ]] || install -m 644 config/iceoryx2.toml "$TARGET_DIR/config/iceoryx2.toml"
 for directory in web/"cta_${FAMILY}"*; do
   mkdir -p "$TARGET_DIR/$directory"
