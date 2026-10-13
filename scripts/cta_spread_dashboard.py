@@ -28,6 +28,13 @@ def build_snapshot(config_path: Path, status_path: Path) -> dict:
     return result
 
 
+def live_ready(row, current_ms, heartbeat_online):
+    signal = row.get('signal') or {}
+    model_ts = row.get('model_ts_ms')
+    return (heartbeat_online and bool(row.get('score_ready')) and bool(signal.get('filter_ready'))
+            and finite(model_ts) and 0 <= current_ms - model_ts <= 180_000)
+
+
 def make_handler(config_path: Path, status_path: Path, index_path: Path,
                  history=None, factors_path=None, collector=None):
     factors_path = factors_path or config_path.with_name("cta_spread_symbol_factors.json")
@@ -55,7 +62,7 @@ def make_handler(config_path: Path, status_path: Path, index_path: Path,
                     ready=bool(sample.get('ready')) and quantile(q) and finite(sample.get('score')),
                     spread_ready=bool(spread.get('ready')) and quantile(spread.get('quantile')),
                     spread_quantile=spread.get('quantile'), model_ts_ms=observation.get('model_ts_ms'),
-                    live_ready=bool(live.get('score_ready')) and bool((live.get('signal') or {}).get('filter_ready')), position_flag=live.get('position_flag', 0)))
+                    live_ready=live_ready(live, result['server_ts_us'] // 1000, result['signal_state'] == 'online'), position_flag=live.get('position_flag', 0)))
             strategies.append(dict(factor=factor, symbols=symbols))
         times = [row['model_ts_ms'] for row in latest.values()]
         result.update(strategies=strategies, latest_model_ms=max(times, default=None),

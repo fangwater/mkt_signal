@@ -14,7 +14,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from cta_spread_signal_history import SpreadHistory, SpotMinuteClient, replay, MINUTE, DAY
-from cta_spread_dashboard import make_handler
+from cta_spread_dashboard import make_handler, live_ready
 
 CONFIG = json.loads((ROOT / 'config/cta_spread.json').read_text())
 START = 1_790_000_040_000
@@ -27,6 +27,15 @@ def row(i, q, spread=.2, ready=True, spread_ready=True, factor='factor_170'):
 
 
 class ReplayTests(unittest.TestCase):
+    def test_live_readiness_needs_fresh_model_and_both_inputs(self):
+        sample=dict(score_ready=True,model_ts_ms=START,signal=dict(filter_ready=True))
+        self.assertTrue(live_ready(sample,START+MINUTE,True))
+        self.assertFalse(live_ready(sample,START+4*MINUTE,True))
+        self.assertFalse(live_ready(sample,START-MINUTE,True))
+        self.assertFalse(live_ready(sample,START,False))
+        sample['signal']['filter_ready']=False
+        self.assertFalse(live_ready(sample,START,True))
+
     def test_entry_hold_exit_and_reversal(self):
         records = [row(0,.99),row(1,.99),row(2,.2,.5),row(3,.01,.8),row(4,.99,.2)]
         points, events = replay(records,'factor_170',1,CONFIG)
