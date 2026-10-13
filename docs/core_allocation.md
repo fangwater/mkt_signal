@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-10-13 07:43 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-10-13 08:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-13 08:04 UTC 新 Perp publisher PID 3841796 的 5 个线程从
+housekeeping 0-5 原地迁到 CPU18，未重启、保留 Kafka 预热状态。操作前确认
+CPU18 没有用户线程使用；环境 `CTA_PERP_FACTOR_MODEL_1M_CORE=18` 已持久化。
+新 signal/config/dashboard 仍为 0-5；旧 RX02、RX01、Exec 的 affinity 未改。
+
+2026-10-13 07:50–07:52 UTC `binance-cta-perp-rx02` 已启动配置服务 PID
+3973622（19186）、Dashboard PID 3979991（10196）、观察信号 PID 3985389；
+因子 publisher PID 3841796 保留。均为 housekeeping 0-5，发布保持关闭。
+新旧 RX02 页面使用独立端口，新路径 `/cta/binance-cta-perp-rx02/` 已接通；
+旧 special 四进程和 Exec 未重启。切换脚本 `41461ead` 支持先停止观察进程再承接
+旧状态；`73a68c85` 补齐只读历史回放配置。07:56 UTC 页面检查通过，Kafka 仍在预热。
 
 2026-10-13 07:35 UTC 在 `binance-cta-perp-rx02` 安装 CTA Perp 预备环境，
 仅启动 Kafka 因子发布器 PID 3841796，affinity 0-5，未新增专用 CPU 绑定。
@@ -131,7 +143,9 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17-19 | (空) | 原 binance-intra-arb01 已下线退役 |
+| 17 | (空) | 原 binance-intra-arb01 已下线退役 |
+| 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-13 原地迁入，5 线程；CTA_PERP_FACTOR_MODEL_1M_CORE=18 |
+| 19 | (空) | 原 binance-intra-arb01 已下线退役 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
 | 21 | trade_signal(okex_mm_alpha) | |
 | 22 | pre_trade(okex_mm_alpha) | |

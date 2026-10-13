@@ -64,6 +64,15 @@ K 线由独立只读后台直连 Binance 公共 Spot Klines 补缺，缺失时�
 
 ## RX02 Perp 新清单与 NQ 短窗口
 
+2026-10-13 07:52 UTC 新 RX02 四个进程均已启动，仓位发布保持关闭。
+配置服务 19186 / Dashboard 10196 与旧 RX02 端口独立，网关路径
+`/cta/binance-cta-perp-rx02/`、`config/`、`signals/` 已接通，旧页面仍保留。
+新观察信号不承接旧实际仓位，仅记录模拟方向；最终切换时先停止观察进程，
+备份模拟状态，再复制已停旧进程的完整最终状态。07:56 UTC 浏览器验证 9 币/
+24 组合、100 USDT、桌面/手机、五个因子回放加载通过，无 JS 错误；Kafka
+仍在追赶历史，不能以页面健康替代实时因子就绪。证据位于
+`artifacts/cta_perp_rx02_preview/`。
+
 2026-10-13 07:35 UTC 已将本地 release 二进制 `976d557e` 与切换脚本
 `f72ab0e4` 校验后安装到 JP `~/binance-cta-perp-rx02`。只启动新 Kafka 因子
 发布器 PID 3841796（CPU 0-5）；新配置保持 enabled=false、单份 100 USDT，

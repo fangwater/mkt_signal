@@ -1,0 +1,1562 @@
+{
+  "config": {
+    "symbols": 9,
+    "bindings": 24,
+    "max_pos_u": 100
+  },
+  "signal_symbols": [
+    "AAVEUSDT",
+    "DASHUSDT",
+    "DOGEUSDT",
+    "ETHUSDT",
+    "NEARUSDT",
+    "SOLUSDT",
+    "XLMUSDT",
+    "XRPUSDT",
+    "ZECUSDT"
+  ],
+  "AAVEUSDT": [
+    "TD_TI_024",
+    "baseline_141",
+    "baseline_164",
+    "baseline_200"
+  ],
+  "NEARUSDT": [
+    "TD_TI_024",
+    "baseline_141",
+    "factor_036"
+  ],
+  "ETHUSDT": [
+    "baseline_141"
+  ],
+  "bs_validation": {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_TI_024",
+    "closed_trades": 2,
+    "entries": 3,
+    "markers": {
+      "B \u5f00\u591a": 1,
+      "S \u5f00\u7a7a": 2,
+      "\u5e73\u4ed3 B/S": 2
+    },
+    "inspector": "TD_TI_024\n2026-10-13 00:11:00 UTC\n\u672c\u7b14\u591a\u4ed3\n\u5c1a\u672a\u5e73\u4ed3\n\nB \u5f00\u591a \u2192 S \u5e73\u591a\n\n\u5f00\u4ed3 UTC\n00:11:00\n\u5e73\u4ed3 UTC\n\u2014\n\u5f00\u4ed3\u4ef7\n155.49\n\u5f53\u524d\u6807\u8bb0\u4ef7\n153.775\n\u539f\u6301\u4ed3\u6570\u91cf\n0.64312818\n\u6d6e\u52a8 PnL\n-1.103\n\u8be5\u5206\u949f\u6301\u4ed3\n\u6ee1\u4ed3\u591a\n\u4fee\u6b63\u540e\u5206\u4f4d\n93.2%\n\u5f00\u591a / \u5f00\u7a7a\n90% / 10%\n\u9000\u591a / \u9000\u7a7a\n30% / 70%\n\u65b9\u5411\u4fee\u6b63\n-\n\u914d\u7f6e\u91d1\u989d\n100 USDT\n\u539f\u59cb\u503c -1.995\n\u539f\u5206\u4f4d 6.8%\n\u4fee\u6b63\u503c 1.995\n\n\u540c\u5411\u91cd\u590d\u89e6\u53d1\u4fdd\u6301\u539f\u4ed3\u4f4d\uff0c\u5e73\u4ed3\u4f7f\u7528\u539f\u6570\u91cf\u3002\n\nNQ change\n\u901a\u8fc7\n\n\u53ea\u8fc7\u6ee4\u5f00\u4ed3 \u00b7 \u4f7f\u7528\u5f53\u65f6\u7684\u9608\u503c\n\nBUY_NQ \u00b7 \u672c\u6b21\u65b9\u5411\n0.5%\n\u5206\u4f4d 77.9% \u2265 \u9608\u503c 50%\n\u901a\u8fc7\nSELL_NQ\n-2.4%\n\u5206\u4f4d 11.3% \u2264 \u9608\u503c 50%\n\u901a\u8fc7\n\u8ba1\u7b97\u65b9\u5f0f"
+  },
+  "mobile_overflow": false,
+  "panel": {
+    "server_ts_ms": 1791878493559,
+    "venue": "binance-futures",
+    "interval": "1m",
+    "symbols": [
+      {
+        "symbol": "AAVEUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "AAVEUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "DASHUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "DASHUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "DOGEUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "ETHUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "ETHUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "NEARUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "NEARUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "SOLUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "SOLUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "XLMUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "XLMUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "XRPUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "XRPUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      },
+      {
+        "symbol": "ZECUSDT",
+        "active": true,
+        "bars": 1441,
+        "latest_bar_ms": 1791878460000,
+        "feed": {
+          "symbol": "ZECUSDT",
+          "last_success_ms": 1791878475818,
+          "error": null
+        }
+      }
+    ],
+    "journal_error": null,
+    "signal_journal_healthy": true,
+    "signal_status_age_ms": 751,
+    "factor_strategies": {
+      "AAVEUSDT": [
+        "TD_TI_024",
+        "baseline_141",
+        "baseline_164",
+        "baseline_200"
+      ],
+      "DASHUSDT": [
+        "TD_TI_024",
+        "baseline_141",
+        "baseline_164",
+        "baseline_200"
+      ],
+      "DOGEUSDT": [
+        "TD_TI_024",
+        "baseline_200"
+      ],
+      "ETHUSDT": [
+        "baseline_141"
+      ],
+      "NEARUSDT": [
+        "TD_TI_024",
+        "baseline_141",
+        "factor_036"
+      ],
+      "SOLUSDT": [
+        "baseline_141",
+        "baseline_200"
+      ],
+      "XLMUSDT": [
+        "TD_TI_024",
+        "baseline_141",
+        "baseline_200"
+      ],
+      "XRPUSDT": [
+        "baseline_141"
+      ],
+      "ZECUSDT": [
+        "TD_TI_024",
+        "baseline_141",
+        "baseline_164",
+        "baseline_200"
+      ]
+    },
+    "trading_enabled": false,
+    "simulation": {
+      "revision": "10943e06358db8f417dcfa6d1684ab6367318bfc43a7b79407ae8af392c251e6",
+      "start_ms": 0,
+      "end_ms": 1791852120000,
+      "settings": {
+        "start_ms": 0,
+        "initial_equity_usdt": 10000,
+        "taker_fee_rate": 0
+      },
+      "max_pos_u": 100.0,
+      "allocation": "per_symbol_factor",
+      "method": "independent_factor_full_position_flags",
+      "price_method": "first_post_bar_bid_ask_no_slippage",
+      "gross_results": true,
+      "closed_trades": 12,
+      "wins": 10,
+      "win_rate": 0.8333333333333334,
+      "realized_pnl": 5.4510509761469645,
+      "unrealized_pnl": -7.173301180718126,
+      "equity": 9998.27774979543,
+      "fees": 0.0,
+      "invalid_price_minutes": 0,
+      "summaries": {
+        "AAVEUSDT": {
+          "closed_trades": 2,
+          "wins": 2,
+          "win_rate": 1.0,
+          "realized_pnl": 1.0701409827032404,
+          "unrealized_pnl": -2.5590919020160685,
+          "position_notional": 297.44090809798394,
+          "entry_actions": 5,
+          "warmup_minutes": 9869,
+          "position_qty": 1.9342604981172749,
+          "strategies": {
+            "TD_TI_024": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 2,
+              "wins": 2,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 1.0701409827032404,
+              "unrealized_pnl": -1.1029648208888054,
+              "position_flag": 1,
+              "position_qty": 0.6431281754453663,
+              "position_notional": 98.8970351791112,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 3
+            },
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "baseline_164": {
+              "strategy_name": "baseline_164",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.3531622602384575,
+              "position_flag": 1,
+              "position_qty": 0.6480041472265423,
+              "position_notional": 99.64683773976155,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "baseline_200": {
+              "strategy_name": "baseline_200",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -1.1029648208888054,
+              "position_flag": 1,
+              "position_qty": 0.6431281754453663,
+              "position_notional": 98.8970351791112,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "DASHUSDT": {
+          "closed_trades": 2,
+          "wins": 2,
+          "win_rate": 1.0,
+          "realized_pnl": 1.6366612111293195,
+          "unrealized_pnl": -0.7079827621588176,
+          "position_notional": 99.2920172378412,
+          "entry_actions": 3,
+          "warmup_minutes": 9869,
+          "position_qty": 2.052123948286477,
+          "strategies": {
+            "TD_TI_024": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "DASHUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.8183306055646598,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 1
+            },
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "DASHUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.7079827621588176,
+              "position_flag": 1,
+              "position_qty": 2.052123948286477,
+              "position_notional": 99.2920172378412,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 1
+            },
+            "baseline_164": {
+              "strategy_name": "baseline_164",
+              "symbol": "DASHUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 0
+            },
+            "baseline_200": {
+              "strategy_name": "baseline_200",
+              "symbol": "DASHUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.8183306055646598,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "DOGEUSDT": {
+          "closed_trades": 3,
+          "wins": 3,
+          "win_rate": 1.0,
+          "realized_pnl": 1.3661938893383905,
+          "unrealized_pnl": 0.0,
+          "position_notional": 0.0,
+          "entry_actions": 3,
+          "warmup_minutes": 4905,
+          "position_qty": 0.0,
+          "strategies": {
+            "TD_TI_024": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "DOGEUSDT",
+              "closed_trades": 2,
+              "wins": 2,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.875937730495398,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 2
+            },
+            "baseline_200": {
+              "strategy_name": "baseline_200",
+              "symbol": "DOGEUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.49025615884299256,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "ETHUSDT": {
+          "closed_trades": 0,
+          "wins": 0,
+          "win_rate": null,
+          "realized_pnl": 0.0,
+          "unrealized_pnl": -0.17880879187808082,
+          "position_notional": 99.82119120812193,
+          "entry_actions": 1,
+          "warmup_minutes": 2497,
+          "position_qty": 0.04115277143339219,
+          "strategies": {
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "ETHUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.17880879187808082,
+              "position_flag": 1,
+              "position_qty": 0.04115277143339219,
+              "position_notional": 99.82119120812193,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "NEARUSDT": {
+          "closed_trades": 0,
+          "wins": 0,
+          "win_rate": null,
+          "realized_pnl": 0.0,
+          "unrealized_pnl": 0.0,
+          "position_notional": 0.0,
+          "entry_actions": 0,
+          "warmup_minutes": 7462,
+          "position_qty": 0.0,
+          "strategies": {
+            "TD_TI_024": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "NEARUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "NEARUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "factor_036": {
+              "strategy_name": "factor_036",
+              "symbol": "NEARUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2527,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            }
+          }
+        },
+        "SOLUSDT": {
+          "closed_trades": 1,
+          "wins": 1,
+          "win_rate": 1.0,
+          "realized_pnl": 0.0862730061349726,
+          "unrealized_pnl": -0.9318551084774866,
+          "position_notional": 99.06814489152251,
+          "entry_actions": 2,
+          "warmup_minutes": 4964,
+          "position_qty": 0.9557488292076842,
+          "strategies": {
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "SOLUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.9318551084774866,
+              "position_flag": 1,
+              "position_qty": 0.9557488292076842,
+              "position_notional": 99.06814489152251,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "baseline_200": {
+              "strategy_name": "baseline_200",
+              "symbol": "SOLUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.0862730061349726,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "XLMUSDT": {
+          "closed_trades": 3,
+          "wins": 1,
+          "win_rate": 0.3333333333333333,
+          "realized_pnl": 0.29037820989217183,
+          "unrealized_pnl": -0.5310155341857792,
+          "position_notional": 99.46898446581422,
+          "entry_actions": 4,
+          "warmup_minutes": 7402,
+          "position_qty": 528.3736658564936,
+          "strategies": {
+            "TD_TI_024": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "XLMUSDT",
+              "closed_trades": 2,
+              "wins": 1,
+              "losses": 1,
+              "breakeven": 0,
+              "win_rate": 0.5,
+              "realized_pnl": 0.34312639007994955,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 2
+            },
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "XLMUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.5310155341857792,
+              "position_flag": 1,
+              "position_qty": 528.3736658564936,
+              "position_notional": 99.46898446581422,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "baseline_200": {
+              "strategy_name": "baseline_200",
+              "symbol": "XLMUSDT",
+              "closed_trades": 1,
+              "wins": 0,
+              "losses": 1,
+              "breakeven": 0,
+              "win_rate": 0.0,
+              "realized_pnl": -0.05274818018777771,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "XRPUSDT": {
+          "closed_trades": 0,
+          "wins": 0,
+          "win_rate": null,
+          "realized_pnl": 0.0,
+          "unrealized_pnl": 0.0,
+          "position_notional": 0.0,
+          "entry_actions": 0,
+          "warmup_minutes": 2497,
+          "position_qty": 0.0,
+          "strategies": {
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "XRPUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            }
+          }
+        },
+        "ZECUSDT": {
+          "closed_trades": 1,
+          "wins": 1,
+          "win_rate": 1.0,
+          "realized_pnl": 1.0014036769488701,
+          "unrealized_pnl": -2.264547082001893,
+          "position_notional": 197.7354529179981,
+          "entry_actions": 3,
+          "warmup_minutes": 9869,
+          "position_qty": 0.17285096390011764,
+          "strategies": {
+            "TD_TI_024": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "ZECUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "baseline_141": {
+              "strategy_name": "baseline_141",
+              "symbol": "ZECUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -1.9738646101113841,
+              "position_flag": 1,
+              "position_qty": 0.0856898029134533,
+              "position_notional": 98.02613538988861,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "baseline_164": {
+              "strategy_name": "baseline_164",
+              "symbol": "ZECUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 1.0014036769488701,
+              "unrealized_pnl": -0.29068247189050894,
+              "position_flag": 1,
+              "position_qty": 0.08716116098666435,
+              "position_notional": 99.7093175281095,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 2
+            },
+            "baseline_200": {
+              "strategy_name": "baseline_200",
+              "symbol": "ZECUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            }
+          }
+        }
+      },
+      "strategy_summaries": {
+        "TD_TI_024": {
+          "closed_trades": 7,
+          "wins": 6,
+          "win_rate": 0.8571428571428571,
+          "realized_pnl": 3.1075357088432476,
+          "unrealized_pnl": -1.1029648208888054,
+          "position_notional": 98.8970351791112,
+          "entry_actions": 8,
+          "warmup_minutes": 14628,
+          "position_qty": 0.6431281754453663,
+          "symbols": {
+            "AAVEUSDT": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 2,
+              "wins": 2,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 1.0701409827032404,
+              "unrealized_pnl": -1.1029648208888054,
+              "position_flag": 1,
+              "position_qty": 0.6431281754453663,
+              "position_notional": 98.8970351791112,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 3
+            },
+            "DASHUSDT": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "DASHUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.8183306055646598,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 1
+            },
+            "DOGEUSDT": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "DOGEUSDT",
+              "closed_trades": 2,
+              "wins": 2,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.875937730495398,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 2
+            },
+            "NEARUSDT": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "NEARUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "XLMUSDT": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "XLMUSDT",
+              "closed_trades": 2,
+              "wins": 1,
+              "losses": 1,
+              "breakeven": 0,
+              "win_rate": 0.5,
+              "realized_pnl": 0.34312639007994955,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 2
+            },
+            "ZECUSDT": {
+              "strategy_name": "TD_TI_024",
+              "symbol": "ZECUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2438,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            }
+          }
+        },
+        "baseline_141": {
+          "closed_trades": 0,
+          "wins": 0,
+          "win_rate": null,
+          "realized_pnl": 0.0,
+          "unrealized_pnl": -4.323526806811548,
+          "position_notional": 495.6764731931885,
+          "entry_actions": 5,
+          "warmup_minutes": 19976,
+          "position_qty": 531.5083812083346,
+          "symbols": {
+            "AAVEUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "DASHUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "DASHUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.7079827621588176,
+              "position_flag": 1,
+              "position_qty": 2.052123948286477,
+              "position_notional": 99.2920172378412,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 1
+            },
+            "ETHUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "ETHUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.17880879187808082,
+              "position_flag": 1,
+              "position_qty": 0.04115277143339219,
+              "position_notional": 99.82119120812193,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "NEARUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "NEARUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "SOLUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "SOLUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.9318551084774866,
+              "position_flag": 1,
+              "position_qty": 0.9557488292076842,
+              "position_notional": 99.06814489152251,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "XLMUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "XLMUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.5310155341857792,
+              "position_flag": 1,
+              "position_qty": 528.3736658564936,
+              "position_notional": 99.46898446581422,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "XRPUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "XRPUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            },
+            "ZECUSDT": {
+              "strategy_name": "baseline_141",
+              "symbol": "ZECUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -1.9738646101113841,
+              "position_flag": 1,
+              "position_qty": 0.0856898029134533,
+              "position_notional": 98.02613538988861,
+              "warmup_minutes": 2497,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            }
+          }
+        },
+        "baseline_164": {
+          "closed_trades": 1,
+          "wins": 1,
+          "win_rate": 1.0,
+          "realized_pnl": 1.0014036769488701,
+          "unrealized_pnl": -0.6438447321289664,
+          "position_notional": 199.35615526787103,
+          "entry_actions": 3,
+          "warmup_minutes": 7401,
+          "position_qty": 0.7351653082132067,
+          "symbols": {
+            "AAVEUSDT": {
+              "strategy_name": "baseline_164",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -0.3531622602384575,
+              "position_flag": 1,
+              "position_qty": 0.6480041472265423,
+              "position_notional": 99.64683773976155,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "DASHUSDT": {
+              "strategy_name": "baseline_164",
+              "symbol": "DASHUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 0
+            },
+            "ZECUSDT": {
+              "strategy_name": "baseline_164",
+              "symbol": "ZECUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 1.0014036769488701,
+              "unrealized_pnl": -0.29068247189050894,
+              "position_flag": 1,
+              "position_qty": 0.08716116098666435,
+              "position_notional": 99.7093175281095,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 2
+            }
+          }
+        },
+        "baseline_200": {
+          "closed_trades": 4,
+          "wins": 3,
+          "win_rate": 0.75,
+          "realized_pnl": 1.3421115903548473,
+          "unrealized_pnl": -1.1029648208888054,
+          "position_notional": 98.8970351791112,
+          "entry_actions": 5,
+          "warmup_minutes": 14802,
+          "position_qty": 0.6431281754453663,
+          "symbols": {
+            "AAVEUSDT": {
+              "strategy_name": "baseline_200",
+              "symbol": "AAVEUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": -1.1029648208888054,
+              "position_flag": 1,
+              "position_qty": 0.6431281754453663,
+              "position_notional": 98.8970351791112,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "DASHUSDT": {
+              "strategy_name": "baseline_200",
+              "symbol": "DASHUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.8183306055646598,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700620000,
+              "entry_actions": 1
+            },
+            "DOGEUSDT": {
+              "strategy_name": "baseline_200",
+              "symbol": "DOGEUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.49025615884299256,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "SOLUSDT": {
+              "strategy_name": "baseline_200",
+              "symbol": "SOLUSDT",
+              "closed_trades": 1,
+              "wins": 1,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": 1.0,
+              "realized_pnl": 0.0862730061349726,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "XLMUSDT": {
+              "strategy_name": "baseline_200",
+              "symbol": "XLMUSDT",
+              "closed_trades": 1,
+              "wins": 0,
+              "losses": 1,
+              "breakeven": 0,
+              "win_rate": 0.0,
+              "realized_pnl": -0.05274818018777771,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 1
+            },
+            "ZECUSDT": {
+              "strategy_name": "baseline_200",
+              "symbol": "ZECUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2467,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            }
+          }
+        },
+        "factor_036": {
+          "closed_trades": 0,
+          "wins": 0,
+          "win_rate": null,
+          "realized_pnl": 0.0,
+          "unrealized_pnl": 0.0,
+          "position_notional": 0.0,
+          "entry_actions": 0,
+          "warmup_minutes": 2527,
+          "position_qty": 0.0,
+          "symbols": {
+            "NEARUSDT": {
+              "strategy_name": "factor_036",
+              "symbol": "NEARUSDT",
+              "closed_trades": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakeven": 0,
+              "win_rate": null,
+              "realized_pnl": 0.0,
+              "unrealized_pnl": 0,
+              "position_flag": 0,
+              "position_qty": 0,
+              "position_notional": 0,
+              "warmup_minutes": 2527,
+              "first_observation_ms": 1791700560000,
+              "entry_actions": 0
+            }
+          }
+        }
+      },
+      "error": null,
+      "ready": true
+    }
+  },
+  "snapshot": {
+    "server_ts_us": 1791878493631146,
+    "status_age_ms": 821,
+    "execution_age_ms": null,
+    "signal_state": "online",
+    "execution_state": "offline",
+    "healthy": true,
+    "config": {
+      "enabled": false,
+      "max_pos_u": 100.0,
+      "entry": {
+        "factor_long_quantile": 0.9,
+        "factor_short_quantile": 0.1,
+        "nq_change_enabled": true,
+        "nq_long_quantile": 0.5,
+        "nq_short_quantile": 0.5
+      },
+      "execution": {
+        "factor_exit_quantile_long": 0.3,
+        "factor_exit_quantile_short": 0.7
+      }
+    },
+    "status": {
+      "allocation": "per_symbol_factor",
+      "enabled": false,
+      "factor_config_key": "binance-cta-perp-rx02:cta_symbol_factors",
+      "follower_source_id": "binance_exec_trade05",
+      "journal_healthy": true,
+      "manager_strategy_prefix": "lgq_cta_",
+      "max_pos_u": 100.0,
+      "publication_error": null,
+      "scheduled_entries": 0,
+      "strategies": {
+        "TD_TI_024": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 160.525,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 50.445,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "DOGEUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 0.08491499999999999,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 5.1995000000000005,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 0.194325,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1226.085,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          }
+        },
+        "baseline_141": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 160.525,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 50.445,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "ETHUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 2528.255,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 5.1995000000000005,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "SOLUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 108.495,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 0.194325,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "XRPUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1.3766500000000002,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1226.085,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          }
+        },
+        "baseline_164": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 160.525,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 50.445,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "+",
+            "mark_price": 1226.085,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          }
+        },
+        "baseline_200": {
+          "AAVEUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 160.525,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "DASHUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 50.445,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "DOGEUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 0.08491499999999999,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "SOLUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 108.495,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "XLMUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 0.194325,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          },
+          "ZECUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 1226.085,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          }
+        },
+        "factor_036": {
+          "NEARUSDT": {
+            "allocation_usdt": 100.0,
+            "entry_notional": 0.0,
+            "factor_sign": "-",
+            "mark_price": 5.1995000000000005,
+            "position_flag": 0,
+            "position_qty": 0.0,
+            "position_usdt": 0.0,
+            "score_ready": false
+          }
+        }
+      },
+      "symbol_factors": {
+        "AAVEUSDT": {
+          "TD_TI_024": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "DASHUSDT": {
+          "TD_TI_024": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "DOGEUSDT": {
+          "TD_TI_024": -1.0,
+          "baseline_200": -1.0
+        },
+        "ETHUSDT": {
+          "baseline_141": 1.0
+        },
+        "NEARUSDT": {
+          "TD_TI_024": -1.0,
+          "baseline_141": 1.0,
+          "factor_036": -1.0
+        },
+        "SOLUSDT": {
+          "baseline_141": 1.0,
+          "baseline_200": -1.0
+        },
+        "XLMUSDT": {
+          "TD_TI_024": -1.0,
+          "baseline_141": 1.0,
+          "baseline_200": -1.0
+        },
+        "XRPUSDT": {
+          "baseline_141": 1.0
+        },
+        "ZECUSDT": {
+          "TD_TI_024": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        }
+      },
+      "updated_ts_us": 1791878492809547,
+      "venue": "binance-futures",
+      "virtual_account_name": "lgq_cta"
+    },
+    "execution": null,
+    "errors": []
+  },
+  "browser_errors": []
+}

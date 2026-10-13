@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 07:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-13 07:56 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-13 07:52 UTC 新 RX02 配置页/观察页已启动，监听 loopback
+19186/10196，4191 网关新增 `/cta/binance-cta-perp-rx02/`；旧 special 路径
+及 19182/10192 保留。观察信号 enabled=false，不调用 Manager 发布目标。
+Dashboard 直连既有 Binance Futures 公共 Klines，不新增公共 API 缓存端点。
+没有新增独立 source IP、`local_ips`、EIP、ENI 或路由调整。
 
 2026-10-13 07:35 UTC 新增 `binance-cta-perp-rx02` 预备目录，仅启动 Kafka
 因子预热；仓位发布保持关闭。它不部署交易引擎、不复制 LTP 凭证、不申请独立
