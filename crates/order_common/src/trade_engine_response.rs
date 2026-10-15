@@ -146,7 +146,12 @@ pub trait TradeEngineResponse {
             || (matches!(
                 self.request_kind(),
                 TradeRequestKind::Open | TradeRequestKind::Cancel | TradeRequestKind::Modify
-            ) && self.error_code() == crate::trade_error_code::ACTION_RESULT_UNKNOWN)
+            ) && (self.error_code() == crate::trade_error_code::ACTION_RESULT_UNKNOWN
+                || (self.exchange_enum() == Some(Exchange::Binance)
+                    && matches!(
+                        self.error_code(),
+                        binance::UNEXPECTED_RESP | binance::TIMEOUT
+                    ))))
     }
 
     /// Whether the order is rejected because maker-only/post-only would cross.
@@ -547,6 +552,53 @@ mod tests {
             hyperliquid::ACTION_AMBIGUOUS,
         );
         assert!(!wrong_exchange.is_hyperliquid_action_ambiguous());
+    }
+
+    #[test]
+    fn binance_unknown_execution_errors_require_query_only_for_order_actions() {
+        for code in [binance::UNEXPECTED_RESP, binance::TIMEOUT] {
+            for req_type in [
+                TradeRequestType::BinanceNewMarginOrder,
+                TradeRequestType::BinanceNewUMOrder,
+                TradeRequestType::BinanceCancelMarginOrder,
+                TradeRequestType::BinanceModifyUMOrder,
+            ] {
+                let response = TradeEngineResponseMessage::new(
+                    400,
+                    req_type as u32,
+                    Exchange::Binance as u32,
+                    42,
+                    code,
+                );
+                assert!(response.is_action_result_unknown(), "{req_type:?} {code}");
+            }
+            let wrong_exchange = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::OkexNewUMOrder as u32,
+                Exchange::Okex as u32,
+                42,
+                code,
+            );
+            assert!(!wrong_exchange.is_action_result_unknown());
+            let non_order = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceUMSetLeverage as u32,
+                Exchange::Binance as u32,
+                42,
+                code,
+            );
+            assert!(!non_order.is_action_result_unknown());
+        }
+        for code in [-2010, -2027, -1008] {
+            let rejected = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceNewMarginOrder as u32,
+                Exchange::Binance as u32,
+                42,
+                code,
+            );
+            assert!(!rejected.is_action_result_unknown());
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-13 13:42 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-14 22:46 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 2026-10-13 13:42 UTC RX01 已正式启用，独立执行环境 `binance_exec_trade06`，RapidX Binance
@@ -260,6 +260,14 @@ trade_signal、pre_trade、trade_engine、viz_server 和 FR dashboard 未固定�
 含 Binance FR 限仓价格 buffer 修复）；六个交易栈程序均已核验运行文件校验值。
 persist_manager 仍绑核 15，其余五个程序未固定绑核，在线可用核为 housekeeping 0-5。
 trade_signal 在撤单、替换和 F 现货对齐期间停止，对齐核验后已恢复。
+2026-10-14 22:46 UTC 重新发布 `binance_fr_arb04`：由本机已同步的 `arbmm`
+`6ff0248e` 工作树（含当前本地修复）构建，上传并校验后原子安装六个 Rust 程序。
+persist_manager 仍绑核 15，其余五个程序实测 CPU mask 为 `0-5,48-95`；
+配置服务也已恢复。trade_signal 在撤单、PARTI 补对冲和基础栈启动期间停止，
+账户快照与限仓缓存就绪后已恢复；47/47 在线交易对杠杆确认 5x，限仓缓存无缺失。
+共享 `delist_risk_server` 同步发布 margin 资格过滤修复，实测 CPU mask
+`0-5,48-95`。隔离核、IRQ 和账户配置未调整。构建、成交和运行文件校验记录见
+`artifacts/binance_fr_arb04_republish/20261014T2227Z/`。
 2026-10-08 06:00 UTC 完成 `gate-intra-arb01`、`bitget-intra-arb01` 退役：
 仅将各自 `data/persist_manager` 的 RocksDB 归档至 `~/retired_data/`，逐文件校验后
 删除部署目录、退役配置服务的 PM2 历史条目及对应 Nginx 转发；两环境无运行进程。

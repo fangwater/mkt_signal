@@ -1,8 +1,12 @@
 pub const MAX_LEVERAGE_RATIO: i32 = -2027;
+pub const UNEXPECTED_RESP: i32 = -1006;
+pub const TIMEOUT: i32 = -1007;
 
 /// Binance trade/rest/ws error codes to short descriptions.
 pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
     match code {
+        UNEXPECTED_RESP => Some("Unexpected response; execution status unknown"),
+        TIMEOUT => Some("Timeout; send and execution status unknown"),
         -2010 => Some("New order rejected"),
         -2011 => Some("Cancel rejected"),
         -2012 => Some("Cancel all failed"),

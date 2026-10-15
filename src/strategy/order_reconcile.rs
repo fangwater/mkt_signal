@@ -190,4 +190,52 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn binance_unknown_result_queries_open_cancel_and_modify() {
+        for code in [
+            order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+            order_common::trade_error_code::binance::UNEXPECTED_RESP,
+            order_common::trade_error_code::binance::TIMEOUT,
+        ] {
+            for (request, expected) in [
+                (
+                    TradeRequestType::BinanceNewMarginOrder,
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceNewUMOrder,
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceCancelMarginOrder,
+                    PendingOrderQueryReason::CancelWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceCancelUMOrder,
+                    PendingOrderQueryReason::CancelWatchdog,
+                ),
+                (
+                    TradeRequestType::BinanceModifyUMOrder,
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+            ] {
+                let response = TradeEngineResponseMessage::new(
+                    0,
+                    request as u32,
+                    symbol_utils::Exchange::Binance as u32,
+                    42,
+                    code,
+                );
+                assert_eq!(
+                    ambiguous_action_query_reason(
+                        &response,
+                        PendingOrderQueryReason::CancelWatchdog
+                    ),
+                    Some(expected),
+                    "{request:?} {code}"
+                );
+            }
+        }
+    }
 }

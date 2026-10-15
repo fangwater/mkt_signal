@@ -1,0 +1,47 @@
+{
+  "created_utc": "2026-10-14T22:27:40.975754+00:00",
+  "env": "binance_fr_arb04",
+  "host": "jp-meta-elvpn",
+  "branch": "arbmm",
+  "base_commit": "6ff0248e524a673c3ba8524bab8e9a6c6ddbb7e1",
+  "origin_commit": "6ff0248e524a673c3ba8524bab8e9a6c6ddbb7e1",
+  "source_state": "maintained arbmm worktree with current local edits; no user edits reverted",
+  "artifacts": [
+    {
+      "name": "trade_signal",
+      "size": 11433648,
+      "sha256": "c25ccfaf31764a186a5ca426f0e22e2923847afa02a3cc7edd40ee7e8190a04b"
+    },
+    {
+      "name": "binance_account_monitor",
+      "size": 10081776,
+      "sha256": "5f650961fd76c15be379854b5a6cd4dc9140de77a18384e73fea42e220047370"
+    },
+    {
+      "name": "viz_server",
+      "size": 8030488,
+      "sha256": "27d4bf40b3350eada29f2db6c41170b48350cbfce1741499a591b47dcd89dd2e"
+    },
+    {
+      "name": "pre_trade",
+      "size": 19673728,
+      "sha256": "52c0e508e19cdb2e9341a0f9d7e2b3a21f3304012b8b21460acc1c6764ed92ed"
+    },
+    {
+      "name": "trade_engine",
+      "size": 12256856,
+      "sha256": "3a644f27a3fca63427739c31c981a19f024d00ec8c8f9e596a70c6cdc8e4f748"
+    },
+    {
+      "name": "persist_manager",
+      "size": 18388232,
+      "sha256": "a3a6eefbdbe0db44b3a62496cb4d915dea6f49047f80ebf1006bc7c2ec8f3da3"
+    },
+    {
+      "name": "delist_risk_server",
+      "size": 11974568,
+      "sha256": "8c31f9e3e3fe53b99efd640d2cdba2d8750b64ec666a0f5e1a0ccae6314aa702"
+    }
+  ],
+  "source_patch_sha256": "381debce6fb7f3f054ba2355ab6835f6cb20670f374c9ada11c571104744b3ef"
+}

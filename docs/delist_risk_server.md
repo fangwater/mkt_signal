@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-05 UTC
+最后更新：2026-10-15 UTC
 
 Public HTTP service for upcoming delist / margin / loan / futures-off risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -40,7 +40,36 @@ No API token. Do not put secrets in query strings.
 
 ## Current JP deployment
 
-Verified on 2026-10-05 UTC in `/home/ubuntu/delist_risk_server` on
+Republished on 2026-10-14 22:46 UTC in `/home/ubuntu/delist_risk_server` on
+`jp-meta-elvpn` from the synchronized local `arbmm` worktree at `6ff0248e`
+with current local fixes. The Binance margin catalog now requires both active
+spot status and `isMarginTradingAllowed=true`. The exact locally built release
+was uploaded, SHA-256 checked and atomically installed before the environment
+start script restarted the service. Artifact SHA-256:
+`8c31f9e3e3fe53b99efd640d2cdba2d8750b64ec666a0f5e1a0ccae6314aa702`.
+Existing configuration and frontend were retained. Live `/healthz` reports
+`ok=true`, `postgres=true`, `degraded=false`; `binance_fr_arb04` reports margin
+catalog removals for HOTUSDT, THEUSDT, IOTXUSDT and TSTUSDT. Their active futures
+legs still prevent whole-pair Redis removal under the existing removal policy.
+After arb04 signal resumed, HOTUSDT margin-order submissions still returned
+HTTP 400 / code 51023 (`Trading pair does not exist.`). Catalog risk recognition
+does not by itself remove an active futures/unsupported margin pair or suppress
+every strategy submission; this release does not change that removal policy.
+The process inherits CPU mask `0-5,48-95`; network configuration is unchanged.
+Build and runtime verification are recorded under
+`artifacts/binance_fr_arb04_republish/20261014T2227Z/`.
+
+On 2026-10-15 02:30 UTC, the operator explicitly requested removal of HOTUSDT
+and THEUSDT from arb04. The environment-local FR Config API removed only these
+symbols from `fwd_trade_symbols` and `unimmr_close_symbols` (46 to 44 each).
+The signal process confirmed hot reload at 02:30:52 UTC. The account universe
+now has 45 symbols; the remaining margin catalog risk hits are IOTXUSDT and
+TSTUSDT. This manual configuration change does not alter the shared automatic
+removal policy. Before/after lists are backed up in the arb04 environment at
+`run/remove_hot_the_20261015T0230Z.json`.
+
+The following is the historical 2026-10-05 deployment audit. Verified then in
+`/home/ubuntu/delist_risk_server` on
 `jp-meta-elvpn`: the Rust release from `a69dcd84` and the launch-script fix from
 `74060ee3` are published. Artifact SHA-256:
 `e5d655dd78433a1510ef484b8184c5b4bc1d06a0e8009c0346599df65e61d862`.
@@ -251,9 +280,16 @@ Monitoring/watchlist tags, trading-bot removals, and other risk labels are exclu
 
 `listing` comes from public exchangeInfo / instrument catalogs (no API key):
 
+Binance `binance-margin` requires both an active spot status and
+`isMarginTradingAllowed=true`. A spot pair that remains `TRADING` after margin
+removal is reported as unavailable on the margin leg. Missing or malformed
+permission fields reject the catalog refresh and retain the last complete
+snapshot; they do not synthesize mass delistings. The July 2026 HOT/THE margin
+removal is one example of this distinction.
+
 - `listed` — the pair is still in the live book
 - `pending` — still in the book, but official `offTime` / `delisting_time` / `in_delisting` / nearby `deliveryDate` is set
-- `delisted` — the pair is gone from that venue catalog (already off)
+- `delisted` — the pair is absent or inactive on that venue, including margin permission removal
 - `unknown` — that venue catalog has not been fetched yet
 
 Spot pair removals such as `SUI/BNB` are stored only as `symbols=["SUIBNB"]`. They do not mark `SUI` / `SUIUSDT` as delisted.

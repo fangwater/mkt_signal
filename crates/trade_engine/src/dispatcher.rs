@@ -83,6 +83,29 @@ fn hot_symbol(params: &[(String, String)]) -> String {
         .to_string()
 }
 
+fn binance_pm_action_error_body(evt: &OrderRequestEvent, status: u16, body: String) -> String {
+    let is_order_action = matches!(evt.method.as_str(), "POST" | "PUT" | "DELETE")
+        && matches!(
+            evt.endpoint.as_str(),
+            "/papi/v1/margin/order" | "/papi/v1/um/order" | "/papi/v1/um/conditional/order"
+        );
+    let unknown_server_result = status == 503
+        && parse_top_level_error_msg(&body).is_some_and(|msg| {
+            msg.eq_ignore_ascii_case("Unknown error, please check your request or try again later.")
+        });
+    if is_order_action && (status == 0 || unknown_server_result) {
+        // The exchange may have accepted the action. Keep its local owner until
+        // an order query or account-stream update establishes the actual state.
+        serde_json::json!({
+            "code": order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+            "msg": body,
+        })
+        .to_string()
+    } else {
+        body
+    }
+}
+
 fn build_signed_query(params: &[(String, String)], recv_window: &str, timestamp: &str) -> String {
     let mut ser = url::form_urlencoded::Serializer::new(String::with_capacity(
         params
@@ -497,7 +520,29 @@ impl Dispatcher {
                 );
 
                 let status = r.status();
-                let text = r.text().await.unwrap_or_default();
+                let text = match r.text().await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        let error = error.without_url();
+                        warn!(
+                            "rest dispatch response body error: req_type={} req_id={:?} endpoint={} status={} err={}",
+                            req_type, evt.req_id, evt.endpoint, status.as_u16(), error
+                        );
+                        return Ok(DispatchResponse {
+                            status: 0,
+                            body: binance_pm_action_error_body(
+                                &evt,
+                                0,
+                                format!("response body error: {error}"),
+                            ),
+                            ip,
+                            account: account_name,
+                            ip_used_weight_1m: ip_used_1m,
+                            order_count_1m: acc_used_1m,
+                        });
+                    }
+                };
+                let text = binance_pm_action_error_body(&evt, status.as_u16(), text);
                 if is_duplicate_order_sent(status.as_u16(), &text) {
                     panic!(
                         "binance duplicate order detected: endpoint={} account={} ip={} req_id={:?} body={}",
@@ -554,6 +599,7 @@ impl Dispatcher {
                 })
             }
             Err(e) => {
+                let e = e.without_url();
                 warn!(
                     "rest dispatch network error: req_type={} req_id={:?} method={} endpoint={} account={} ip={} symbol={} weight={} counts_toward_order_limit={} ip_used_weight_1m={} order_count_1m={} err={}",
                     req_type,
@@ -571,7 +617,7 @@ impl Dispatcher {
                 );
                 Ok(DispatchResponse {
                     status: 0,
-                    body: format!("request error: {}", e),
+                    body: binance_pm_action_error_body(&evt, 0, format!("request error: {e}")),
                     ip,
                     account: account_name,
                     ip_used_weight_1m: Some(self.ip_clients[ip_idx].used_weight_1m),
@@ -654,6 +700,7 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestType};
     use reqwest::header::{HeaderName, HeaderValue};
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -688,6 +735,139 @@ mod tests {
             None,
         )
         .expect("dispatcher")
+    }
+
+    async fn dispatch_pm_test_response(response: Option<&'static str>) -> DispatchResponse {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let n = socket.read(&mut request).await.unwrap();
+            assert!(std::str::from_utf8(&request[..n])
+                .unwrap()
+                .starts_with("POST /papi/v1/margin/order?"));
+            if let Some(response) = response {
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let mut dispatcher = test_dispatcher();
+        dispatcher.base_url_papi = format!("http://{address}");
+        let out = dispatcher
+            .dispatch(OrderRequestEvent {
+                req_type: Some("BinanceNewMarginOrder".into()),
+                endpoint: "/papi/v1/margin/order".into(),
+                method: "POST".into(),
+                params: vec![("symbol".into(), "PARTIUSDT".into())],
+                weight: Some(1),
+                account: None,
+                req_id: Some("42".into()),
+                counts_toward_order_limit: true,
+                recv_window_ms: None,
+            })
+            .await
+            .unwrap();
+        server.await.unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn binance_pm_accepted_request_disconnect_requires_order_query() {
+        let out = dispatch_pm_test_response(None).await;
+        assert_eq!(out.status, 0);
+        let code = parse_top_level_error_code(&out.body).unwrap();
+        assert_eq!(code, order_common::trade_error_code::ACTION_RESULT_UNKNOWN);
+        let response = TradeEngineResponseMessage::new(
+            out.status,
+            TradeRequestType::BinanceNewMarginOrder as u32,
+            symbol_utils::Exchange::Binance as u32,
+            42,
+            code,
+        );
+        assert!(response.is_action_result_unknown());
+        assert!(!response.is_request_success());
+        assert!(!out.body.contains("signature="));
+    }
+
+    #[tokio::test]
+    async fn binance_pm_truncated_success_response_requires_order_query() {
+        let out = dispatch_pm_test_response(Some(
+            "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{}",
+        ))
+        .await;
+        assert_eq!(out.status, 0);
+        assert_eq!(
+            parse_top_level_error_code(&out.body),
+            Some(order_common::trade_error_code::ACTION_RESULT_UNKNOWN)
+        );
+    }
+
+    #[test]
+    fn binance_pm_unknown_result_preserves_definite_rejections_and_queries() {
+        let mut evt = OrderRequestEvent {
+            req_type: Some("BinanceNewUMOrder".into()),
+            endpoint: "/papi/v1/um/order".into(),
+            method: "POST".into(),
+            params: Vec::new(),
+            weight: None,
+            account: None,
+            req_id: None,
+            counts_toward_order_limit: true,
+            recv_window_ms: None,
+        };
+        let unknown = r#"{"code":-1000,"msg":"Unknown error, please check your request or try again later."}"#;
+        for method in ["POST", "PUT", "DELETE"] {
+            evt.method = method.into();
+            assert_eq!(
+                parse_top_level_error_code(&binance_pm_action_error_body(
+                    &evt,
+                    503,
+                    unknown.into()
+                )),
+                Some(order_common::trade_error_code::ACTION_RESULT_UNKNOWN)
+            );
+        }
+        for (status, body) in [
+            (400, r#"{"code":-2010,"msg":"New order rejected"}"#),
+            (
+                400,
+                r#"{"code":-2027,"msg":"Exceeded maximum allowable position"}"#,
+            ),
+            (
+                503,
+                r#"{"code":-1008,"msg":"Request throttled by system-level protection."}"#,
+            ),
+            (503, r#"{"code":-1000,"msg":"Service Unavailable."}"#),
+            (
+                503,
+                r#"{"code":-1001,"msg":"Internal error; unable to process your request. Please try again."}"#,
+            ),
+        ] {
+            assert_eq!(
+                binance_pm_action_error_body(&evt, status, body.into()),
+                body
+            );
+        }
+        evt.method = "GET".into();
+        assert_eq!(
+            binance_pm_action_error_body(&evt, 0, "request error".into()),
+            "request error"
+        );
+        evt.method = "POST".into();
+        evt.endpoint = "/papi/v1/um/leverage".into();
+        assert_eq!(
+            binance_pm_action_error_body(&evt, 0, "request error".into()),
+            "request error"
+        );
+        evt.endpoint = "/fapi/v1/order".into();
+        assert_eq!(
+            binance_pm_action_error_body(&evt, 0, "request error".into()),
+            "request error"
+        );
     }
 
     #[test]

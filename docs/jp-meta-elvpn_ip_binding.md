@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-13 13:42 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-14 22:46 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 2026-10-13 13:42 UTC `binance_exec_trade06` 正式接管RX01现货/永续，使用已有
 `local_ips=["172.31.35.228"]`；未新增EIP/ENI或修改路由。
@@ -159,6 +159,13 @@ ens42  172.31.46.91/20 172.31.46.92/20 172.31.46.93/20
 2026-10-07 15:38 UTC 按 publish FR 流程重新发布 `binance_fr_arb03`（`d35f67ea`）：
 两个交易连接的 `local_ips` 仍为 `172.31.35.231`，trade_engine / account_monitor
 启动日志已核验该 source IP；部署前后 `trade_engine.toml` 和 `env.sh` 校验一致。
+
+2026-10-14 22:46 UTC 重新发布并恢复 `binance_fr_arb04`：两个连接的
+`trade_engine.toml local_ips` 仍为 `172.31.35.231, 172.31.35.231`；
+环境根目录 `trade_engine.toml`、`env.sh` 与 `config/viz.toml` 部署前后 SHA-256
+一致。共享 `delist_risk_server` 同步发布并恢复健康，未修改监听配置、源 IP、
+EIP、ENI 或路由。精确发布清单与核验记录见
+`artifacts/binance_fr_arb04_republish/20261014T2227Z/`。
 
 2026-10-08 06:00 UTC 完成 `gate-intra-arb01`、`bitget-intra-arb01` 退役，
 RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；共享出口 `.228`

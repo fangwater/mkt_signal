@@ -347,7 +347,18 @@ fn ingest_binance_symbols(
             .get("deliveryDate")
             .and_then(Value::as_i64)
             .filter(|ms| *ms > now_ms && *ms < now_ms + 400 * 86_400_000);
-        index.insert(venue, symbol, row(status, delivery.is_some()));
+        let mut listing = row(status, delivery.is_some());
+        if venue == "binance-margin" {
+            let margin_allowed = item
+                .get("isMarginTradingAllowed")
+                .and_then(Value::as_bool)
+                .with_context(|| {
+                    format!("{venue} exchangeInfo symbol={symbol} missing boolean isMarginTradingAllowed")
+                })?;
+            // Spot can remain TRADING after cross/isolated margin is delisted.
+            listing.listed &= margin_allowed;
+        }
+        index.insert(venue, symbol, listing);
         inserted += 1;
     }
     if inserted == 0 {
@@ -669,6 +680,83 @@ mod tests {
             index.listing_for("binance-margin", &["AAAUSDT".into()], &[]),
             "delisted"
         );
+    }
+
+    #[test]
+    fn binance_margin_permissions_surface_risk_without_announcements() {
+        use crate::common::delist_accounts::{build_account_views, AccountSpec, RedisSite};
+        use crate::common::delist_risk::{RiskBook, RiskQuery};
+        use std::collections::BTreeSet;
+
+        let body = serde_json::json!({"symbols": [
+            {"symbol": "HOTUSDT", "status": "TRADING", "isSpotTradingAllowed": true, "isMarginTradingAllowed": false},
+            {"symbol": "THEUSDT", "status": "TRADING", "isSpotTradingAllowed": true, "isMarginTradingAllowed": false},
+            {"symbol": "PARTIUSDT", "status": "TRADING", "isMarginTradingAllowed": true},
+            {"symbol": "HALTEDUSDT", "status": "BREAK", "isMarginTradingAllowed": true}
+        ]});
+        let mut index = ListingIndex::default();
+        ingest_binance_symbols(&body, "binance-margin", &mut index, 1).unwrap();
+        let futures = serde_json::json!({"symbols": [
+            {"symbol": "HOTUSDT", "status": "TRADING"},
+            {"symbol": "THEUSDT", "status": "TRADING"},
+            {"symbol": "PARTIUSDT", "status": "TRADING"}
+        ]});
+        ingest_binance_symbols(&futures, "binance-futures", &mut index, 1).unwrap();
+        for symbol in ["HOTUSDT", "THEUSDT", "HALTEDUSDT"] {
+            assert_eq!(
+                index.listing_for("binance-margin", &[symbol.into()], &[]),
+                "delisted"
+            );
+        }
+        assert_eq!(
+            index.listing_for("binance-margin", &["PARTIUSDT".into()], &[]),
+            "listed"
+        );
+
+        let account = AccountSpec {
+            slug: "binance_fr_arb04".into(),
+            alias: "test".into(),
+            exchange: "binance".into(),
+            kind: "funding_rate".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        };
+        let symbols: BTreeSet<String> = ["HOTUSDT", "THEUSDT", "PARTIUSDT"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let universes = BTreeMap::from([(account.slug.clone(), Ok(symbols))]);
+        let risk = RiskBook::default().query(&RiskQuery::default());
+        let views = build_account_views(&[account], &risk, &index, &universes);
+        assert_eq!(views[0].tone, "risk");
+        assert_eq!(views[0].risk_n, 2);
+        for hit in &views[0].hits {
+            assert_eq!(hit.events[0].venue, "binance-margin");
+            assert_eq!(hit.events[0].action, "catalog_removed");
+        }
+        let hot = index
+            .snapshot_rows()
+            .into_iter()
+            .find(|row| row.venue == "binance-margin" && row.symbol == "HOTUSDT")
+            .unwrap();
+        assert_eq!(hot.status, "TRADING");
+        assert!(!hot.listed);
+    }
+
+    #[test]
+    fn binance_margin_catalog_rejects_missing_or_malformed_permission() {
+        for permission in [Value::Null, Value::String("false".into())] {
+            let body = serde_json::json!({"symbols": [{
+                "symbol": "HOTUSDT", "status": "TRADING", "isMarginTradingAllowed": permission
+            }]});
+            let error =
+                ingest_binance_symbols(&body, "binance-margin", &mut ListingIndex::default(), 1)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("HOTUSDT"));
+            assert!(error.contains("isMarginTradingAllowed"));
+        }
     }
 
     #[test]
