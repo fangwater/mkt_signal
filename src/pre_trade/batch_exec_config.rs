@@ -232,7 +232,12 @@ impl BatchExecLeverageInitState {
     }
 
     fn confirmed_on_startup(&self) -> BTreeSet<String> {
-        if self.scope.rapidx_portfolio_id.is_some() {
+        if self.scope.rapidx_portfolio_id.is_some()
+            || matches!(
+                self.scope.venue.as_str(),
+                "bybit-futures" | "bitget-futures"
+            )
+        {
             BTreeSet::new()
         } else {
             self.symbols.clone()
@@ -249,6 +254,8 @@ impl BatchExecLeverageInitScope {
             TradingVenue::OkexFutures | TradingVenue::OkexMargin => {
                 runtime_common::exchange::Exchange::Okex
             }
+            TradingVenue::BybitFutures => runtime_common::exchange::Exchange::Bybit,
+            TradingVenue::BitgetFutures => runtime_common::exchange::Exchange::Bitget,
             other => anyhow::bail!(
                 "unsupported BatchExec futures venue for leverage-init scope: {other:?}"
             ),

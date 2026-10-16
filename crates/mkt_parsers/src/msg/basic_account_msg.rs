@@ -43,6 +43,8 @@ pub enum BasicAccountEventType {
     HyperliquidTwapHistory = 4017,
     /// Native Hyperliquid account evidence that must not synthesize fills or balances.
     HyperliquidNativeEvent = 4018,
+    /// Factual exchange-owned UTA futures fill, without a CTA strategy identity.
+    ExternalFuturesFill = 4019,
     /// 错误
     Error = 4999,
 }
@@ -1757,6 +1759,7 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4016 => BasicAccountEventType::HyperliquidTwapSliceFill,
         4017 => BasicAccountEventType::HyperliquidTwapHistory,
         4018 => BasicAccountEventType::HyperliquidNativeEvent,
+        4019 => BasicAccountEventType::ExternalFuturesFill,
         _ => BasicAccountEventType::Error,
     }
 }

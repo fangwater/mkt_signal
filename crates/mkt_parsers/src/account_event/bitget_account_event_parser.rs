@@ -17,7 +17,15 @@ use serde_json::{Map, Value};
 use sonic_rs::{JsonValueTrait, LazyValue};
 
 #[derive(Clone)]
-pub struct BitgetAccountEventParser;
+pub struct BitgetAccountEventParser {
+    external_fills: std::cell::RefCell<
+        std::collections::BTreeMap<
+            String,
+            Vec<crate::msg::external_futures_fill::ExternalFuturesFill>,
+        >,
+    >,
+    forced_orders: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
+}
 
 impl Default for BitgetAccountEventParser {
     fn default() -> Self {
@@ -27,7 +35,10 @@ impl Default for BitgetAccountEventParser {
 
 impl BitgetAccountEventParser {
     pub fn new() -> Self {
-        Self
+        Self {
+            external_fills: Default::default(),
+            forced_orders: Default::default(),
+        }
     }
 
     fn parse_account_channel<S: AccountEventSink>(&self, root: &LazyValue<'_>, tx: &S) -> usize {
@@ -240,6 +251,27 @@ impl BitgetAccountEventParser {
         let default_venue = detect_message_venue(json_value);
 
         for order_obj in collect_data_objects(json_value) {
+            if let Some(reason) = crate::msg::external_futures_fill::bitget_reason(
+                order_obj
+                    .get("execType")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            ) {
+                if let Some(id) = order_obj.get("orderId").and_then(Value::as_str) {
+                    let mut reasons = self.forced_orders.borrow_mut();
+                    if reasons.len() >= 8192 {
+                        reasons.pop_first();
+                    }
+                    reasons.insert(id.to_owned(), reason.to_owned());
+                    if let Some(fills) = self.external_fills.borrow_mut().remove(id) {
+                        for mut fill in fills {
+                            fill.reason = Some(reason.to_owned());
+                            count += usize::from(fill.emit(tx));
+                        }
+                    }
+                }
+            }
+
             let symbol = order_obj
                 .get("symbol")
                 .or_else(|| order_obj.get("instId"))
@@ -386,6 +418,36 @@ impl BitgetAccountEventParser {
         let default_venue = detect_message_venue(json_value);
 
         for fill_obj in collect_data_objects(json_value) {
+            let id = fill_obj
+                .get("orderId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let reason = self.forced_orders.borrow().get(id).cloned();
+            let internal = parse_i64_str_or_num(fill_obj.get("clientOid")).is_some_and(|v| v > 0);
+            if !internal || reason.is_some() {
+                if let Some(fill) =
+                    crate::msg::external_futures_fill::ExternalFuturesFill::from_exchange(
+                        7,
+                        &Value::Object(fill_obj.clone()),
+                        reason.as_deref(),
+                    )
+                {
+                    count += usize::from(fill.emit(tx));
+                    if fill.reason.is_none() {
+                        let mut pending = self.external_fills.borrow_mut();
+                        if pending.len() >= 8192 {
+                            pending.pop_first();
+                        }
+                        let fills = pending.entry(id.to_owned()).or_default();
+                        if !fills.iter().any(|v| v.trade_id == fill.trade_id) && fills.len() < 1024
+                        {
+                            fills.push(fill);
+                        }
+                    }
+                }
+                continue;
+            }
+
             let symbol = fill_obj
                 .get("symbol")
                 .and_then(|v| v.as_str())
@@ -404,7 +466,8 @@ impl BitgetAccountEventParser {
                 .or_else(|| parse_i64_str_or_num(fill_obj.get("updatedTime")))
                 .unwrap_or(top_timestamp);
             let trade_id = fill_obj
-                .get("tradeId")
+                .get("execId")
+                .or_else(|| fill_obj.get("tradeId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -711,6 +774,38 @@ mod tests {
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
     use crate::msg::bitget_account_msg::BitgetBasicOrderMsg;
+
+    #[test]
+    fn external_fill_and_forced_order_join_in_either_arrival_order() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        for fill_first in [true, false] {
+            let parser = BitgetAccountEventParser::new();
+            let sink = TestAccountEventSink::new();
+            let fill = serde_json::json!({"arg":{"instType":"UTA","topic":"fill"},"data":[{"category":"usdt-futures","symbol":"BTCUSDT","orderId":"9001","clientOid":"exchange-owned","execId":"9002","execTime":"1700000000000","side":"sell","execPrice":"50000","execQty":"0.2"}]});
+            let order = serde_json::json!({"arg":{"instType":"UTA","topic":"order"},"data":[{"category":"USDT-FUTURES","symbol":"BTCUSDT","orderId":"9001","clientOid":"exchange-owned","execType":"liquidation","side":"sell","orderType":"market","orderStatus":"filled","qty":"0.2","cumExecQty":"0.2","avgPrice":"50000"}]});
+            let events = if fill_first {
+                vec![fill, order]
+            } else {
+                vec![order, fill]
+            };
+            for event in events {
+                parser.parse(Bytes::from(event.to_string()), &sink);
+            }
+            let mut factual = Vec::new();
+            while let Some(raw) = sink.recv() {
+                let (kind, _, body) = split_basic_account_event(&raw).unwrap();
+                if kind == BasicAccountEventType::ExternalFuturesFill {
+                    let fill = ExternalFuturesFill::from_bytes(&body).unwrap();
+                    if fill.reason.is_some() {
+                        factual.push(fill);
+                    }
+                }
+            }
+            assert_eq!(factual.len(), 1);
+            assert_eq!(factual[0].reason.as_deref(), Some("liquidation"));
+            assert_eq!(factual[0].trade_id, "9002");
+        }
+    }
 
     #[test]
     fn account_channel_emits_zero_borrow_when_liability_fields_are_present() {

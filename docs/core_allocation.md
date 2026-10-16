@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-14 22:46 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-16 09:10 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 2026-10-13 13:42 UTC RX01 已正式启用，独立执行环境 `binance_exec_trade06`，RapidX Binance
@@ -351,6 +351,12 @@ L3 说明:c7i.metal-24xl 的 L3 为全芯片共享(`shared_cpu_list=0-47`),
 ## sg(SSH: `sg`,ip-172-31-7-123,c7a.4xlarge,apse1-az3)
 
 CPU 布局:`0-7` housekeeping,`8-15` 隔离;AMD 实例无 SMT,全部为物理核。
+
+2026-10-16 新部署独立 CTA Manager（`crypto-cta-manager-web.service`）与本机
+PostgreSQL 16，均限制 CPU 0–7；API 仅 `127.0.0.1:18201`，数据库仅
+`127.0.0.1:5432`，复用 4191 网关 `/manager/`。Bybit/Bitget Exec 仅预留禁用
+source，未启动交易或 monitor；Bybit intra01/02 继续全停。公共数据出口预设
+行情 ENI `172.31.10.217`，私有请求仍使用账户首个交易 IP，未新增源 IP 分配。
 主机调优记录见 `sg_hfq_low_latency_tuning_20260816.md`。
 NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp40s0`;
 `busy_poll`/`busy_read` 与 jp 对齐为 200/50(2026-08-17)。
@@ -361,14 +367,27 @@ NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp
 | 9 | spread_pbs bybit-both(bookticker 角色) | BBO 专核 |
 | 10 | NIC IRQ: enp39s0 下单网卡 | 禁止再绑用户进程 |
 | 11 | NIC IRQ: enp40s0 行情网卡 | 禁止再绑用户进程 |
-| 12 | account_monitor_bybit(bybit-intra-arb01) | |
-| 13 | trade_signal(bybit-intra-arb01) | 预留;start-intra 默认不拉起 |
-| 14 | pre_trade(bybit-intra-arb01) | |
-| 15 | trade_engine(bybit-intra-arb01) | 单线程，只需一核；`TRADE_ENGINE_IPC_CORE` 已废弃 |
+| 12 | account_monitor_bybit(bybit-intra-arb01) | 2026-10-16 已停止，保留配置 |
+| 13 | trade_signal(bybit-intra-arb01) | 2026-10-16 已停止，保留配置；start-intra 默认不拉起 |
+| 14 | pre_trade(bybit-intra-arb01) | 2026-10-16 已停止，保留配置 |
+| 15 | trade_engine(bybit-intra-arb01) | 2026-10-16 已停止，保留配置；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
 
 未绑核、跑在 housekeeping 0-7 的热路径进程(截至本次盘点):
 mm_bybit_alpha 全套(trade_engine/trade_signal/pre_trade/account_monitor/persist_manager)、
-bybit-intra-arb02 的 trade_signal/pre_trade/account_monitor、depth_pub、若干 persist_manager。
+depth_pub、若干 persist_manager。bybit-intra-arb02 原有全套进程使用 0-7，2026-10-16 已全部停止。
 这些与 housekeeping/系统中断同核竞争;隔离段 IRQ 已迁到 10/11。
+
+2026-10-16 07:43 UTC 按操作者要求，`bybit-intra-arb01`、`bybit-intra-arb02`
+已停止全部 7 类环境进程（包括 trade_signal、Config、Viz、persist_manager），
+通过环境本地脚本停止并核对 `/proc`，两账户现货全部订单类型和 USDT linear 挂单均为零。
+从本地已同步 `origin/arbmm` 的工作区构建、校验并原子发布 6 个运行二进制及配套脚本，
+release ID 为 `b68065b7cb50bef48e111f341ae1551cfea4982336974537716e3dd87fc8c314`。
+本次构建包含既有未提交改动；来源与校验记录见证据目录。发布后保持全停，未做在线启动测试。
+env.sh、交易配置和原核心分配保留，两环境的 `local_ips` 仍为
+`["172.31.7.124", "172.31.7.124"]`，没有重新分配 CPU、源 IP、ENI 或路由。
+18 笔人工对冲单全部成交；最终单币最大残余敞口分别约 4.98/4.13 USDT，
+其余为最小下单限制内的尾差，借币利息仍可使后续敞口变化。
+SG 备份：`/home/ubuntu/bybit_intra_redeploy_backup_20261016/<env>/runtime-before.tar`。
+证据：`artifacts/bybit_intra_redeploy/20261016T0741Z/`。
 
 2026-10-11 07:07 UTC trade05 执行完成状态修复：仅更新 exec-pre-trade（PID 3477503）和 Viz（PID 3477383），通过环境脚本重启；其余执行进程和 RX02 四个信号进程保持运行，RX03 停盘。CPU 仍为 housekeeping 0-5；修复活动批次未成交时被最小下单余量永久挂起的问题。1,243 项单元测试通过；线上原先 8 项未结束状态已恢复，全部 15 项后端记录完成、待下单量及剩余批次数归零。证据：`artifacts/trade05_completion_live_validation.json`。

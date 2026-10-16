@@ -20,7 +20,7 @@ Usage: scripts/start-exec.sh --env-name <nameNN> [options]
 Options:
   --host <ssh-host>     SSH config host (default: cta_exec)
   --env-name <nameNN>   Exec environment (required), e.g. binance_exec_trade01
-  --venue <name>        Venue (binance-futures, binance-coin-futures or okex-futures)
+  --venue <name>        Venue (binance-futures, binance-coin-futures, okex-futures, bybit-futures or bitget-futures)
   --check-only          Validate the target and show process state without starting
   -h, --help            Show this help
 
@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|okex)_exec_[a-z0-9][a-z0-9_-]*([0-9]{2})$ ]]; then
+if [[ ! "$ENV_NAME" =~ ^(binance|okex|bybit|bitget)_exec_[a-z0-9][a-z0-9_-]*([0-9]{2})$ ]]; then
   echo "[ERROR] env-name must match binance_exec_<suffixNN> or okex_exec_<suffixNN>: $ENV_NAME" >&2
   exit 2
 fi
@@ -77,6 +77,8 @@ VENUE="${VENUE:-$INFERRED_VENUE}"
 case "$VENUE" in
   binance-futures|binance-coin-futures) VENUE_EXCHANGE="binance" ;;
   okex-futures) VENUE_EXCHANGE="okex" ;;
+  bybit-futures) VENUE_EXCHANGE="bybit" ;;
+  bitget-futures) VENUE_EXCHANGE="bitget" ;;
   *) echo "[ERROR] unsupported venue: $VENUE" >&2; exit 2 ;;
 esac
 if [[ "$VENUE_EXCHANGE" != "$INFERRED_EXCHANGE" ]]; then
@@ -284,11 +286,13 @@ if ! (
     native)
       case "$exchange" in
         binance) [[ -n "${BINANCE_API_KEY:-}" && -n "${BINANCE_API_SECRET:-}" ]] || exit 1 ;;
+        bybit) [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]] || exit 1 ;;
+        bitget) [[ -n "${BITGET_API_KEY:-}" && -n "${BITGET_API_SECRET:-}" && -n "${BITGET_API_PASSPHRASE:-}" ]] || exit 1 ;;
         okex) [[ -n "${OKX_API_KEY:-}" && -n "${OKX_API_SECRET:-}" && -n "${OKX_PASSPHRASE:-}" ]] || exit 1 ;;
       esac
       ;;
     ltp)
-      [[ "$venue" != "binance-coin-futures" ]] || exit 1
+      [[ "$venue" == "binance-futures" || "$venue" == "okex-futures" ]] || exit 1
       [[ -n "${LTP_API_KEY:-}" && -n "${LTP_API_SECRET:-}" ]] || exit 1
       [[ "${LTP_PORTFOLIO_ID:-}" =~ ^[0-9]{1,64}$ ]] || exit 1
       ;;
@@ -333,6 +337,8 @@ fi
 case "$exchange" in
   binance) short_exchange="bn" ;;
   okex) short_exchange="ok" ;;
+  bybit) short_exchange="bb" ;;
+  bitget) short_exchange="bg" ;;
   *)
     echo "[ERROR] unsupported exchange: $exchange" >&2
     exit 1

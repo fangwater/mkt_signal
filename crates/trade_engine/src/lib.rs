@@ -27,6 +27,7 @@ pub mod ltp_rest;
 pub mod ltp_snapshot;
 pub mod ltp_statement;
 pub mod ltp_ws;
+pub mod native_uta_exec;
 pub mod okex;
 pub mod okex_precheck;
 pub mod okex_query;

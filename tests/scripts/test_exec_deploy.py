@@ -30,7 +30,7 @@ class ExecDeployTests(unittest.TestCase):
         for name in (
             "exec-pre-trade", "trade_signal", "trade_engine", "persist_manager",
             "viz_server", "spread_pbs", "binance_account_monitor",
-            "okex_account_monitor", "rapidx_account_monitor",
+            "okex_account_monitor", "rapidx_account_monitor", "bybit_account_monitor", "bitget_account_monitor",
         ):
             (release / name).write_text(f"artifact:{name}\n", encoding="utf-8")
 
@@ -46,8 +46,8 @@ class ExecDeployTests(unittest.TestCase):
         )
 
     def test_prebuilt_deploy_installs_backend_specific_monitor(self) -> None:
-        for exchange in ("binance", "okex"):
-            for backend in ("native", "rapidx"):
+        for exchange in ("binance", "okex", "bybit", "bitget"):
+            for backend in (("native", "rapidx") if exchange in ("binance", "okex") else ("native",)):
                 with self.subTest(exchange=exchange, backend=backend):
                     name = f"{exchange}_exec_{backend}01"
                     args = ["--skip-build"]
@@ -67,6 +67,20 @@ class ExecDeployTests(unittest.TestCase):
                     if backend == "rapidx":
                         self.assertIn("LTP_API_KEY, LTP_API_SECRET and LTP_PORTFOLIO_ID", env)
                     self.assertIn("Processes were not started", result.stdout)
+
+    def test_uta_runtime_wrappers_delegate_with_the_configured_exchange(self):
+        for exchange in ("bybit", "bitget"):
+            name=f"{exchange}_exec_wrapper01"
+            result=self.run_deploy(name,f"{exchange}-futures","--scripts-only")
+            self.assertEqual(result.returncode,0,result.stderr)
+            target=self.deploy_root/name
+            for helper in ("start_trade_engine.sh","stop_trade_engine.sh","start_fr_persist_manager.sh","stop_fr_persist_manager.sh"):
+                path=target/"scripts"/helper
+                path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+            for wrapper in ("start_exec_trade_engine.sh","stop_exec_trade_engine.sh","start_exec_persist_manager.sh","stop_exec_persist_manager.sh"):
+                result=subprocess.run(["bash",str(target/"scripts"/wrapper)],capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertIn(exchange,result.stdout)
 
     def test_existing_rapidx_env_is_preserved_and_selects_monitor_automatically(self) -> None:
         target = self.deploy_root / "binance_exec_rx01"
@@ -106,7 +120,7 @@ class ExecDeployTests(unittest.TestCase):
         self.assertFalse((target / "exec-pre-trade").exists())
 
     def test_rapidx_coin_and_invalid_backend_are_rejected_before_mutation(self) -> None:
-        for venue, backend in (("binance-coin-futures", "rapidx"), ("binance-futures", "typo")):
+        for venue, backend in (("binance-coin-futures", "rapidx"), ("bybit-futures", "rapidx"), ("bitget-futures", "rapidx"), ("binance-futures", "typo")):
             with self.subTest(venue=venue, backend=backend):
                 result = self.run_deploy(
                     "binance_exec_rx01", venue, "--scripts-only", "--exec-backend", backend,

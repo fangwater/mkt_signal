@@ -21,7 +21,7 @@ while [[ $# -gt 0 ]]; do
     --scripts-only) DO_BUILD=0; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help)
-      echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures> [--exec-backend <native|rapidx>] [--viz-port <port>] [--config-port <port>] [--scripts-only|--skip-build]"
+      echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures|bybit-futures|bitget-futures> [--exec-backend <native|rapidx>] [--viz-port <port>] [--config-port <port>] [--scripts-only|--skip-build]"
       echo "Deploys the complete Exec runtime plus the matching spread_pbs venue; nothing is started."
       echo "Backend: new environments default to native; existing environments use env.sh."
       echo "--scripts-only prepares scripts/config; --skip-build also installs prebuilt release binaries."
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$ENV_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo "[ERROR] invalid --env-name" >&2; exit 1; }
-[[ "$VENUE" == "binance-futures" || "$VENUE" == "binance-coin-futures" || "$VENUE" == "okex-futures" ]] || { echo "[ERROR] unsupported --venue" >&2; exit 1; }
+[[ "$VENUE" == "binance-futures" || "$VENUE" == "binance-coin-futures" || "$VENUE" == "okex-futures" || "$VENUE" == "bybit-futures" || "$VENUE" == "bitget-futures" ]] || { echo "[ERROR] unsupported --venue" >&2; exit 1; }
 if [[ "$ENV_NAME" =~ ([0-9]+)$ ]]; then
   INSTANCE_SUFFIX="${BASH_REMATCH[1]}"
   INSTANCE_INDEX=$((10#$INSTANCE_SUFFIX))
@@ -57,6 +57,8 @@ TARGET_DIR="${DEPLOY_ROOT}/${ENV_NAME}"
 case "$VENUE" in
   binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
   okex-futures) EXCHANGE="okex" ;;
+  bybit-futures) EXCHANGE="bybit" ;;
+  bitget-futures) EXCHANGE="bitget" ;;
 esac
 if [[ -f "${TARGET_DIR}/env.sh" ]]; then
   if ! (requested_exec_venue="$VENUE"; requested_exec_namespace="$ENV_NAME"; source "${TARGET_DIR}/env.sh" >/dev/null 2>&1 || exit 1; [[ "${EXEC_VENUE:-${VENUE:-}}" == "$requested_exec_venue" && "${IPC_NAMESPACE:-}" == "$requested_exec_namespace" ]]); then
@@ -79,7 +81,7 @@ if [[ -f "${TARGET_DIR}/env.sh" ]]; then
 else
   EXEC_BACKEND="${REQUESTED_EXEC_BACKEND:-native}"
 fi
-if [[ "$EXEC_BACKEND" == "ltp" && "$VENUE" == "binance-coin-futures" ]]; then
+if [[ "$EXEC_BACKEND" == "ltp" && "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
   echo "[ERROR] RapidX Exec supports Binance/OKX linear perpetual venues only" >&2
   exit 1
 fi

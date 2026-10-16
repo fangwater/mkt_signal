@@ -475,7 +475,7 @@ def decode_stored_exec_config(
 
 
 def exec_markets(venue: str) -> List[str]:
-    if venue not in ("binance-futures", "binance-coin-futures", "okex-futures"):
+    if venue not in ("binance-futures", "binance-coin-futures", "okex-futures", "bybit-futures", "bitget-futures"):
         return [venue]
 
     def backend(raw: str) -> str:
@@ -501,9 +501,9 @@ def exec_markets(venue: str) -> List[str]:
         if key in overrides:
             raise ValueError(f"duplicate execution backend mapping: {key}")
         overrides[key] = backend(value)
-    selected = overrides.get("okex" if venue == "okex-futures" else "binance", overrides.get("*", selected))
-    if venue == "binance-coin-futures" and selected != "native":
-        raise ValueError("COIN-M execution requires the native Binance backend")
+    selected = overrides.get(venue.split("-", 1)[0], overrides.get("*", selected))
+    if venue not in ("binance-futures", "okex-futures") and selected != "native":
+        raise ValueError("This Exec market requires its native backend")
     if selected == "ltp":
         return [venue, "okex-margin" if venue == "okex-futures" else "binance-margin"]
     return [venue]
@@ -521,8 +521,8 @@ class ExecConfigStore:
         self.venue = str(venue).strip()
         if not self.env_name or not self.venue:
             raise ValueError("env_name and venue are required")
-        if self.venue not in ("binance-futures", "binance-coin-futures", "okex-futures"):
-            raise ValueError("venue must be binance-futures, binance-coin-futures or okex-futures")
+        if self.venue not in ("binance-futures", "binance-coin-futures", "okex-futures", "bybit-futures", "bitget-futures"):
+            raise ValueError("unsupported Exec futures venue")
         self.markets = exec_markets(self.venue)
         self.prefix = self.family_prefix()
         self.index_key = f"{self.prefix}strategy_names"
@@ -545,6 +545,10 @@ class ExecConfigStore:
         ) for venue in self.markets]
 
     def _symbol_market(self, symbol: str) -> str:
+        if self.venue in ("bybit-futures", "bitget-futures"):
+            if len(symbol) <= 4 or not symbol.endswith("USDT"):
+                raise ValueError(f"symbol {symbol} does not belong to USDT Exec market {self.venue}")
+            return self.venue
         exchange = "okex" if self.venue == "okex-futures" else "binance"
         if symbol.endswith(("USDT", "USDC")):
             selected = f"{exchange}-futures"

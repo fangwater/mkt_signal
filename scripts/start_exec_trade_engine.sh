@@ -11,6 +11,8 @@ VENUE="${EXEC_VENUE:-${VENUE:-}}"
 case "$VENUE" in
   binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
   okex-futures) EXCHANGE="okex" ;;
+  bybit-futures) EXCHANGE="bybit" ;;
+  bitget-futures) EXCHANGE="bitget" ;;
   *) echo "[ERROR] unsupported EXEC_VENUE: $VENUE" >&2; exit 1 ;;
 esac
 if [[ -n "${EXEC_START_VENUE:-}" && "$VENUE" != "$EXEC_START_VENUE" ]]; then

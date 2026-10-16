@@ -20,13 +20,13 @@ while [[ $# -gt 0 ]]; do
     --config-reload-ms) CONFIG_RELOAD_MS="${2:-}"; shift 2 ;;
     --core) CORE="${2:-}"; shift 2 ;;
     -h|--help)
-      echo "Usage: scripts/start_exec_pre_trade.sh --venue <binance-futures|binance-coin-futures|okex-futures>"
+      echo "Usage: scripts/start_exec_pre_trade.sh --venue <binance-futures|binance-coin-futures|okex-futures|bybit-futures|bitget-futures>"
       exit 0
       ;;
     *) echo "[ERROR] Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
-if [[ "$VENUE" != "binance-futures" && "$VENUE" != "binance-coin-futures" && "$VENUE" != "okex-futures" ]]; then
+if [[ "$VENUE" != "binance-futures" && "$VENUE" != "binance-coin-futures" && "$VENUE" != "okex-futures" && "$VENUE" != "bybit-futures" && "$VENUE" != "bitget-futures" ]]; then
   echo "[ERROR] unsupported venue: $VENUE" >&2
   exit 1
 fi
@@ -39,6 +39,8 @@ export EXEC_VENUE="$VENUE"
 case "$VENUE" in
   binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
   okex-futures) EXCHANGE="okex" ;;
+  bybit-futures) EXCHANGE="bybit" ;;
+  bitget-futures) EXCHANGE="bitget" ;;
 esac
 
 # Keep this parser aligned with runtime_common::execution_backend::ExecBackend.
@@ -113,7 +115,7 @@ exec_backend_for_exchange() {
 
 EXEC_BACKEND="$(exec_backend_for_exchange "$EXCHANGE")" || exit 1
 if [[ "$EXEC_BACKEND" == "ltp" ]]; then
-  if [[ "$VENUE" == "binance-coin-futures" ]]; then
+  if [[ "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
     echo "[ERROR] RapidX Exec supports Binance/OKX linear perpetual venues only" >&2
     exit 1
   fi

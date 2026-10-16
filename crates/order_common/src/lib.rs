@@ -10,6 +10,7 @@ pub use symbol_utils::TradingVenue;
 pub mod binance_basic_impl;
 pub mod bitget_basic_impl;
 pub mod bybit_basic_impl;
+pub mod external_futures_fill_impl;
 pub mod gate_basic_impl;
 pub mod hyperliquid_basic_impl;
 pub mod okex_basic_impl;

@@ -78,6 +78,7 @@ struct Args {
 struct DirectAccountForwarder {
     forwarder: PmForwarder,
     deduper: AccountEventDeduper,
+    exec_venue: Option<order_common::TradingVenue>,
 }
 
 thread_local! {
@@ -103,6 +104,12 @@ fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
         let Some(state) = state.as_mut() else {
             return false;
         };
+        if state
+            .exec_venue
+            .is_some_and(|venue| !trade_engine::native_uta_exec::account_event_allowed(venue, &msg))
+        {
+            return true;
+        }
         let should_forward = match dedup_key {
             Some(key) => state.deduper.should_forward_key(key),
             None => state.deduper.should_forward(&msg),
@@ -121,6 +128,7 @@ fn init_direct_forwarder(exchange: &str) -> Result<()> {
     let state = DirectAccountForwarder {
         forwarder: PmForwarder::new(exchange)?,
         deduper: AccountEventDeduper::new(8192),
+        exec_venue: runtime_common::exec_market::configured_venue()?,
     };
     DIRECT_FORWARDER.with(|cell| {
         *cell.borrow_mut() = Some(state);
@@ -194,6 +202,7 @@ async fn main() -> Result<()> {
         build_account_subscribe_message(),
         build_positions_subscribe_message(),
         build_fast_fill_subscribe_message(),
+        serde_json::json!({"op":"subscribe","args":[{"instType":"UTA","topic":"fill"}]}),
     ];
     subscribe_messages.extend(build_orders_subscribe_message());
 
@@ -826,7 +835,8 @@ impl AccountEventDeduper {
             | BasicAccountEventType::HyperliquidPerpDexState
             | BasicAccountEventType::HyperliquidTwapSliceFill
             | BasicAccountEventType::HyperliquidTwapHistory
-            | BasicAccountEventType::HyperliquidNativeEvent => return true,
+            | BasicAccountEventType::HyperliquidNativeEvent
+            | BasicAccountEventType::ExternalFuturesFill => return true,
             BasicAccountEventType::Error => return true,
         };
 

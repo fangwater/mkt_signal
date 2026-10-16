@@ -40,6 +40,8 @@ pub fn parse_venue(value: &str) -> Result<TradingVenue> {
         "binance-futures" => Ok(TradingVenue::BinanceFutures),
         "binance-coin-futures" => Ok(TradingVenue::BinanceCoinFutures),
         "okex-futures" => Ok(TradingVenue::OkexFutures),
+        "bybit-futures" => Ok(TradingVenue::BybitFutures),
+        "bitget-futures" => Ok(TradingVenue::BitgetFutures),
         _ => bail!("unsupported Exec market: {value}"),
     }
 }
@@ -74,9 +76,10 @@ pub fn validate_symbol(venue: TradingVenue, symbol: &str) -> Result<()> {
             normalized.ends_with("USDT") || normalized.ends_with("USDC")
         }
         TradingVenue::BinanceCoinFutures => normalized.len() > 3 && normalized.ends_with("USD"),
-        TradingVenue::BinanceMargin | TradingVenue::OkexMargin => {
-            normalized.len() > 4 && normalized.ends_with("USDT")
-        }
+        TradingVenue::BinanceMargin
+        | TradingVenue::OkexMargin
+        | TradingVenue::BybitFutures
+        | TradingVenue::BitgetFutures => normalized.len() > 4 && normalized.ends_with("USDT"),
         _ => false,
     };
     ensure!(
@@ -125,6 +128,18 @@ mod tests {
         );
         assert_eq!(resolve_venue(None, None).unwrap(), None);
         assert!(resolve_venue(Some("binance-margin"), None).is_err());
+    }
+
+    #[test]
+    fn native_uta_owns_only_usdt_perpetuals() {
+        for name in ["bybit-futures", "bitget-futures"] {
+            let venue = parse_venue(name).unwrap();
+            assert_eq!(runtime_venues(venue, ExecBackend::Native), vec![venue]);
+            assert!(validate_symbol(venue, "BTCUSDT").is_ok());
+            for symbol in ["BTC", "BTCUSD", "BTCUSDC", "USDT"] {
+                assert!(validate_symbol(venue, symbol).is_err());
+            }
+        }
     }
 
     #[test]

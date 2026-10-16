@@ -163,6 +163,8 @@ fn chase_exec_venue_supported(venue: TradingVenue) -> bool {
             | TradingVenue::OkexFutures
             | TradingVenue::BinanceMargin
             | TradingVenue::OkexMargin
+            | TradingVenue::BybitFutures
+            | TradingVenue::BitgetFutures
     )
 }
 const POSITION_LEDGER_KEY: &str = "chase_exec_state:position_allocations";
@@ -229,7 +231,12 @@ impl ChaseExecLeverageInitState {
     }
 
     fn confirmed_on_startup(&self) -> BTreeSet<String> {
-        if self.scope.rapidx_portfolio_id.is_some() {
+        if self.scope.rapidx_portfolio_id.is_some()
+            || matches!(
+                self.scope.venue.as_str(),
+                "bybit-futures" | "bitget-futures"
+            )
+        {
             BTreeSet::new()
         } else {
             self.symbols.clone()
@@ -246,6 +253,8 @@ impl ChaseExecLeverageInitScope {
             TradingVenue::OkexFutures | TradingVenue::OkexMargin => {
                 runtime_common::exchange::Exchange::Okex
             }
+            TradingVenue::BybitFutures => runtime_common::exchange::Exchange::Bybit,
+            TradingVenue::BitgetFutures => runtime_common::exchange::Exchange::Bitget,
             other => anyhow::bail!(
                 "unsupported ChaseExec futures venue for leverage-init scope: {other:?}"
             ),
@@ -1869,10 +1878,7 @@ impl ChaseExecConfigReloader {
             active_names.remove(&strategy_name);
         }
         if !active_names.is_empty() && !chase_exec_venue_supported(self.venue) {
-            anyhow::bail!(
-                "ChaseExec only supports binance-futures, binance-coin-futures and okex-futures; venue={:?}",
-                self.venue
-            );
+            anyhow::bail!("ChaseExec does not support venue={:?}", self.venue);
         }
 
         let mut loaded = Vec::new();

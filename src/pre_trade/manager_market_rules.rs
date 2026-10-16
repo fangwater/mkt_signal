@@ -55,6 +55,8 @@ impl ManagerMarketRulesReloader {
                 | TradingVenue::OkexFutures
                 | TradingVenue::BinanceMargin
                 | TradingVenue::OkexMargin
+                | TradingVenue::BybitFutures
+                | TradingVenue::BitgetFutures
         ) {
             bail!("Manager market-rules cache does not support venue {venue:?}");
         }
@@ -62,7 +64,14 @@ impl ManagerMarketRulesReloader {
             Exchange::from_str(venue.trade_engine_exchange()).context("invalid rule exchange")?;
         let backend = ExecBackend::for_exchange(exchange)?;
         anyhow::ensure!(
-            backend != ExecBackend::Ltp || venue != TradingVenue::BinanceCoinFutures,
+            backend != ExecBackend::Ltp
+                || matches!(
+                    venue,
+                    TradingVenue::BinanceFutures
+                        | TradingVenue::OkexFutures
+                        | TradingVenue::BinanceMargin
+                        | TradingVenue::OkexMargin
+                ),
             "RapidX inverse futures rules are unsupported"
         );
         let portfolio_id = if backend == ExecBackend::Ltp {
@@ -86,7 +95,7 @@ impl ManagerMarketRulesReloader {
             .client
             .get_json::<ManagerMarketRulesSnapshot>(MARKET_RULES_KEY)
             .await?
-            .context("Manager market-rules cache is required before RapidX Exec startup")?;
+            .context("Manager market-rules cache is required before Exec startup")?;
         snapshot.validate_provenance(venue, reloader.backend, reloader.portfolio_id.as_deref())?;
         snapshot.validate_startup_time(runtime_common::time_util::get_timestamp_us())?;
         snapshot.into_tables(venue)?;
@@ -182,7 +191,13 @@ impl ManagerMarketRulesSnapshot {
                 portfolio.context("missing RapidX rule portfolio")?,
             )?;
             anyhow::ensure!(
-                venue != TradingVenue::BinanceCoinFutures,
+                matches!(
+                    venue,
+                    TradingVenue::BinanceFutures
+                        | TradingVenue::OkexFutures
+                        | TradingVenue::BinanceMargin
+                        | TradingVenue::OkexMargin
+                ),
                 "RapidX inverse futures rules unsupported"
             );
         }
@@ -212,7 +227,10 @@ impl ManagerMarketRulesSnapshot {
             bail!("Manager market-rules snapshot is empty");
         }
         let market_type = match expected_venue {
-            TradingVenue::BinanceFutures | TradingVenue::OkexFutures => MarketType::Futures,
+            TradingVenue::BinanceFutures
+            | TradingVenue::OkexFutures
+            | TradingVenue::BybitFutures
+            | TradingVenue::BitgetFutures => MarketType::Futures,
             TradingVenue::BinanceCoinFutures => MarketType::CoinFutures,
             TradingVenue::BinanceMargin | TradingVenue::OkexMargin => MarketType::Spot,
             _ => unreachable!(),
@@ -230,6 +248,16 @@ impl ManagerMarketRulesSnapshot {
                 || rule.quote_asset.trim().is_empty()
             {
                 bail!("Manager market-rules identity fields are empty: {symbol}");
+            }
+            if matches!(
+                expected_venue,
+                TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+            ) {
+                runtime_common::exec_market::validate_symbol(expected_venue, &symbol)?;
+                anyhow::ensure!(
+                    rule.quote_asset == "USDT" && rule.contract_multiplier.is_none(),
+                    "UTA Exec requires base-quantity USDT perpetual rules"
+                );
             }
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
@@ -269,6 +297,8 @@ fn status_is_tradable(venue: TradingVenue, status: &str) -> bool {
         | TradingVenue::BinanceCoinFutures
         | TradingVenue::BinanceMargin => status.eq_ignore_ascii_case("TRADING"),
         TradingVenue::OkexFutures | TradingVenue::OkexMargin => status.eq_ignore_ascii_case("live"),
+        TradingVenue::BybitFutures => status == "Trading",
+        TradingVenue::BitgetFutures => status == "online",
         _ => false,
     }
 }
@@ -286,6 +316,32 @@ fn positive_decimal(symbol: &str, field: &str, value: &str) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uta_cache_has_native_statuses_and_usdt_base_units() {
+        for (venue, status) in [
+            (TradingVenue::BybitFutures, "Trading"),
+            (TradingVenue::BitgetFutures, "online"),
+        ] {
+            let mut snapshot = sample_snapshot();
+            snapshot.venue = venue.data_pub_slug().into();
+            for rule in snapshot.symbols.values_mut() {
+                rule.status = status.into();
+                rule.contract_multiplier = None;
+            }
+            let (_, filters, multipliers, tradable) = snapshot.into_tables(venue).unwrap();
+            assert_eq!(filters.len(), tradable.len());
+            assert!(multipliers.is_empty());
+            for rule in snapshot.symbols.values_mut() {
+                rule.status = "settling".into();
+            }
+            assert!(snapshot.into_tables(venue).unwrap().3.is_empty());
+            for rule in snapshot.symbols.values_mut() {
+                rule.quote_asset = "USDC".into();
+            }
+            assert!(snapshot.into_tables(venue).is_err());
+        }
+    }
 
     #[test]
     fn cash_rule_snapshot_uses_spot_units_without_contract_multiplier() {

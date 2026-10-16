@@ -2411,6 +2411,36 @@ impl BasicAccountListener {
         }
 
         let weight = match msg_type {
+            BasicAccountEventType::ExternalFuturesFill => {
+                if let Ok(fill) =
+                    mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_bytes(data)
+                {
+                    use order_common::TradeUpdate;
+                    let venue = fill.trading_venue();
+                    if (venue == self.open_venue || venue == self.hedge_venue)
+                        && scope_matches_venue(
+                            account_scope,
+                            self.exchange,
+                            venue,
+                            self.binance_account_mode,
+                            self.hyperliquid_account_mode,
+                        )
+                    {
+                        let record = build_uta_external_uniform_order(&fill);
+                        PersistChannel::with(|channel| {
+                            channel.publish_trade_update_unmatched(&fill);
+                            if let Some(record) = &record {
+                                channel.publish_uniform_order(record);
+                            }
+                        });
+                        if record.is_some() {
+                            MonitorChannel::instance().bump_trade_update_seq();
+                        }
+                    }
+                }
+                MONITOR_FAST_POLL_NORMAL_WEIGHT
+            }
+
             BasicAccountEventType::BalanceUpdate => {
                 let mut weight = MONITOR_FAST_POLL_LOW_WEIGHT;
                 if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
@@ -7677,6 +7707,42 @@ fn dispatch_binance_external_order_update(update: &BinanceBasicOrderMsg) {
     }
 }
 
+fn build_uta_external_uniform_order(
+    fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
+) -> Option<UnifiedOrderRecord> {
+    fill.validate().ok()?;
+    let reason = fill.reason.as_deref()?;
+    let mut record = UnifiedOrderRecord {
+        symbol_len: 0,
+        symbol: fill.symbol.as_bytes().to_vec(),
+        create_ts: fill.timestamp_us,
+        update_ts: fill.timestamp_us,
+        signal_ts: 0,
+        submit_ts: 0,
+        local_ts: get_timestamp_us(),
+        mkt_ts: 0,
+        client_order_id: 0,
+        venue: fill.venue,
+        ttype: order_common::OrderType::Market as u8,
+        side: fill.side,
+        price: fill.price,
+        price_offset: 0.0,
+        amount_init: fill.quantity,
+        amount_update: fill.quantity,
+        status: order_common::OrderStatus::Filled as u8,
+        from_key_len: 0,
+        from_key: format!(
+            "exchange_forced_close:{reason}:order={}:trade={}",
+            fill.order_id, fill.trade_id
+        )
+        .into_bytes(),
+        signal_bbo: None,
+        fill_liquidity: persist_common::FillLiquidity::from_is_maker(fill.is_maker),
+    };
+    record.refresh_lengths();
+    Some(record)
+}
+
 fn build_binance_external_uniform_order(
     update: &BinanceBasicOrderMsg,
 ) -> Option<UnifiedOrderRecord> {
@@ -7921,6 +7987,22 @@ mod tests {
             None,
             false,
         )
+    }
+
+    #[test]
+    fn uta_forced_fill_has_exchange_attribution_without_a_strategy() {
+        let fill=mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_exchange(5,&serde_json::json!({"category":"linear","symbol":"BTCUSDT","orderId":"native-order","execId":"native-trade","execTime":"1700000000000","side":"Sell","execPrice":"50000","execQty":"0.2"}),Some("delivery")).unwrap();
+        let record = build_uta_external_uniform_order(&fill).unwrap();
+        assert_eq!(record.client_order_id, 0);
+        assert_eq!(record.signal_ts, 0);
+        assert_eq!(record.amount_update, 0.2);
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:delivery:order=native-order:trade=native-trade"
+        );
+        let mut unknown = fill;
+        unknown.reason = None;
+        assert!(build_uta_external_uniform_order(&unknown).is_none());
     }
 
     #[test]

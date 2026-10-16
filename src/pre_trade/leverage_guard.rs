@@ -256,6 +256,17 @@ pub async fn set_batch_exec_default_leverage(
     symbol: &str,
     binance_account_mode: Option<BinanceAccountMode>,
 ) -> Result<()> {
+    if matches!(
+        venue,
+        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+    ) {
+        return trade_engine::native_uta_exec::set_and_verify_leverage(
+            venue,
+            symbol,
+            BATCH_EXEC_DEFAULT_LEVERAGE,
+        )
+        .await;
+    }
     let backend = match venue {
         TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
             ExecBackend::for_exchange(Exchange::Binance)?
@@ -824,7 +835,7 @@ async fn bybit_account_is_pm(local_ip: Option<IpAddr>) -> Result<bool> {
         .get("marginMode")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let is_pm = unified_status == 6 || margin_mode.eq_ignore_ascii_case("PORTFOLIO_MARGIN");
+    let is_pm = margin_mode.eq_ignore_ascii_case("PORTFOLIO_MARGIN");
     info!(
         "ArbOpen leverage guard Bybit account mode: unifiedMarginStatus={} marginMode={} portfolio_margin={}",
         unified_status, margin_mode, is_pm

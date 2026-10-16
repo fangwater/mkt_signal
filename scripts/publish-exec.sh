@@ -17,7 +17,7 @@ Usage: scripts/publish-exec.sh --env-name <nameNN> [options]
 Options:
   --host <ssh-host>     SSH config host (default: cta_exec)
   --env-name <nameNN>   Exec environment (required), e.g. binance_exec_trade01
-  --venue <name>        Venue (binance-futures, binance-coin-futures or okex-futures)
+  --venue <name>        Venue (binance-futures, binance-coin-futures, okex-futures, bybit-futures or bitget-futures)
   --check-only          Only verify that publish target processes are stopped
   --skip-build          Reuse already-built release binaries
   -h, --help            Show this help
@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|okex)_exec_[a-z0-9][a-z0-9_-]*([0-9]{2})$ ]]; then
+if [[ ! "$ENV_NAME" =~ ^(binance|okex|bybit|bitget)_exec_[a-z0-9][a-z0-9_-]*([0-9]{2})$ ]]; then
   echo "[ERROR] env-name must match binance_exec_<suffixNN> or okex_exec_<suffixNN>: $ENV_NAME" >&2
   exit 2
 fi
@@ -83,6 +83,8 @@ VENUE="${VENUE:-$INFERRED_VENUE}"
 case "$VENUE" in
   binance-futures|binance-coin-futures) VENUE_EXCHANGE="binance" ;;
   okex-futures) VENUE_EXCHANGE="okex" ;;
+  bybit-futures) VENUE_EXCHANGE="bybit" ;;
+  bitget-futures) VENUE_EXCHANGE="bitget" ;;
   *) echo "[ERROR] unsupported venue: $VENUE" >&2; exit 2 ;;
 esac
 if [[ "$VENUE_EXCHANGE" != "$INFERRED_EXCHANGE" ]]; then
@@ -144,7 +146,7 @@ backend="$(execution_backend_for_exchange "$exchange" 2>/dev/null)" || {
   echo "[ERROR] invalid execution backend in target env.sh" >&2
   exit 1
 }
-if [[ "$backend" == "ltp" && "$requested_venue" == "binance-coin-futures" ]]; then
+if [[ "$backend" == "ltp" && "$requested_venue" != "binance-futures" && "$requested_venue" != "okex-futures" ]]; then
   echo "[ERROR] RapidX Exec supports Binance/OKX linear perpetual venues only" >&2
   exit 1
 fi
@@ -214,6 +216,8 @@ target_executables=(
   "$target/account_monitor"
   "$target/binance_account_monitor"
   "$target/okex_account_monitor"
+  "$target/bybit_account_monitor"
+  "$target/bitget_account_monitor"
   "$target/rapidx_account_monitor"
   "$target/viz_server"
   "$target/trade_engine"

@@ -112,6 +112,21 @@ class ClearTargetTests(unittest.TestCase):
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_native_uta_market_and_strategy_isolation(self):
+        for venue in ("bybit-futures", "bitget-futures"):
+            with self.subTest(venue=venue), mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND":"native", "TRADE_ENGINE_EXEC_BACKEND_MAP":""}):
+                self.assertEqual(MODULE.exec_markets(venue), [venue])
+                store = fake_store(venue, venue.replace("-futures", "_exec_trade01"))
+                store.markets = MODULE.exec_markets(venue)
+                for family, defaults in [("batch_exec",MODULE.DEFAULT_CONFIG),("chase_exec",MODULE.DEFAULT_CHASE_CONFIG)]:
+                    saved = store.save("cta", {**defaults,"targets":{"BTCUSDT":0.2}},family)
+                    self.assertEqual(store.load("cta",family),saved)
+                    for symbol in ("BTC", "BTCUSDC", "BTCUSD", "USDT"):
+                        with self.assertRaises(ValueError): store.save("cta",{**defaults,"targets":{symbol:1}},family)
+                    self.assertTrue(store.remove("cta",family))
+            with mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND":"rapidx", "TRADE_ENGINE_EXEC_BACKEND_MAP":""}):
+                with self.assertRaises(ValueError): MODULE.exec_markets(venue)
+
     def test_rapidx_mixed_cash_and_perp_publish_merge_clear_and_remove(self):
         for venue, cash in [("binance-futures", "binance-margin"), ("okex-futures", "okex-margin")]:
             for family, defaults in [("batch_exec", MODULE.DEFAULT_CONFIG), ("chase_exec", MODULE.DEFAULT_CHASE_CONFIG)]:

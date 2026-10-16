@@ -189,6 +189,10 @@ class ExecOrchestrationTests(unittest.TestCase):
                 export OKX_PASSPHRASE=test-passphrase
                 """
             )
+        if exchange in ("bybit", "bitget"):
+            key = exchange.upper()
+            env_contents = f"export IPC_NAMESPACE={env_name}\nexport EXEC_VENUE={venue}\nexport VENUE={venue}\nexport {key}_API_KEY=test-key\nexport {key}_API_SECRET=test-secret\n"
+            if exchange == "bitget": env_contents += "export BITGET_API_PASSPHRASE=test-passphrase\n"
         self._write(target / "env.sh", env_contents)
         self._write(target / "config" / "exec_viz.toml", "")
         self._write(target / "config" / "exec_config_server.env", "PORT=18161\n")
@@ -255,6 +259,8 @@ class ExecOrchestrationTests(unittest.TestCase):
             {
                 "target/release/binance_account_monitor",
                 "target/release/okex_account_monitor",
+                "target/release/bybit_account_monitor",
+                "target/release/bitget_account_monitor",
                 "target/release/rapidx_account_monitor",
                 "scripts/binance_cancel_all_std_um_ws_orders.py",
                 "scripts/binance_cancel_all_std_cm_orders.py",
@@ -362,7 +368,7 @@ class ExecOrchestrationTests(unittest.TestCase):
                 self.assertFalse(ssh_log.exists())
 
     def test_check_only_start_and_stop_do_not_invoke_helpers(self) -> None:
-        for exchange in ("binance", "okex"):
+        for exchange in ("binance", "okex", "bybit", "bitget"):
             with self.subTest(exchange=exchange):
                 target = self._make_remote_env(exchange)
                 action_log = self.temp_path / f"{exchange}-check.log"
@@ -437,7 +443,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         local_script = local_repo / "scripts" / PUBLISH_SCRIPT.name
         self._write(self.fake_bin / "cargo", "#!/usr/bin/env bash\nexit 99\n", executable=True)
         for backend, exchange in (
-            ("native", "binance"), ("native", "okex"),
+            ("native", "binance"), ("native", "okex"), ("native", "bybit"), ("native", "bitget"),
             ("rapidx", "binance"), ("rapidx", "okex"),
         ):
             with self.subTest(exchange=exchange, backend=backend):
@@ -479,7 +485,8 @@ class ExecOrchestrationTests(unittest.TestCase):
                     if exchange == "binance"
                     else "okx_swap_open_orders.py"
                 )
-                self.assertTrue((target / "scripts" / helper).is_file())
+                if exchange in ("binance", "okex"):
+                    self.assertTrue((target / "scripts" / helper).is_file())
                 self.assertEqual((target / "env.sh").read_bytes(), original_env)
                 self.assertEqual((target / "config/exec_viz.toml").read_bytes(), original_config)
                 self.assertNotIn("fixture-secret", result.stdout)

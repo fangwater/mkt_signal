@@ -480,6 +480,12 @@ async fn cancel_all_orders_on_startup(
             .cancel_open_orders(wire_exchange, business_type, Duration::from_secs(timeout))
             .await;
     }
+    if matches!(
+        venue,
+        TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+    ) {
+        return trade_engine::native_uta_exec::cancel_orders_on_startup(venue).await;
+    }
     let cwd = std::env::current_dir().context("resolve current directory")?;
     let (script_name, args): (&str, Vec<String>) = match venue {
         TradingVenue::BinanceFutures => match binance_account_mode {
@@ -644,9 +650,11 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             TradingVenue::BinanceFutures
                 | TradingVenue::OkexFutures
                 | TradingVenue::BinanceCoinFutures
+                | TradingVenue::BybitFutures
+                | TradingVenue::BitgetFutures
         ) {
             return Err(anyhow::anyhow!(
-                "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures"
+                "exec-pre-trade requires a supported native futures venue or RapidX Binance/OKX"
             ));
         }
         if let Some(configured) = runtime_common::exec_market::configured_venue()? {
@@ -740,6 +748,20 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             ));
             ManagerMarketRulesReloader::verify_startup(redis, *venue).await?;
         }
+    }
+    if exec_pre_trade
+        && matches!(
+            open_venue,
+            TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+        )
+    {
+        let mut redis = RedisSettings::default();
+        redis.prefix = Some(exec_redis_prefix(
+            infer_dir_prefix_from_cwd().as_deref(),
+            open_venue,
+        ));
+        ManagerMarketRulesReloader::verify_startup(redis, open_venue).await?;
+        trade_engine::native_uta_exec::validate_startup(open_venue).await?;
     }
     let binance_account_mode = if need_binance {
         Some(if rapidx_binance {

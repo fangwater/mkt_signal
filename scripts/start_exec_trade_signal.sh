@@ -15,7 +15,7 @@ export ENABLE_IPC_FAST_POLL=0
 [[ -n "${IPC_NAMESPACE:-}" ]] || { echo "[ERROR] IPC_NAMESPACE is required" >&2; exit 1; }
 EXEC_VENUE="${EXEC_VENUE:-${VENUE:-}}"
 case "$EXEC_VENUE" in
-  binance-futures|binance-coin-futures|okex-futures) ;;
+  binance-futures|binance-coin-futures|okex-futures|bybit-futures|bitget-futures) ;;
   *) echo "[ERROR] explicit EXEC_VENUE is required" >&2; exit 1 ;;
 esac
 if [[ -n "${EXEC_START_VENUE:-}" && "$EXEC_VENUE" != "$EXEC_START_VENUE" ]]; then

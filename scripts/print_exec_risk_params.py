@@ -38,6 +38,8 @@ def try_import_redis():
 EXCHANGE_DEFAULTS = {
     "binance": "binance-futures",
     "okex": "okex-futures",
+    "bybit": "bybit-futures",
+    "bitget": "bitget-futures",
 }
 
 
@@ -74,8 +76,8 @@ def parse_args() -> argparse.Namespace:
         p.error("需要 --exec-venue，或在目录名包含 <exchange> 前缀（如 binance_exec_trade）的 exec 目录运行")
 
     args.exec_venue = exec_venue.lower()
-    if args.exec_venue not in ("binance-futures", "okex-futures"):
-        p.error("exec venue 只支持 binance-futures 或 okex-futures")
+    if args.exec_venue not in ("binance-futures", "binance-coin-futures", "okex-futures", "bybit-futures", "bitget-futures"):
+        p.error("unsupported Exec futures venue")
 
     if not args.env_name:
         args.env_name = infer_env_name_from_cwd()

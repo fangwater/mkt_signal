@@ -616,6 +616,8 @@ fn exec_trade_request_allowed(
                 | BinanceWsCancelMarginOrder
         ),
         TradingVenue::OkexMargin => matches!(request, OkexNewMarginOrder | OkexCancelMarginOrder),
+        TradingVenue::BybitFutures => matches!(request, BybitNewUMOrder | BybitCancelUMOrder),
+        TradingVenue::BitgetFutures => matches!(request, BitgetNewUMOrder | BitgetCancelUMOrder),
         _ => false,
     }
 }
@@ -666,6 +668,17 @@ fn exec_query_request_allowed(
                 | OkexAccountBalanceSnapshot
                 | OkexPositionsSnapshot
                 | OkexUsdtAvailableSnapshot
+        ),
+        TradingVenue::BybitFutures => matches!(
+            request,
+            BybitUMQuery | BybitAccountBalanceSnapshot | BybitPositionsSnapshot
+        ),
+        TradingVenue::BitgetFutures => matches!(
+            request,
+            BitgetUMQuery
+                | BitgetAccountBalanceSnapshot
+                | BitgetPositionsSnapshot
+                | BitgetUsdtAvailableSnapshot
         ),
         _ => false,
     }
@@ -2083,19 +2096,23 @@ impl TradeEngine {
             Some(endpoints)
         } else if exchange == Exchange::Bitget {
             // 前置校验：Bitget 必须是 UTA + one-way 持仓模式；margin 路径还要求 Advanced。
-            // 这里直接 panic，避免配置错误时 trade_engine 继续运行并反复拒单。
+            // Return startup errors rather than allowing an online process to repeatedly reject orders.
             let bitget_precheck_creds = account_common::bitget_auth::BitgetCredentials::from_env()
                 .context(
                     "bitget precheck: BITGET_API_KEY/BITGET_API_SECRET/BITGET_PASSPHRASE not set",
                 )?;
-            let bitget_precheck_http = reqwest::Client::new();
-            if let Err(err) = crate::bitget_precheck::ensure_unified_account(
-                &bitget_precheck_http,
-                &bitget_precheck_creds,
-            )
-            .await
-            {
-                panic!("bitget precheck failed: {err:#}");
+            let uta_exec = runtime_common::exec_market::configured_venue()?
+                == Some(order_common::TradingVenue::BitgetFutures);
+            if uta_exec {
+                crate::native_uta_exec::validate_startup(order_common::TradingVenue::BitgetFutures)
+                    .await?;
+            } else {
+                crate::bitget_precheck::ensure_unified_account(
+                    &reqwest::Client::new(),
+                    &bitget_precheck_creds,
+                )
+                .await
+                .context("bitget precheck failed")?;
             }
 
             let mut local_ips = self.local_ips.clone();
@@ -2162,11 +2179,18 @@ impl TradeEngine {
                     .map(|ip| ip.to_string())
                     .unwrap_or_else(|| "system default".to_string())
             );
-            crate::bybit_precheck::ensure_uta_and_spot_margin(
-                &bybit_precheck_http,
-                &bybit_precheck_creds,
-            )
-            .await?;
+            if runtime_common::exec_market::configured_venue()?
+                == Some(order_common::TradingVenue::BybitFutures)
+            {
+                crate::native_uta_exec::validate_startup(order_common::TradingVenue::BybitFutures)
+                    .await?;
+            } else {
+                crate::bybit_precheck::ensure_uta_and_spot_margin(
+                    &bybit_precheck_http,
+                    &bybit_precheck_creds,
+                )
+                .await?;
+            }
 
             let mut local_ips = self.local_ips.clone();
             if local_ips.is_empty() {
@@ -3184,7 +3208,23 @@ impl TradeEngine {
             let fast_poll_for_query_router = fast_poll;
             let router_idle_spin_iters_for_query_router = router_idle_spin_iters;
             let bybit_rest_local_ip = self.local_ips.first().copied();
-            let bybit_http = crate::bybit_query::build_bybit_rest_client(bybit_rest_local_ip)?;
+            let native_uta = matches!(
+                exec_venue,
+                Some(
+                    order_common::TradingVenue::BybitFutures
+                        | order_common::TradingVenue::BitgetFutures
+                )
+            );
+            let bybit_http = if native_uta {
+                crate::native_uta_exec::account_client()?
+            } else {
+                crate::bybit_query::build_bybit_rest_client(bybit_rest_local_ip)?
+            };
+            let bitget_http = if native_uta {
+                crate::native_uta_exec::account_client()?
+            } else {
+                reqwest::Client::new()
+            };
             let query_router = tokio::task::spawn_local(async move {
                 let ltp_rest = if use_ltp_backend_for_query_router {
                     Some(
@@ -3197,7 +3237,6 @@ impl TradeEngine {
                 let okex_http = reqwest::Client::new();
                 let okex_creds = account_common::okex_auth::OkexCredentials::from_env().ok();
                 let bybit_creds = account_common::bybit_auth::BybitCredentials::from_env().ok();
-                let bitget_http = reqwest::Client::new();
                 let bitget_creds = account_common::bitget_auth::BitgetCredentials::from_env().ok();
                 let gate_http = reqwest::Client::new();
                 let gate_creds = account_common::gate_auth::GateCredentials::from_env().ok();
@@ -4743,6 +4782,46 @@ mod tests {
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn native_uta_exec_routes_orders_and_queries_without_cash_or_coin() {
+        use order_common::TradingVenue::*;
+        use QueryRequestType::*;
+        use TradeRequestType::*;
+        for (venue, new, cancel, query, position, spot) in [
+            (
+                BybitFutures,
+                BybitNewUMOrder,
+                BybitCancelUMOrder,
+                BybitUMQuery,
+                BybitPositionsSnapshot,
+                BybitNewMarginOrder,
+            ),
+            (
+                BitgetFutures,
+                BitgetNewUMOrder,
+                BitgetCancelUMOrder,
+                BitgetUMQuery,
+                BitgetPositionsSnapshot,
+                BitgetNewMarginOrder,
+            ),
+        ] {
+            assert!(exec_trade_request_allowed(venue, new));
+            assert!(exec_trade_request_allowed(venue, cancel));
+            assert!(exec_query_request_allowed(venue, query));
+            assert!(exec_query_request_allowed(venue, position));
+            assert!(!exec_trade_request_allowed(venue, spot));
+            assert!(!exec_trade_request_allowed(
+                venue,
+                BitgetNewCoinFuturesOrder
+            ));
+            assert!(!exec_query_request_allowed(
+                venue,
+                BitgetCoinPositionsSnapshot
+            ));
+            assert!(!exec_query_request_allowed(venue, BinanceUmAccountSnapshot));
+        }
     }
 
     #[test]

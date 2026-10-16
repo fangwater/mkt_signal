@@ -54,6 +54,18 @@ class ExecBackendValidationTests(unittest.TestCase):
             f"export EXEC_VENUE={venue}",
         ]
 
+    def test_native_uta_requires_credentials_and_rejects_rapidx(self):
+        for exchange in ("bybit", "bitget"):
+            venue = f"{exchange}-futures"
+            key = exchange.upper()
+            native = self.base_env(venue) + [f"export {key}_API_KEY=fixture", f"export {key}_API_SECRET=fixture"]
+            if exchange == "bitget":
+                self.assertNotEqual(self.run_validation(venue, native).returncode, 0)
+                native.append("export BITGET_API_PASSPHRASE=fixture")
+            self.assertEqual(self.run_validation(venue, native).returncode, 0)
+            rapidx = native + ["export TRADE_ENGINE_EXEC_BACKEND=rapidx", "export LTP_API_KEY=fixture", "export LTP_API_SECRET=fixture", "export LTP_PORTFOLIO_ID=123"]
+            self.assertNotEqual(self.run_validation(venue, rapidx).returncode, 0)
+
     def test_native_and_rapidx_alias_map_precedence_validate(self) -> None:
         native = self.base_env("binance-futures") + [
             "export BINANCE_API_KEY=key",

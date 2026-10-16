@@ -623,7 +623,27 @@ impl Parser for BybitAccountEventParser {
 
         match route.as_str() {
             "wallet" => self.parse_wallet_channel(&root, tx),
-            "execution" => 0,
+            "execution" => {
+                use crate::msg::external_futures_fill::{bybit_reason, ExternalFuturesFill};
+                let Ok(value) = serde_json::from_slice::<Value>(&msg) else {
+                    return 0;
+                };
+                let mut count = 0;
+                for row in value["data"].as_array().into_iter().flatten() {
+                    let reason = bybit_reason(row["execType"].as_str().unwrap_or(""));
+                    let internal = row["orderLinkId"]
+                        .as_str()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .is_some_and(|v| v > 0);
+                    if reason.is_none() && (internal || row["execType"] != "Trade") {
+                        continue;
+                    }
+                    if let Some(fill) = ExternalFuturesFill::from_exchange(5, row, reason) {
+                        count += usize::from(fill.emit(tx));
+                    }
+                }
+                count
+            }
             "position" | "order" | "execution.fast" => {
                 let json_value: Value = match serde_json::from_slice(msg.as_ref()) {
                     Ok(v) => v,
@@ -746,6 +766,23 @@ mod tests {
     use crate::msg::basic_account_msg::{
         split_basic_account_event, BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
     };
+
+    #[test]
+    fn execution_keeps_non_numeric_forced_fill_identity() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        let parser = BybitAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let raw = serde_json::json!({"topic":"execution","data":[{"category":"linear","symbol":"BTCUSDT","orderId":"liquidation-order","orderLinkId":"","execType":"BustTrade","execId":"factual-trade","execTime":"1700000000000","side":"Sell","execPrice":"50000","execQty":"0.2"}]});
+        assert_eq!(parser.parse(Bytes::from(raw.to_string()), &sink), 1);
+        let received = sink.recv().unwrap();
+        let (_, _, body) = split_basic_account_event(&received).unwrap();
+        let fill = ExternalFuturesFill::from_bytes(&body).unwrap();
+        assert_eq!(fill.reason.as_deref(), Some("liquidation"));
+        assert_eq!(fill.trade_id, "factual-trade");
+        let mut funding = raw;
+        funding["data"][0]["execType"] = serde_json::json!("Funding");
+        assert_eq!(parser.parse(Bytes::from(funding.to_string()), &sink), 0);
+    }
 
     #[test]
     fn wallet_channel_emits_zero_borrow_when_liability_fields_are_present() {

@@ -281,6 +281,16 @@ pub struct ChaseExecStrategy {
     alive_flag: bool,
 }
 
+// These venues have no amend request in the internal order contract. Wait
+// for a terminal cancellation before releasing quantity to the maker ledger.
+fn uses_cancel_reprice(venue: TradingVenue) -> bool {
+    venue.is_spot()
+        || matches!(
+            venue,
+            TradingVenue::BybitFutures | TradingVenue::BitgetFutures
+        )
+}
+
 impl ChaseExecStrategy {
     pub fn new(
         strategy_id: i32,
@@ -991,7 +1001,7 @@ impl ChaseExecStrategy {
                 (!meta.cancel_requested
                     && (meta.cancel_for_target
                         || meta.maker_expired
-                        || (self.exec_venue.is_spot() && meta.reprice_pending)))
+                        || (uses_cancel_reprice(self.exec_venue) && meta.reprice_pending)))
                     .then_some(*client_order_id)
             })
             .collect();
@@ -1099,7 +1109,7 @@ impl ChaseExecStrategy {
             // Cash has no native amend request in our IPC contract. Cancel
             // and let confirmed terminal updates release the unfilled maker
             // quantity for reposting; never submit its replacement early.
-            if self.exec_venue.is_spot() {
+            if uses_cancel_reprice(self.exec_venue) {
                 drop(order);
                 if let Some(meta) = self.children.get_mut(&client_order_id) {
                     meta.reprice_pending = true;
@@ -2595,6 +2605,27 @@ mod tests {
             from_key: b"chase_alpha".to_vec(),
             release_side,
             effective_batch_usdt: None,
+        }
+    }
+
+    #[test]
+    fn uta_reprice_retries_cancel_and_releases_only_after_terminal() {
+        for venue in [TradingVenue::BybitFutures, TradingVenue::BitgetFutures] {
+            let mut strategy = ChaseExecStrategy::new(1, "uta", "BTCUSDT", venue, config());
+            strategy.active_target = Some(active_target(1.0, 0, 7));
+            let pending = strategy.next_order_id();
+            let mut meta = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
+            meta.reprice_pending = true;
+            strategy.children.insert(pending, meta.clone());
+            let sent = strategy.next_order_id();
+            meta.cancel_requested = true;
+            strategy.children.insert(sent, meta);
+            strategy.retry_unsent_cancels();
+            // The missing order resolves terminal; a sent but unconfirmed
+            // cancellation must retain its live quantity reservation.
+            assert!(!strategy.children.contains_key(&pending));
+            assert!(strategy.children.contains_key(&sent));
+            assert_eq!(strategy.taker_pending_base_qty, 0.0);
         }
     }
 

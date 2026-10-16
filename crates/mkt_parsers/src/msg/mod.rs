@@ -1,6 +1,7 @@
 pub mod basic_account_msg;
 pub mod bitget_account_msg;
 pub mod bybit_account_msg;
+pub mod external_futures_fill;
 pub mod hyperliquid_account_msg;
 pub mod hyperliquid_native_msg;
 pub mod mkt_msg;
