@@ -321,6 +321,11 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
 }
 
 fn build_bitget_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<reqwest::Client> {
+    if runtime_common::exec_market::configured_venue()?
+        == Some(order_common::TradingVenue::BitgetFutures)
+    {
+        return trade_engine::native_uta_exec::account_client();
+    }
     let builder = reqwest::Client::builder().timeout(timeout);
     let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
         Some(ip) if ip != "0.0.0.0" => {
