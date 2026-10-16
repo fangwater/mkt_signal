@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-14 22:46 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-16 10:15 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 2026-10-13 13:42 UTC `binance_exec_trade06` 正式接管RX01现货/永续，使用已有
 `local_ips=["172.31.35.228"]`；未新增EIP/ENI或修改路由。
@@ -243,3 +243,14 @@ JP `~/retired_data/` 中仅保存以下 RocksDB 数据归档及各自 `.sha256` 
 2026-10-11 07:07 UTC trade05 完成状态修复仅替换 exec-pre-trade/Viz，source IP 继续使用 `.228`，未变更 ENI、EIP 或路由。
 
 2026-10-11 NAV 行情监控迁入独立 `fr_monitor`（只读 IPC/Viz/RocksDB，回环 18180），停用 `public-infra-monitor` 与常驻 BPF。未分配交易 source IP，未修改 ENI、EIP、trade_engine local_ips 或路由；NAV 中 RX02/RX03 退役数据由 `binance_exec_trade05`（别名 `lgq_cta`、既有 RapidX `.228`）替代。原交易目录及 RocksDB 保留。
+
+## SG Bybit Exec 预部署
+
+2026-10-16 10:15 UTC 新增 `/home/ubuntu/bybit_exec_trade02`，lgq 管理、别名
+`bybit-02`。`trade_engine.toml local_ips` 为 `["172.31.7.124", "172.31.7.124"]`，
+沿用原 arb02 的下单 ENI / 公网出口 `47.131.162.78`，没有新增 IP 或更改路由。
+账户监控全部外连已核验使用 `172.31.7.124`；trade_engine、exec-pre-trade、
+trade_signal 保持停止，旧 Bybit intra01/02 也保持停止。Manager 公共规则缓存使用
+行情 ENI，独立 namespace / Redis 前缀 / RocksDB，未搬迁旧 intra 持仓与历史。
+服务与 CPU 清单见 `core_allocation.md`；证据见
+`artifacts/sg_bybit02_exec_deploy/20261016T100107Z/validation.json`。
