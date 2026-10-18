@@ -1,0 +1,13 @@
+{
+  "source_branch": "arbmm",
+  "source_head": "133bf23fcdc53001eb2dbac72cd0b1d64ac285ca",
+  "executed": true,
+  "files": {
+    "manager_cutover.py": "6aefafcf6e1c2b8d49a8dd722b2ef42e80bf52a4c4c39bcbc42a3e5de04b66ac",
+    "manager_binding_plan.json": "ebe297444346daf9501ac0b6767c54d8229c78fe527be9f07590c8f5f406a1cd"
+  },
+  "actions": [
+    "prepare",
+    "retire"
+  ]
+}

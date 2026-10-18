@@ -1,7 +1,137 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-16 10:15 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-18 08:52 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-18 08:43–08:50 UTC，JP 重启后经环境本地脚本恢复
+`binance_exec_trade01`–`07`，每套 persist_manager、trade_engine、账户监控、
+exec-pre-trade、Viz、Config 共6进程，全部实测 CPU mask `0-5,48-95`；
+7套仓位快照 position_ready=true，鉴权 Viz snapshot / Config 接口通过。
+CTA Manager 已由 user systemd 自动恢复，PID2235、CPU24，health=ok、
+source_count=7、last_refresh_error=null，无需重复重启。
+另恢复 RX01 Spread → Exec06、RX02 Perp → Exec05、RX03 Perp → Exec07，
+各自 factor/config/dashboard/signal 共4进程；factor 分别 PID106525/100190/106578、
+CPU17/18/19，其他进程沿用 `0-5,48-95`。旧 special/companion 未启动。
+三套 Redis 因子表缺失，使用与最后运行 status 完全一致的环境本地 JSON，经原
+factor_config 校验脚本恢复（16币46组合、47币192组合、14币34组合）；
+Exec06/07 缺失的风险 hash 按部署脚本及原 activation risk_reference 一致值恢复。
+因子依赖 `~/tlen_config_shared/scripts/start_tlen_config_server.sh` 的6322服务，
+已先恢复该服务再重启之前因依赖缺失退出的 RX01/RX03 factor。
+08:50–08:52 三套因子仍在回放原配置3天 Kafka 历史，尚未实时就绪，不能据进程
+在线判断实时推送完成。未修改 env.sh、二进制、local_ips、ENI/EIP或路由。
+证据：`artifacts/jp_exec_recovery_20261018/`，远端配置/仓位备份及启动日志：
+`~/backups/jp_exec_signal_recovery_20261018/`。
+
+2026-10-18 08:28–08:37 UTC，恢复 Binance FR arb02/03/04、Gate FR arb01/02/03、
+Bitget FR arb01/02/03，每套运行 account_monitor、persist_manager、trade_engine、
+pre_trade、viz_server、fr_config_server、fr_signal_dashboard；**九套 trade_signal
+均未启动**。启动前逐账户撤单并复查：Gate arb02 残留 IDOL_USDT 4笔、INIT_USDT
+1笔已撤，其余八套没有挂单。persist_manager 仍绑定 CPU15，其余沿用各环境配置，
+没有修改 local_ips/ENI/EIP/路由。九套 Nginx 页面、healthz、snapshot、Config
+symbol-lists/risk-params 均200，Viz及FR WebSocket均实际收到数据。
+
+Binance mark price 依赖 `~/binance_futures_ipc_proxy/scripts/start.sh`：必须在
+NAV、FR dashboard、rolling_metrics、pre_trade 等代理消费者之前启动。消费者
+先启动会创建64 subscribers/20 nodes通道，而代理要求128/128，导致代理启动
+失败。本次暂停三个 Binance pre_trade/FR dashboard、Binance rolling_metrics
+及 systemd crypto-nav-manager，待消费者退出后原通道自动清理，代理重建128/128
+通道，再恢复消费者；没有手工删除共享IPC文件。代理PID58430持续转发，九套
+pre_trade均确认收到mark price。Gate仍有冷启动价格未齐警告，08:37–08:38 UTC arb01/02/03
+分别剩3/4/1项：ACH尚未收到mark，SUPER已恢复；SLVON/TSLAX/CRCLX为只有现货的资产，
+不能把它们算作对应USDT合约行情故障。未将此抽样写成全资产风控就绪。
+
+环境内 Config/FR dashboard start/stop 的 PM2 delete 已收窄到精确进程名，避免
+带 `--namespace` 同时删除同环境的其他服务；保持其余环境脚本原样。
+远端证据及修改前备份：`~/backups/binance_fr_recovery_20261018/`、
+`~/backups/fr_recovery_20261018/`。
+
+2026-10-18 08:24–08:27 UTC，JP 主机重启后，按原部署脚本恢复 Binance、Gate、
+Bitget 公共行情及依赖，共19进程：7个 spread_pbs（含共享 depth 必需的 OKX
+both）、depth_pub_general、Binance BBO ZMQ relay、4个 rolling_metrics（含
+Bitget/Gate futures 配对）、6个 trade_flow_feature_pub。spread CPU 仍为
+8/9/10/11/12/14/16，depth 为13，relay 为5，其余继承0-5,48-95。
+共享 depth 必须等 OKX IPC 创建后启动，否则报 DoesNotExist 并退出；trade-flow
+须等 depth 通道创建后启动。本次补齐依赖后，depth PID37298 持续发布八路数据。
+只读巡检的八路 BTC/ETH BBO 均为 fresh；该抽样不代表全币种验收，rolling
+指标仍有预热/未就绪项。未启动交易/信号栈，未替换二进制或更改源IP/路由。
+远端证据：`~/backups/marketdata_recovery_20261018/`。
+
+2026-10-15 13:59 UTC RX02/RX03 Perp 静默回放与上线验收完成。RX02 使用 v1、
+17 因子/47 币/192 组合、单份300 USDT；ICXUSDT 不在可交易规则缓存中，
+其3个请求组合保留在排除清单。RX03 保留 v0、5 因子/14 币/34 组合、单份100 USDT。
+两套 factor/config/dashboard/signal 已更新，因子 PID3996876/4053379 仍用 CPU18/19。
+共享 Manager clear 支持 release `20261015T124324Z`，PID3907213、CPU24；
+RX02 的9个旧策略55条目标已明确发布 clear，旧绑定份额归零并保留历史。
+用户另行授权按 RapidX 杠杆上限修复 Exec05：pre-trade PID341167、trade_engine
+PID440232，均保留 CPU0-5。两组件配套后账户快照就绪；最终 Exec05 的36条、
+Exec07 的16条执行记录全部完成，余差仅为交易所最小下单量限制。RX01 配置及
+其他44个受保护进程身份保持，未改 local_ips/ENI/EIP/路由。证据：
+`artifacts/cta_perp_replay_cutover/`。
+
+2026-10-15 06:13 UTC 恢复 Exec04 / prc 的 BNB 储备对冲：复用已在 Exec03
+验证的 `8a263e04` release，配套替换 exec-pre-trade（PID3885210）、
+viz_server（PID3875816）、account_monitor（PID3869376）。三个进程仍为 CPU
+mask 0-5，未新增绑核或隔离核。仓位通道改用现有 64 KiB 格式，解决约 38 KB
+快照超过旧 32 KiB 上限导致停更的问题；账户监控同步匹配风控消息格式。
+BNBUSDC 储备空头 -25.24 BNB 成交完成，实测净储备敞口约 +0.000489 BNB。
+其他133个受保护进程、交易IP及配置保持；Manager、交易引擎、持久化、Config、
+Nginx与公共行情未重启。独立 Manager 项目的
+`docs/jp_meta_prc_bnb_recovery_20261015.md` 和
+`artifacts/jp_meta_prc_bnb_recovery_20261015/` 记录证据，不构成运行依赖。
+
+2026-10-15 03:47 UTC 仅替换 Exec06 / RX01 的 `rapidx_account_monitor`，
+修复账单可用余额上下文的 1e-20 USDT 尾差导致恢复循环、Manager 实时权益为空。
+PID3046353 → PID2309899，CPU mask 保持0-5；Manager及其余190个受保护进程
+PID/start time/绑核、33份配置和4张初始仓位快照表校验保持。
+账单追至实时，成交/账单持久化队列归零；lgq 桌面/手机工作台权益恢复且与API一致。
+没有新增隔离核或更改交易IP。证据保存在独立 Manager 项目的
+`artifacts/jp_meta_rx01_equity_20261015/`，不构成运行依赖。
+
+2026-10-14 08:05 UTC RX03 CTA Perp 已接入独立 `binance_exec_trade07` 实盘，
+Manager source `trade07 / lgq_cta_RX03` 跟随 `virtual04 / cta_perp_rx03`，
+倍率1，五因子各1份，14币/34组合，每组合100 USDT。启用前账户为空仓、无挂单；
+新Exec使用独立namespace、Redis键及RocksDB，没有迁移旧持仓或历史。
+执行模板 `binance_cta_perp_rx03_ctaker` 复制RX02当前 `lgq_cta_ctaker`，
+五份实际运行参数逐项相同；买卖各最多10个挂单，10秒200单、每分钟400单。
+Maker费率-0.00002、Taker 0.000175、理论TWAP 0.0004。
+34个实时目标与Exec一致，账户position_ready、发布日志健康，Manager无待发布项。
+证据：`artifacts/cta_perp_rx03_activation/`。
+Exec07的六个进程均使用housekeeping CPU0-5,48-95；未增加隔离核。
+RX03因子publisher仍为PID2038356、5线程CPU19，signal加载新Manager配置后重启；
+config/dashboard保留。现有其他环境的进程与配置核对保持。
+
+此前观察部署记录：
+2026-10-14 07:10 UTC 新增观察环境 `binance-cta-perp-rx03`：14币、5因子、34组合，
+单份100 USDT，`enabled=false`。本地arbmm release构建，经34文件SHA-256校验后
+原子安装目录，只通过环境本地脚本启动。因子publisher PID2038356，全部5线程
+绑定CPU19；signal PID2062080、config PID2049101、dashboard PID2054156
+均为CPU0-5,48-95。独立model scope为 `binance_cta_perp_rx03`，独立publisher
+进程名及Redis清单，不复用RX02的单publisher通道。07:26完成Kafka预热，
+34/34组合实时就绪，NQ 14/14就绪；07:27、07:28、07:29全部组合连续更新。
+发布始终关闭，B/S为历史模拟。
+原50个CTA/Exec/Manager进程PID、CPU mask及55份配置哈希保持。
+无Manager/Exec绑定，未启动交易引擎。证据：`artifacts/cta_perp_rx03_deployment/`。
+
+2026-10-14 04:38 UTC 修复Exec06 RapidX现货市价买入的quoteOrderQty构造及金额精度，
+本地arbmm release构建、SHA-256核验、原子替换后，仅经环境本地脚本重启exec-pre-trade。
+PID3307344 → 中间PID375418 → 最终PID448295，CPU mask保持0-5；
+其他44个受保护进程PID/绑核及15个配置/环境文件哈希均保持，signal PID176562继续实盘发布。
+交易IP、账户/策略配置与库存目标未调整，无隔离核重新分配。
+证据：`artifacts/rapidx_cash_market_buy_fix/`。
+
+2026-10-14 04:12 UTC RX01 Spread 完成46组合100 USDT绝对目标重建并开启实盘推送。
+signal通过环境本地脚本重启以载入状态，PID46021 → PID176562，CPU0-5保持；
+publisher CPU17及其余44个受保护进程PID/绑核均不变，无隔离核重新分配。
+五因子92个现货/永续目标与Exec06一致，独立inventory保持原绑定。
+证据：`artifacts/cta_spread_rx01_live_enable/`；下方04:01关闭状态是部署时历史。
+
+2026-10-14 04:01 UTC 仅重新部署 RX01 Spread signal 的绝对目标替换修复，
+`~/binance-cta-spread-rx01` signal PID3132535 → PID46021，实测CPU mask仍为0-5。
+publisher PID663465/CPU17、配置PID3183433、页面PID3390010及所有Exec保持原PID与绑核；
+共44个受保护进程核对一致，未新增或重新分配隔离核。46/46组合就绪，
+发布保持 `enabled=false`，未清理历史累计目标或调整账户仓位。
+本地arbmm release构建并逐文件校验后原子安装，仅使用环境本地signal脚本重启。
+证据：`artifacts/cta_spread_rx01_absolute_target_deploy/`。
 
 2026-10-13 13:42 UTC RX01 已正式启用，独立执行环境 `binance_exec_trade06`，RapidX Binance
 现货开方向、退出时永续对冲；五因子、16币、46组合，单份100 USDT。
@@ -220,7 +350,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-13 新清单已实时就绪，PID663465/5线程；CTA_SPREAD_FACTOR_MODEL_1M_CORE=17 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-13 原地迁入，5 线程；CTA_PERP_FACTOR_MODEL_1M_CORE=18 |
-| 19 | (空) | 原 binance-intra-arb01 已下线退役 |
+| 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 2026-10-14 独立RX03实盘信号publisher，PID2038356/5线程；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
 | 21 | trade_signal(okex_mm_alpha) | |
 | 22 | pre_trade(okex_mm_alpha) | |

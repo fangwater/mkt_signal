@@ -1,0 +1,5 @@
+{
+  "reason": "Current pre-trade owns both RapidX futures and cash market snapshots. Previous trade engine rejects the required cash balance query, leaving the shared position-ready gate false. Matching current trade engine is required.",
+  "initial_wrapper_failure": "Generic start_trade_engine.sh required an explicit exchange and exited before stopping the old engine. Resume uses env-local start_exec_trade_engine.sh with preserved Exec process name and venue.",
+  "pre_trade_unchanged_during_engine_update": true
+}

@@ -440,8 +440,9 @@ fn advance_position(
         }
         return Ok("entry_quote_unavailable");
     };
-    let mut next = position.clone();
-    next.exit();
+    // Construct one complete target from this signal, as CTA Perp does. The
+    // old cash/contract hedge must not become part of a new entry's target.
+    let mut next = StrategyPosition::default();
     if let Err(error) = next.enter_cash(
         next_flag,
         config.max_pos_u,
@@ -550,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_signal_lifecycle_keeps_inventory_and_publishes_absolute_targets() {
+    fn complete_signal_lifecycle_replaces_inventory_and_publishes_absolute_targets() {
         let mut c = config();
         c.enabled = true;
         let mut p = StrategyPosition::default();
@@ -598,7 +599,7 @@ mod tests {
             .unwrap(),
             "factor_reversal"
         );
-        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-1.0, -2.0, -3.0));
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-3.0, 0.0, -3.0));
         let targets = market_targets("ETHUSDT", &p);
         assert_eq!(
             advance_position(
@@ -619,7 +620,7 @@ mod tests {
             advance_position(&mut p, Some(&bar(0.8, None)), &c, 60000, 0, NOW, None).unwrap(),
             "factor_exit"
         );
-        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-1.0, 1.0, 0.0));
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-3.0, 3.0, 0.0));
     }
 
     #[test]

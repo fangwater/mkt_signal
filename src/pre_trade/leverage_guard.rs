@@ -278,7 +278,7 @@ pub async fn set_batch_exec_default_leverage(
         ),
     };
     if backend == ExecBackend::Ltp {
-        return trade_engine::ltp_init_leverage::set_and_verify_batch_exec_leverage(
+        return trade_engine::ltp_init_leverage::set_and_verify_exec_default_leverage(
             venue,
             symbol,
             BATCH_EXEC_DEFAULT_LEVERAGE,

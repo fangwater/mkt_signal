@@ -1,0 +1,144 @@
+{
+  "env": "bybit-intra-arb02",
+  "time": 1792136164.1946487,
+  "wallet": [
+    {
+      "coin": "BTC",
+      "walletBalance": "-0.00002232",
+      "spotBorrow": "0.07593337",
+      "borrowAmount": "0.075955702437182527",
+      "accruedInterest": "0.00000001",
+      "equity": "-0.0759557",
+      "usdValue": "-6228.85629868",
+      "unrealisedPnl": "0",
+      "locked": "0"
+    },
+    {
+      "coin": "ETH",
+      "walletBalance": "-0.00260051",
+      "spotBorrow": "2.61311907",
+      "borrowAmount": "2.615719590665836464",
+      "accruedInterest": "0.00000208",
+      "equity": "-2.61571959",
+      "usdValue": "-6403.10463067",
+      "unrealisedPnl": "0",
+      "locked": "0"
+    },
+    {
+      "coin": "SOL",
+      "walletBalance": "48.66113364",
+      "spotBorrow": "0",
+      "borrowAmount": "0.000000000000000000",
+      "accruedInterest": "0",
+      "equity": "48.66113364",
+      "usdValue": "5157.29842511",
+      "unrealisedPnl": "0",
+      "locked": "0"
+    },
+    {
+      "coin": "XRP",
+      "walletBalance": "3659.63346288",
+      "spotBorrow": "0",
+      "borrowAmount": "0.000000000000000000",
+      "accruedInterest": "0",
+      "equity": "3659.63346288",
+      "usdValue": "4890.50726253",
+      "unrealisedPnl": "0",
+      "locked": "0"
+    },
+    {
+      "coin": "USDT",
+      "walletBalance": "26203.73137674",
+      "spotBorrow": "0",
+      "borrowAmount": "0.000000000000000000",
+      "accruedInterest": "0",
+      "equity": "27098.06093388",
+      "usdValue": "27062.86055273",
+      "unrealisedPnl": "894.32955714",
+      "locked": "0"
+    },
+    {
+      "coin": "DOGE",
+      "walletBalance": "2762.28915862",
+      "spotBorrow": "0",
+      "borrowAmount": "0.000000000000000000",
+      "accruedInterest": "0",
+      "equity": "2762.28915862",
+      "usdValue": "226.49887168",
+      "unrealisedPnl": "0",
+      "locked": "0"
+    },
+    {
+      "coin": "BNB",
+      "walletBalance": "-0.01342797",
+      "spotBorrow": "6.64039033",
+      "borrowAmount": "6.653818309766742411",
+      "accruedInterest": "0.00001274",
+      "equity": "-6.6538183",
+      "usdValue": "-4854.97099232",
+      "unrealisedPnl": "0",
+      "locked": "0"
+    }
+  ],
+  "positions": [
+    {
+      "symbol": "DOGEUSDT",
+      "side": "Sell",
+      "size": "2753",
+      "positionIdx": 0,
+      "markPrice": "0.08205",
+      "positionValue": "225.88365",
+      "positionStatus": "Normal"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "side": "Sell",
+      "size": "3663.3",
+      "positionIdx": 0,
+      "markPrice": "1.3375",
+      "positionValue": "4899.66375",
+      "positionStatus": "Normal"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "side": "Sell",
+      "size": "48.7",
+      "positionIdx": 0,
+      "markPrice": "106.07",
+      "positionValue": "5165.609",
+      "positionStatus": "Normal"
+    },
+    {
+      "symbol": "BNBUSDT",
+      "side": "Buy",
+      "size": "6.63",
+      "positionIdx": 0,
+      "markPrice": "730.15",
+      "positionValue": "4840.8945",
+      "positionStatus": "Normal"
+    },
+    {
+      "symbol": "ETHUSDT",
+      "side": "Buy",
+      "size": "2.61",
+      "positionIdx": 0,
+      "markPrice": "2450.4",
+      "positionValue": "6395.544",
+      "positionStatus": "Normal"
+    },
+    {
+      "symbol": "BTCUSDT",
+      "side": "Buy",
+      "size": "0.076",
+      "positionIdx": 0,
+      "markPrice": "82081.2",
+      "positionValue": "6238.1712",
+      "positionStatus": "Normal"
+    }
+  ],
+  "extra_positions": {
+    "linear_usdc": [],
+    "inverse": [],
+    "option": []
+  }
+}

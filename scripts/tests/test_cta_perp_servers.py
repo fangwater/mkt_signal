@@ -111,6 +111,46 @@ class CtaPerpServerTests(unittest.TestCase):
         del config["enabled"]
         self.assertFalse(CONFIG_SERVER.normalize_config(config)["enabled"])
 
+    def test_algorithm_and_partial_symbol_overrides_resolve_and_validate_together(self):
+        config = json.loads(self.config_path.read_text())
+        self.assertEqual(CONFIG_SERVER.normalize_config(config)["position_algorithm"], "v0")
+        config["symbol_overrides"] = {
+            "ETHUSDT": {"factor_long_quantile": .8, "factor_exit_quantile_short": .6},
+            "BTCUSDT": {"factor_short_quantile": .2, "factor_exit_quantile_long": .4},
+        }
+        for algorithm in ("v0", "v1"):
+            config["position_algorithm"] = algorithm
+            normalized = CONFIG_SERVER.normalize_config(config)
+            eth = CONFIG_SERVER.effective_config(normalized, "ETHUSDT")
+            self.assertEqual(eth["entry"]["factor_long_quantile"], .8)
+            self.assertEqual(eth["entry"]["factor_short_quantile"], .1)
+            self.assertEqual(eth["execution"]["factor_exit_quantile_long"], .3)
+            self.assertEqual(eth["execution"]["factor_exit_quantile_short"], .6)
+            self.assertEqual(eth["max_pos_u"], normalized["max_pos_u"])
+            self.assertEqual(eth["entry"]["nq_long_quantile"], .5)
+            self.assertEqual(CONFIG_SERVER.effective_config(normalized, "SOLUSDT")["entry"], normalized["entry"])
+        config["entry"]["factor_long_quantile"] = .35
+        with self.assertRaisesRegex(ValueError, "BTCUSDT"):
+            CONFIG_SERVER.normalize_config(config)
+
+    def test_algorithm_range_and_four_override_fields_are_enforced(self):
+        config = json.loads(self.config_path.read_text())
+        for field in ("max_pos_u", "nq_long_quantile", "position_algorithm"):
+            config["symbol_overrides"] = {"ETHUSDT": {field: .5}}
+            with self.assertRaisesRegex(ValueError, "unknown fields"):
+                CONFIG_SERVER.normalize_config(config)
+        config["symbol_overrides"] = {"ethusdt": {"factor_long_quantile": .8}}
+        with self.assertRaisesRegex(ValueError, "invalid symbol"):
+            CONFIG_SERVER.normalize_config(config)
+        config["symbol_overrides"] = {"ETHUSDT": {"factor_short_quantile": -.6}}
+        with self.assertRaises(ValueError):
+            CONFIG_SERVER.normalize_config(config)
+        config["position_algorithm"] = "v1"
+        self.assertEqual(CONFIG_SERVER.normalize_config(config)["symbol_overrides"], config["symbol_overrides"])
+        config["position_algorithm"] = "v2"
+        with self.assertRaisesRegex(ValueError, "position_algorithm"):
+            CONFIG_SERVER.normalize_config(config)
+
     def test_config_rejects_unknown_and_invalid_strategy_fields(self):
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         config["venue"] = "binance-futures"
@@ -154,6 +194,25 @@ class CtaPerpServerTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, 409)
         caught.exception.close()
+
+    def test_algorithm_switch_requires_flat_ledger_but_amount_edits_do_not(self):
+        path = self.directory / "config/cta_perp.json"
+        path.parent.mkdir()
+        path.write_bytes(self.config_path.read_bytes())
+        positions = self.directory / "run/cta_perp_position_flags.json"
+        positions.parent.mkdir()
+        positions.write_text(json.dumps({"factor_036":{"ETHUSDT":{"flag":1,"qty":2}},
+                                         "factor_051":{"ETHUSDT":{"flag":-1,"qty":-2}}}))
+        store = CONFIG_SERVER.ConfigStore(path)
+        config, revision = store.load()
+        config['max_pos_u'] = 300
+        config, revision = store.save(config, revision)
+        config['position_algorithm'] = 'v1'
+        with self.assertRaisesRegex(ValueError, '先关闭现有仓位'):
+            store.save(config, revision)
+        self.assertEqual(store.load()[0]['position_algorithm'], 'v0')
+        positions.write_text(json.dumps({"factor_036":{"ETHUSDT":{"flag":0,"qty":0}}}))
+        self.assertEqual(store.save(config, revision)[0]['position_algorithm'], 'v1')
 
     def test_config_rejects_obsolete_single_factor_contract(self):
         store = CONFIG_SERVER.ConfigStore(self.config_path)

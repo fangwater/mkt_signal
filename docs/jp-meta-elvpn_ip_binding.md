@@ -1,6 +1,79 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-16 10:15 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-18 08:52 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-18 JP 重启恢复 Exec01–07 及 RX01 Spread / RX02、RX03 Perp 信号链路。
+CTA Manager user service 已自动恢复。沿用所有环境现有 env.sh、trade_engine.toml、
+Exec01–07 的10041–10047/18161–18167及CTA看板/配置入口，无IP、ENI/EIP、
+路由、网关或二进制变更。三套 Redis 因子配置及 Exec06/07 缺失的风险配置按
+本地部署证据恢复；08:52 UTC factor 仍在3天 Kafka 预热，未宣布实时信号就绪。
+完整启动/验收记录：`artifacts/jp_exec_recovery_20261018/`；CPU见核心分配登记。
+
+2026-10-15 13:59 UTC RX02/RX03 Perp 静默回放完成并恢复最终目标发布；RX02 为
+v1/17因子/47币，RX03 保持 v0/原14币。仍使用4191网关及
+loopback19186/10196、19187/10197。Manager 已更新显式 clear 支持，
+RX02 旧9策略55条 clear 经 Exec Redis 核验，旧绑定份额归零。
+Exec05 配套更新 pre-trade 与 trade_engine，以支持 RapidX 明确的较低杠杆上限
+及新运行时所需账户快照查询；实际执行已恢复。RX02 新策略发布令牌仅保存在
+远端 env.sh。交易配置、local_ips、ENI/EIP、路由及监听端口均保持原值，
+Exec05/07 继续使用原有交易出口。证据：`artifacts/cta_perp_replay_cutover/`。
+
+2026-10-15 06:13 UTC Exec04 / prc 的 BNB 对冲恢复仅配套更新 pre-trade、Viz、
+账户监控，复用 Exec03 已验证的 `8a263e04` release。继续保留
+`local_ips=["172.31.35.228", "172.31.35.234"]`，新账户监控启动日志确认认证
+账户查询显式绑定 `.228`。未改写 env.sh、交易 TOML、ENI/EIP、路由、网关或
+Manager 配置；其余133个受保护进程保持。原三组件及 Viz TOML 的备份在
+Manager 主目录 `backups/prc-bnb-20261015T060515Z`，BNBUSDC 空头已完成。
+
+2026-10-15 03:47 UTC 仅替换 Exec06 / RX01 的 RapidX 账户监控（PID2309899），
+修复账单可用余额极小尾差触发的恢复循环。沿用 `local_ips=["172.31.35.228"]`，
+认证账户查询继续显式绑定该交易地址；env.sh、交易TOML、ENI/EIP、路由、网关
+以及Manager均未改动。实时权益及账单追赶已恢复，其他190个受保护进程保持。
+
+2026-10-14 08:05 UTC RX03 CTA Perp 已接入独立 `binance_exec_trade07` 实盘，
+Manager source `trade07 / lgq_cta_RX03` 跟随 `virtual04 / cta_perp_rx03`，
+倍率1，五因子各1份，14币/34组合，每组合100 USDT。启用前账户为空仓、无挂单；
+新Exec使用独立namespace、Redis键及RocksDB，没有迁移旧持仓或历史。
+执行模板 `binance_cta_perp_rx03_ctaker` 复制RX02当前 `lgq_cta_ctaker`，
+五份实际运行参数逐项相同；买卖各最多10个挂单，10秒200单、每分钟400单。
+Maker费率-0.00002、Taker 0.000175、理论TWAP 0.0004。
+34个实时目标与Exec一致，账户position_ready、发布日志健康，Manager无待发布项。
+证据：`artifacts/cta_perp_rx03_activation/`。
+Exec07交易与认证账户查询固定使用 `172.31.35.228`，沿用RX03原RapidX白名单；
+未新增EIP/ENI/路由。该环境trade_engine.toml加入Manager Kline交易IP排除清单。
+4191网关新增带Manager鉴权的 `/exec_trade07/`、`config/`；对应loopback10047/18167。
+信号页面继续使用 `/cta/binance-cta-perp-rx03/` 和loopback10197/19187。
+信号路由持久化为 `/etc/nginx/snippets/cta_perp_rx03.conf`，由
+`~/nginx_locations.txt` 的单条external映射生成；Exec07路由仍归Manager鉴权snippet。
+
+此前观察部署记录：
+2026-10-14 07:10 UTC 新增 `binance-cta-perp-rx03` 观察环境，14币/34组合、
+单份100 USDT、发布关闭。Dashboard/Config分别监听loopback10197/19187，
+已有4191 Nginx网关新增 `/cta/binance-cta-perp-rx03/`、`signals/`、`config/`；
+保留RX01/RX02及旧RX03路径。独立Kafka因子publisher使用默认出口，
+没有LTP凭证、Manager连接或执行账户绑定，无新 `local_ips`、EIP、ENI或路由变更。
+原50个相关进程和55份配置哈希核对保持；07:26已完成预热，34/34组合实时就绪。
+仓位发布始终关闭。publisher实测两条Kafka连接源地址均为 `172.31.35.228`。
+网关修改前后配置保留在新环境 `run/`；证据：`artifacts/cta_perp_rx03_deployment/`。
+
+2026-10-14 04:38 UTC 仅部署Exec06现货市价买入quoteOrderQty与精度修复，
+exec-pre-trade最终PID448295，CPU0-5；交易绑定仍为 `172.31.35.228`。
+认证账户查询重读live TOML并固定绑定该地址；未改local_ips、env.sh、ENI/EIP、路由或网关。
+其余44个受保护进程与15个配置/环境哈希不变，Spread实盘发布继续。
+证据：`artifacts/rapidx_cash_market_buy_fix/`。
+
+2026-10-14 04:12 UTC 按操作者要求开启RX01 Spread实盘推送，先重建五因子
+46组合最近一次100 USDT的完整绝对目标，signal PID176562、CPU0-5。
+source IP、env.sh、交易TOML、ENI/EIP、路由、网页与网关不变，Exec未重启。
+`binance_exec_trade06` 交易绑定仍为 `172.31.35.228`；92个目标逐项核对一致。
+下方04:01关闭状态为当次部署历史。证据：`artifacts/cta_spread_rx01_live_enable/`。
+
+2026-10-14 04:01 UTC 仅重新部署 `binance-cta-spread-rx01` 的signal目标累加修复，
+signal PID46021，46/46组合就绪。该时刻发布仍关闭，04:12恢复见上文。
+未改source IP、交易绑定、env.sh、ENI/EIP、路由、网页监听或网关路径；
+`binance_exec_trade06` 继续使用原 `172.31.35.228`，Exec及其他发布器未重启。
+已有累计目标和账户仓位未清理。证据见
+`artifacts/cta_spread_rx01_absolute_target_deploy/`。
 
 2026-10-13 13:42 UTC `binance_exec_trade06` 正式接管RX01现货/永续，使用已有
 `local_ips=["172.31.35.228"]`；未新增EIP/ENI或修改路由。
@@ -111,7 +184,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；`binance-cta-special-rx02` 信号发布到 Exec `trade05`（RX02 RapidX）；rx03 停盘；Exec `trade02`–`trade04` `local_ips[0]` |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；`binance-cta-special-rx02` 信号发布到 Exec `trade05`（RX02 RapidX）；RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]` |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
@@ -177,6 +250,7 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
 binance-cta-spread-rx01      172.31.35.228                  独立 Spread 信号/页面，发布关闭；Kafka 默认出口
 binance-cta-special-rx02     172.31.35.228                  信号/config/dashboard；执行迁入 trade05
+binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230
@@ -197,6 +271,7 @@ binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，follow lgq_cta，ctaker
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，现货/永续在线，follow virtual03/cta_spread_rx01，ctaker
+binance_exec_trade07         172.31.35.228                  RX03 RapidX，永续在线，follow virtual04/cta_perp_rx03，ctaker
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。

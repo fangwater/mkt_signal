@@ -1,0 +1,4962 @@
+{
+  "host": "ip-172-31-35-228",
+  "environments": {
+    "binance-cta-spread-rx01": {
+      "hashes": {
+        "env.sh": "c003b5269ecf5384f1fcd9b52a461965e6edd05570480c934e8db0585fe2155d",
+        "config/cta_spread_symbol_factors.json": "e646a37f3081ae090ba8ef5f517f40f0a2cb19d19ed0e48c3eb3188b204a50e9",
+        "config/cta_spread_factor_model_1m_pub.toml": "c146fd104980a547421cad7dc1b16a5a230045e804d8a1250c7701a98901c64b",
+        "config/cta_spread.json": "f5a92b72fe5a3a58a5d5b131c28613e434fd3da149af9e9738986f289fcdc44c"
+      }
+    },
+    "binance-cta-perp-rx02": {
+      "config/cta_perp.json": {
+        "enabled": true,
+        "max_pos_u": 300.0,
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.7,
+          "factor_exit_quantile_short": 0.3
+        }
+      },
+      "config/cta_perp_symbol_factors.json": {
+        "AAVEUSDT": {
+          "TD_TI_024": -1,
+          "baseline_141": 1,
+          "baseline_164": 1,
+          "baseline_200": -1
+        },
+        "DASHUSDT": {
+          "TD_TI_024": -1,
+          "baseline_141": 1,
+          "baseline_164": 1,
+          "baseline_200": -1
+        },
+        "DOGEUSDT": {
+          "TD_TI_024": -1,
+          "baseline_200": -1
+        },
+        "ETHUSDT": {
+          "baseline_141": 1
+        },
+        "NEARUSDT": {
+          "TD_TI_024": -1,
+          "baseline_141": 1,
+          "factor_036": -1
+        },
+        "SOLUSDT": {
+          "baseline_141": 1,
+          "baseline_200": -1
+        },
+        "XLMUSDT": {
+          "TD_TI_024": -1,
+          "baseline_141": 1,
+          "baseline_200": -1
+        },
+        "XRPUSDT": {
+          "baseline_141": 1
+        },
+        "ZECUSDT": {
+          "TD_TI_024": -1,
+          "baseline_141": 1,
+          "baseline_164": 1,
+          "baseline_200": -1
+        }
+      },
+      "run/cta_perp_status.json": {
+        "allocation": "per_symbol_factor",
+        "enabled": true,
+        "factor_config_key": "binance-cta-perp-rx02:cta_symbol_factors",
+        "follower_source_id": "binance_exec_trade05",
+        "journal_healthy": true,
+        "manager_strategy_prefix": "lgq_cta_",
+        "max_pos_u": 300.0,
+        "publication_error": null,
+        "scheduled_entries": 0,
+        "strategies": {
+          "TD_TI_024": {
+            "AAVEUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 148.445,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.4838541666666667,
+                    "corrected_score": -0.026088139646254328,
+                    "factor": "TD_TI_024",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5161458333333333,
+                    "score": 0.026088139646254328,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 0,
+                "quantile": 0.4838541666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645671927
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.4960069444444445,
+                    "corrected_score": -0.04275084721734694,
+                    "factor": "TD_TI_024",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5039930555555555,
+                    "score": 0.04275084721734694,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.4960069444444445,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645502599
+            },
+            "DOGEUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.07997499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.8220486111111112,
+                    "corrected_score": 0.8056858291271369,
+                    "factor": "TD_TI_024",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.1779513888888889,
+                    "score": -0.8056858291271369,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.07916666666666666,
+                "nq_long_value": 0.0031302823514681053,
+                "nq_short_quantile": 0.020833333333333332,
+                "nq_short_value": -0.0063255813953489665,
+                "position_flag": 0,
+                "quantile": 0.8220486111111112,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645662091
+            },
+            "NEARUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.2699652777777778,
+                    "corrected_score": -0.5499067869053408,
+                    "factor": "TD_TI_024",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7300347222222222,
+                    "score": 0.5499067869053408,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.2699652777777778,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645655433
+            },
+            "XLMUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.17907499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7932291666666667,
+                    "corrected_score": 0.6364897872555244,
+                    "factor": "TD_TI_024",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.20677083333333332,
+                    "score": -0.6364897872555244,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.35,
+                "nq_long_value": 0.004029888338510612,
+                "nq_short_quantile": 0.5041666666666667,
+                "nq_short_value": -0.0059845399384920615,
+                "position_flag": 0,
+                "quantile": 0.7932291666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645667220
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.12517361111111114,
+                    "corrected_score": -0.9801396289109203,
+                    "factor": "TD_TI_024",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.8748263888888889,
+                    "score": 0.9801396289109203,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.12517361111111114,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645646626
+            }
+          },
+          "baseline_141": {
+            "AAVEUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 148.445,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5772569444444444,
+                    "corrected_score": -0.1336474264247018,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5772569444444444,
+                    "score": -0.1336474264247018,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 0,
+                "quantile": 0.5772569444444444,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645672820
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7001736111111111,
+                    "corrected_score": 0.2701604157965118,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7001736111111111,
+                    "score": 0.2701604157965118,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.7001736111111111,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645643232
+            },
+            "ETHUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 2353.2650000000003,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6571180555555556,
+                    "corrected_score": 0.10359674004078985,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6571180555555556,
+                    "score": 0.10359674004078985,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.9958333333333333,
+                "nq_long_value": 0.005342174375910906,
+                "nq_short_quantile": 0.2791666666666667,
+                "nq_short_value": -0.0058019692938686895,
+                "position_flag": 0,
+                "quantile": 0.6571180555555556,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645678812
+            },
+            "NEARUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.22552083333333334,
+                    "corrected_score": -0.8495704707740382,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.22552083333333334,
+                    "score": -0.8495704707740382,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.22552083333333334,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645658436
+            },
+            "SOLUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 101.85499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6029513888888889,
+                    "corrected_score": -0.14140242185729865,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6029513888888889,
+                    "score": -0.14140242185729865,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.4791666666666667,
+                "nq_long_value": 0.0043304955464791295,
+                "nq_short_quantile": 0.8375,
+                "nq_short_value": -0.005845389449072127,
+                "position_flag": 0,
+                "quantile": 0.6029513888888889,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645663735
+            },
+            "XLMUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 0.17907499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6869791666666667,
+                    "corrected_score": 0.08345234062565642,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6869791666666667,
+                    "score": 0.08345234062565642,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.35,
+                "nq_long_value": 0.004029888338510612,
+                "nq_short_quantile": 0.5041666666666667,
+                "nq_short_value": -0.0059845399384920615,
+                "position_flag": 0,
+                "quantile": 0.6869791666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645668707
+            },
+            "XRPUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 1.3023500000000001,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6619791666666667,
+                    "corrected_score": 0.16302109500961345,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6619791666666667,
+                    "score": 0.16302109500961345,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.4125,
+                "nq_long_value": 0.002920044569101338,
+                "nq_short_quantile": 0.7791666666666667,
+                "nq_short_value": -0.0063192356008985465,
+                "position_flag": 0,
+                "quantile": 0.6619791666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645666555
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.24322916666666666,
+                    "corrected_score": -0.7807410912679182,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.24322916666666666,
+                    "score": -0.7807410912679182,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.24322916666666666,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645648041
+            }
+          },
+          "baseline_164": {
+            "AAVEUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 148.445,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5067708333333333,
+                    "corrected_score": -0.24771192720042431,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5067708333333333,
+                    "score": -0.24771192720042431,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 0,
+                "quantile": 0.5067708333333333,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645674422
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6633680555555556,
+                    "corrected_score": 0.18728662702359838,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6633680555555556,
+                    "score": 0.18728662702359838,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.6633680555555556,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645644299
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.18454861111111112,
+                    "corrected_score": -0.8898149324055914,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.18454861111111112,
+                    "score": -0.8898149324055914,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.18454861111111112,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645649297
+            }
+          },
+          "baseline_200": {
+            "AAVEUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 148.445,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5147569444444444,
+                    "corrected_score": 0.052429976961272155,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.4852430555555556,
+                    "score": -0.052429976961272155,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 0,
+                "quantile": 0.5147569444444444,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645676003
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.4883680555555555,
+                    "corrected_score": -0.05803259979441344,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5116319444444445,
+                    "score": 0.05803259979441344,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.4883680555555555,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645645753
+            },
+            "DOGEUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.07997499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.8144097222222222,
+                    "corrected_score": 0.7782411073781272,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.18559027777777778,
+                    "score": -0.7782411073781272,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.07916666666666666,
+                "nq_long_value": 0.0031302823514681053,
+                "nq_short_quantile": 0.020833333333333332,
+                "nq_short_value": -0.0063255813953489665,
+                "position_flag": 0,
+                "quantile": 0.8144097222222222,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645662488
+            },
+            "SOLUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 101.85499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5380208333333334,
+                    "corrected_score": 0.07167975119079695,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.46197916666666666,
+                    "score": -0.07167975119079695,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.4791666666666667,
+                "nq_long_value": 0.0043304955464791295,
+                "nq_short_quantile": 0.8375,
+                "nq_short_value": -0.005845389449072127,
+                "position_flag": 0,
+                "quantile": 0.5380208333333334,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645665621
+            },
+            "XLMUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.17907499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7532986111111111,
+                    "corrected_score": 0.5496673968047233,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.2467013888888889,
+                    "score": -0.5496673968047233,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.35,
+                "nq_long_value": 0.004029888338510612,
+                "nq_short_quantile": 0.5041666666666667,
+                "nq_short_value": -0.0059845399384920615,
+                "position_flag": 0,
+                "quantile": 0.7532986111111111,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645670000
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.17100694444444442,
+                    "corrected_score": -1.0266821555107857,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.8289930555555556,
+                    "score": 1.0266821555107857,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.17100694444444442,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645650228
+            }
+          },
+          "factor_036": {
+            "NEARUSDT": {
+              "allocation_usdt": 300.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.39288194444444446,
+                    "corrected_score": -0.18173562196087528,
+                    "factor": "factor_036",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6071180555555555,
+                    "score": 0.18173562196087528,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.39288194444444446,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645659780
+            }
+          }
+        },
+        "symbol_factors": {
+          "AAVEUSDT": {
+            "TD_TI_024": -1.0,
+            "baseline_141": 1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "DASHUSDT": {
+            "TD_TI_024": -1.0,
+            "baseline_141": 1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "DOGEUSDT": {
+            "TD_TI_024": -1.0,
+            "baseline_200": -1.0
+          },
+          "ETHUSDT": {
+            "baseline_141": 1.0
+          },
+          "NEARUSDT": {
+            "TD_TI_024": -1.0,
+            "baseline_141": 1.0,
+            "factor_036": -1.0
+          },
+          "SOLUSDT": {
+            "baseline_141": 1.0,
+            "baseline_200": -1.0
+          },
+          "XLMUSDT": {
+            "TD_TI_024": -1.0,
+            "baseline_141": 1.0,
+            "baseline_200": -1.0
+          },
+          "XRPUSDT": {
+            "baseline_141": 1.0
+          },
+          "ZECUSDT": {
+            "TD_TI_024": -1.0,
+            "baseline_141": 1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          }
+        },
+        "updated_ts_us": 1792067680108362,
+        "venue": "binance-futures",
+        "virtual_account_name": "lgq_cta"
+      },
+      "run/cta_perp_position_flags.json": {
+        "TD_TI_002": {
+          "BNBUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LINKUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "SOLUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XRPUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "TD_TI_024": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XLMUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_004": {
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ETHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_141": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ETHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "SOLUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XLMUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XRPUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_164": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_200": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "SOLUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XLMUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "factor_036": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "AVAXUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "FILUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LINKUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LTCUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "UNIUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XLMUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "factor_051": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "BNBUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "FILUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LINKUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LTCUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "SOLUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "factor_170": {
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOTUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LINKUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LTCUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "UNIUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XRPUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        }
+      },
+      "factor_config": "[universe]\nsymbols = [\n  \"AAVEUSDT\", \"DASHUSDT\", \"DOGEUSDT\", \"ETHUSDT\", \"NEARUSDT\", \"SOLUSDT\",\n  \"XLMUSDT\", \"XRPUSDT\", \"ZECUSDT\",\n]\nfactors = [\"baseline_141\", \"baseline_200\", \"TD_TI_024\", \"factor_036\", \"baseline_164\"]\n\n[tlen_server]\nbase_url = \"http://127.0.0.1:6322\"\nrequest_timeout_ms = 5000\nsymbol_reload_secs = 180\n\n# Keep this identical to the V005/rx01 offline normalize_factors contract.\n[normalize]\nwindow_bars = 1440\nmin_periods = 1000\nclip_zscore = 3.0\n\n[kafka]\nlookback_secs = 259200\ncatchup_timeout_secs = 3600\ntopic = \"binance-futures\"\ntopics = [\"binance-futures\"]\nbrokers = \"156.231.137.189:1501\"\ngroup_id = \"cta_perp_factor_model_1m\"\nclient_id = \"cta_perp_factor_model_1m\"\noffset_reset = \"earliest\"\npayload_compression = \"zlib\"\npoll_timeout_ms = 1000\nenable_auto_commit = false\nenable_partition_eof = false\nsecurity_protocol = \"none\"\nbroker_addr_rewrites = [\n  { from_host = \"10.140.140.55\", to_host = \"156.231.137.189\" },\n]\n",
+      "hashes": {
+        "env.sh": "be47b79d6fcd90a98307130d0ef3d6bf68057885f8ff840864081b257c807665",
+        "config/cta_perp_factor_model_1m_pub.toml": "5f727dcfcc86896cbf2256f67d65c8739ae5ee72cad65feecbb764e8f287d7ae",
+        "config/cta_perp_replay.json": "4e4eaa05e45897240cb4321fa8a11cdb1434f89c4e4d33d5723841f8a9c82d91",
+        "config/cta_perp.json": "9ff31d6b46cef2fe14b5c0f014bfb4f44728d95e0d2cee0f8bf82761e5e54028",
+        "config/cta_perp_symbol_factors.json": "531524512c16e5abc7636d4a7c8f7cb744651a9925b9192bd3950b7c30c6639a"
+      }
+    },
+    "binance-cta-perp-rx03": {
+      "config/cta_perp.json": {
+        "enabled": true,
+        "max_pos_u": 100.0,
+        "entry": {
+          "factor_long_quantile": 0.9,
+          "factor_short_quantile": 0.1,
+          "nq_change_enabled": true,
+          "nq_long_quantile": 0.5,
+          "nq_short_quantile": 0.5
+        },
+        "execution": {
+          "factor_exit_quantile_long": 0.3,
+          "factor_exit_quantile_short": 0.7
+        }
+      },
+      "config/cta_perp_symbol_factors.json": {
+        "AAVEUSDT": {
+          "baseline_085": -1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "ADAUSDT": {
+          "baseline_085": -1.0,
+          "baseline_164": 1.0
+        },
+        "AVAXUSDT": {
+          "baseline_141": 1.0
+        },
+        "BTCUSDT": {
+          "baseline_085": -1.0,
+          "baseline_200": -1.0
+        },
+        "DASHUSDT": {
+          "TD_MT_029": -1.0,
+          "baseline_085": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "DOGEUSDT": {
+          "baseline_085": -1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "DOTUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "ETHUSDT": {
+          "baseline_085": -1.0,
+          "baseline_200": -1.0
+        },
+        "LTCUSDT": {
+          "baseline_141": 1.0
+        },
+        "NEARUSDT": {
+          "baseline_085": -1.0,
+          "baseline_141": 1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "SOLUSDT": {
+          "baseline_141": 1.0,
+          "baseline_164": 1.0
+        },
+        "UNIUSDT": {
+          "baseline_164": 1.0
+        },
+        "XLMUSDT": {
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        },
+        "ZECUSDT": {
+          "TD_MT_029": -1.0,
+          "baseline_085": -1.0,
+          "baseline_164": 1.0,
+          "baseline_200": -1.0
+        }
+      },
+      "run/cta_perp_status.json": {
+        "allocation": "per_symbol_factor",
+        "enabled": true,
+        "factor_config_key": "binance-cta-perp-rx03:cta_symbol_factors",
+        "follower_source_id": "binance_exec_trade07",
+        "journal_healthy": true,
+        "manager_strategy_prefix": "binance_cta_perp_rx03_",
+        "max_pos_u": 100.0,
+        "publication_error": null,
+        "scheduled_entries": 0,
+        "strategies": {
+          "TD_MT_029": {
+            "DASHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 100.0,
+              "factor_sign": "-",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 1,
+              "position_qty": 2.113271344040575,
+              "position_usdt": 99.33431952662721,
+              "score_ready": true,
+              "signal": {
+                "decision": "long",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.4786458333333333,
+                    "corrected_score": -0.12110648504087519,
+                    "factor": "TD_MT_029",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5213541666666667,
+                    "score": 0.12110648504087519,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 1,
+                "quantile": 0.4786458333333333,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645494836
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.16302083333333328,
+                    "corrected_score": -1.2062999920423643,
+                    "factor": "TD_MT_029",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.8369791666666667,
+                    "score": 1.2062999920423643,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.16302083333333328,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645511242
+            }
+          },
+          "baseline_085": {
+            "AAVEUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 100.0,
+              "factor_sign": "-",
+              "mark_price": 148.435,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 1,
+              "position_qty": 0.6710058377507885,
+              "position_usdt": 99.60075152653829,
+              "score_ready": true,
+              "signal": {
+                "decision": "long",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5300347222222221,
+                    "corrected_score": 0.13890995394668867,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.4699652777777778,
+                    "score": -0.13890995394668867,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 1,
+                "quantile": 0.5300347222222221,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645557609
+            },
+            "ADAUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.22055,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6296875,
+                    "corrected_score": 0.38318190486668824,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.3703125,
+                    "score": -0.38318190486668824,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5125,
+                "nq_long_value": 0.005460750853242351,
+                "nq_short_quantile": 0.5458333333333333,
+                "nq_short_value": -0.0062963795817404305,
+                "position_flag": 0,
+                "quantile": 0.6296875,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645526843
+            },
+            "BTCUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 80752.25,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6682291666666667,
+                    "corrected_score": 0.5478968338407288,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.33177083333333335,
+                    "score": -0.5478968338407288,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.8291666666666667,
+                "nq_long_value": 0.0027365873416087343,
+                "nq_short_quantile": 0.5375,
+                "nq_short_value": -0.0038572948778697875,
+                "position_flag": 0,
+                "quantile": 0.6682291666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645538487
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 100.0,
+              "factor_sign": "-",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 1,
+              "position_qty": 2.111040743086342,
+              "position_usdt": 99.22947012877349,
+              "score_ready": true,
+              "signal": {
+                "decision": "long",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5151041666666667,
+                    "corrected_score": -0.01439933312148619,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.48489583333333336,
+                    "score": 0.01439933312148619,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 1,
+                "quantile": 0.5151041666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645500992
+            },
+            "DOGEUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.07997499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.8078125,
+                    "corrected_score": 0.967731356752898,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.1921875,
+                    "score": -0.967731356752898,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.07916666666666666,
+                "nq_long_value": 0.0031302823514681053,
+                "nq_short_quantile": 0.020833333333333332,
+                "nq_short_value": -0.0063255813953489665,
+                "position_flag": 0,
+                "quantile": 0.8078125,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645522510
+            },
+            "ETHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 2353.2650000000003,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7130208333333333,
+                    "corrected_score": 0.6828497650636912,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.2869791666666667,
+                    "score": -0.6828497650636912,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.9958333333333333,
+                "nq_long_value": 0.005342174375910906,
+                "nq_short_quantile": 0.2791666666666667,
+                "nq_short_value": -0.0058019692938686895,
+                "position_flag": 0,
+                "quantile": 0.7130208333333333,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645546786
+            },
+            "NEARUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.3223958333333333,
+                    "corrected_score": -0.5588763293494808,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6776041666666667,
+                    "score": 0.5588763293494808,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.3223958333333333,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645531511
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.17343750000000002,
+                    "corrected_score": -1.0125700573244971,
+                    "factor": "baseline_085",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.8265625,
+                    "score": 1.0125700573244971,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.17343750000000002,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645513626
+            }
+          },
+          "baseline_141": {
+            "AVAXUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 9.5825,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6467013888888888,
+                    "corrected_score": -0.002364929580155732,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6467013888888888,
+                    "score": -0.002364929580155732,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.8458333333333333,
+                "nq_long_value": 0.011597870209288779,
+                "nq_short_quantile": 0.6041666666666666,
+                "nq_short_value": -0.006729126766395908,
+                "position_flag": 0,
+                "quantile": 0.6467013888888888,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645521546
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7005208333333334,
+                    "corrected_score": 0.270160415796512,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7005208333333334,
+                    "score": 0.270160415796512,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.7005208333333334,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645503098
+            },
+            "DOTUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 1.0831499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7512152777777777,
+                    "corrected_score": 0.2625438305499475,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7512152777777777,
+                    "score": 0.2625438305499475,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.15416666666666667,
+                "nq_long_value": 0.004070117015864169,
+                "nq_short_quantile": 0.0375,
+                "nq_short_value": -0.0117448900623664,
+                "position_flag": 0,
+                "quantile": 0.7512152777777777,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645529666
+            },
+            "LTCUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 58.035,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7342013888888889,
+                    "corrected_score": 0.29179738197664445,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7342013888888889,
+                    "score": 0.29179738197664445,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5,
+                "nq_long_value": 0.004321894718644654,
+                "nq_short_quantile": 0.5291666666666667,
+                "nq_short_value": -0.007177646757241762,
+                "position_flag": 0,
+                "quantile": 0.7342013888888889,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645520055
+            },
+            "NEARUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.2154513888888889,
+                    "corrected_score": -0.8495704707740244,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.2154513888888889,
+                    "score": -0.8495704707740244,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.2154513888888889,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645532346
+            },
+            "SOLUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 101.85499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6039930555555556,
+                    "corrected_score": -0.14140242185730167,
+                    "factor": "baseline_141",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6039930555555556,
+                    "score": -0.14140242185730167,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.4791666666666667,
+                "nq_long_value": 0.0043304955464791295,
+                "nq_short_quantile": 0.8375,
+                "nq_short_value": -0.005845389449072127,
+                "position_flag": 0,
+                "quantile": 0.6039930555555556,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645542236
+            }
+          },
+          "baseline_164": {
+            "AAVEUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 148.435,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5067708333333333,
+                    "corrected_score": -0.24771192720042465,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5067708333333333,
+                    "score": -0.24771192720042465,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 0,
+                "quantile": 0.5067708333333333,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645559236
+            },
+            "ADAUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 0.22055,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7595486111111112,
+                    "corrected_score": 0.4681348641134207,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7595486111111112,
+                    "score": 0.4681348641134207,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5125,
+                "nq_long_value": 0.005460750853242351,
+                "nq_short_quantile": 0.5458333333333333,
+                "nq_short_value": -0.0062963795817404305,
+                "position_flag": 0,
+                "quantile": 0.7595486111111112,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645527940
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6644097222222223,
+                    "corrected_score": 0.1872866270235986,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6644097222222223,
+                    "score": 0.1872866270235986,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.6644097222222223,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645506539
+            },
+            "DOGEUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 0.07997499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.8046875,
+                    "corrected_score": 0.6741220665585717,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.8046875,
+                    "score": 0.6741220665585717,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.07916666666666666,
+                "nq_long_value": 0.0031302823514681053,
+                "nq_short_quantile": 0.020833333333333332,
+                "nq_short_value": -0.0063255813953489665,
+                "position_flag": 0,
+                "quantile": 0.8046875,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645523621
+            },
+            "DOTUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 1.0831499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7151041666666667,
+                    "corrected_score": 0.2835035265234499,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7151041666666667,
+                    "score": 0.2835035265234499,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.15416666666666667,
+                "nq_long_value": 0.004070117015864169,
+                "nq_short_quantile": 0.0375,
+                "nq_short_value": -0.0117448900623664,
+                "position_flag": 0,
+                "quantile": 0.7151041666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645530186
+            },
+            "NEARUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.2574652777777778,
+                    "corrected_score": -0.742623883759559,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.2574652777777778,
+                    "score": -0.742623883759559,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.2574652777777778,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645534576
+            },
+            "SOLUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 101.85499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5401041666666667,
+                    "corrected_score": -0.1977270958318067,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5401041666666667,
+                    "score": -0.1977270958318067,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.4791666666666667,
+                "nq_long_value": 0.0043304955464791295,
+                "nq_short_quantile": 0.8375,
+                "nq_short_value": -0.005845389449072127,
+                "position_flag": 0,
+                "quantile": 0.5401041666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645544341
+            },
+            "UNIUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 6.8715,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.4730902777777778,
+                    "corrected_score": -0.29292244973343623,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.4730902777777778,
+                    "score": -0.29292244973343623,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.6875,
+                "nq_long_value": 0.006722689075630421,
+                "nq_short_quantile": 0.925,
+                "nq_short_value": -0.0047677526547712885,
+                "position_flag": 0,
+                "quantile": 0.4730902777777778,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645551794
+            },
+            "XLMUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 0.17907499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7977430555555556,
+                    "corrected_score": 0.6198857467715799,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.7977430555555556,
+                    "score": 0.6198857467715799,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.35,
+                "nq_long_value": 0.004029888338510612,
+                "nq_short_quantile": 0.5041666666666667,
+                "nq_short_value": -0.0059845399384920615,
+                "position_flag": 0,
+                "quantile": 0.7977430555555556,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645553294
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "+",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.17552083333333332,
+                    "corrected_score": -0.8898149324055922,
+                    "factor": "baseline_164",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.17552083333333332,
+                    "score": -0.8898149324055922,
+                    "sign": "+",
+                    "vote": 0,
+                    "weight": 1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.17552083333333332,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645515042
+            }
+          },
+          "baseline_200": {
+            "AAVEUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 148.435,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.5147569444444444,
+                    "corrected_score": 0.05242997696127207,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.4852430555555556,
+                    "score": -0.05242997696127207,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.3458333333333333,
+                "nq_long_value": 0.005069451485349285,
+                "nq_short_quantile": 0.9208333333333333,
+                "nq_short_value": -0.0067466016499114325,
+                "position_flag": 0,
+                "quantile": 0.5147569444444444,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645560133
+            },
+            "BTCUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 80752.25,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.6696180555555555,
+                    "corrected_score": 0.5499887198327468,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.33038194444444446,
+                    "score": -0.5499887198327468,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.8291666666666667,
+                "nq_long_value": 0.0027365873416087343,
+                "nq_short_quantile": 0.5375,
+                "nq_short_value": -0.0038572948778697875,
+                "position_flag": 0,
+                "quantile": 0.6696180555555555,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645541071
+            },
+            "DASHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 47.004999999999995,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.48940972222222223,
+                    "corrected_score": -0.058032599794413504,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.5105902777777778,
+                    "score": 0.058032599794413504,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.5625,
+                "nq_long_value": 0.006844187787402575,
+                "nq_short_quantile": 0.7625,
+                "nq_short_value": -0.010509721492380452,
+                "position_flag": 0,
+                "quantile": 0.48940972222222223,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645508663
+            },
+            "DOGEUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.07997499999999999,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.8182291666666667,
+                    "corrected_score": 0.7782411073781269,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.18177083333333333,
+                    "score": -0.7782411073781269,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.07916666666666666,
+                "nq_long_value": 0.0031302823514681053,
+                "nq_short_quantile": 0.020833333333333332,
+                "nq_short_value": -0.0063255813953489665,
+                "position_flag": 0,
+                "quantile": 0.8182291666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645525216
+            },
+            "ETHUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 2353.2650000000003,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7401041666666667,
+                    "corrected_score": 0.7560761659266803,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.2598958333333333,
+                    "score": -0.7560761659266803,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.9958333333333333,
+                "nq_long_value": 0.005342174375910906,
+                "nq_short_quantile": 0.2791666666666667,
+                "nq_short_value": -0.0058019692938686895,
+                "position_flag": 0,
+                "quantile": 0.7401041666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645549005
+            },
+            "NEARUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 4.5915,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.3057291666666667,
+                    "corrected_score": -0.4666495363180611,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.6942708333333333,
+                    "score": 0.4666495363180611,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7958333333333333,
+                "nq_long_value": 0.014979623306531471,
+                "nq_short_quantile": 0.9041666666666667,
+                "nq_short_value": -0.0032449972958357096,
+                "position_flag": 0,
+                "quantile": 0.3057291666666667,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645535703
+            },
+            "XLMUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 0.17907499999999998,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.7567708333333334,
+                    "corrected_score": 0.5496673968047235,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.24322916666666666,
+                    "score": -0.5496673968047235,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.35,
+                "nq_long_value": 0.004029888338510612,
+                "nq_short_quantile": 0.5041666666666667,
+                "nq_short_value": -0.0059845399384920615,
+                "position_flag": 0,
+                "quantile": 0.7567708333333334,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645554663
+            },
+            "ZECUSDT": {
+              "allocation_usdt": 100.0,
+              "entry_notional": 0.0,
+              "factor_sign": "-",
+              "mark_price": 1092.415,
+              "model_ts_ms": 1792067640000,
+              "position_flag": 0,
+              "position_qty": 0.0,
+              "position_usdt": 0.0,
+              "score_ready": true,
+              "signal": {
+                "decision": "flat",
+                "execution_coefficient": 1.0,
+                "factor_votes": [
+                  {
+                    "corrected_quantile": 0.17100694444444442,
+                    "corrected_score": -1.0266821555107841,
+                    "factor": "baseline_200",
+                    "normalized_weight": 1.0,
+                    "quantile": 0.8289930555555556,
+                    "score": 1.0266821555107841,
+                    "sign": "-",
+                    "vote": 0,
+                    "weight": -1.0
+                  }
+                ],
+                "filter_ready": true,
+                "model_ts_ms": 1792067640000,
+                "nq_long_quantile": 0.7791666666666667,
+                "nq_long_value": 0.014366044400765717,
+                "nq_short_quantile": 0.9375,
+                "nq_short_value": -0.004734895864129801,
+                "position_flag": 0,
+                "quantile": 0.17100694444444442,
+                "score": 0.0,
+                "score_ready": true
+              },
+              "updated_ts_us": 1792067645518974
+            }
+          }
+        },
+        "symbol_factors": {
+          "AAVEUSDT": {
+            "baseline_085": -1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "ADAUSDT": {
+            "baseline_085": -1.0,
+            "baseline_164": 1.0
+          },
+          "AVAXUSDT": {
+            "baseline_141": 1.0
+          },
+          "BTCUSDT": {
+            "baseline_085": -1.0,
+            "baseline_200": -1.0
+          },
+          "DASHUSDT": {
+            "TD_MT_029": -1.0,
+            "baseline_085": -1.0,
+            "baseline_141": 1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "DOGEUSDT": {
+            "baseline_085": -1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "DOTUSDT": {
+            "baseline_141": 1.0,
+            "baseline_164": 1.0
+          },
+          "ETHUSDT": {
+            "baseline_085": -1.0,
+            "baseline_200": -1.0
+          },
+          "LTCUSDT": {
+            "baseline_141": 1.0
+          },
+          "NEARUSDT": {
+            "baseline_085": -1.0,
+            "baseline_141": 1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "SOLUSDT": {
+            "baseline_141": 1.0,
+            "baseline_164": 1.0
+          },
+          "UNIUSDT": {
+            "baseline_164": 1.0
+          },
+          "XLMUSDT": {
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          },
+          "ZECUSDT": {
+            "TD_MT_029": -1.0,
+            "baseline_085": -1.0,
+            "baseline_164": 1.0,
+            "baseline_200": -1.0
+          }
+        },
+        "updated_ts_us": 1792067680077576,
+        "venue": "binance-futures",
+        "virtual_account_name": "cta_perp_rx03"
+      },
+      "run/cta_perp_position_flags.json": {
+        "TD_MT_029": {
+          "DASHUSDT": {
+            "flag": 1,
+            "qty": 2.113271344040575,
+            "entry_notional": 100.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_085": {
+          "AAVEUSDT": {
+            "flag": 1,
+            "qty": 0.6710058377507885,
+            "entry_notional": 100.0
+          },
+          "ADAUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "BTCUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 1,
+            "qty": 2.111040743086342,
+            "entry_notional": 100.0
+          },
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ETHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_141": {
+          "AVAXUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOTUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "LTCUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "SOLUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_164": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ADAUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOTUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "SOLUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "UNIUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XLMUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        },
+        "baseline_200": {
+          "AAVEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "BTCUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DASHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "DOGEUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ETHUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "NEARUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "XLMUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          },
+          "ZECUSDT": {
+            "flag": 0,
+            "qty": 0.0,
+            "entry_notional": 0.0
+          }
+        }
+      },
+      "factor_config": "[universe]\nsymbols = [\"AAVEUSDT\", \"ADAUSDT\", \"AVAXUSDT\", \"BTCUSDT\", \"DASHUSDT\", \"DOGEUSDT\", \"DOTUSDT\", \"ETHUSDT\", \"LTCUSDT\", \"NEARUSDT\", \"SOLUSDT\", \"UNIUSDT\", \"XLMUSDT\", \"ZECUSDT\"]\nfactors = [\"baseline_164\", \"baseline_200\", \"baseline_085\", \"baseline_141\", \"TD_MT_029\"]\n\n[tlen_server]\nbase_url = \"http://127.0.0.1:6322\"\nrequest_timeout_ms = 5000\nsymbol_reload_secs = 180\n\n# Keep this identical to the V005/rx01 offline normalize_factors contract.\n[normalize]\nwindow_bars = 1440\nmin_periods = 1000\nclip_zscore = 3.0\n\n[kafka]\nlookback_secs = 259200\ncatchup_timeout_secs = 3600\ntopic = \"binance-futures\"\ntopics = [\"binance-futures\"]\nbrokers = \"156.231.137.189:1501\"\ngroup_id = \"cta_perp_rx03_factor_model_1m\"\nclient_id = \"cta_perp_rx03_factor_model_1m\"\noffset_reset = \"earliest\"\npayload_compression = \"zlib\"\npoll_timeout_ms = 1000\nenable_auto_commit = false\nenable_partition_eof = false\nsecurity_protocol = \"none\"\nbroker_addr_rewrites = [\n  { from_host = \"10.140.140.55\", to_host = \"156.231.137.189\" },\n]\n",
+      "hashes": {
+        "env.sh": "5c2d2a64704571cce56cc09ca1908e98ebfc2ccaadc79a3c55fc30122770d1cd",
+        "config/cta_perp_factor_model_1m_pub.toml": "57f7968c46b2bc454b9df273ad9e657b212991684c88ead8bcae3f335d86073d",
+        "config/cta_perp_replay.json": "4e4eaa05e45897240cb4321fa8a11cdb1434f89c4e4d33d5723841f8a9c82d91",
+        "config/cta_perp.json": "e2efb23368f159a766e4d49f2349dcc4130fb6965d5ee5b492bdeea6f9f59b90",
+        "config/cta_perp_symbol_factors.json": "1d3899463f65148e8327778fa94d0646a5a2cda44df921e00ec5ee2db149f2cd"
+      }
+    }
+  },
+  "protected": [
+    {
+      "pid": 5570,
+      "start": "11",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.nvm/versions/node/v26.3.1/bin/node"
+    },
+    {
+      "pid": 9946,
+      "start": "245771",
+      "cwd": "/home/ubuntu/trade_flow_feature/binance-margin",
+      "exe": "/home/ubuntu/trade_flow_feature/binance-margin/trade_flow_feature_pub"
+    },
+    {
+      "pid": 10116,
+      "start": "245820",
+      "cwd": "/home/ubuntu/trade_flow_feature/gate-margin",
+      "exe": "/home/ubuntu/trade_flow_feature/gate-margin/trade_flow_feature_pub"
+    },
+    {
+      "pid": 10201,
+      "start": "245842",
+      "cwd": "/home/ubuntu/trade_flow_feature/gate-futures",
+      "exe": "/home/ubuntu/trade_flow_feature/gate-futures/trade_flow_feature_pub"
+    },
+    {
+      "pid": 10286,
+      "start": "245866",
+      "cwd": "/home/ubuntu/trade_flow_feature/bitget-margin",
+      "exe": "/home/ubuntu/trade_flow_feature/bitget-margin/trade_flow_feature_pub"
+    },
+    {
+      "pid": 10371,
+      "start": "245891",
+      "cwd": "/home/ubuntu/trade_flow_feature/bitget-futures",
+      "exe": "/home/ubuntu/trade_flow_feature/bitget-futures/trade_flow_feature_pub"
+    },
+    {
+      "pid": 11866,
+      "start": "328035",
+      "cwd": "/home/ubuntu/rolling_metrics/binance-margin-binance-futures",
+      "exe": "/home/ubuntu/rolling_metrics/binance-margin-binance-futures/rolling_metrics"
+    },
+    {
+      "pid": 70169,
+      "start": "924496921",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/home/ubuntu/okex_mm_alpha/persist_manager"
+    },
+    {
+      "pid": 71759,
+      "start": "627750682",
+      "cwd": "/home/ubuntu/model_pub/predict_rnn_layer",
+      "exe": "/home/ubuntu/model_pub/predict_rnn_layer/pred_rnn_infer"
+    },
+    {
+      "pid": 78360,
+      "start": "32654319",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/code-6928394f91b684055b873eecb8bc281365131f1c"
+    },
+    {
+      "pid": 109709,
+      "start": "925065194",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/home/ubuntu/okex_mm_alpha/pre_trade"
+    },
+    {
+      "pid": 110725,
+      "start": "925071357",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/home/ubuntu/okex_mm_alpha/trade_engine"
+    },
+    {
+      "pid": 111703,
+      "start": "925076257",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/home/ubuntu/okex_mm_alpha/trade_signal"
+    },
+    {
+      "pid": 176562,
+      "start": "1017701433",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/home/ubuntu/binance-cta-spread-rx01/cta_spread_signal"
+    },
+    {
+      "pid": 195036,
+      "start": "827579742",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/persist_manager"
+    },
+    {
+      "pid": 196044,
+      "start": "827580984",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/trade_engine"
+    },
+    {
+      "pid": 196324,
+      "start": "827582792",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/account_monitor"
+    },
+    {
+      "pid": 211474,
+      "start": "269421582",
+      "cwd": "/home/ubuntu/predict_file/hf_taker",
+      "exe": "/home/ubuntu/predict_file/hf_taker/bin/predict_file"
+    },
+    {
+      "pid": 255763,
+      "start": "1010678643",
+      "cwd": "/home/ubuntu/spread_pbs/binance-futures",
+      "exe": "/home/ubuntu/spread_pbs/binance-futures/spread_pbs"
+    },
+    {
+      "pid": 257171,
+      "start": "344526779",
+      "cwd": "/home/ubuntu/notification_server",
+      "exe": "/home/ubuntu/notification_server/notification_server"
+    },
+    {
+      "pid": 266181,
+      "start": "1010685293",
+      "cwd": "/home/ubuntu/spread_pbs/binance-futures",
+      "exe": "/home/ubuntu/spread_pbs/binance-futures/spread_pbs"
+    },
+    {
+      "pid": 380694,
+      "start": "974094305",
+      "cwd": "/home/ubuntu/spread_pbs/gate-bitget-futures-bbo",
+      "exe": "/home/ubuntu/spread_pbs/gate-bitget-futures-bbo/spread_pbs"
+    },
+    {
+      "pid": 383077,
+      "start": "1022645000",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/dash"
+    },
+    {
+      "pid": 383095,
+      "start": "1022645019",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/code-6928394f91b684055b873eecb8bc281365131f1c"
+    },
+    {
+      "pid": 385648,
+      "start": "786015844",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/fr_signal_dashboard"
+    },
+    {
+      "pid": 448295,
+      "start": "1017854928",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/exec-pre-trade"
+    },
+    {
+      "pid": 467297,
+      "start": "924501282",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/home/ubuntu/okex_mm_alpha/account_monitor"
+    },
+    {
+      "pid": 490165,
+      "start": "974821992",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/account_monitor"
+    },
+    {
+      "pid": 490380,
+      "start": "974825850",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/exec-pre-trade"
+    },
+    {
+      "pid": 492190,
+      "start": "974834791",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/viz_server"
+    },
+    {
+      "pid": 597571,
+      "start": "403992254",
+      "cwd": "/home/ubuntu/spread_pbs/gate-both",
+      "exe": "/home/ubuntu/spread_pbs/gate-both/spread_pbs"
+    },
+    {
+      "pid": 663465,
+      "start": "1010911823",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/home/ubuntu/binance-cta-spread-rx01/cta_spread_factor_model_1m_pub"
+    },
+    {
+      "pid": 716703,
+      "start": "214274674",
+      "cwd": "/home/ubuntu/tlen_config_shared",
+      "exe": "/usr/bin/python3.12 (deleted)"
+    },
+    {
+      "pid": 827153,
+      "start": "840540259",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/pre_trade"
+    },
+    {
+      "pid": 828134,
+      "start": "840547882",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/trade_signal"
+    },
+    {
+      "pid": 831497,
+      "start": "828098736",
+      "cwd": "/home/ubuntu/fusion_factor_1m/binance-futures",
+      "exe": "/home/ubuntu/fusion_factor_1m/binance-futures/fusion_factor_1m_pub_binance-futures"
+    },
+    {
+      "pid": 952882,
+      "start": "958037247",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "exe": "/home/ubuntu/crypto_nav_manager/target/release/ops_monitor"
+    },
+    {
+      "pid": 957822,
+      "start": "215384561",
+      "cwd": "/home/ubuntu/model_manager",
+      "exe": "/usr/bin/python3.12 (deleted)"
+    },
+    {
+      "pid": 958192,
+      "start": "924328588",
+      "cwd": "/home/ubuntu/trade_flow_feature/okex-margin",
+      "exe": "/home/ubuntu/trade_flow_feature/okex-margin/trade_flow_feature_pub"
+    },
+    {
+      "pid": 1100295,
+      "start": "924789686",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 1143405,
+      "start": "485608722",
+      "cwd": "/home/ubuntu/bridge_sg_model_sender",
+      "exe": "/home/ubuntu/bridge_sg_model_sender/ipc_bridge"
+    },
+    {
+      "pid": 1144398,
+      "start": "485609222",
+      "cwd": "/home/ubuntu/persist_center",
+      "exe": "/home/ubuntu/persist_center/persist_read_server"
+    },
+    {
+      "pid": 1209275,
+      "start": "923299596",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/exec-pre-trade"
+    },
+    {
+      "pid": 1357542,
+      "start": "924332295",
+      "cwd": "/home/ubuntu/trade_flow_feature/okex-futures",
+      "exe": "/home/ubuntu/trade_flow_feature/okex-futures/trade_flow_feature_pub"
+    },
+    {
+      "pid": 1362556,
+      "start": "980238429",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/home/ubuntu/.codex/packages/app-server-daemon/releases/0.162.1-x86_64-unknown-linux-musl/bin/codex"
+    },
+    {
+      "pid": 1397911,
+      "start": "840432701",
+      "cwd": "/home/ubuntu/binance_futures_ipc_proxy",
+      "exe": "/home/ubuntu/binance_futures_ipc_proxy/binance_futures_ipc_proxy"
+    },
+    {
+      "pid": 1502198,
+      "start": "924403551",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 1582923,
+      "start": "1008890298",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 1664842,
+      "start": "840621616",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/exec-pre-trade"
+    },
+    {
+      "pid": 1723769,
+      "start": "836842105",
+      "cwd": "/home/ubuntu/intra_factor_model_1m/binance-futures",
+      "exe": "/home/ubuntu/intra_factor_model_1m/binance-futures/intra_factor_model_1m_pub"
+    },
+    {
+      "pid": 1727948,
+      "start": "826659656",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 1727950,
+      "start": "826659804",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/viz_server"
+    },
+    {
+      "pid": 1777663,
+      "start": "830848981",
+      "cwd": "/home/ubuntu/spread_pbs/binance-margin",
+      "exe": "/home/ubuntu/spread_pbs/binance-margin/spread_pbs"
+    },
+    {
+      "pid": 1792862,
+      "start": "1009015718",
+      "cwd": "/home/ubuntu/spread_bbo_zmq_pub/binance-futures",
+      "exe": "/home/ubuntu/spread_bbo_zmq_pub/binance-futures/spread_bbo_zmq_pub"
+    },
+    {
+      "pid": 1806616,
+      "start": "1016264778",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/trade_engine"
+    },
+    {
+      "pid": 1866671,
+      "start": "188159190",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/usr/bin/timeout (deleted)"
+    },
+    {
+      "pid": 1866675,
+      "start": "188159192",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/home/ubuntu/mkt_signal/target/release/ipc_bridge (deleted)"
+    },
+    {
+      "pid": 1876781,
+      "start": "762962064",
+      "cwd": "/home/ubuntu/trade_flow_feature/binance-futures",
+      "exe": "/home/ubuntu/trade_flow_feature/binance-futures/trade_flow_feature_pub"
+    },
+    {
+      "pid": 1893761,
+      "start": "354059326",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/perl (deleted)"
+    },
+    {
+      "pid": 1893970,
+      "start": "354060560",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/dash"
+    },
+    {
+      "pid": 1893974,
+      "start": "354060562",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/tigervncconfig"
+    },
+    {
+      "pid": 1893975,
+      "start": "354060562",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/xfce4-session"
+    },
+    {
+      "pid": 1894174,
+      "start": "354061114",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/xfwm4"
+    },
+    {
+      "pid": 1894180,
+      "start": "354061167",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/xfsettingsd"
+    },
+    {
+      "pid": 1894377,
+      "start": "354062004",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/xfce4-panel"
+    },
+    {
+      "pid": 1894513,
+      "start": "354062803",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/thunar"
+    },
+    {
+      "pid": 1894520,
+      "start": "354062810",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/xfdesktop"
+    },
+    {
+      "pid": 1894543,
+      "start": "354062879",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/lib/x86_64-linux-gnu/xfce4/panel/wrapper-2.0"
+    },
+    {
+      "pid": 1894544,
+      "start": "354062880",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/lib/x86_64-linux-gnu/xfce4/panel/wrapper-2.0"
+    },
+    {
+      "pid": 1894955,
+      "start": "354065407",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/lib/x86_64-linux-gnu/xfce4/panel/wrapper-2.0"
+    },
+    {
+      "pid": 1900361,
+      "start": "961267661",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 1900551,
+      "start": "961270835",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/viz_server"
+    },
+    {
+      "pid": 1901619,
+      "start": "961274195",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/persist_manager"
+    },
+    {
+      "pid": 1902123,
+      "start": "961277112",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/trade_engine"
+    },
+    {
+      "pid": 1903181,
+      "start": "961280631",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/pre_trade"
+    },
+    {
+      "pid": 1904263,
+      "start": "961285226",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/account_monitor"
+    },
+    {
+      "pid": 1922219,
+      "start": "961325174",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/trade_signal"
+    },
+    {
+      "pid": 2005389,
+      "start": "831519008",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/persist_manager"
+    },
+    {
+      "pid": 2005937,
+      "start": "831522160",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/trade_engine"
+    },
+    {
+      "pid": 2061622,
+      "start": "94560611",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/dbus-daemon"
+    },
+    {
+      "pid": 2097118,
+      "start": "924520254",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "exe": "/home/ubuntu/okex_mm_alpha/viz_server"
+    },
+    {
+      "pid": 2105093,
+      "start": "831524274",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/account_monitor"
+    },
+    {
+      "pid": 2174591,
+      "start": "840001037",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/persist_manager"
+    },
+    {
+      "pid": 2175056,
+      "start": "840002288",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/trade_engine"
+    },
+    {
+      "pid": 2177637,
+      "start": "840012727",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 2258642,
+      "start": "831525675",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/viz_server"
+    },
+    {
+      "pid": 2271642,
+      "start": "831525821",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 2309899,
+      "start": "1026190673",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/rapidx_account_monitor"
+    },
+    {
+      "pid": 2321121,
+      "start": "846403731",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 2321283,
+      "start": "846407845",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/viz_server"
+    },
+    {
+      "pid": 2322353,
+      "start": "846409998",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/persist_manager"
+    },
+    {
+      "pid": 2322642,
+      "start": "846411694",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/trade_engine"
+    },
+    {
+      "pid": 2322913,
+      "start": "846413433",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/pre_trade"
+    },
+    {
+      "pid": 2323978,
+      "start": "846415645",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/account_monitor"
+    },
+    {
+      "pid": 2324427,
+      "start": "846418579",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/fr_signal_dashboard"
+    },
+    {
+      "pid": 2324546,
+      "start": "846419431",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "exe": "/home/ubuntu/bitget_fr_arb03/trade_signal"
+    },
+    {
+      "pid": 2329500,
+      "start": "716799758",
+      "cwd": "/home/ubuntu/spread_pbs/bitget-both",
+      "exe": "/home/ubuntu/spread_pbs/bitget-both/spread_pbs"
+    },
+    {
+      "pid": 2372709,
+      "start": "762968955",
+      "cwd": "/home/ubuntu/fusion_factor/binance-futures",
+      "exe": "/home/ubuntu/fusion_factor/binance-futures/fusion_factor_pub_binance-futures"
+    },
+    {
+      "pid": 2392640,
+      "start": "836861682",
+      "cwd": "/home/ubuntu/binance-cta-rx01",
+      "exe": "/home/ubuntu/binance-cta-rx01/persist_manager"
+    },
+    {
+      "pid": 2394028,
+      "start": "836864172",
+      "cwd": "/home/ubuntu/binance-cta-rx01",
+      "exe": "/home/ubuntu/binance-cta-rx01/account_monitor_binance"
+    },
+    {
+      "pid": 2544479,
+      "start": "1019044379",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 2558060,
+      "start": "1019052041",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "exe": "/home/ubuntu/binance_exec_trade07/persist_manager"
+    },
+    {
+      "pid": 2567859,
+      "start": "1019057903",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "exe": "/home/ubuntu/binance_exec_trade07/rapidx_account_monitor"
+    },
+    {
+      "pid": 2576756,
+      "start": "1019062823",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "exe": "/home/ubuntu/binance_exec_trade07/viz_server"
+    },
+    {
+      "pid": 2600583,
+      "start": "1019075104",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "exe": "/home/ubuntu/binance_exec_trade07/trade_engine"
+    },
+    {
+      "pid": 2610249,
+      "start": "1019080157",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "exe": "/home/ubuntu/binance_exec_trade07/exec-pre-trade"
+    },
+    {
+      "pid": 2639828,
+      "start": "717025878",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/viz_server"
+    },
+    {
+      "pid": 2686564,
+      "start": "836108651",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/fr_signal_dashboard"
+    },
+    {
+      "pid": 2725608,
+      "start": "717037909",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/viz_server"
+    },
+    {
+      "pid": 2799346,
+      "start": "935240363",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 2799724,
+      "start": "935243154",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/viz_server"
+    },
+    {
+      "pid": 2800593,
+      "start": "935246056",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/persist_manager"
+    },
+    {
+      "pid": 2801143,
+      "start": "935248605",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/trade_engine"
+    },
+    {
+      "pid": 2802234,
+      "start": "935251896",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/pre_trade"
+    },
+    {
+      "pid": 2803130,
+      "start": "935255341",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/account_monitor"
+    },
+    {
+      "pid": 2803836,
+      "start": "935258194",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "exe": "/home/ubuntu/gate_fr_arb03/trade_signal"
+    },
+    {
+      "pid": 2806129,
+      "start": "11",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/home/ubuntu/.nvm/versions/node/v26.3.1/bin/node"
+    },
+    {
+      "pid": 2806157,
+      "start": "11",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/home/ubuntu/.nvm/versions/node/v26.3.1/bin/node"
+    },
+    {
+      "pid": 2841741,
+      "start": "716824745",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/usr/bin/python3.12 (deleted)"
+    },
+    {
+      "pid": 2842592,
+      "start": "716830292",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/persist_manager"
+    },
+    {
+      "pid": 2843247,
+      "start": "716832344",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/trade_engine"
+    },
+    {
+      "pid": 2844145,
+      "start": "716834883",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/pre_trade"
+    },
+    {
+      "pid": 2845098,
+      "start": "716837132",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/account_monitor"
+    },
+    {
+      "pid": 2846512,
+      "start": "716839900",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/trade_signal"
+    },
+    {
+      "pid": 2846792,
+      "start": "716840860",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "exe": "/home/ubuntu/bitget_fr_arb01/fr_signal_dashboard"
+    },
+    {
+      "pid": 2849020,
+      "start": "716847036",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/usr/bin/python3.12 (deleted)"
+    },
+    {
+      "pid": 2850144,
+      "start": "716852801",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/persist_manager"
+    },
+    {
+      "pid": 2870882,
+      "start": "716856676",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/trade_engine"
+    },
+    {
+      "pid": 2905544,
+      "start": "580183449",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/usr/bin/python3.12 (deleted)"
+    },
+    {
+      "pid": 2906294,
+      "start": "580185395",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/viz_server"
+    },
+    {
+      "pid": 2906718,
+      "start": "580187084",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/persist_manager"
+    },
+    {
+      "pid": 2909955,
+      "start": "580189526",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/trade_engine"
+    },
+    {
+      "pid": 2910435,
+      "start": "580192739",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/pre_trade"
+    },
+    {
+      "pid": 2911016,
+      "start": "580195498",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/account_monitor"
+    },
+    {
+      "pid": 2922805,
+      "start": "580266472",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/fr_signal_dashboard"
+    },
+    {
+      "pid": 2933125,
+      "start": "580282103",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/usr/bin/python3.12 (deleted)"
+    },
+    {
+      "pid": 2933606,
+      "start": "580284379",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/viz_server"
+    },
+    {
+      "pid": 2934191,
+      "start": "580288469",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/persist_manager"
+    },
+    {
+      "pid": 2934899,
+      "start": "580290470",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/trade_engine"
+    },
+    {
+      "pid": 2935301,
+      "start": "580293045",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/pre_trade"
+    },
+    {
+      "pid": 2935939,
+      "start": "580296171",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/account_monitor"
+    },
+    {
+      "pid": 2944144,
+      "start": "580355454",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "exe": "/home/ubuntu/gate_fr_arb02/trade_signal"
+    },
+    {
+      "pid": 2959189,
+      "start": "716860591",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/pre_trade"
+    },
+    {
+      "pid": 2987736,
+      "start": "1012223348",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/persist_manager"
+    },
+    {
+      "pid": 2993382,
+      "start": "1012227221",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3003411,
+      "start": "1012231270",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/viz_server"
+    },
+    {
+      "pid": 3028399,
+      "start": "990510987",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3036362,
+      "start": "990557564",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/persist_manager"
+    },
+    {
+      "pid": 3038156,
+      "start": "990564977",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/rapidx_account_monitor"
+    },
+    {
+      "pid": 3093270,
+      "start": "716865941",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/account_monitor"
+    },
+    {
+      "pid": 3098112,
+      "start": "924298956",
+      "cwd": "/home/ubuntu/spread_pbs/okex-both",
+      "exe": "/home/ubuntu/spread_pbs/okex-both/spread_pbs"
+    },
+    {
+      "pid": 3099074,
+      "start": "924302718",
+      "cwd": "/home/ubuntu/rolling_metrics/okex-margin-okex-futures",
+      "exe": "/home/ubuntu/rolling_metrics/okex-margin-okex-futures/rolling_metrics"
+    },
+    {
+      "pid": 3129308,
+      "start": "827957998",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/persist_manager"
+    },
+    {
+      "pid": 3130319,
+      "start": "827959301",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/trade_engine"
+    },
+    {
+      "pid": 3131781,
+      "start": "827964941",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3132073,
+      "start": "1017013329",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/dash"
+    },
+    {
+      "pid": 3132077,
+      "start": "1017013329",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/node"
+    },
+    {
+      "pid": 3132461,
+      "start": "1017013575",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/node"
+    },
+    {
+      "pid": 3133478,
+      "start": "1017014380",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/node"
+    },
+    {
+      "pid": 3133510,
+      "start": "1017014403",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/node"
+    },
+    {
+      "pid": 3146923,
+      "start": "1017021957",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.vscode-server/extensions/ms-python.vscode-python-envs-1.38.0-linux-x64/python-env-tools/bin/pet"
+    },
+    {
+      "pid": 3149722,
+      "start": "1017023217",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/bash"
+    },
+    {
+      "pid": 3152974,
+      "start": "840496350",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "exe": "/home/ubuntu/binance_fr_arb03/fr_signal_dashboard"
+    },
+    {
+      "pid": 3153374,
+      "start": "1017024574",
+      "cwd": "/home/ubuntu/.vscode-server/extensions/ms-python.vscode-pylance-2026.4.1/dist",
+      "exe": "/home/ubuntu/.vscode-server/cli/servers/Stable-6928394f91b684055b873eecb8bc281365131f1c/server/node"
+    },
+    {
+      "pid": 3153618,
+      "start": "1017024872",
+      "cwd": "/home/ubuntu/liang_torch/all_exchange_select_symbol",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3156625,
+      "start": "840511452",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/fr_signal_dashboard"
+    },
+    {
+      "pid": 3165313,
+      "start": "840516079",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "exe": "/home/ubuntu/binance_fr_arb02/fr_signal_dashboard"
+    },
+    {
+      "pid": 3175453,
+      "start": "991272847",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/trade_engine"
+    },
+    {
+      "pid": 3183433,
+      "start": "1009858046",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3235559,
+      "start": "716868912",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/trade_signal"
+    },
+    {
+      "pid": 3242991,
+      "start": "1024319773",
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "exe": "/usr/bin/ssh (deleted)"
+    },
+    {
+      "pid": 3243019,
+      "start": "1024320034",
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "exe": "/home/ubuntu/delist_risk_server/delist_risk_server"
+    },
+    {
+      "pid": 3252075,
+      "start": "1024325114",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3261019,
+      "start": "716869329",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "exe": "/home/ubuntu/bitget_fr_arb02/fr_signal_dashboard"
+    },
+    {
+      "pid": 3267729,
+      "start": "1024334545",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/viz_server"
+    },
+    {
+      "pid": 3280625,
+      "start": "1024343230",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/persist_manager"
+    },
+    {
+      "pid": 3294825,
+      "start": "1024351175",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/trade_engine"
+    },
+    {
+      "pid": 3308938,
+      "start": "1024359605",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/pre_trade"
+    },
+    {
+      "pid": 3323899,
+      "start": "1024368683",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/account_monitor"
+    },
+    {
+      "pid": 3335195,
+      "start": "881662594",
+      "cwd": "/home/ubuntu/mkt_signal",
+      "exe": "/home/ubuntu/.codex/packages/app-server-daemon/releases/0.162.1-x86_64-unknown-linux-musl/bin/codex"
+    },
+    {
+      "pid": 3341031,
+      "start": "1024378370",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "exe": "/home/ubuntu/binance_fr_arb04/trade_signal"
+    },
+    {
+      "pid": 3381039,
+      "start": "966390523",
+      "cwd": "/home/ubuntu/bitget-gate-cross-arb01",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3381925,
+      "start": "1012471202",
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/trade_engine"
+    },
+    {
+      "pid": 3390010,
+      "start": "1010003751",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3427679,
+      "start": "966531289",
+      "cwd": "/home/ubuntu/persist_center",
+      "exe": "/home/ubuntu/persist_center/persist_sync_collector"
+    },
+    {
+      "pid": 3477383,
+      "start": "992824347",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/viz_server"
+    },
+    {
+      "pid": 3477503,
+      "start": "992826140",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/exec-pre-trade"
+    },
+    {
+      "pid": 3480759,
+      "start": "510332991",
+      "cwd": "/home/ubuntu/depth_pub/general",
+      "exe": "/home/ubuntu/depth_pub/general/depth_pub_general"
+    },
+    {
+      "pid": 3534590,
+      "start": "846886103",
+      "cwd": "/home/ubuntu/rolling_metrics/gate-margin-gate-futures",
+      "exe": "/home/ubuntu/rolling_metrics/gate-margin-gate-futures/rolling_metrics"
+    },
+    {
+      "pid": 3536610,
+      "start": "846893686",
+      "cwd": "/home/ubuntu/rolling_metrics/bitget-margin-bitget-futures",
+      "exe": "/home/ubuntu/rolling_metrics/bitget-margin-bitget-futures/rolling_metrics"
+    },
+    {
+      "pid": 3537745,
+      "start": "846899211",
+      "cwd": "/home/ubuntu/rolling_metrics/bitget-futures-gate-futures",
+      "exe": "/home/ubuntu/rolling_metrics/bitget-futures-gate-futures/rolling_metrics"
+    },
+    {
+      "pid": 3628789,
+      "start": "1019660011",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "exe": "/home/ubuntu/crypto_nav_manager/target/release/crypto_nav_manager"
+    },
+    {
+      "pid": 3666136,
+      "start": "828427009",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/persist_manager"
+    },
+    {
+      "pid": 3667391,
+      "start": "828429892",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/account_monitor"
+    },
+    {
+      "pid": 3667720,
+      "start": "828432278",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/viz_server"
+    },
+    {
+      "pid": 3667967,
+      "start": "828433999",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3719180,
+      "start": "675393262",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "exe": "/home/ubuntu/gate_fr_arb01/trade_signal"
+    },
+    {
+      "pid": 3749384,
+      "start": "993910251",
+      "cwd": "/home/ubuntu/fr_monitor",
+      "exe": "/home/ubuntu/fr_monitor/fr_monitor"
+    },
+    {
+      "pid": 3802453,
+      "start": "1029353435",
+      "cwd": "/home/ubuntu/crypto_nav_manager",
+      "exe": "/home/ubuntu/crypto_nav_manager/target/release/sync_history"
+    },
+    {
+      "pid": 3804570,
+      "start": "1029355444",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/sleep"
+    },
+    {
+      "pid": 3808987,
+      "start": "1029357439",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 3837783,
+      "start": "1017405371",
+      "cwd": "/home/ubuntu",
+      "exe": "/usr/bin/bash"
+    },
+    {
+      "pid": 3839196,
+      "start": "1017406006",
+      "cwd": "/home/ubuntu",
+      "exe": "/home/ubuntu/.grok/downloads/grok-1.0.52-linux-x86_64"
+    },
+    {
+      "pid": 3869376,
+      "start": "1027053370",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/account_monitor"
+    },
+    {
+      "pid": 3875816,
+      "start": "1027056838",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/viz_server"
+    },
+    {
+      "pid": 3885210,
+      "start": "1027062402",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/exec-pre-trade"
+    },
+    {
+      "pid": 3961255,
+      "start": "0",
+      "cwd": "/home/ubuntu/.pm2/modules/pm2-logrotate/node_modules/pm2-logrotate",
+      "exe": "/home/ubuntu/.nvm/versions/node/v26.3.1/bin/node"
+    },
+    {
+      "pid": 4155551,
+      "start": "1027214392",
+      "cwd": "/home/ubuntu/crypto_cta_manager",
+      "exe": "/home/ubuntu/crypto_cta_manager/bin/cta_web"
+    }
+  ],
+  "bindings": [
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791679532710058,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_TD_MT_029",
+      "position_strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_085",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_085",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_141",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_141",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_164",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_164",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_200",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_200",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    }
+  ],
+  "virtuals": [
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_TD_MT_029",
+      "position_strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_085",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_085",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_141",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_141",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_164",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_164",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_200",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_200",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    }
+  ],
+  "targets": [
+    {
+      "strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+      "targets": {
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 2.113271344040575,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "binance_cta_perp_rx03_baseline_085",
+      "targets": {
+        "ADAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "BTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.6710058377507885,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 2.111040743086342,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "binance_cta_perp_rx03_baseline_141",
+      "targets": {
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AVAXUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "binance_cta_perp_rx03_baseline_164",
+      "targets": {
+        "ADAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "binance_cta_perp_rx03_baseline_200",
+      "targets": {
+        "BTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_TD_TI_002",
+      "targets": {
+        "BNBUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_TD_TI_024",
+      "targets": {
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_004",
+      "targets": {
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_141",
+      "targets": {
+        "ETHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_164",
+      "targets": {
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_200",
+      "targets": {
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_factor_036",
+      "targets": {
+        "FILUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AVAXUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_factor_051",
+      "targets": {
+        "BNBUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "FILUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "targets": {
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      }
+    }
+  ]
+}

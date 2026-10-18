@@ -3,7 +3,7 @@ use super::factors::WeightedBar;
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
-/// A factor's targets include the carried basis position after a directional exit.
+/// One symbol/factor's absolute targets, including its last entry's exit hedge.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StrategyPosition {
@@ -61,7 +61,10 @@ impl StrategyPosition {
         );
         let qty = f64::from(flag) * amount / price;
         let mut next = self.clone();
-        next.cash_qty += qty;
+        // A new signal replaces both market targets. A previous exit hedge is
+        // not another lot to retain or add to this entry.
+        next.cash_qty = qty;
+        next.perpetual_qty = 0.0;
         next.flag = flag;
         next.qty = qty;
         next.entry_notional = amount;
@@ -200,7 +203,7 @@ mod tests {
         assert_eq!(next_position_flag(-1, &bar(0.9, None), &c), 0);
     }
     #[test]
-    fn cash_exit_is_hedged_and_restart_and_later_entries_keep_inventory() {
+    fn cash_exit_is_hedged_and_later_entries_replace_both_targets() {
         let mut p = StrategyPosition::default();
         p.enter_cash(1, 200.0, 100.0).unwrap();
         assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (2.0, 0.0, 2.0));
@@ -209,9 +212,9 @@ mod tests {
         p = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         p.validate().unwrap();
         p.enter_cash(-1, 200.0, 100.0).unwrap();
-        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (0.0, -2.0, -2.0));
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-2.0, 0.0, -2.0));
         p.exit();
-        assert_eq!(p, StrategyPosition::default());
+        assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-2.0, 2.0, 0.0));
         let saved = p.clone();
         assert!(p.enter_cash(1, 1.0, 0.0).is_err());
         assert_eq!(p, saved);
@@ -230,7 +233,7 @@ mod tests {
         }
     }
     #[test]
-    fn reversed_targets_include_old_contract_hedge_and_new_cash_once() {
+    fn reversed_targets_replace_old_contract_hedge_and_cash() {
         for direction in [-1, 1] {
             let d = f64::from(direction);
             let mut p = StrategyPosition::default();
@@ -240,7 +243,7 @@ mod tests {
             p.validate().unwrap();
             assert_eq!(
                 (p.cash_qty, p.perpetual_qty, p.qty),
-                (-d, -2.0 * d, -3.0 * d)
+                (-3.0 * d, 0.0, -3.0 * d)
             );
             let saved = p.clone();
             assert_eq!(
@@ -254,7 +257,47 @@ mod tests {
             assert!(p.enter_cash(-direction, 300.0, 100.0).is_err());
             assert_eq!(p, saved);
             p.exit();
-            assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-d, d, 0.0));
+            assert_eq!(
+                (p.cash_qty, p.perpetual_qty, p.qty),
+                (-3.0 * d, 3.0 * d, 0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_entries_and_exits_never_accumulate_market_targets() {
+        for flag in [-1, 1] {
+            let mut p = StrategyPosition::default();
+            for cycle in 0..100 {
+                // Repeated same-side signals previously accumulated a fresh
+                // 100 USDT cash leg after every hedge exit.
+                let price = 50.0 + f64::from(cycle);
+                p.enter_cash(flag, 100.0, price).unwrap();
+                assert_eq!(p.cash_qty, f64::from(flag) * 100.0 / price);
+                assert_eq!(p.perpetual_qty, 0.0);
+                assert!((p.cash_qty.abs() * price - 100.0).abs() < 1e-10);
+                p.exit();
+                assert!(((p.cash_qty.abs() + p.perpetual_qty.abs()) * price - 200.0).abs() < 1e-10);
+                p = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+                p.validate().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_target_does_not_inherit_oversized_persisted_hedges() {
+        let mut p = StrategyPosition {
+            cash_qty: -10_000.0,
+            perpetual_qty: 10_000.0,
+            ..Default::default()
+        };
+        for flag in [-1, 1] {
+            p.enter_cash(flag, 100.0, 50.0).unwrap();
+            assert_eq!(
+                (p.cash_qty, p.perpetual_qty, p.qty),
+                (f64::from(flag) * 2.0, 0.0, f64::from(flag) * 2.0)
+            );
+            p.exit();
         }
     }
     #[test]

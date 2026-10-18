@@ -49,7 +49,7 @@ use runtime_common::redis_client::RedisSettings;
 use sha2::Sha256;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, UdpSocket};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -379,6 +379,29 @@ fn parse_binance_multi_assets_mode(body: &str) -> Result<bool> {
         .context("Binance accountConfig response has invalid multiAssetsMargin")
 }
 
+fn exec_account_query_local_ip(configured: IpAddr) -> Result<IpAddr> {
+    if !configured.is_unspecified() {
+        return Ok(configured);
+    }
+    // UDP connect selects the local route without sending a packet.
+    let destination: IpAddr = if configured.is_ipv4() {
+        "192.0.2.1"
+    } else {
+        "2001:db8::1"
+    }
+    .parse()?;
+    let socket = UdpSocket::bind((configured, 0)).context("bind account-query route probe")?;
+    socket
+        .connect((destination, 443))
+        .context("resolve account-query default route without sending packets")?;
+    let local_ip = socket.local_addr()?.ip();
+    anyhow::ensure!(
+        !local_ip.is_unspecified(),
+        "account-query default route has no concrete local address"
+    );
+    Ok(local_ip)
+}
+
 async fn require_binance_multi_assets_mode_on_exec_startup(local_ip: IpAddr) -> Result<()> {
     let api_key = std::env::var("BINANCE_API_KEY")
         .context("BINANCE_API_KEY is required for the Exec account-mode startup gate")?;
@@ -440,6 +463,7 @@ async fn cancel_all_orders_on_startup(
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
     gate_name: &str,
+    account_query_local_ip: Option<IpAddr>,
 ) -> Result<()> {
     let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
         .context("invalid startup cancellation exchange")?;
@@ -487,7 +511,7 @@ async fn cancel_all_orders_on_startup(
         return trade_engine::native_uta_exec::cancel_orders_on_startup(venue).await;
     }
     let cwd = std::env::current_dir().context("resolve current directory")?;
-    let (script_name, args): (&str, Vec<String>) = match venue {
+    let (script_name, mut args): (&str, Vec<String>) = match venue {
         TradingVenue::BinanceFutures => match binance_account_mode {
             Some(BinanceAccountMode::Standard) => (
                 "binance_cancel_all_std_um_ws_orders.py",
@@ -539,6 +563,11 @@ async fn cancel_all_orders_on_startup(
             "startup cancellation only supports binance-futures, binance-coin-futures and okex-futures: venue={venue:?}"
         ),
     };
+    if let Some(local_ip) = account_query_local_ip {
+        // Reuse the fixed binding from accountConfig for the STANDARD UM
+        // startup order query; leave the live trade-engine configuration intact.
+        args.extend(["--local-address".to_string(), local_ip.to_string()]);
+    }
     let script = exec_cancel_script(script_name)?;
     let timeout_secs = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
         .ok()
@@ -561,6 +590,9 @@ async fn cancel_all_orders_on_startup(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
+    if account_query_local_ip.is_some() {
+        command.env("NO_PROXY", "*").env("no_proxy", "*");
+    }
     let status = tokio::time::timeout(Duration::from_secs(timeout_secs), command.status())
         .await
         .with_context(|| {
@@ -831,6 +863,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
+    let mut binance_startup_query_ip = None;
     if exec_pre_trade
         && open_venue == TradingVenue::BinanceFutures
         && !rapidx_binance
@@ -838,9 +871,11 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     {
         let (raw_ip, source) = load_primary_local_ip_from_trade_engine_sync()
             .context("load Binance REST local IP for the Exec account-mode startup gate")?;
-        let local_ip = raw_ip
+        let configured_ip = raw_ip
             .parse::<IpAddr>()
             .with_context(|| format!("invalid Binance REST local IP {raw_ip} from {source}"))?;
+        let local_ip = exec_account_query_local_ip(configured_ip)?;
+        binance_startup_query_ip = Some(local_ip);
         info!(
             "exec-pre-trade account-mode startup gate using Binance REST local_ip={} ({})",
             local_ip, source
@@ -856,7 +891,13 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     let startup_cancel_gate = exec_pre_trade.then_some("exec-pre-trade");
     if let Some(gate_name) = startup_cancel_gate {
         for venue in &exec_venues {
-            cancel_all_orders_on_startup(*venue, binance_account_mode, gate_name).await?;
+            cancel_all_orders_on_startup(
+                *venue,
+                binance_account_mode,
+                gate_name,
+                binance_startup_query_ip,
+            )
+            .await?;
         }
     }
     let local = tokio::task::LocalSet::new();
@@ -1447,6 +1488,24 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_account_query_preserves_explicit_trading_address() {
+        for address in ["192.0.2.10", "2001:db8::10"] {
+            let configured = address.parse().unwrap();
+            assert_eq!(exec_account_query_local_ip(configured).unwrap(), configured);
+        }
+    }
+
+    #[test]
+    fn exec_account_query_resolves_wildcard_without_sending_packets() {
+        let address = exec_account_query_local_ip("0.0.0.0".parse().unwrap()).unwrap();
+        assert!(address.is_ipv4());
+        assert!(!address.is_unspecified());
+        // A later query reuses this concrete address instead of looking up a
+        // potentially changed default route again.
+        assert_eq!(exec_account_query_local_ip(address).unwrap(), address);
+    }
 
     #[test]
     fn rejects_cta_execution_environments_before_startup() {

@@ -1,0 +1,18 @@
+[INFO] Restarting spp_bn_fu (venue=binance-futures, core=2)
+[2m2026-10-18T08:06:18.714864Z[0m [32m INFO[0m [2mpmdaemon[0m[2m:[0m PMDaemon v0.1.4 starting
+[2m2026-10-18T08:06:18.886349Z[0m [32m INFO[0m [2mpmdaemon::manager[0m[2m:[0m Loaded 85 process configurations
+[2m2026-10-18T08:06:18.886570Z[0m [32m INFO[0m [2mpmdaemon::process[0m[2m:[0m Starting process: spp_bn_fu_market
+[2m2026-10-18T08:06:18.887347Z[0m [32m INFO[0m [2mpmdaemon::process[0m[2m:[0m Process spp_bn_fu_market started with PID: 1080468
+Started process 'spp_bn_fu_market' from config file with ID: 73d54496-5168-4947-a998-7f6aa684f4ae
+[2m2026-10-18T08:06:18.897532Z[0m [32m INFO[0m [2mpmdaemon[0m[2m:[0m PMDaemon v0.1.4 starting
+[2m2026-10-18T08:06:19.066634Z[0m [32m INFO[0m [2mpmdaemon::manager[0m[2m:[0m Loaded 86 process configurations
+[2m2026-10-18T08:06:19.066972Z[0m [32m INFO[0m [2mpmdaemon::process[0m[2m:[0m Starting process: spp_bn_fu_bookticker
+[2m2026-10-18T08:06:19.067920Z[0m [32m INFO[0m [2mpmdaemon::process[0m[2m:[0m Process spp_bn_fu_bookticker started with PID: 1080489
+Started process 'spp_bn_fu_bookticker' from config file with ID: 3fe46ded-a756-4337-9846-f7657dab6d6a
+
+[INFO] Started: spp_bn_fu_market pinned to core 2
+[INFO] Started: spp_bn_fu_bookticker pinned to core 1
+Venue:  binance-futures
+Logs:   tail -F /dev/shm/spread_pbs-1000/binance-futures-market.log
+Logs:   tail -F /dev/shm/spread_pbs-1000/binance-futures-bookticker.log
+Status: pmdaemon list

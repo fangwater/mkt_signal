@@ -1,0 +1,35 @@
+[2m2026-10-18T08:31:46.647603Z[0m [32m INFO[0m [2mcrypto_cta_manager::redis_runtime[0m[2m:[0m Manager Redis long connection ready [3murl[0m[2m=[0mredis://127.0.0.1:6379/0
+0 [W] "Config::global_config()" 
+| No config file was loaded, a config with default values will be used. 
+[2m2026-10-18T08:31:46.700707Z[0m [32m INFO[0m [2mcrypto_cta_manager::monitor[0m[2m:[0m CTA monitor market BBO subscribed [3mvenue[0m[2m=[0m"binance-futures" [3mservice_name[0m[2m=[0m"spread_pbs/binance-futures/ask_bid_spread"
+CTA monitor: 30 issue(s)
+orders:stale:1672040754131771606:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771606 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15935 秒
+orders:stale:1672040754131771607:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771607 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15935 秒
+orders:stale:1672040754131771608:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771608 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040754131771609:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771609 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040887275763660:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763660 SUIUSDT 处于 NEW 状态，最近活动已停止约 15935 秒
+orders:stale:1672040887275763661:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763661 SUIUSDT 处于 NEW 状态，最近活动已停止约 15935 秒
+orders:stale:1672040887275763662:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763662 SUIUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040887275763663:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763663 SUIUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040904455634046:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634046 WLDUSDT 处于 NEW 状态，最近活动已停止约 15935 秒
+orders:stale:1672040904455634047:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634047 WLDUSDT 处于 NEW 状态，最近活动已停止约 15935 秒
+orders:stale:1672040904455634048:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634048 WLDUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040904455634049:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634049 WLDUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040925930463275:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040925930463275 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672040925930463276:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040925930463276 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672041059074453499:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041059074453499 SUIUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672041059074453500:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041059074453500 SUIUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672041076254325734:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041076254325734 WLDUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+orders:stale:1672041076254325735:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041076254325735 WLDUSDT 处于 NEW 状态，最近活动已停止约 15899 秒
+position:account:1000PEPEUSDT:binance_exec_trade13 [position] [bn_group31] 1000PEPEUSDT 配置仓位 1983.303172034940 与账户仓位 4888.000000000000 不一致且无挂单执行
+position:account:ADAUSDT:binance_exec_trade13 [position] [bn_group31] ADAUSDT 配置仓位 -59.783004442633 与账户仓位 -112.000000000000 不一致且无挂单执行
+position:account:BNBUSDT:binance_exec_trade13 [position] [bn_group31] BNBUSDT 配置仓位 0.030686651228 与账户仓位 0.030000000000 不一致且无挂单执行
+position:account:BTCUSDT:binance_exec_trade13 [position] [bn_group31] BTCUSDT 配置仓位 0.300015006545 与账户仓位 0.299000000000 不一致且无挂单执行
+position:account:DOGEUSDT:binance_exec_trade13 [position] [bn_group31] DOGEUSDT 配置仓位 263.822318975383 与账户仓位 283.000000000000 不一致且无挂单执行
+position:account:ETHUSDT:binance_exec_trade13 [position] [bn_group31] ETHUSDT 配置仓位 6.166431374798 与账户仓位 6.169000000000 不一致且无挂单执行
+position:account:NEARUSDT:binance_exec_trade13 [position] [bn_group31] NEARUSDT 配置仓位 14.998050779486 与账户仓位 17.000000000000 不一致且无挂单执行
+position:account:SOLUSDT:binance_exec_trade13 [position] [bn_group31] SOLUSDT 配置仓位 63.672592054784 与账户仓位 63.670000000000 不一致且无挂单执行
+position:account:SUIUSDT:binance_exec_trade13 [position] [bn_group31] SUIUSDT 配置仓位 27.539572909752 与账户仓位 21.500000000000 不一致且无挂单执行
+position:account:UNIUSDT:binance_exec_trade13 [position] [bn_group31] UNIUSDT 配置仓位 3.292935736859 与账户仓位 3.000000000000 不一致且无挂单执行
+position:account:WLDUSDT:binance_exec_trade13 [position] [bn_group31] WLDUSDT 配置仓位 -9.305208022779 与账户仓位 -12.000000000000 不一致且无挂单执行
+position:account:XRPUSDT:binance_exec_trade13 [position] [bn_group31] XRPUSDT 配置仓位 1344.647184327148 与账户仓位 1344.700000000000 不一致且无挂单执行

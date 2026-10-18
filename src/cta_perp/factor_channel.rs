@@ -1,7 +1,9 @@
-use super::config::{EntryConfig, CTA_PERP_MAX_MODEL_AGE_MS};
+use super::config::{
+    CtaPerpConfig, EntryConfig, PositionAlgorithm, CTA_PERP_MAX_MODEL_AGE_MS, SYMBOL_MEAN_STRATEGY,
+};
 use super::factors::{
-    aggregate_bar, model_bar_is_fresh, model_service, table_services, FactorConfigWatcher,
-    SymbolFactorTable, SymbolFactors, WeightedBar,
+    aggregate_bar, mean_bar, model_bar_is_fresh, model_service, table_services,
+    FactorConfigWatcher, SymbolFactorTable, SymbolFactors, WeightedBar,
 };
 use anyhow::Result;
 use iceoryx2::prelude::*;
@@ -28,7 +30,7 @@ pub struct FactorObservation {
     pub bar: Option<WeightedBar>,
 }
 
-pub struct IndependentFactorObservation {
+pub struct PositionObservation {
     pub symbol: String,
     pub factor: String,
     pub model_ts_ms: i64,
@@ -62,12 +64,8 @@ impl WeightedFactorChannel {
         &self.table
     }
 
-    /// Each factor owns its clock and readiness. Another factor warming up
-    /// must not block this strategy's entries or exits.
-    pub fn poll_independent(
-        &mut self,
-        entry: &EntryConfig,
-    ) -> (bool, Vec<IndependentFactorObservation>) {
+    /// v0 consumes each factor independently; v1 waits for an aligned symbol bar.
+    pub fn poll_positions(&mut self, config: &CtaPerpConfig) -> (bool, Vec<PositionObservation>) {
         let changed = if let Some(next) = self.watcher.take_change() {
             self.table = next.as_ref().clone();
             self.hub
@@ -90,9 +88,34 @@ impl WeightedFactorChannel {
             .collect();
         let mut updates = Vec::new();
         for symbol in touched {
+            let effective = config.for_symbol(&symbol);
             let Some(row) = self.table.get(&symbol) else {
                 continue;
             };
+            if config.position_algorithm == PositionAlgorithm::V1 {
+                let inputs: Vec<_> = row
+                    .factors
+                    .iter()
+                    .map(|factor| {
+                        self.hub.cached_score(
+                            &model_service(factor),
+                            &symbol,
+                            TradingVenue::BinanceFutures,
+                        )
+                    })
+                    .collect();
+                if let Some(observation) = next_mean_observation(
+                    symbol,
+                    row,
+                    &inputs,
+                    &effective.entry,
+                    &mut self.last_ts,
+                    get_timestamp_us(),
+                ) {
+                    updates.push(observation);
+                }
+                continue;
+            }
             for (factor, weight) in row
                 .factors
                 .iter()
@@ -117,11 +140,16 @@ impl WeightedFactorChannel {
                     factors: vec![factor.clone()],
                     weights: vec![weight.signum()],
                 };
-                updates.push(IndependentFactorObservation {
+                updates.push(PositionObservation {
                     symbol: symbol.clone(),
                     factor: factor.clone(),
                     model_ts_ms: ts,
-                    bar: aggregate_bar(&single, &[input], entry),
+                    bar: aggregate_bar(
+                        &single,
+                        &[input],
+                        &effective.entry,
+                        effective.position_algorithm,
+                    ),
                 });
             }
         }
@@ -184,6 +212,37 @@ impl WeightedFactorChannel {
     }
 }
 
+fn next_mean_observation(
+    symbol: String,
+    row: &SymbolFactors,
+    inputs: &[ModelOutputScoreLookupResult],
+    entry: &EntryConfig,
+    last_ts: &mut HashMap<String, i64>,
+    now_us: i64,
+) -> Option<PositionObservation> {
+    let mut timestamps = inputs
+        .iter()
+        .zip(&row.weights)
+        .filter(|(_, weight)| **weight != 0.0)
+        .map(|(input, _)| input.score_ts_ms);
+    let model_ts_ms = timestamps.next()?;
+    let key = format!("{SYMBOL_MEAN_STRATEGY}:{symbol}");
+    if model_ts_ms <= 0
+        || timestamps.any(|ts| ts != model_ts_ms)
+        || last_ts.get(&key).is_some_and(|ts| model_ts_ms <= *ts)
+        || !model_bar_is_fresh(model_ts_ms, now_us, CTA_PERP_MAX_MODEL_AGE_MS)
+    {
+        return None;
+    }
+    last_ts.insert(key, model_ts_ms);
+    Some(PositionObservation {
+        symbol,
+        factor: SYMBOL_MEAN_STRATEGY.into(),
+        model_ts_ms,
+        bar: mean_bar(row, inputs, entry),
+    })
+}
+
 // An aligned but unready bar still carries exit settings so recovered positions
 // can retain trailing protection without using an invalid factor percentile.
 fn next_observation(
@@ -211,7 +270,7 @@ fn next_observation(
     Some(FactorObservation {
         symbol,
         model_ts_ms,
-        bar: aggregate_bar(row, inputs, entry),
+        bar: aggregate_bar(row, inputs, entry, PositionAlgorithm::V0),
     })
 }
 
@@ -239,6 +298,62 @@ mod tests {
             note: String::new(),
         }
     }
+    #[test]
+    fn mean_waits_for_aligned_factors_and_emits_one_symbol_strategy() {
+        let row = SymbolFactors {
+            factors: vec!["factor_036".into(), "factor_051".into()],
+            weights: vec![10.0, 1.0],
+        };
+        let mut last = HashMap::new();
+        let entry = EntryConfig {
+            factor_long_quantile: 0.8,
+            ..Default::default()
+        };
+        assert!(next_mean_observation(
+            "ETHUSDT".into(),
+            &row,
+            &[input(120_000), input(60_000)],
+            &entry,
+            &mut last,
+            121_000_000
+        )
+        .is_none());
+        assert!(last.is_empty());
+        let bar = next_mean_observation(
+            "ETHUSDT".into(),
+            &row,
+            &[input(120_000), input(120_000)],
+            &entry,
+            &mut last,
+            121_000_000,
+        )
+        .unwrap();
+        assert_eq!(bar.factor, SYMBOL_MEAN_STRATEGY);
+        assert_eq!(bar.bar.unwrap().value, 1.0);
+        assert!(next_mean_observation(
+            "ETHUSDT".into(),
+            &row,
+            &[input(120_000), input(120_000)],
+            &entry,
+            &mut last,
+            121_000_000
+        )
+        .is_none());
+        let mut unready = input(180_000);
+        unready.score_ready = false;
+        assert!(next_mean_observation(
+            "ETHUSDT".into(),
+            &row,
+            &[input(180_000), unready],
+            &entry,
+            &mut last,
+            181_000_000
+        )
+        .unwrap()
+        .bar
+        .is_none());
+    }
+
     #[test]
     fn partial_arrival_does_not_consume_bar_and_complete_bar_is_emitted_once() {
         let row = SymbolFactors {

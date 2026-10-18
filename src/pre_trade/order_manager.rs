@@ -278,6 +278,7 @@ struct BinanceCashRoute {
     cancel_order: trade_engine::trade_request::TradeRequestType,
     margin_business: bool,
     maker_only: bool,
+    market_buy_uses_quote_qty: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +330,7 @@ fn binance_cash_route_for(
             cancel_order: TradeRequestType::BinanceWsCancelMarginOrder,
             margin_business: false,
             maker_only: true,
+            market_buy_uses_quote_qty: backend == ExecBackend::Ltp,
         }
     } else if backend == ExecBackend::Ltp && cash_business == RapidXCashBusinessType::Spot {
         BinanceCashRoute {
@@ -336,6 +338,7 @@ fn binance_cash_route_for(
             cancel_order: TradeRequestType::BinanceLtpCancelSpotOrder,
             margin_business: false,
             maker_only: true,
+            market_buy_uses_quote_qty: backend == ExecBackend::Ltp,
         }
     } else {
         BinanceCashRoute {
@@ -343,8 +346,112 @@ fn binance_cash_route_for(
             cancel_order: TradeRequestType::BinanceCancelMarginOrder,
             margin_business: true,
             maker_only: backend == ExecBackend::Ltp,
+            market_buy_uses_quote_qty: backend == ExecBackend::Ltp,
         }
     }
+}
+
+fn prepare_binance_cash_order(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+    route: BinanceCashRoute,
+    now_us: i64,
+) -> Result<PreparedTradeRequest, String> {
+    let quote = if route.market_buy_uses_quote_qty
+        && order.order_type == OrderType::Market
+        && order.side == Side::Buy
+        && MktChannel::is_initialized()
+    {
+        let quote = MktChannel::instance().get_quote(&order.symbol, order.venue);
+        let price_tick = crate::pre_trade::monitor_channel::MonitorChannel::instance()
+            .try_venue_min_qty_table(order.venue)
+            .and_then(|table| {
+                table.price_tick(&quote_plan::order_align::min_qty_symbol_key(
+                    order.venue,
+                    &order.symbol,
+                ))
+            });
+        quote
+            .zip(price_tick)
+            .map(|(quote, price_tick)| (quote.ask, quote.ts, price_tick))
+    } else {
+        None
+    };
+    prepare_binance_cash_order_with_quote(order, resolved, route, now_us, quote)
+}
+
+fn prepare_binance_cash_order_with_quote(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+    route: BinanceCashRoute,
+    now_us: i64,
+    ask_quote: Option<(f64, i64, f64)>,
+) -> Result<PreparedTradeRequest, String> {
+    let mut quantity_qv = resolved.require_quantity_qv(order, "binance")?;
+    let mut quote_order_qty_qv = QuantizedValue::zero();
+    if route.market_buy_uses_quote_qty
+        && order.order_type == OrderType::Market
+        && order.side == Side::Buy
+    {
+        let (ask, quote_ts, price_tick) = ask_quote.ok_or_else(|| {
+            format!(
+                "RapidX cash market buy requires BBO and Manager price tick: symbol={}",
+                order.symbol
+            )
+        })?;
+        const MAX_BBO_AGE_US: i64 = 2_000_000;
+        if !ask.is_finite()
+            || ask <= 0.0
+            || quote_ts <= 0
+            || now_us.saturating_sub(quote_ts) > MAX_BBO_AGE_US
+            || quote_ts.saturating_sub(now_us) > MAX_BBO_AGE_US
+        {
+            return Err(format!(
+                "RapidX cash market buy has invalid or stale BBO: symbol={}",
+                order.symbol
+            ));
+        }
+        // Keep the internal order/fill ledger in base quantity. Only the RapidX
+        // cash MARKET BUY wire request uses quote currency; never inflate it.
+        // RapidX also caps quoteOrderQty decimals at the symbol's price precision
+        // (401122). The Manager price tick provides a conservative decimal scale.
+        let price_scale = QuantizedValue::from_decimal(price_tick)
+            .ok_or_else(|| format!("invalid RapidX cash price tick: symbol={}", order.symbol))?
+            .get_tick_parts()
+            .1
+            .min(0);
+        quote_order_qty_qv =
+            QuantizedValue::encode_floor(quantity_qv.get_val() * ask, 10f64.powi(price_scale))
+                .filter(|value| !value.is_zero())
+                .ok_or_else(|| {
+                    format!(
+                        "invalid RapidX market buy notional: symbol={}",
+                        order.symbol
+                    )
+                })?;
+        quantity_qv = QuantizedValue::zero();
+    }
+    let flags = binance_cash_transport_flags(
+        route,
+        order.require_binance_account_mode() == BinanceAccountMode::Standard,
+    );
+    BinanceNewOrderParams::prepared_request_from_parts_with_quote_order_qty(
+        route.new_order,
+        now_us,
+        order.client_order_id,
+        &order.symbol,
+        order.side,
+        order.order_type,
+        quantity_qv,
+        resolved.limit_price_qv_or_zero(order, "binance")?,
+        order.reduce_only,
+        binance_margin_should_use_margin_buy(route.margin_business, order.reduce_only),
+        flags.ws_response_full,
+        flags.ws_um_response_result,
+        flags.ws_margin_limit_maker,
+        quote_order_qty_qv,
+    )
+    .ok_or_else(|| "failed to build binance cash order params".to_string())
 }
 
 fn binance_margin_should_use_margin_buy(margin_business: bool, reduce_only: bool) -> bool {
@@ -1025,43 +1132,8 @@ impl PreTradeOrderRequestExt for Order {
                 if !use_binance_ws_margin {
                     check_binance_unified_margin_balance(self, resolved)?;
                 }
-                let margin_buy = binance_margin_should_use_margin_buy(
-                    cash_route.margin_business,
-                    self.reduce_only,
-                );
-                let transport_flags =
-                    binance_cash_transport_flags(cash_route, use_binance_ws_margin);
-
-                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
-                if !suppress_pre_submit_hot_path_logs() {
-                    debug!(
-                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
-                        self.venue,
-                        self.client_order_id,
-                        self.symbol,
-                        self.side,
-                        self.order_type,
-                        self.reduce_only
-                    );
-                }
-                let req_type = cash_route.new_order;
-                BinanceNewOrderParams::request_bytes_from_parts(
-                    req_type,
-                    local_create_ts,
-                    self.client_order_id,
-                    &self.symbol,
-                    self.side,
-                    self.order_type,
-                    quantity_qv,
-                    price_qv,
-                    self.reduce_only,
-                    margin_buy,
-                    transport_flags.ws_response_full,
-                    transport_flags.ws_um_response_result,
-                    transport_flags.ws_margin_limit_maker,
-                )
-                .ok_or_else(|| "failed to build binance margin order params".to_string())
+                prepare_binance_cash_order(self, resolved, cash_route, local_create_ts)
+                    .map(|request| request.to_bytes())
             }
             TradingVenue::BinanceFutures => {
                 let use_binance_ws_um =
@@ -1353,42 +1425,7 @@ impl PreTradeOrderRequestExt for Order {
                 if !use_binance_ws_margin {
                     check_binance_unified_margin_balance(self, resolved)?;
                 }
-                let margin_buy = binance_margin_should_use_margin_buy(
-                    cash_route.margin_business,
-                    self.reduce_only,
-                );
-                let transport_flags =
-                    binance_cash_transport_flags(cash_route, use_binance_ws_margin);
-                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
-                if !suppress_pre_submit_hot_path_logs() {
-                    debug!(
-                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
-                        self.venue,
-                        self.client_order_id,
-                        self.symbol,
-                        self.side,
-                        self.order_type,
-                        self.reduce_only
-                    );
-                }
-                let req_type = cash_route.new_order;
-                BinanceNewOrderParams::prepared_request_from_parts(
-                    req_type,
-                    local_create_ts,
-                    self.client_order_id,
-                    &self.symbol,
-                    self.side,
-                    self.order_type,
-                    quantity_qv,
-                    price_qv,
-                    self.reduce_only,
-                    margin_buy,
-                    transport_flags.ws_response_full,
-                    transport_flags.ws_um_response_result,
-                    transport_flags.ws_margin_limit_maker,
-                )
-                .ok_or_else(|| "failed to build binance margin order params".to_string())
+                prepare_binance_cash_order(self, resolved, cash_route, local_create_ts)
             }
             TradingVenue::BinanceFutures => {
                 let use_binance_ws_um =
@@ -1668,9 +1705,9 @@ mod tests {
     use super::{
         binance_cash_route_for, binance_cash_transport_flags, binance_margin_should_use_margin_buy,
         bybit_margin_should_use_leverage, hyperliquid_market_protection_price,
-        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
-        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
-        TradeUpdateSkipReason,
+        prepare_binance_cash_order_with_quote, BybitNewOrderRequest, Order, OrderExecutionStatus,
+        OrderManager, OrderQuantizedValue, OrderStatus, OrderType, PreTradeOrderManagerRequestExt,
+        PreTradeOrderRequestExt, ResolvedOrderQuantities, Side, TradeUpdateSkipReason,
     };
     use mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash;
     use order_common::{BinanceAccountMode, TradingVenue};
@@ -1942,6 +1979,197 @@ mod tests {
         assert!(flags.ws_response_full);
         assert!(!flags.ws_um_response_result);
         assert!(flags.ws_margin_limit_maker);
+    }
+
+    #[test]
+    fn rapidx_cash_market_buy_reaches_wire_as_quote_notional() {
+        for business in [RapidXCashBusinessType::Spot, RapidXCashBusinessType::Margin] {
+            let route =
+                binance_cash_route_for(BinanceAccountMode::Unified, ExecBackend::Ltp, business);
+            let mut order = Order::new(
+                TradingVenue::BinanceMargin,
+                42,
+                OrderType::Market,
+                "XRPUSDT".into(),
+                Side::Buy,
+                3.17,
+                0.0,
+                false,
+                1.0,
+                Some(BinanceAccountMode::Unified),
+                false,
+            );
+            order.set_quantity_qv(OrderQuantizedValue::new(1, -2, 317));
+            let prepared = prepare_binance_cash_order_with_quote(
+                &order,
+                ResolvedOrderQuantities::from_order(&order),
+                route,
+                10_000_000,
+                Some((1.23456789, 9_999_999, 0.00001)),
+            )
+            .unwrap();
+            let bytes = prepared.to_bytes();
+            let msg = TradeRequestMsg::parse(&bytes).unwrap();
+            let params =
+                trade_engine::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                    .unwrap();
+            assert!(params.quantity_qv.is_zero());
+            assert_eq!(params.quote_order_qty_qv.decimal_string(), "3.91358");
+            assert!(params.price_qv.is_zero());
+            let payload: Value = serde_json::from_str(
+                &trade_engine::ltp_ws::build_order_payload(
+                    runtime_common::exchange::Exchange::Binance,
+                    &msg,
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(payload["args"]["quoteOrderQty"], "3.91358");
+            assert!(payload["args"].get("orderQty").is_none());
+            assert_eq!(order.quantity, 3.17);
+            assert_eq!(order.quantity_qv.unwrap().count, 317);
+        }
+    }
+
+    #[test]
+    fn rapidx_cash_quote_amount_floors_to_manager_price_decimals() {
+        let route = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Margin,
+        );
+        let order = Order::new(
+            TradingVenue::BinanceMargin,
+            42,
+            OrderType::Market,
+            "XRPUSDT".into(),
+            Side::Buy,
+            100.0,
+            0.0,
+            false,
+            1.0,
+            Some(BinanceAccountMode::Unified),
+            false,
+        );
+        for (tick, expected) in [(0.00001, "123.45678"), (0.05, "123.45"), (5.0, "123")] {
+            let request = prepare_binance_cash_order_with_quote(
+                &order,
+                ResolvedOrderQuantities::from_order(&order),
+                route,
+                10_000_000,
+                Some((1.23456789, 10_000_000, tick)),
+            )
+            .unwrap();
+            let params = trade_engine::trade_request::BinanceNewOrderParams::from_bytes(
+                request.params_slice(),
+            )
+            .unwrap();
+            assert_eq!(params.quote_order_qty_qv.decimal_string(), expected);
+            assert!(params.quote_order_qty_qv.get_val() <= order.quantity * 1.23456789);
+        }
+    }
+
+    #[test]
+    fn rapidx_cash_market_buy_requires_fresh_positive_ask() {
+        let route = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Margin,
+        );
+        let order = Order::new(
+            TradingVenue::BinanceMargin,
+            42,
+            OrderType::Market,
+            "XRPUSDT".into(),
+            Side::Buy,
+            100.0,
+            0.0,
+            false,
+            1.0,
+            Some(BinanceAccountMode::Unified),
+            false,
+        );
+        for quote in [
+            None,
+            Some((1.0, 0, 0.00001)),
+            Some((1.0, 7_999_999, 0.00001)),
+            Some((0.0, 10_000_000, 0.00001)),
+            Some((f64::NAN, 10_000_000, 0.00001)),
+            Some((1.0, 10_000_000, 0.0)),
+        ] {
+            assert!(prepare_binance_cash_order_with_quote(
+                &order,
+                ResolvedOrderQuantities::from_order(&order),
+                route,
+                10_000_000,
+                quote,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn cash_limit_sell_and_native_market_orders_keep_base_quantity() {
+        for backend in [ExecBackend::Native, ExecBackend::Ltp] {
+            for (kind, side) in [
+                (OrderType::Limit, Side::Buy),
+                (OrderType::Limit, Side::Sell),
+                (OrderType::Market, Side::Sell),
+                (OrderType::Market, Side::Buy),
+            ] {
+                if backend == ExecBackend::Ltp && kind == OrderType::Market && side == Side::Buy {
+                    continue;
+                }
+                let route = binance_cash_route_for(
+                    BinanceAccountMode::Unified,
+                    backend,
+                    RapidXCashBusinessType::Margin,
+                );
+                let order = Order::new(
+                    TradingVenue::BinanceMargin,
+                    42,
+                    kind,
+                    "XRPUSDT".into(),
+                    side,
+                    3.17,
+                    if kind.is_limit() { 1.23 } else { 0.0 },
+                    false,
+                    1.0,
+                    Some(BinanceAccountMode::Unified),
+                    kind.is_limit(),
+                );
+                let request = prepare_binance_cash_order_with_quote(
+                    &order,
+                    ResolvedOrderQuantities::from_order(&order),
+                    route,
+                    10_000_000,
+                    None,
+                )
+                .unwrap();
+                let params = trade_engine::trade_request::BinanceNewOrderParams::from_bytes(
+                    request.params_slice(),
+                )
+                .unwrap();
+                assert_eq!(params.quantity_qv.decimal_string(), "3.17");
+                assert!(params.quote_order_qty_qv.is_zero());
+                if backend == ExecBackend::Ltp {
+                    let bytes = request.to_bytes();
+                    let msg = TradeRequestMsg::parse(&bytes).unwrap();
+                    let payload: Value = serde_json::from_str(
+                        &trade_engine::ltp_ws::build_order_payload(
+                            runtime_common::exchange::Exchange::Binance,
+                            &msg,
+                            1,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(payload["args"]["orderQty"], "3.17");
+                    assert!(payload["args"].get("quoteOrderQty").is_none());
+                }
+            }
+        }
     }
 
     #[test]

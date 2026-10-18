@@ -1,0 +1,64 @@
+{
+  "AAVEUSDT": {
+    "baseline_085": -1.0,
+    "baseline_164": 1.0,
+    "baseline_200": -1.0
+  },
+  "ADAUSDT": {
+    "baseline_085": -1.0,
+    "baseline_164": 1.0
+  },
+  "AVAXUSDT": {
+    "baseline_141": 1.0
+  },
+  "BTCUSDT": {
+    "baseline_085": -1.0,
+    "baseline_200": -1.0
+  },
+  "DASHUSDT": {
+    "TD_MT_029": -1.0,
+    "baseline_085": -1.0,
+    "baseline_141": 1.0,
+    "baseline_164": 1.0,
+    "baseline_200": -1.0
+  },
+  "DOGEUSDT": {
+    "baseline_085": -1.0,
+    "baseline_164": 1.0,
+    "baseline_200": -1.0
+  },
+  "DOTUSDT": {
+    "baseline_141": 1.0,
+    "baseline_164": 1.0
+  },
+  "ETHUSDT": {
+    "baseline_085": -1.0,
+    "baseline_200": -1.0
+  },
+  "LTCUSDT": {
+    "baseline_141": 1.0
+  },
+  "NEARUSDT": {
+    "baseline_085": -1.0,
+    "baseline_141": 1.0,
+    "baseline_164": 1.0,
+    "baseline_200": -1.0
+  },
+  "SOLUSDT": {
+    "baseline_141": 1.0,
+    "baseline_164": 1.0
+  },
+  "UNIUSDT": {
+    "baseline_164": 1.0
+  },
+  "XLMUSDT": {
+    "baseline_164": 1.0,
+    "baseline_200": -1.0
+  },
+  "ZECUSDT": {
+    "TD_MT_029": -1.0,
+    "baseline_085": -1.0,
+    "baseline_164": 1.0,
+    "baseline_200": -1.0
+  }
+}

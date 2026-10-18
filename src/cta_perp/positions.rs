@@ -26,8 +26,9 @@ pub fn full_qty(max_pos_u: f64, flag: i8, price: f64) -> Result<f64> {
 
 pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig) -> i8 {
     let exit = &config.execution;
-    if (current > 0 && exit.factor_exit_quantile_long - bar.quantile > 4.0 * f64::EPSILON)
-        || (current < 0 && bar.quantile - exit.factor_exit_quantile_short > 4.0 * f64::EPSILON)
+    if (current > 0 && exit.factor_exit_quantile_long - bar.decision_value > 4.0 * f64::EPSILON)
+        || (current < 0
+            && bar.decision_value - exit.factor_exit_quantile_short > 4.0 * f64::EPSILON)
     {
         return 0;
     }
@@ -76,7 +77,9 @@ mod tests {
         serde_json::from_str(include_str!("../../config/cta_perp.json")).unwrap()
     }
     fn bar(q: f64, nq_ready: bool) -> WeightedBar {
-        let config = config();
+        bar_for(q, nq_ready, &config(), 1.0)
+    }
+    fn bar_for(q: f64, nq_ready: bool, config: &CtaPerpConfig, sign: f64) -> WeightedBar {
         let input = ModelOutputScoreLookupResult {
             service_name: String::new(),
             symbol_key: "FILUSDT".into(),
@@ -99,12 +102,93 @@ mod tests {
         aggregate_bar(
             &SymbolFactors {
                 factors: vec!["factor_036".into()],
-                weights: vec![1.0],
+                weights: vec![sign],
             },
             &[input],
             &config.entry,
+            config.position_algorithm,
         )
         .unwrap()
+    }
+    #[test]
+    fn percentile_usage_changes_entries_and_exits_without_changing_sign_or_nq() {
+        use crate::cta_perp::config::PositionAlgorithm;
+        let mut c = config();
+        c.entry.factor_long_quantile = 0.7;
+        assert_eq!(next_position_flag(0, &bar_for(0.8, true, &c, 1.0), &c), 1);
+        assert_eq!(next_position_flag(1, &bar_for(0.6, false, &c, 1.0), &c), 1);
+        c.position_algorithm = PositionAlgorithm::V1;
+        let observation = bar_for(0.8, true, &c, 1.0);
+        assert!((observation.decision_value - 0.6).abs() < 1e-12);
+        assert_eq!(observation.quantile, 0.8);
+        assert_eq!(observation.nq.filter_long_quantile, Some(0.9));
+        assert_eq!(next_position_flag(0, &observation, &c), 0);
+        assert_eq!(next_position_flag(1, &bar_for(0.6, false, &c, 1.0), &c), 0);
+        assert_eq!(next_position_flag(0, &bar_for(0.1, true, &c, -1.0), &c), 1);
+        assert_eq!(next_position_flag(0, &bar_for(0.1, false, &c, -1.0), &c), 0);
+    }
+
+    #[test]
+    fn centered_percentiles_support_negative_thresholds_and_strict_ties() {
+        use crate::cta_perp::config::PositionAlgorithm;
+        let mut c = config();
+        c.position_algorithm = PositionAlgorithm::V1;
+        c.entry.factor_long_quantile = 0.6;
+        c.entry.factor_short_quantile = -0.6;
+        c.execution.factor_exit_quantile_long = 0.2;
+        c.execution.factor_exit_quantile_short = -0.2;
+        c.validate().unwrap();
+        for (current, q, next) in [
+            (0, 0.8, 0),
+            (0, 0.2, 0),
+            (0, 0.81, 1),
+            (0, 0.19, -1),
+            (1, 0.6, 1),
+            (1, 0.59, 0),
+            (-1, 0.4, -1),
+            (-1, 0.41, 0),
+        ] {
+            assert_eq!(
+                next_position_flag(current, &bar_for(q, true, &c, 1.0), &c),
+                next,
+                "current={current} percentile={q}"
+            );
+        }
+    }
+
+    #[test]
+    fn symbol_overrides_change_only_that_symbols_position_decisions() {
+        use crate::cta_perp::config::{PositionAlgorithm, SymbolThresholdOverrides};
+        let mut c = config();
+        c.symbol_overrides.insert(
+            "ETHUSDT".into(),
+            SymbolThresholdOverrides {
+                factor_long_quantile: Some(0.7),
+                factor_short_quantile: Some(0.0),
+                factor_exit_quantile_long: Some(0.6),
+                factor_exit_quantile_short: Some(0.2),
+            },
+        );
+        for algorithm in [PositionAlgorithm::V0, PositionAlgorithm::V1] {
+            c.position_algorithm = algorithm;
+            c.validate().unwrap();
+            let eth = c.for_symbol("ETHUSDT");
+            let btc = c.for_symbol("BTCUSDT");
+            let q = if algorithm == PositionAlgorithm::V0 {
+                0.8
+            } else {
+                0.9
+            };
+            assert_eq!(next_position_flag(0, &bar_for(q, true, &eth, 1.0), &eth), 1);
+            assert_eq!(next_position_flag(0, &bar_for(q, true, &btc, 1.0), &btc), 0);
+            let q = if algorithm == PositionAlgorithm::V0 {
+                0.5
+            } else {
+                0.75
+            };
+            assert_eq!(next_position_flag(1, &bar_for(q, true, &eth, 1.0), &eth), 0);
+            assert_eq!(next_position_flag(1, &bar_for(q, true, &btc, 1.0), &btc), 1);
+        }
     }
     #[test]
     fn independent_states_hold_and_exit_without_nq() {

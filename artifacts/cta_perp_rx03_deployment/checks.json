@@ -1,0 +1,21 @@
+{
+  "cta_perp_rust_tests": {
+    "passed": 30,
+    "failed": 0
+  },
+  "python_tests": {
+    "passed": 51,
+    "failed": 0
+  },
+  "all_library_tests": {
+    "passed": 1271,
+    "failed": 2,
+    "ignored": 3,
+    "existing_failures": [
+      "cta_spread publisher expected factor list is stale",
+      "cta_factor_universe formula expected map does not cover current repo factors"
+    ]
+  },
+  "config_check": true,
+  "shell_syntax": true
+}

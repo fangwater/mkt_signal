@@ -1,4 +1,5 @@
 use anyhow::{ensure, Context, Result};
+use bigdecimal::BigDecimal;
 use persist_common::rapidx_execution::ExecutionRecord;
 use persist_common::rapidx_statement::StatementRecord;
 use serde::Serialize;
@@ -8,6 +9,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::str::FromStr;
 
 pub use persist_common::rapidx_execution::ExecutionEvidence;
 
@@ -232,6 +234,7 @@ impl AccountJournal {
         // statement must never leave an earlier statement partially recorded.
         let mut batch_ids = std::collections::HashSet::new();
         let mut added = Vec::new();
+        let mut reobserved = Vec::new();
         for statement in statements {
             statement.validate()?;
             ensure!(
@@ -243,11 +246,26 @@ impl AccountJournal {
                 "duplicate statement in batch"
             );
             if let Some(old) = self.statements.get(&statement.statement_id) {
-                ensure!(old == statement, "conflicting duplicate statement");
+                if old != statement {
+                    ensure!(
+                        available_balance_roundoff_only(old, statement)?,
+                        "conflicting duplicate statement"
+                    );
+                    reobserved.push(statement);
+                }
             } else {
                 statement.to_ipc_payload()?;
                 added.push(statement.clone());
             }
+        }
+        // Keep the original durable fact/ACK unchanged. Retain the subsequent
+        // exchange observation separately so the accepted context drift is auditable.
+        for statement in reobserved {
+            self.append(&json!({
+                "portfolio": self.portfolio,
+                "exchange": self.exchange,
+                "statement_balance_reobservation": statement,
+            }))?;
         }
         for statement in &added {
             self.append(&json!({
@@ -335,6 +353,39 @@ impl AccountJournal {
         );
         Ok(())
     }
+}
+
+/// RapidX may revise both available-balance context fields by the same tiny
+/// amount on an overlapping REST read (observed: 1e-20 USDT). Accept at most
+/// 1e-18 in absolute terms, using exact decimals, only if the available change
+/// and every other field (including settlement/debt) are unchanged.
+fn available_balance_roundoff_only(old: &StatementRecord, new: &StatementRecord) -> Result<bool> {
+    let mut comparable = new.clone();
+    comparable
+        .before_available
+        .clone_from(&old.before_available);
+    comparable.after_available.clone_from(&old.after_available);
+    if old != &comparable {
+        return Ok(false);
+    }
+    // Limit scale before decimal subtraction; an extreme exponent must not
+    // allocate unbounded memory while comparing untrusted exchange fields.
+    if [
+        &old.before_available,
+        &old.after_available,
+        &new.before_available,
+        &new.after_available,
+    ]
+    .iter()
+    .any(|value| value.contains(['e', 'E']))
+    {
+        return Ok(false);
+    }
+    let before_shift =
+        BigDecimal::from_str(&new.before_available)? - BigDecimal::from_str(&old.before_available)?;
+    let after_shift =
+        BigDecimal::from_str(&new.after_available)? - BigDecimal::from_str(&old.after_available)?;
+    Ok(before_shift == after_shift && before_shift.abs() <= BigDecimal::new(1.into(), 18))
 }
 
 /// Only a torn final line is recoverable. Interior corruption must never silently
@@ -504,6 +555,121 @@ mod tests {
         assert_eq!(recovered.next_statement_record().unwrap(), Some(first));
         drop(recovered);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn statement_balance_roundoff_keeps_original_fact_and_replays_after_restart() {
+        let dir = std::env::temp_dir().join(format!("rapidx-roundoff-{}", uuid::Uuid::new_v4()));
+        let mut original = statement("s1");
+        original.before_available = "17416.36113024563168763286".into();
+        original.after_available = original.before_available.clone();
+        let mut repeated = original.clone();
+        repeated.before_available = "17416.36113024563168763285".into();
+        repeated.after_available = repeated.before_available.clone();
+        let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        journal.record_statements(&[original.clone()]).unwrap();
+        journal.statement_record_enqueued();
+        journal.record_statements(&[repeated.clone()]).unwrap();
+        assert_eq!(journal.statements.len(), 1);
+        assert_eq!(journal.statement_delivery_pending(), 0);
+        journal.complete_statement_history(2_000).unwrap();
+        drop(journal);
+
+        let mut observations = Vec::new();
+        for path in std::fs::read_dir(&dir).unwrap() {
+            let path = path.unwrap().path();
+            read_records(BufReader::new(File::open(path).unwrap()), |row| {
+                if let Some(observed) = row.get("statement_balance_reobservation") {
+                    observations.push(serde_json::from_value::<StatementRecord>(observed.clone())?);
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert_eq!(observations, vec![repeated]);
+        let recovered = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        assert_eq!(recovered.statement_history_end_ms, Some(2_000));
+        assert_eq!(recovered.next_statement_record().unwrap(), Some(original));
+        drop(recovered);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn statement_roundoff_never_masks_settlement_debt_identity_or_available_change() {
+        let original = statement("s1");
+        let mut repeated = original.clone();
+        repeated.before_available = "10.000000000000000001".into();
+        repeated.after_available = repeated.before_available.clone();
+        assert!(available_balance_roundoff_only(&original, &repeated).unwrap());
+        for field in [
+            "delta",
+            "debt",
+            "timestamp",
+            "id",
+            "request",
+            "coin",
+            "scope",
+            "after",
+        ] {
+            let mut conflict = repeated.clone();
+            match field {
+                "delta" => conflict.delta_amount = "0.00000000000000000001".into(),
+                "debt" => conflict.after_overdraw = "0.00000000000000000001".into(),
+                "timestamp" => conflict.timestamp_us += 1_000,
+                "id" => conflict.statement_id = "s2".into(),
+                "request" => conflict.request_id = "r2".into(),
+                "coin" => conflict.coin = "BTC".into(),
+                "scope" => conflict.portfolio = "456".into(),
+                "after" => conflict.after_available = "10".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !available_balance_roundoff_only(&original, &conflict).unwrap(),
+                "{field}"
+            );
+        }
+        // Absolute bound applies even when f64 would round both values together.
+        let mut large = original.clone();
+        large.before_available = "100000000000000000000".into();
+        large.after_available = large.before_available.clone();
+        let mut changed = large.clone();
+        changed.before_available = "100000000000000000001".into();
+        changed.after_available = changed.before_available.clone();
+        assert!(!available_balance_roundoff_only(&large, &changed).unwrap());
+        repeated.before_available = "10.00000000000000000101".into();
+        repeated.after_available = repeated.before_available.clone();
+        assert!(!available_balance_roundoff_only(&original, &repeated).unwrap());
+        repeated.before_available = "1e-999999999".into();
+        repeated.after_available = repeated.before_available.clone();
+        assert!(!available_balance_roundoff_only(&original, &repeated).unwrap());
+    }
+
+    #[test]
+    fn conflicting_statement_after_roundoff_does_not_partially_append_or_enqueue() {
+        let dir =
+            std::env::temp_dir().join(format!("rapidx-roundoff-batch-{}", uuid::Uuid::new_v4()));
+        let original = statement("s1");
+        let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        journal
+            .record_statements(&[original.clone(), statement("s3")])
+            .unwrap();
+        journal.statement_record_enqueued();
+        journal.statement_record_enqueued();
+        let bytes_before = journal.file.metadata().unwrap().len();
+        let mut repeated = original;
+        repeated.before_available = "10.00000000000000000001".into();
+        repeated.after_available = repeated.before_available.clone();
+        let mut conflict = repeated.clone();
+        conflict.statement_id = "s3".into();
+        conflict.delta_amount = "1".into();
+        assert!(journal
+            .record_statements(&[repeated, statement("s2"), conflict])
+            .is_err());
+        assert_eq!(journal.file.metadata().unwrap().len(), bytes_before);
+        assert_eq!(journal.statements.len(), 2);
+        assert_eq!(journal.statement_delivery_pending(), 0);
+        drop(journal);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

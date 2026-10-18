@@ -1,0 +1,17 @@
+{
+  "release_id": "20261015T134900Z",
+  "old_pid": 3175453,
+  "new_pid": 440232,
+  "binary_sha256": "66398fd544839af21b4d60f17add3cebad174047c237f016beb7e7130efd77e8",
+  "restart_ts_us": 1792072464396837,
+  "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "configuration_unchanged": true,
+  "backup": "/home/ubuntu/binance_exec_trade05/run/cta_engine_match_20261015T134900Z"
+}

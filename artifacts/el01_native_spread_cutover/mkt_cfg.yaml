@@ -1,0 +1,11 @@
+restart_duration_secs: 1800
+primary_local_ip: "0.0.0.0"
+secondary_local_ip: "0.0.0.0"
+snapshot_requery_time: ""
+data_types:
+  enable_incremental: false
+  enable_trade: false
+  enable_kline: false
+  enable_derivatives: true
+  enable_ask_bid_spread: true
+  max_levels_per_msg: 50

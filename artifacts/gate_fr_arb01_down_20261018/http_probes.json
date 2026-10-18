@@ -1,0 +1,29 @@
+[
+  {
+    "utc": "2026-10-18T06:41:52.293187+00:00",
+    "vantage": "workspace",
+    "url": "http://13.115.227.29:4191/fr/gate_fr_arb01",
+    "exit_code": 28,
+    "stdout": "http=000 remote= connect=0.000000 total=8.002064 bytes=0\n",
+    "stderr": "curl: (28) Failed to connect to 13.115.227.29 port 4191 after 8002 ms: Timeout was reached\n",
+    "duration_seconds": 8.018
+  },
+  {
+    "utc": "2026-10-18T06:41:52.293980+00:00",
+    "vantage": "jp-vpn",
+    "url": "http://13.115.227.29:4191/fr/gate_fr_arb01",
+    "exit_code": 28,
+    "stdout": "http=000 remote= connect=0.000000 total=8.002818 bytes=0\n",
+    "stderr": "curl: (28) Failed to connect to 13.115.227.29 port 4191 after 8002 ms: Timeout was reached\n",
+    "duration_seconds": 9.838
+  },
+  {
+    "utc": "2026-10-18T06:41:52.294698+00:00",
+    "vantage": "sg",
+    "url": "http://13.115.227.29:4191/fr/gate_fr_arb01",
+    "exit_code": 28,
+    "stdout": "http=000 remote= connect=0.000000 total=8.002350 bytes=0\n",
+    "stderr": "curl: (28) Failed to connect to 13.115.227.29 port 4191 after 8002 ms: Timeout was reached\n",
+    "duration_seconds": 9.223
+  }
+]

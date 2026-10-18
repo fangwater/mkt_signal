@@ -1,6 +1,173 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-10-13 13:44 UTC
+
+2026-10-15 本地新增 Perp 静默仓位恢复：显式的
+`run/cta_perp_recovery_request.json` 指定本轮因子发布器 generation，信号在历史
+因子与仓位逐分钟重算期间禁止发布；所有配置组合追上新采样的 Kafka 水位、
+最新完整分钟并就绪后，才切换为最终目标发布。普通重启不自动触发重算。
+历史回放按当时首个 post-bar bid/ask 计算固定入场数量，并保留旧策略/币种的
+清零目标。有限 Kafka 保留期无法证明保留期之前且期间从未退出的历史仓位。
+本次尚未上线：Manager 当前仅接受数字 qty，显式 `clear` 的端到端接入仍待
+用户确认是否允许更新共享 Manager；准备状态和验证见
+`artifacts/cta_perp_replay_cutover/README.md`。
+
+最后更新：2026-10-15
+
+## Perp 百分位算法与 symbol 开平阈值（本地实现，未部署）
+
+同一 `cta_perp_signal` 通过 `position_algorithm` 选择仓位计算：
+
+- `v0`：每个 symbol × factor 直接用其百分位 `x`，独立判断开平。
+- `v1`（prep-v1）：同一 symbol 的全部启用因子分别计算 `2*x-1`，
+  再取等权算术平均 `m = sum(2*x_i-1)/N`，用 `m` 统一判断该 symbol 的开平。
+  例如两个因子的 `x` 为0.9、0.7，转换后为0.8、0.4，综合判断值为0.6。
+
+两版沿用单份金额（现有配置键 `max_pos_u`），它是每次入场的金额，
+不是新增的仓位上限。入场数量仍为 `方向 × 单份金额 / 入场价`，
+同向持仓保持原qty，退出全平原qty；不按均值幅度缩放仓位。
+v0 每个因子分别持有一份；v1 综合信号每次入场使用一份。
+
+原有sign方向修正继续执行，均值按修正后的因子值计算；signed weight 的
+绝对值不改变等权占比，0表示禁用，不计入分母。必须等所有启用因子到齐
+同一根闭合分钟并就绪，缺失时保持已有仓位。归一化、rolling分位和NQ不变。
+
+四个开平阈值直接与所选算法的判断值比较，切换时不会自动换算阈值。
+`v0` 的阈值范围为 `[0,1]`，`v1` 为 `[-1,1]`；开空阈值必须小于开多阈值，
+退多必须小于开多，退空必须大于开空。阈值相等时不触发，NQ仍使用 `[0,1]`
+分位，仅过滤开仓。配置未写 `position_algorithm` 时默认为 `v0`。
+
+`symbol_overrides` 只允许覆盖开多、开空、退多、退空四项，两套算法共用一份：
+
+```json
+{
+  "position_algorithm": "v1",
+  "symbol_overrides": {
+    "ETHUSDT": {
+      "factor_long_quantile": 0.7,
+      "factor_short_quantile": 0.1,
+      "factor_exit_quantile_long": 0.4,
+      "factor_exit_quantile_short": 0.6
+    },
+    "BTCUSDT": {
+      "factor_long_quantile": 0.8
+    }
+  }
+}
+```
+
+上例为新增字段示例，需合入完整配置。未填写或为null的字段继承全局值；
+未配置的币种完全继承全局值。覆盖应用于该币种的所有因子，不覆盖金额、NQ
+或算法选择。更新全局参数时也会校验每个币种合并后的开平阈值，拒绝无效组合。
+配置页提供算法下拉框与按币种编辑的四个输入框，空白表示继承。
+
+同一算法下的金额和阈值热加载后由下一根新闭合分钟使用，持仓继续沿用
+原数量。v0与v1的持仓归属不同，切换算法要求原持仓已关闭；配置API及Rust
+启动/热加载均检查原持仓，避免将独立因子的数量静默转移到综合策略。
+已有零目标保留并向Manager发布，继续使用唯一的Manager/Exec契约。
+
+状态和信号快照记录计算时的算法及该币种实际阈值；`quantile` 保留修正后
+百分位（v1为其均值），`decision_value` 记录开平判断值。v1以`symbol_mean`
+作为仓位策略名，记录所有因子的输入、sign和等权占比。历史模拟按当前配置
+重算，实际发布日志保留当时设置。Dashboard与B/S详情展示综合判断值和全部
+因子贡献，每币只展示一份综合仓位。
+
+两套算法共用同一份因子预热结果，单独切换算法无需重新拉取或回放行情。
+扩展因子/币种清单仍需补齐行情和元数据并验证ready。本次只修改本地代码与测试，
+未部署、未变更RX02线上配置或Manager/Exec绑定。
+
+## RX03 Perp 实盘
+
+2026-10-14 08:05 UTC RX03 CTA Perp 已接入独立 `binance_exec_trade07` 实盘，
+Manager source `trade07 / lgq_cta_RX03` 跟随 `virtual04 / cta_perp_rx03`，
+倍率1，五因子各1份，14币/34组合，每组合100 USDT。启用前账户为空仓、无挂单；
+新Exec使用独立namespace、Redis键及RocksDB，没有迁移旧持仓或历史。
+执行模板 `binance_cta_perp_rx03_ctaker` 复制RX02当前 `lgq_cta_ctaker`，
+五份实际运行参数逐项相同；买卖各最多10个挂单，10秒200单、每分钟400单。
+Maker费率-0.00002、Taker 0.000175、理论TWAP 0.0004。
+34个实时目标与Exec一致，账户position_ready、发布日志健康，Manager无待发布项。
+证据：`artifacts/cta_perp_rx03_activation/`。
+
+信号发布已开启，NQ 120/min60、因子分位2880/min1440、zscore1440/min1000，
+开仓0.9/0.1、NQ过滤0.5/0.5、退出0.7/0.3。运行环境保留100 USDT，
+仓库profile默认enabled=false，重新部署必须先检查独立Manager/Exec绑定。
+页面：`/cta/binance-cta-perp-rx03/`、`/exec_trade07/`，均由4191网关提供。
+
+## RX03 Perp 初始观察部署（历史）
+
+2026-10-14 已部署JP `~/binance-cta-perp-rx03`，14币、5因子、34个组合，
+单份100 USDT，`enabled=false`；不连接Manager，不建立实盘Exec绑定。
+07:26已完成Kafka预热，四进程正常，34/34组合实时就绪、NQ 14/14就绪。
+07:27、07:28、07:29三个连续实时分钟的34个组合全部继续更新，日志仅有observed、真实仓位发布0条。
+配置清单在 `config/cta_perp_rx03/`，与RX02独立。
+
+| 因子 | sign | 币种 |
+|---|---:|---|
+| baseline_164 | +1 | AAVE、ADA、DASH、DOGE、DOT、NEAR、SOL、UNI、XLM、ZEC |
+| baseline_200 | -1 | AAVE、BTC、DASH、DOGE、ETH、NEAR、XLM、ZEC |
+| baseline_085 | -1 | AAVE、ADA、BTC、DASH、DOGE、ETH、NEAR、ZEC |
+| baseline_141 | +1 | AVAX、DASH、DOT、LTC、NEAR、SOL |
+| TD_MT_029 | -1 | DASH、ZEC |
+
+其余信号阈值沿用本次现场RX02：开仓0.9/0.1，NQ过滤0.5/0.5，退出0.7/0.3。
+RX02现场单份已为300 USDT；RX03按用户明确指定保持100 USDT。
+因子归一化1440/min1000，分位2880/min1440，NQ 120/min60。
+
+同主机第二个Perp实例必须配置 `CTA_PERP_MODEL_SCOPE`：publisher和signal
+共同使用 `model_output/<scope>/cta_perp-binance-futures-1m-<factor>`。
+RX03取 `binance_cta_perp_rx03`，RX02继续其已有未加scope的通道。
+`CTA_PERP_FACTOR_PROCESS_NAME` 同时隔离publisher的启停进程名；RX03为
+`cta_perp_factor_binance_cta_perp_rx03`。BBO仍订阅共享行情。
+Redis使用 `binance-cta-perp-rx03:cta_symbol_factors`，历史/状态均在新目录。
+
+新页面为4191网关 `/cta/binance-cta-perp-rx03/`、`config/`、`signals/`，
+分别代理loopback10197/19187。publisher绑定CPU19，其他三进程0-5,48-95。
+配置页清单、100 USDT、B/S开多/开空/平仓标记、快照点击及手机布局检查通过，
+无JavaScript错误；50个既有进程及55份配置保持。
+本次30项Perp Rust和51项Python检查通过；全库1271项通过、3项忽略，
+2项原有测试因默认因子清单变更后断言未更新而失败（Spread服务列表、
+cta_factor_universe公式期望表），详见 `artifacts/cta_perp_rx03_deployment/checks.json`。
+构建、哈希、页面和现场检查证据均保留在该目录。
+
+2026-10-14 04:12:05 UTC 按操作者要求恢复 RX01 Spread 实盘推送。
+启用前从不可变信号日志中找齐46组合最近一次100 USDT入场数量，重建完整绝对目标：
+3个方向持有组合使用该方向的一份现货/零永续，43个退出组合只保留最近一份现货
+及其反向永续。移除旧轮次累加量，不改写历史日志，不清零账户后再开仓。
+按准备时市价，五因子目标双腿合计58,851.68 → 8,876.85 USDT；独立旧inventory
+保持原目标与份数，不包含在该五因子合计中。
+通过环境本地脚本重启signal载入目标，PID46021 → PID176562，CPU0-5不变，
+其余44个受保护进程不变。配置API乐观锁开启 `enabled=true`，五因子发布成功，
+Manager模板与Exec06全部92个市场数量逐项一致，跟随队列为空，journal健康且无发布错误。
+首轮交易所核验可用保证金已为+1,123.01 USDT，仓位仍在向新目标收敛，不能将此
+视为所有执行已经完成。证据：`artifacts/cta_spread_rx01_live_enable/`。
+状态/配置备份：`~/binance-cta-spread-rx01/run/live_enable_20261014T041023Z/`。
+
+2026-10-14 03:32:25 UTC 已通过 RX01 环境本地配置接口将 Spread 的
+`enabled` 设为 `false`，进程已确认热加载。此操作只暂停新目标发布，未重启
+Exec、撤单、改杠杆或改写已有目标与账户仓位。配置和信号状态备份在
+`~/binance-cta-spread-rx01/run/reentry_guard_20261014T033225Z/`。
+
+诊断确认旧 Spread `cash_qty += qty` 在对冲退出后每次重新入场继续累积
+两腿库存，违背当前操作者要求的绝对目标模型。Manager 份数与跟随倍率均为1，
+目录目标与 Exec 目标逐项一致。当前46组合、每份100 USDT 的新策略基准双腿
+上限为9200 USDT（市值随价格变化），另有启用时显式承接的独立旧 inventory，
+不可混为本次100 USDT配置生成的新仓。
+
+已修正为每次新入场替换完整的现货/永续目标，禁止把历史对冲腿叠加到
+新目标；33项 Spread 测试通过，包含100轮同向重入、退出与重启回归。
+格式与 `cargo check --bin cta_spread_signal` 通过。完整库测试1265通过、3忽略、
+3失败：未改动的因子配置测试仍固定期望旧symbol数量、旧因子列表或旧公式映射，
+与当前仓库配置不符；本次未改动这些配置和测试。
+04:01 UTC 按操作者要求完成信号推送程序重新部署：本地同步的 `arbmm`
+`6ff0248e` 加本次两文件补丁，release 构建、SHA-256 校验后原子安装，
+仅通过环境本地脚本重启 signal，PID3132535 → PID46021，CPU0-5不变。
+二进制 SHA-256：`4069055ff3a20582f727d8cecdc6a14af7d619af7ca12ed625bad765add330b4`。
+46/46组合实时就绪、journal健康、publication_error为空；其余44个受保护进程、
+15个配置/环境文件哈希和Exec策略目录均保持不变。发布仍为 `enabled=false`。
+04:01部署时未重建累计状态，后于04:12启用前完成上述五因子目标重建；独立旧库存保留。
+该次重启JSON往返的12个数量字段仅发生1 ULP舍入，最大2.85e-14，
+没有业务目标调整或新的实盘发布。
+部署证据：`artifacts/cta_spread_rx01_absolute_target_deploy/`；远端旧程序和状态备份：
+`~/binance-cta-spread-rx01/run/absolute_target_20261014T035311Z/`。
 
 2026-10-13 13:42 UTC **RX01 Spread 已启用实盘发布并接入 Exec06**。操作者确认沿用
 现货开方向、退出时期货对冲；开仓至退出期间允许方向敞口。
@@ -236,13 +403,14 @@ Perp 使用 NQ 开仓过滤参数，Spread 使用历史 mid 价差分位过滤�
 执行配置入口统一位于 Manager。
 
 反向开仓信号同时通过价差过滤时，直接反转，不等待下一根 bar：
-先在目标账本中用永续对冲旧方向，再在现货加入新方向的一份数量，
+用新方向的一份数量构造完整目标：现货为该数量，永续为0，替换上一轮两腿。
 一次向 Manager 发布最终两个绝对目标。没有中间清仓请求。
 反向信号未通过新现货方向的价差过滤，或现货 BBO 无效，则只对冲旧方向，不开反向仓位。
-同向信号不加仓；重复发布始终是幂等的完整绝对目标。
+持仓期间同向信号不重算数量；退出后新入场同样替换两腿目标，不累积旧库存。
+重复发布始终是幂等的完整绝对目标。
 
 例如现货 +2 / 永续 0，反向做空数量为 -3 且价差处于高分位：
-发布现货 -1 / 永续 -2，净方向为 -3。再退出空方向时发布现货 -1 / 永续 +1，
+发布现货 -3 / 永续 0，净方向为 -3。再退出空方向时发布现货 -3 / 永续 +3，
 净方向归零。没有通过高分位过滤时，只发布现货 +2 / 永续 -2。
 执行尚未完成时再次更新，Exec 以最新目标减实际已执行数量计算差额。
 

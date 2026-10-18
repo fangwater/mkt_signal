@@ -1,0 +1,33 @@
+{
+  "created_utc": "2026-10-15T10:26:01.390764+00:00",
+  "source_branch": "arbmm",
+  "source_head": "133bf23fcdc53001eb2dbac72cd0b1d64ac285ca",
+  "dirty_worktree": true,
+  "files": {
+    "before.json": "468e6bb69309e9f8e90198da49428453d1e8c193c02a224d96b87bf77614dc9a",
+    "bin/cta_perp_factor_model_1m_pub": "f45db4d4533629f24212655ac834a31053bd44b76a9ea217a90eb59a68d7c019",
+    "bin/cta_perp_signal": "7d7f4bf29fbe3edd24286c5ec52a4b6e12e662aa3a4a735ec7106d66f6889b3b",
+    "deploy_remote.py": "fd113b5549b0fca3ada7608981fe0625de9eb0da80100f7c1e6fa45adc3373a2",
+    "rx02/cta_perp.json": "bb336c99e813c53d9d40131b9e82ccb0c0f2a5ff797e19babb6ae738abf96a03",
+    "rx02/cta_perp_factor_model_1m_pub.toml": "cc17aa88e6f20d05e5c5ba7c456efde18a10248c4bbdee6050b35a5310ecc79f",
+    "rx02/cta_perp_symbol_factors.json": "6b2a0fbb91dd272a36053269acd8b91626ca0c537930fd0cf4c13f7edb5acdd7",
+    "rx02/excluded_symbols.json": "9aab6936d39879c033ec96fff8ffcad900354fe377a5c9d55b3a6b7e6736df2e",
+    "rx03/cta_perp.json": "05fceb75858d43d9c3a60bf86ebceeac1caa873ee77fd25a5eb3c23aad56b56e",
+    "rx03/cta_perp_factor_model_1m_pub.toml": "57f7968c46b2bc454b9df273ad9e657b212991684c88ead8bcae3f335d86073d",
+    "rx03/cta_perp_symbol_factors.json": "1d3899463f65148e8327778fa94d0646a5a2cda44df921e00ec5ee2db149f2cd",
+    "scripts/cta_perp_config_server.py": "db05696ddf986aada9a9d8a92406d6786a1bb4bd0ca2fb91ba70d7525eef2101",
+    "scripts/cta_perp_dashboard.py": "39d58b495cf2fc268888ae2b02088b36bb67037702d4f2e846f5d1fe99a259b1",
+    "scripts/cta_perp_factor_config.py": "56781c109cd0fbdcf629dcf0e0eff0638489e2cf6c0b101527590718b1d02842",
+    "scripts/cta_perp_position_replay.py": "059e800bd73edd58c2fd8d07f4a417d93b206415aca7fa8202bb282caeebcbbc",
+    "scripts/cta_perp_signal_history.py": "d3a68d16d216fc537a1ab7fbb51c5258636a48b10cffb9129b679bff9105daab",
+    "scripts/factor_validation_allowlist.txt": "59d19566e4f2c81f611df634a97cd70c95ca4a48a0a65a1dd1b521860aa367f2",
+    "web/cta_perp/index.html": "9786a79bc68952c6c9483390f152849e711e2983082bc0c03b86bbd1a6b4b7dd",
+    "web/cta_perp_config/index.html": "dc9233d035de02feec3748daefb9cb7540f87f757f639ccf66d252c149e88062",
+    "web/cta_perp_signals/index.html": "a21007fc06a43bb3892d2729fe5dcdd342a4ee17521bd1c70e0e9ef1a4d1a9ea",
+    "web/cta_perp_signals/panel.js": "b6be527ff48caa7d656078ea926953fae1582e79b2a4d2cb89e2e51c615c75be"
+  },
+  "deployment_completed": true,
+  "remote_temporary_paths_removed": true,
+  "final_verification": "final_target_verification.json",
+  "cleanup_verification": "cleanup_verified.json"
+}

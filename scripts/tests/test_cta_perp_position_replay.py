@@ -143,4 +143,98 @@ class PositionReplayTests(unittest.TestCase):
     def test_reflected_threshold_ties_do_not_enter_or_exit(self):
         result=self.run_rows([self.row(0,{'A':.9})],{'A':-1})
         self.assertEqual(result['summaries']['FILUSDT']['entry_actions'],0)
+
+    def test_percentile_usage_changes_decisions_but_not_sign_nq_or_saved_percentile(self):
+        self.config['entry']['factor_long_quantile'] = .7
+        row = self.row(0, {'A': .8})
+        old = factor_snapshot('A', 1, row, self.config)
+        self.assertEqual(old['decision'], 'long')
+        self.config['position_algorithm'] = 'v1'
+        new = factor_snapshot('A', 1, row, self.config)
+        self.assertAlmostEqual(new['decision_value'], .6)
+        self.assertEqual(new['quantile'], .8)
+        self.assertEqual(new['decision'], 'flat')
+        self.assertEqual(new['nq_long_quantile'], old['nq_long_quantile'])
+        negative = factor_snapshot('A', -1, self.row(0, {'A': .1}), self.config)
+        self.assertAlmostEqual(negative['decision_value'], .8)
+        self.assertEqual(negative['decision'], 'long')
+
+    def test_v1_exit_uses_transformed_value_and_original_quantity(self):
+        rows = [self.row(0, {'A': .99}), self.row(1, {'A': .6}, 120, 120)]
+        self.assertEqual(self.run_rows(rows, {'A': 1})['closed_trades'], 0)
+        self.config['position_algorithm'] = 'v1'
+        result = self.run_rows(rows, {'A': 1})
+        self.assertEqual(result['closed_trades'], 1)
+        self.assertEqual(result['trades'][0]['qty'], 10)
+        self.assertEqual(result['trades'][0]['pnl'], 200)
+        self.assertEqual(result['records'][1]['snapshot']['position_algorithm'], 'v1')
+        self.assertAlmostEqual(result['records'][1]['snapshot']['signal']['decision_value'], .2)
+
+    def test_symbol_overrides_work_for_both_algorithms_and_are_frozen_in_snapshots(self):
+        self.config['symbol_overrides'] = {'FILUSDT': {
+            'factor_long_quantile': .7, 'factor_short_quantile': .0,
+            'factor_exit_quantile_long': .6, 'factor_exit_quantile_short': .2,
+        }}
+        for algorithm, qs in [('v0', [.8, .5]), ('v1', [.9, .75])]:
+            self.config['position_algorithm'] = algorithm
+            fil = [self.row(i, {'A': q}) for i, q in enumerate(qs)]
+            eth = [{**row, 'symbol': 'ETHUSDT'} for row in fil]
+            result = simulate(fil + eth, {'FILUSDT': {'A': 1}, 'ETHUSDT': {'A': 1}}, self.config, self.settings)
+            self.assertEqual(result['summaries']['FILUSDT']['closed_trades'], 1)
+            self.assertEqual(result['summaries']['ETHUSDT']['entry_actions'], 0)
+            records = [r for r in result['records'] if r['symbol'] == 'FILUSDT']
+            self.assertEqual(records[0]['snapshot']['entry']['factor_long_quantile'], .7)
+            self.assertEqual(records[1]['snapshot']['execution']['factor_exit_quantile_long'], .6)
+            self.assertEqual(records[0]['snapshot']['entry']['nq_long_quantile'], .5)
+            self.assertEqual(records[0]['snapshot']['max_pos_u'], 1000)
+
+    def test_v1_negative_thresholds_and_exact_ties(self):
+        self.config['position_algorithm'] = 'v1'
+        self.config['entry'].update(factor_long_quantile=.6, factor_short_quantile=-.6)
+        self.config['execution'].update(factor_exit_quantile_long=.2, factor_exit_quantile_short=-.2)
+        for qs in [[.8,.81,.6,.59], [.2,.19,.4,.41]]:
+            result = self.run_rows([self.row(i, {'A': q, 'B': q}) for i,q in enumerate(qs)], {'A': 1, 'B': 1})
+            self.assertEqual(result['closed_trades'], 1)
+            self.assertEqual(result['trades'][0]['entry_ts_ms'], START + 60001)
+            self.assertEqual(result['trades'][0]['exit_ts_ms'], START + 180001)
+
+    def test_v1_mean_is_equal_weight_before_threshold_and_one_unit_per_entry(self):
+        self.config['position_algorithm']='v1'
+        self.config['entry'].update(factor_long_quantile=.8, factor_short_quantile=-.8)
+        rows=[self.row(0, {'A':.99,'B':.79}), self.row(1, {'A':.96,'B':.95}),
+              self.row(2, {'A':.99,'B':.99},200,200), self.row(3, {'A':.51,'B':.51},300,300)]
+        result=self.run_rows(rows,{'A':20,'B':1})
+        self.assertEqual(result['allocation'],'per_symbol')
+        self.assertEqual(len(result['records']),4)
+        self.assertEqual(result['records'][0]['simulation']['actions'],[])
+        self.assertAlmostEqual(result['records'][0]['snapshot']['signal']['decision_value'],.78)
+        self.assertEqual(set(result['summaries']['FILUSDT']['strategies']),{'symbol_mean'})
+        trade=result['trades'][0]
+        self.assertEqual(trade['qty'],10)
+        self.assertEqual(trade['entry_notional'],1000)
+        self.assertEqual(trade['strategy_name'],'symbol_mean')
+        self.assertEqual(result['records'][2]['snapshot']['position_qty'],10)
+        votes=result['records'][0]['snapshot']['signal']['factor_votes']
+        self.assertEqual([v['normalized_weight'] for v in votes],[.5,.5])
+
+    def test_v1_waits_for_all_factors_and_disabled_factors_are_excluded(self):
+        self.config['position_algorithm']='v1'
+        rows=[self.row(0,{'A':.99}), self.row(1,{'A':.99,'B':.99}),self.row(2,{'A':.01}),self.row(3,{'A':.6,'B':.6})]
+        result=self.run_rows(rows,{'A':1,'B':1,'C':0})
+        self.assertEqual(result['summaries']['FILUSDT']['warmup_minutes'],2)
+        self.assertEqual(result['trades'][0]['entry_ts_ms'],START+60001)
+        self.assertEqual(result['trades'][0]['exit_ts_ms'],START+180001)
+        self.assertEqual(result['trades'][0]['qty'],10)
+
+    def test_v1_opposing_values_cancel_and_sign_nq_apply_to_combined_direction(self):
+        self.config['position_algorithm']='v1'
+        self.config['entry'].update(factor_long_quantile=.6, factor_short_quantile=-.6)
+        result=self.run_rows([self.row(0,{'A':.99,'B':.01})],{'A':1,'B':1})
+        self.assertEqual(result['open_positions'],[])
+        rows=[self.row(0,{'A':.01,'B':.99}),self.row(1,{'A':.01,'B':.99}),self.row(2,{'A':.6,'B':.4})]
+        rows[0]['nq']['long_quantile']=.4
+        rows[2]['nq']['ready']=False
+        result=self.run_rows(rows,{'A':-20,'B':1})
+        self.assertEqual(result['trades'][0]['entry_ts_ms'],START+60001)
+        self.assertEqual(result['closed_trades'],1)
 if __name__=='__main__':unittest.main()

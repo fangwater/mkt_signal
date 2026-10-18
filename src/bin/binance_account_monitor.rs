@@ -32,7 +32,7 @@ use runtime_common::mkt_cfg::{
     load_trade_engine_local_ip_config_preferring_trade_engine,
     validate_binance_um_whitelist_ip_config,
 };
-use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use runtime_common::ws_connection::{MktConnection, MktConnectionHandler, WsConnector};
 use serde::Deserialize;
 use sha2::Sha256;
 use std::cell::RefCell;
@@ -40,12 +40,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::net::IpAddr;
+use std::net::{IpAddr, UdpSocket};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use trade_engine::binance_fix::{spawn_binance_spot_fix_er_listener, BinanceSpotFixConfig};
 use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
@@ -333,18 +333,42 @@ async fn signed_get_binance(
     Ok(body)
 }
 
+fn account_query_local_ip(configured: &str) -> Result<IpAddr> {
+    let configured: IpAddr = configured
+        .trim()
+        .parse()
+        .context("invalid account local IP")?;
+    if !configured.is_unspecified() {
+        return Ok(configured);
+    }
+    // UDP connect selects a route without sending packets. Resolve once at
+    // startup so later account requests retain the configured trading route.
+    let destination: IpAddr = if configured.is_ipv4() {
+        "192.0.2.1"
+    } else {
+        "2001:db8::1"
+    }
+    .parse()?;
+    let socket = UdpSocket::bind((configured, 0)).context("bind account route probe")?;
+    socket
+        .connect((destination, 443))
+        .context("resolve account route")?;
+    let local = socket.local_addr()?.ip();
+    anyhow::ensure!(
+        !local.is_unspecified(),
+        "account route has no concrete local IP"
+    );
+    Ok(local)
+}
+
 fn build_binance_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<Client> {
-    let builder = Client::builder().timeout(timeout);
-    let builder = match local_ip.map(str::trim).filter(|ip| !ip.is_empty()) {
-        Some(ip) if ip != "0.0.0.0" => {
-            let parsed: IpAddr = ip
-                .parse()
-                .with_context(|| format!("invalid Binance REST local_ip: {}", ip))?;
-            builder.local_address(parsed)
-        }
-        _ => builder,
-    };
-    builder.build().context("build Binance REST client failed")
+    let local = account_query_local_ip(local_ip.context("account query requires a local IP")?)?;
+    Client::builder()
+        .timeout(timeout)
+        .local_address(local)
+        .no_proxy()
+        .build()
+        .context("build Binance REST client failed")
 }
 
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
@@ -1124,18 +1148,20 @@ where
 
 async fn run_binance_std_um_wallet_poller_session(
     url: &str,
+    local_ip: &str,
     api_key: &str,
     api_secret: &str,
     interval_secs: u64,
     recv_window_ms: u64,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    let (mut ws, _) = connect_async(url)
+    let connection = WsConnector::connect_with_local_ip_raw(url, local_ip)
         .await
         .with_context(|| format!("connect Binance WS API account.status url={url}"))?;
+    let mut ws = connection.ws_stream.lock().await;
     info!(
-        "binance std UM account poller connected: url={} wallet_assets=USDT,BFUSD interval={}s",
-        url, interval_secs
+        "binance std UM account poller connected: url={} local_ip={} wallet_assets=USDT,BFUSD interval={}s",
+        url, local_ip, interval_secs
     );
 
     let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -1150,7 +1176,7 @@ async fn run_binance_std_um_wallet_poller_session(
                 }
             }
             _ = tick.tick() => {
-                query_binance_std_um_wallet_once(&mut ws, api_key, api_secret, recv_window_ms).await?;
+                query_binance_std_um_wallet_once(&mut *ws, api_key, api_secret, recv_window_ms).await?;
             }
         }
     }
@@ -1159,6 +1185,7 @@ async fn run_binance_std_um_wallet_poller_session(
 fn spawn_binance_std_um_wallet_poller(
     api_key: String,
     api_secret: String,
+    local_ip: String,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let url = std::env::var("BINANCE_STD_UM_BALANCE_WS_API_URL")
@@ -1185,6 +1212,7 @@ fn spawn_binance_std_um_wallet_poller(
             }
             match run_binance_std_um_wallet_poller_session(
                 &url,
+                &local_ip,
                 &api_key,
                 &api_secret,
                 interval_secs,
@@ -1395,8 +1423,8 @@ async fn main() -> Result<()> {
         &ip_source,
         "binance_account_monitor",
     );
-    let primary_ip = local_ip_cfg.local_ips[0].clone();
-    let secondary_ip = local_ip_cfg.local_ips[1].clone();
+    let primary_ip = account_query_local_ip(&local_ip_cfg.local_ips[0])?.to_string();
+    let secondary_ip = account_query_local_ip(&local_ip_cfg.local_ips[1])?.to_string();
     let binance_um_whitelist_ip = if binance_is_standard && binance_um_ip_whitelist_mode {
         Some(
             local_ip_cfg
@@ -1507,6 +1535,7 @@ async fn main() -> Result<()> {
             spawn_binance_std_um_wallet_poller(
                 api_key.clone(),
                 api_secret.clone(),
+                primary_ip.clone(),
                 shutdown_rx.clone(),
             );
         }
@@ -1675,6 +1704,69 @@ mod tests {
         BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope,
     };
     use order_common::TradingVenue;
+
+    #[tokio::test]
+    async fn account_rest_uses_required_source_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = server.local_addr().unwrap();
+        let accepted = tokio::spawn(async move {
+            let (mut socket, peer) = server.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+            peer.ip()
+        });
+        let timeout = std::time::Duration::from_secs(3);
+        assert!(super::build_binance_rest_client(None, timeout).is_err());
+        assert!(super::build_binance_rest_client(Some("invalid"), timeout).is_err());
+        let client = super::build_binance_rest_client(Some("127.0.0.2"), timeout).unwrap();
+        let response = client
+            .get(format!("http://{address}/account"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(accepted.await.unwrap().to_string(), "127.0.0.2");
+    }
+
+    #[tokio::test]
+    async fn account_wallet_websocket_keeps_source_address() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = server.local_addr().unwrap();
+        let accepted = tokio::spawn(async move {
+            let (socket, peer) = server.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let request = ws.next().await.unwrap().unwrap();
+            let value: serde_json::Value =
+                serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert_eq!(value["method"], "v2/account.status");
+            ws.send(Message::Close(None)).await.unwrap();
+            peer.ip()
+        });
+        let (_shutdown, mut receiver) = tokio::sync::watch::channel(false);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            super::run_binance_std_um_wallet_poller_session(
+                &format!("ws://{address}/account"),
+                "127.0.0.2",
+                "test-key",
+                "test-secret",
+                20,
+                5000,
+                &mut receiver,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err()); // The mock server closes after the first query.
+        assert_eq!(accepted.await.unwrap().to_string(), "127.0.0.2");
+    }
 
     #[test]
     fn exec_forwarding_isolates_positions_but_retains_shared_collateral_risk() {

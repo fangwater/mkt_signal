@@ -1,0 +1,25 @@
+{
+  "checked_ts_us": 1792072694090861,
+  "manager_health": {
+    "status": "ok",
+    "source_count": 7,
+    "generated_at_us": 1792072687002840,
+    "last_attempt_at_us": 1792072679275956,
+    "refresh_interval_secs": 60,
+    "last_refresh_error": null
+  },
+  "manager_binary_and_cpu_verified": true,
+  "factor_cpus_verified": {
+    "rx02": 18,
+    "rx03": 19
+  },
+  "page_statuses": {
+    "binance-cta-perp-rx02/": 200,
+    "binance-cta-perp-rx02/signals/": 200,
+    "binance-cta-perp-rx02/config/": 200,
+    "binance-cta-perp-rx03/": 200,
+    "binance-cta-perp-rx03/signals/": 200,
+    "binance-cta-perp-rx03/config/": 200
+  },
+  "temporary_session_removed": true
+}

@@ -1,0 +1,61 @@
+{
+  "baseline_164": {
+    "sign": 1,
+    "symbols": [
+      "AAVEUSDT",
+      "ADAUSDT",
+      "DASHUSDT",
+      "DOGEUSDT",
+      "DOTUSDT",
+      "NEARUSDT",
+      "SOLUSDT",
+      "UNIUSDT",
+      "XLMUSDT",
+      "ZECUSDT"
+    ]
+  },
+  "baseline_200": {
+    "sign": -1,
+    "symbols": [
+      "AAVEUSDT",
+      "BTCUSDT",
+      "DASHUSDT",
+      "DOGEUSDT",
+      "ETHUSDT",
+      "NEARUSDT",
+      "XLMUSDT",
+      "ZECUSDT"
+    ]
+  },
+  "baseline_085": {
+    "sign": -1,
+    "symbols": [
+      "AAVEUSDT",
+      "ADAUSDT",
+      "BTCUSDT",
+      "DASHUSDT",
+      "DOGEUSDT",
+      "ETHUSDT",
+      "NEARUSDT",
+      "ZECUSDT"
+    ]
+  },
+  "baseline_141": {
+    "sign": 1,
+    "symbols": [
+      "AVAXUSDT",
+      "DASHUSDT",
+      "DOTUSDT",
+      "LTCUSDT",
+      "NEARUSDT",
+      "SOLUSDT"
+    ]
+  },
+  "TD_MT_029": {
+    "sign": -1,
+    "symbols": [
+      "DASHUSDT",
+      "ZECUSDT"
+    ]
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "source_id": "binance_exec_trade05",
+  "virtual_id": "virtual02",
+  "new_strategy": {
+    "strategy_name": "lgq_cta_symbol_mean",
+    "targets": {}
+  },
+  "creator": "lgq",
+  "publish_token_source": "RX02 env CTA_PUBLISH_TOKEN; read in remote memory only",
+  "bindings_during_recovery": [
+    {
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "binding_name": "lgq_cta_symbol_mean",
+      "position_strategy_name": "lgq_cta_symbol_mean",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1.0
+    }
+  ],
+  "bindings_after_final_targets_verified": [
+    {
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0.0
+    },
+    {
+      "binding_name": "lgq_cta_symbol_mean",
+      "position_strategy_name": "lgq_cta_symbol_mean",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1.0
+    }
+  ],
+  "rx03": "keep existing virtual04 bindings",
+  "executed": false
+}

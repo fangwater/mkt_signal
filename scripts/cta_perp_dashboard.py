@@ -21,6 +21,7 @@ from cta_perp_signal_history import (  # noqa: E402
     BinanceMinuteClient, SignalHistoryStore, SignalPanelCollector, configured_targets,
 )
 from cta_perp_position_replay import PositionReplay
+from cta_perp_config_server import position_strategy_factors
 
 MAX_HEALTHY_STATUS_AGE_MS = 90_000
 
@@ -51,8 +52,9 @@ def factor_strategies(status_path: Path, config_path: Path) -> dict[str, list[st
         table, _ = _read_json(config_path.with_name("cta_perp_symbol_factors.json"))
     if not isinstance(table, dict):
         return {}
-    return {symbol: sorted(name for name, weight in row.items()
-                           if isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight != 0)
+    config, _ = _read_json(config_path)
+    algorithm = config.get("position_algorithm", "v0") if isinstance(config, dict) else "v0"
+    return {symbol: sorted(position_strategy_factors(row, algorithm))
             for symbol, row in table.items() if isinstance(row, dict)}
 
 

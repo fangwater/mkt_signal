@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use order_common::TradingVenue;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -10,6 +11,7 @@ pub const CTA_PERP_SIGNAL_POLL_INTERVAL_MS: u64 = 10;
 pub const CTA_PERP_MAX_QUOTE_AGE_MS: u64 = 5_000;
 pub const CTA_PERP_MAX_MODEL_AGE_MS: u64 = 120_000;
 pub const CTA_PERP_STATUS_PATH: &str = "run/cta_perp_status.json";
+pub const SYMBOL_MEAN_STRATEGY: &str = "symbol_mean";
 
 fn default_max_pos_u() -> f64 {
     200.0
@@ -43,14 +45,60 @@ fn default_factor_exit_quantile_short() -> f64 {
     0.7
 }
 
+/// How a factor percentile is used for position decisions, independent of sign.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PositionAlgorithm {
+    #[default]
+    V0,
+    V1,
+}
+
+impl PositionAlgorithm {
+    pub fn allocation(self) -> &'static str {
+        match self {
+            Self::V0 => "per_symbol_factor",
+            Self::V1 => "per_symbol",
+        }
+    }
+
+    pub fn decision_value(self, x: f64) -> f64 {
+        match self {
+            Self::V0 => x,
+            Self::V1 => 2.0 * x - 1.0,
+        }
+    }
+
+    fn minimum(self) -> f64 {
+        self.decision_value(0.0)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SymbolThresholdOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_long_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_short_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_exit_quantile_long: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_exit_quantile_short: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CtaPerpConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// USDT entry amount for each enabled symbol/factor pair.
+    /// One entry's USDT amount: per factor in v0, per symbol mean in v1.
     #[serde(default = "default_max_pos_u")]
     pub max_pos_u: f64,
+    #[serde(default)]
+    pub position_algorithm: PositionAlgorithm,
+    #[serde(default)]
+    pub symbol_overrides: BTreeMap<String, SymbolThresholdOverrides>,
     #[serde(default)]
     pub entry: EntryConfig,
     pub execution: ExecutionConfig,
@@ -109,19 +157,68 @@ impl CtaPerpConfig {
         CTA_PERP_VENUE
     }
 
+    /// Resolve only the four position thresholds; all other controls are global.
+    pub fn for_symbol(&self, symbol: &str) -> Self {
+        let mut effective = Self {
+            enabled: self.enabled,
+            max_pos_u: self.max_pos_u,
+            position_algorithm: self.position_algorithm,
+            symbol_overrides: BTreeMap::new(),
+            entry: self.entry.clone(),
+            execution: self.execution.clone(),
+        };
+        if let Some(row) = self.symbol_overrides.get(symbol) {
+            if let Some(value) = row.factor_long_quantile {
+                effective.entry.factor_long_quantile = value;
+            }
+            if let Some(value) = row.factor_short_quantile {
+                effective.entry.factor_short_quantile = value;
+            }
+            if let Some(value) = row.factor_exit_quantile_long {
+                effective.execution.factor_exit_quantile_long = value;
+            }
+            if let Some(value) = row.factor_exit_quantile_short {
+                effective.execution.factor_exit_quantile_short = value;
+            }
+        }
+        effective
+    }
+
     pub fn validate(&self) -> Result<()> {
+        self.validate_controls()?;
+        if self.symbol_overrides.len() > 256 {
+            bail!("symbol_overrides supports at most 256 symbols");
+        }
+        for symbol in self.symbol_overrides.keys() {
+            if symbol.is_empty()
+                || symbol.len() > 32
+                || !symbol
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            {
+                bail!("invalid symbol_overrides symbol: {symbol}");
+            }
+            self.for_symbol(symbol)
+                .validate_controls()
+                .with_context(|| format!("symbol_overrides.{symbol}"))?;
+        }
+        Ok(())
+    }
+
+    fn validate_controls(&self) -> Result<()> {
+        let minimum = self.position_algorithm.minimum();
         if !self.max_pos_u.is_finite() || self.max_pos_u <= 0.0 {
             bail!("max_pos_u must be a positive finite USDT amount");
         }
         if !(self.entry.factor_long_quantile.is_finite()
             && self.entry.factor_short_quantile.is_finite()
-            && self.entry.factor_long_quantile > 0.0
+            && self.entry.factor_long_quantile > minimum
             && self.entry.factor_long_quantile <= 1.0
-            && self.entry.factor_short_quantile >= 0.0
+            && self.entry.factor_short_quantile >= minimum
             && self.entry.factor_short_quantile < 1.0
             && self.entry.factor_short_quantile < self.entry.factor_long_quantile)
         {
-            bail!("entry factor quantiles must satisfy 0 <= short < long <= 1");
+            bail!("entry factor thresholds must satisfy {minimum} <= short < long <= 1");
         }
         if ![self.entry.nq_long_quantile, self.entry.nq_short_quantile]
             .into_iter()
@@ -130,10 +227,10 @@ impl CtaPerpConfig {
             bail!("entry NQ quantiles must be finite values in [0, 1]");
         }
         if !(self.execution.factor_exit_quantile_long.is_finite()
-            && self.execution.factor_exit_quantile_long >= 0.0
+            && self.execution.factor_exit_quantile_long >= minimum
             && self.execution.factor_exit_quantile_long < self.entry.factor_long_quantile)
         {
-            bail!("factor_exit_quantile_long must be in [0, entry.factor_long_quantile)");
+            bail!("factor_exit_quantile_long must be in [{minimum}, entry.factor_long_quantile)");
         }
         if !(self.execution.factor_exit_quantile_short.is_finite()
             && self.execution.factor_exit_quantile_short > self.entry.factor_short_quantile
@@ -162,6 +259,73 @@ mod tests {
         .expect("parse");
         config.validate().expect("validate");
         assert_eq!(config.venue(), TradingVenue::BinanceFutures);
+        assert_eq!(config.position_algorithm, PositionAlgorithm::V0);
+        assert!(config.symbol_overrides.is_empty());
+    }
+
+    #[test]
+    fn symbol_thresholds_inherit_per_field_for_both_algorithms() {
+        let mut config: CtaPerpConfig = serde_json::from_value(serde_json::json!({
+            "execution": {},
+            "symbol_overrides": {
+                "ETHUSDT": {"factor_long_quantile": 0.8, "factor_exit_quantile_short": 0.6},
+                "BTCUSDT": {"factor_short_quantile": 0.2, "factor_exit_quantile_long": 0.4}
+            }
+        }))
+        .unwrap();
+        for algorithm in [PositionAlgorithm::V0, PositionAlgorithm::V1] {
+            config.position_algorithm = algorithm;
+            config.validate().unwrap();
+            let eth = config.for_symbol("ETHUSDT");
+            assert_eq!(eth.entry.factor_long_quantile, 0.8);
+            assert_eq!(eth.entry.factor_short_quantile, 0.1);
+            assert_eq!(eth.execution.factor_exit_quantile_long, 0.3);
+            assert_eq!(eth.execution.factor_exit_quantile_short, 0.6);
+            assert_eq!(eth.entry.nq_long_quantile, config.entry.nq_long_quantile);
+            assert_eq!(eth.max_pos_u, config.max_pos_u);
+            assert_eq!(config.for_symbol("SOLUSDT").entry, config.entry);
+        }
+        config.entry.factor_long_quantile = 0.35;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("BTCUSDT"));
+    }
+
+    #[test]
+    fn algorithm_ranges_and_override_fields_are_validated() {
+        let mut raw = serde_json::json!({"position_algorithm":"v1", "entry":{
+            "factor_long_quantile":0.6, "factor_short_quantile":-0.6
+        }, "execution":{"factor_exit_quantile_long":0.2,"factor_exit_quantile_short":-0.2}});
+        serde_json::from_value::<CtaPerpConfig>(raw.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        raw["position_algorithm"] = serde_json::json!("v0");
+        assert!(serde_json::from_value::<CtaPerpConfig>(raw.clone())
+            .unwrap()
+            .validate()
+            .is_err());
+        raw["position_algorithm"] = serde_json::json!("v2");
+        assert!(serde_json::from_value::<CtaPerpConfig>(raw).is_err());
+        for overrides in [
+            serde_json::json!({"ethusdt":{"factor_long_quantile":0.8}}),
+            serde_json::json!({"ETHUSDT":{"factor_exit_quantile_long":0.95}}),
+            serde_json::json!({"ETHUSDT":{"factor_short_quantile":-0.1}}),
+        ] {
+            let config: CtaPerpConfig = serde_json::from_value(serde_json::json!({
+                "execution":{}, "symbol_overrides":overrides
+            }))
+            .unwrap();
+            assert!(config.validate().is_err());
+        }
+        for field in ["max_pos_u", "nq_long_quantile", "position_algorithm"] {
+            assert!(serde_json::from_value::<CtaPerpConfig>(serde_json::json!({
+                "execution":{}, "symbol_overrides":{"ETHUSDT":{field:0.5}}
+            }))
+            .is_err());
+        }
     }
 
     #[test]

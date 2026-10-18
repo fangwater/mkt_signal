@@ -312,6 +312,16 @@ the existing durable ACK mechanism. Restart replays the journal; stable
 portfolio/venue/statement identities deduplicate unchanged records and reject
 conflicts. Pagination inconsistencies and cross-portfolio rows fail closed.
 
+An overlapping REST read may revise both available-balance context fields by
+the same tiny amount (RX01 observed 1e-20 USDT on interest statements). The
+monitor accepts an absolute shift up to 1e-18 only when exact decimal arithmetic
+confirms that the before/after shifts are identical and all other fields,
+including identity, settlement amount and debt, remain unchanged. It preserves
+the original statement and ACK bytes and journals the subsequent observation as
+`statement_balance_reobservation`. Larger shifts, changed available deltas,
+scientific-notation comparisons and actual settlement/debt conflicts still fail
+closed. The IPC contract and persisted statement keys are unchanged.
+
 Statements use the independent `rapidx_statements` RocksDB column family and
 sync outbox. They do not create trades, change positions, or reapply balance
 deltas to account snapshots. Like execution facts, their hash keys are excluded

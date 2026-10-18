@@ -1,4 +1,4 @@
-/* One factor, one position: only opening and closing transitions draw B/S. */
+/* Each strategy has one position per symbol; B/S mark entry and exit transitions. */
 "use strict";
 const CtaPanel = (() => {
   const MINUTE = 60000;
@@ -337,13 +337,14 @@ if (typeof document !== "undefined")
       Object.keys(
         state.overview?.simulation?.summaries?.[symbol]?.strategies || {},
       );
+    const strategyLabel = name => name === "symbol_mean" ? "因子算术平均" : name;
     const factorStats = (symbol, factor) =>
       state.overview?.simulation?.summaries?.[symbol]?.strategies?.[factor];
     function watchlist() {
       el("symbols").innerHTML = (state.overview?.symbols || [])
         .map((row) => {
           const factors = choices(row.symbol);
-          return `<button class="symbol ${row.symbol === state.symbol ? "active" : ""}" data-symbol="${esc(row.symbol)}"><span><strong>${esc(row.symbol.replace(/USDT$/, ""))}</strong><small>${factors.length} 个独立因子</small></span><span class="count">${factors.length}</span></button>`;
+          return `<button class="symbol ${row.symbol === state.symbol ? "active" : ""}" data-symbol="${esc(row.symbol)}"><span><strong>${esc(row.symbol.replace(/USDT$/, ""))}</strong><small>${factors.includes("symbol_mean") ? "综合方向" : factors.length + " 个独立因子"}</small></span><span class="count">${factors.length}</span></button>`;
         })
         .join("");
       el("symbols")
@@ -358,7 +359,7 @@ if (typeof document !== "undefined")
       const available = choices(state.symbol);
       el("strategy-filter").innerHTML = available.length
         ? available
-            .map((name) => `<option value="${esc(name)}">${esc(name)}</option>`)
+            .map((name) => `<option value="${esc(name)}">${esc(strategyLabel(name))}</option>`)
             .join("")
         : '<option value="">暂无可用因子</option>';
       el("strategy-filter").value = state.strategy;
@@ -367,7 +368,7 @@ if (typeof document !== "undefined")
         .map((name) => {
           const stats = factorStats(state.symbol, name),
             pnl = (stats?.realized_pnl || 0) + (stats?.unrealized_pnl || 0);
-          return `<button class="factor-choice ${name === state.strategy ? "active" : ""}" data-factor="${esc(name)}"><b>${esc(name)}</b><span>${positionText(stats?.position_flag)} · ${stats?.closed_trades || 0} 笔已平</span><strong class="${tone(pnl)}">${fmt(pnl, 2)} <small>USDT</small></strong></button>`;
+          return `<button class="factor-choice ${name === state.strategy ? "active" : ""}" data-factor="${esc(name)}"><b>${esc(strategyLabel(name))}</b><span>${positionText(stats?.position_flag)} · ${stats?.closed_trades || 0} 笔已平</span><strong class="${tone(pnl)}">${fmt(pnl, 2)} <small>USDT</small></strong></button>`;
         })
         .join("");
       el("factor-list")
@@ -390,7 +391,7 @@ if (typeof document !== "undefined")
         (row) => row.snapshot.demo === true,
       );
       el("market-symbol").textContent = data.symbol.replace(/USDT$/, " ");
-      el("factor-name").textContent = state.strategy;
+      el("factor-name").textContent = strategyLabel(state.strategy);
       el("price").textContent = fmt(last?.close, 8);
       const change = last && first ? (last.close / first.open - 1) * 100 : null;
       el("change").textContent =
@@ -407,7 +408,7 @@ if (typeof document !== "undefined")
       el("pnl").className = tone(pnl || 0);
       el("pnl-note").textContent =
         `已实现 ${fmt(stats?.realized_pnl, 3)} / 浮动 ${fmt(stats?.unrealized_pnl, 3)}`;
-      el("factor-quantile").textContent = pct(signal?.quantile);
+      el("factor-quantile").textContent = pct(signal?.decision_value ?? signal?.quantile);
       el("factor-quantile").className = tone(signal?.score || 0);
       el("nq-status").textContent = record
         ? `NQ ${CtaPanel.nqGate(record).text}`
@@ -433,7 +434,7 @@ if (typeof document !== "undefined")
         marker = rows.find((row) => row.data?.action);
       if (marker) {
         const action = marker.data.action;
-        return `<b>${actionText(action)}</b><br>${esc(state.strategy)} · ${time(action.ts_ms)} UTC<br>价格 ${fmt(action.price, 8)} · 数量 ${fmt(action.qty, 8)}${action.kind === "close" ? `<br>本笔 PnL ${fmt(action.pnl, 4)} USDT` : ""}<br>点击查看本次交易与 NQ`;
+        return `<b>${actionText(action)}</b><br>${esc(strategyLabel(state.strategy))} · ${time(action.ts_ms)} UTC<br>价格 ${fmt(action.price, 8)} · 数量 ${fmt(action.qty, 8)}${action.kind === "close" ? `<br>本笔 PnL ${fmt(action.pnl, 4)} USDT` : ""}<br>点击查看本次交易与 NQ`;
       }
       const candlePoint = rows.find((row) => row.seriesType === "candlestick");
       if (candlePoint) {
@@ -675,12 +676,11 @@ if (typeof document !== "undefined")
     function inspector(record, action = null) {
       if (!record) {
         el("inspector").innerHTML =
-          '<div class="hint">点击 B/S 点、交易记录或 K 线，查看这个因子的交易与 NQ。</div>';
+          '<div class="hint">点击 B/S 点、交易记录或 K 线，查看当前策略的交易与 NQ。</div>';
         return;
       }
       const snapshot = record.snapshot,
         signal = snapshot.signal || {},
-        vote = signal.factor_votes?.[0],
         flag = snapshot.position_flag;
       const execution = snapshot.execution || {},
         entry = snapshot.entry || {},
@@ -696,11 +696,11 @@ if (typeof document !== "undefined")
       <div><small>原持仓数量</small><b>${fmt(selectedTrade.qty, 8)}</b></div><div><small>${selectedTrade.status === "open" ? "浮动 PnL" : "本笔 PnL"}</small><b class="${tone(selectedTrade.pnl ?? selectedTrade.unrealized_pnl)}">${fmt(selectedTrade.pnl ?? selectedTrade.unrealized_pnl, 4)}</b></div></div></section>`
         : "";
       el("inspector").innerHTML =
-        `<div class="signal-top"><b>${esc(state.strategy)}</b><span>${time(record.model_ts_ms, true)} UTC</span></div>${pair}
-      <div class="detail-grid"><div><small>该分钟持仓</small><b>${positionText(flag)}</b></div><div><small>修正后分位</small><b>${pct(signal.quantile)}</b></div>
+        `<div class="signal-top"><b>${esc(strategyLabel(state.strategy))}</b><span>${time(record.model_ts_ms, true)} UTC</span></div>${pair}
+      <div class="detail-grid"><div><small>该分钟持仓</small><b>${positionText(flag)}</b></div><div><small>开平判断值 · ${esc(snapshot.position_algorithm || "v0")}</small><b>${pct(signal.decision_value ?? signal.quantile)}</b></div>
       <div><small>开多 / 开空</small><b>${pct(entry.factor_long_quantile)} / ${pct(entry.factor_short_quantile)}</b></div><div><small>退多 / 退空</small><b>${pct(execution.factor_exit_quantile_long)} / ${pct(execution.factor_exit_quantile_short)}</b></div>
-      <div><small>方向修正</small><b>${esc(vote?.sign)}</b></div><div><small>配置金额</small><b>${fmt(snapshot.max_pos_u ?? cfg.max_pos_u_overrides?.[record.symbol] ?? cfg.max_pos_u, 2)} USDT</b></div></div>
-      <div class="factor-snapshot"><span>原始值 ${fmt(vote?.score, 4)}</span><span>原分位 ${pct(vote?.quantile)}</span><span>修正值 ${fmt(vote?.corrected_score, 4)}</span></div>
+      <div><small>因子数量</small><b>${signal.factor_votes?.length || 0}</b></div><div><small>单份金额</small><b>${fmt(snapshot.max_pos_u ?? cfg.max_pos_u_overrides?.[record.symbol] ?? cfg.max_pos_u, 2)} USDT</b></div></div>
+      ${(signal.factor_votes || []).map(v => `<div class="factor-snapshot"><b>${esc(v.factor)}</b><span>sign ${esc(v.sign)}</span><span>原分位 ${pct(v.quantile)}</span><span>修正分位 x ${pct(v.corrected_quantile)}</span><span>判断值 ${pct(v.decision_value ?? v.corrected_quantile)}</span><span>占比 ${pct(v.normalized_weight)}</span></div>`).join("")}
       <p class="hint">同向重复触发保持原仓位，平仓使用原数量。</p>${nqInspector(record)}`;
     }
     function selectRecord(record, action = null) {
@@ -770,7 +770,7 @@ if (typeof document !== "undefined")
             event = CtaPanel.actions(record).at(-1);
           return `<tr data-id="${esc(record.signal_id)}" class="${state.selected === record.signal_id ? "selected" : ""}"><td>${time(record.model_ts_ms)}</td>
         <td>${event ? `<span class="${tone(CtaPanel.direction(record))}">${actionText(event)}</span>` : positionText(record.snapshot.position_flag)}</td>
-        <td>${pct(signal.quantile)}</td><td class="nq-timeline" data-mode="${gate.mode}">${gate.text}</td></tr>`;
+        <td>${pct(signal.decision_value ?? signal.quantile)}</td><td class="nq-timeline" data-mode="${gate.mode}">${gate.text}</td></tr>`;
         })
         .join("");
       el("observation-rows")
@@ -835,7 +835,7 @@ if (typeof document !== "undefined")
         el(id).textContent = "—";
       el("record-state").textContent = "等待选择";
       inspector(null);
-      el("factor-name").textContent = state.strategy || "暂无因子";
+      el("factor-name").textContent = strategyLabel(state.strategy) || "暂无策略";
       watchlist();
       factors();
       if (!state.strategy) {

@@ -1,0 +1,42 @@
+[2m2026-10-18T08:26:29.653981Z[0m [32m INFO[0m [2mcrypto_cta_manager::redis_runtime[0m[2m:[0m Manager Redis long connection ready [3murl[0m[2m=[0mredis://127.0.0.1:6379/0
+0 [W] "Config::global_config()" 
+| No config file was loaded, a config with default values will be used. 
+[2m2026-10-18T08:26:29.714061Z[0m [32m INFO[0m [2mcrypto_cta_manager::monitor[0m[2m:[0m CTA monitor market BBO subscribed [3mvenue[0m[2m=[0m"binance-futures" [3mservice_name[0m[2m=[0m"spread_pbs/binance-futures/ask_bid_spread"
+CTA monitor: 37 issue(s)
+orders:stale:1364983294348765441:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983294348765441 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1364983294348765442:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983294348765442 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1364983294348765443:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983294348765443 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983294348765444:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983294348765444 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983444672631328:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983444672631328 WLDUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1364983444672631329:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983444672631329 WLDUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1364983444672631330:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983444672631330 WLDUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983444672631331:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983444672631331 WLDUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983466147456545:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983466147456545 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983466147456546:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983466147456546 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983599291434651:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983599291434651 SUIUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983599291434652:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983599291434652 SUIUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983616471323013:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983616471323013 WLDUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1364983616471323014:binance_exec_xy_lxy21_05 [orders] [xy_lxy21] 订单 1364983616471323014 WLDUSDT 处于 NEW 状态，最近活动已停止约 15576 秒
+orders:stale:1672040754131771606:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771606 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15618 秒
+orders:stale:1672040754131771607:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771607 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15618 秒
+orders:stale:1672040754131771608:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771608 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040754131771609:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040754131771609 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040887275763660:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763660 SUIUSDT 处于 NEW 状态，最近活动已停止约 15618 秒
+orders:stale:1672040887275763661:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763661 SUIUSDT 处于 NEW 状态，最近活动已停止约 15618 秒
+orders:stale:1672040887275763662:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763662 SUIUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040887275763663:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040887275763663 SUIUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040904455634046:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634046 WLDUSDT 处于 NEW 状态，最近活动已停止约 15618 秒
+orders:stale:1672040904455634047:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634047 WLDUSDT 处于 NEW 状态，最近活动已停止约 15618 秒
+orders:stale:1672040904455634048:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634048 WLDUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040904455634049:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040904455634049 WLDUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040925930463275:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040925930463275 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672040925930463276:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672040925930463276 1000PEPEUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672041059074453499:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041059074453499 SUIUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672041059074453500:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041059074453500 SUIUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672041076254325734:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041076254325734 WLDUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:1672041076254325735:binance_exec_trade08 [orders] [Crypto_cta1] 订单 1672041076254325735 WLDUSDT 处于 NEW 状态，最近活动已停止约 15582 秒
+orders:stale:4824252299322860621:binance_exec_trade14 [orders] [hxl_2025] 订单 4824252299322860621 1000PEPEUSDC 处于 NEW 状态，最近活动已停止约 15617 秒
+orders:stale:4824252299322860622:binance_exec_trade14 [orders] [hxl_2025] 订单 4824252299322860622 1000PEPEUSDC 处于 NEW 状态，最近活动已停止约 15617 秒
+orders:stale:4824252299322860623:binance_exec_trade14 [orders] [hxl_2025] 订单 4824252299322860623 1000PEPEUSDC 处于 NEW 状态，最近活动已停止约 15612 秒
+orders:stale:4824252299322860624:binance_exec_trade14 [orders] [hxl_2025] 订单 4824252299322860624 1000PEPEUSDC 处于 NEW 状态，最近活动已停止约 15612 秒
+orders:stale:4824252380927243853:binance_exec_trade14 [orders] [hxl_2025] 订单 4824252380927243853 SUIUSDC 处于 NEW 状态，最近活动已停止约 15617 秒

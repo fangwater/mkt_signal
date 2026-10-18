@@ -1,4 +1,4 @@
-use crate::cta_perp::config::EntryConfig;
+use crate::cta_perp::config::{EntryConfig, PositionAlgorithm};
 use crate::factor_pub::fusion_factor_pub::app::BaselineReplayState;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
 use anyhow::{ensure, Context, Result};
@@ -63,10 +63,7 @@ pub fn runtime_factor_config_key() -> Result<String> {
 }
 
 pub fn model_service(factor: &str) -> String {
-    format!(
-        "model_output/cta_perp-binance-futures-1m-{}",
-        factor.to_ascii_lowercase()
-    )
+    super::model_service::model_service_path("binance-futures", factor)
 }
 
 pub fn parse_factor_table(raw: &str) -> Result<SymbolFactorTable> {
@@ -158,6 +155,7 @@ pub struct FactorVote {
     pub corrected_score: f64,
     pub quantile: f64,
     pub corrected_quantile: f64,
+    pub decision_value: f64,
     pub vote: i8,
 }
 
@@ -167,6 +165,7 @@ pub struct WeightedBar {
     pub value: f64,
     pub coefficient: f64,
     pub quantile: f64,
+    pub decision_value: f64,
     pub votes: Vec<FactorVote>,
     pub nq: ModelOutputScoreLookupResult,
 }
@@ -187,6 +186,7 @@ pub fn aggregate_bar(
     row: &SymbolFactors,
     inputs: &[ModelOutputScoreLookupResult],
     entry: &EntryConfig,
+    algorithm: PositionAlgorithm,
 ) -> Option<WeightedBar> {
     if inputs.len() != row.factors.len()
         || row.weights.len() != inputs.len()
@@ -220,12 +220,13 @@ pub fn aggregate_bar(
             _ => {}
         }
         let corrected = if row.weights[i] > 0.0 { q } else { 1.0 - q };
+        let decision_value = algorithm.decision_value(corrected);
         // Reflecting 0.9 can produce 0.09999999999999998. Keep threshold ties
         // neutral under sign correction instead of inventing a boundary vote.
         let quantile_epsilon = 4.0 * f64::EPSILON;
-        let vote = if corrected - entry.factor_long_quantile > quantile_epsilon {
+        let vote = if decision_value - entry.factor_long_quantile > quantile_epsilon {
             1
-        } else if entry.factor_short_quantile - corrected > quantile_epsilon {
+        } else if entry.factor_short_quantile - decision_value > quantile_epsilon {
             -1
         } else {
             0
@@ -249,6 +250,7 @@ pub fn aggregate_bar(
             },
             quantile: q,
             corrected_quantile: corrected,
+            decision_value,
             vote,
         });
     }
@@ -263,6 +265,7 @@ pub fn aggregate_bar(
         value,
         coefficient: value.abs(),
         quantile: quantile.clamp(0.0, 1.0),
+        decision_value: algorithm.decision_value(quantile.clamp(0.0, 1.0)),
         votes,
         nq: inputs[first].clone(),
     })
@@ -273,6 +276,42 @@ pub fn model_bar_is_fresh(ts_ms: i64, now_us: i64, max_age_ms: u64) -> bool {
         && ts_ms.saturating_mul(1_000) <= now_us.saturating_add(5_000_000)
         && now_us.saturating_sub(ts_ms.saturating_mul(1_000))
             <= (max_age_ms as i64).saturating_mul(1_000)
+}
+
+/// One symbol decision from the arithmetic mean of all active factor values.
+/// Magnitudes in the factor table do not change the equal weighting.
+pub fn mean_bar(
+    row: &SymbolFactors,
+    inputs: &[ModelOutputScoreLookupResult],
+    entry: &EntryConfig,
+) -> Option<WeightedBar> {
+    if !row.weights.iter().all(|w| w.is_finite()) {
+        return None;
+    }
+    let equal = SymbolFactors {
+        factors: row.factors.clone(),
+        weights: row
+            .weights
+            .iter()
+            .map(|w| if *w == 0.0 { 0.0 } else { w.signum() })
+            .collect(),
+    };
+    let mut bar = aggregate_bar(&equal, inputs, entry, PositionAlgorithm::V1)?;
+    bar.decision_value = bar
+        .votes
+        .iter()
+        .map(|vote| vote.decision_value)
+        .sum::<f64>()
+        / bar.votes.len() as f64;
+    bar.value = if bar.decision_value - entry.factor_long_quantile > 4.0 * f64::EPSILON {
+        1.0
+    } else if entry.factor_short_quantile - bar.decision_value > 4.0 * f64::EPSILON {
+        -1.0
+    } else {
+        0.0
+    };
+    bar.coefficient = bar.value.abs();
+    Some(bar)
 }
 
 /// Redis polling runs outside the trading reactor. One GET reads the entire table.
@@ -420,8 +459,56 @@ mod tests {
             &row(weights, signs),
             &qs.iter().map(|q| input(*q)).collect::<Vec<_>>(),
             &EntryConfig::default(),
+            PositionAlgorithm::V0,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn symbol_mean_compares_values_before_making_one_decision() {
+        let row = row(vec![20.0, 1.0], vec![FactorSign::Positive; 2]);
+        let entry = EntryConfig {
+            factor_long_quantile: 0.8,
+            factor_short_quantile: -0.8,
+            ..Default::default()
+        };
+        let bar = mean_bar(&row, &[input(0.99), input(0.79)], &entry).unwrap();
+        assert!((bar.decision_value - 0.78).abs() < 1e-12);
+        assert_eq!(bar.value, 0.0); // One factor votes long, but the mean stays below entry.
+        assert_eq!(bar.votes[0].vote, 1);
+        assert!(bar.votes.iter().all(|v| v.normalized_weight == 0.5));
+        let bar = mean_bar(&row, &[input(0.95), input(0.96)], &entry).unwrap();
+        assert_eq!(bar.value, 1.0);
+        assert!((bar.decision_value - 0.91).abs() < 1e-12);
+        assert_eq!(
+            mean_bar(&row, &[input(0.9), input(0.9)], &entry)
+                .unwrap()
+                .value,
+            0.0
+        );
+    }
+
+    #[test]
+    fn symbol_mean_keeps_sign_and_requires_every_enabled_factor() {
+        let row = row(
+            vec![20.0, 1.0, 0.0],
+            vec![
+                FactorSign::Negative,
+                FactorSign::Positive,
+                FactorSign::Positive,
+            ],
+        );
+        let entry = EntryConfig::default();
+        let mut inputs = [input(0.01), input(0.99), input(f64::NAN)];
+        let bar = mean_bar(&row, &inputs, &entry).unwrap();
+        assert!((bar.decision_value - 0.98).abs() < 1e-12);
+        assert_eq!(bar.votes.len(), 2);
+        assert_eq!(bar.value, 1.0);
+        inputs[1].score_ready = false;
+        assert!(mean_bar(&row, &inputs, &entry).is_none());
+        inputs[1].score_ready = true;
+        inputs[1].score_ts_ms += 60_000;
+        assert!(mean_bar(&row, &inputs, &entry).is_none());
     }
 
     #[test]
@@ -491,7 +578,13 @@ mod tests {
                 4 => inputs[1].score_quantile = Some(1.01),
                 _ => inputs[1].score_quantile = Some(f64::INFINITY),
             }
-            assert!(aggregate_bar(&row, &inputs, &EntryConfig::default()).is_none());
+            assert!(aggregate_bar(
+                &row,
+                &inputs,
+                &EntryConfig::default(),
+                PositionAlgorithm::V0
+            )
+            .is_none());
         }
     }
 
@@ -500,12 +593,23 @@ mod tests {
         let row = row(vec![2.0, 1.0], vec![FactorSign::Positive; 2]);
         let mut inputs = vec![input(0.95), input(0.05)];
         inputs[0].score_ts_ms = 120_000;
-        assert!(aggregate_bar(&row, &inputs, &EntryConfig::default()).is_none());
+        assert!(aggregate_bar(
+            &row,
+            &inputs,
+            &EntryConfig::default(),
+            PositionAlgorithm::V0
+        )
+        .is_none());
         inputs[1].score_ts_ms = 120_000;
         assert_eq!(
-            aggregate_bar(&row, &inputs, &EntryConfig::default())
-                .unwrap()
-                .model_ts_ms,
+            aggregate_bar(
+                &row,
+                &inputs,
+                &EntryConfig::default(),
+                PositionAlgorithm::V0
+            )
+            .unwrap()
+            .model_ts_ms,
             120_000
         );
     }
@@ -516,7 +620,13 @@ mod tests {
         let mut missing = input(f64::NAN);
         missing.subscribed = false;
         missing.score_ts_ms = 0;
-        let bar = aggregate_bar(&row, &[input(0.95), missing], &EntryConfig::default()).unwrap();
+        let bar = aggregate_bar(
+            &row,
+            &[input(0.95), missing],
+            &EntryConfig::default(),
+            PositionAlgorithm::V0,
+        )
+        .unwrap();
         assert_eq!(bar.coefficient, 1.0);
         assert_eq!(bar.votes.len(), 1);
         let table = BTreeMap::from([("ETHUSDT".into(), row)]);
@@ -556,12 +666,25 @@ mod tests {
         let duplicate =
             serde_json::json!({"ETHUSDT": table["ETHUSDT"], "ethusdt": table["ETHUSDT"]});
         assert!(parse_factor_table(&duplicate.to_string()).is_err());
-        assert_eq!(
-            parse_factor_table(include_str!("../../config/cta_perp_symbol_factors.json"))
-                .unwrap()
-                .len(),
-            16
-        );
+        for (raw, symbols, bindings) in [
+            (
+                include_str!("../../config/cta_perp_symbol_factors.json"),
+                9,
+                24,
+            ),
+            (
+                include_str!("../../config/cta_perp_rx03/cta_perp_symbol_factors.json"),
+                14,
+                34,
+            ),
+        ] {
+            let table = parse_factor_table(raw).unwrap();
+            assert_eq!(table.len(), symbols);
+            assert_eq!(
+                table.values().map(|row| row.factors.len()).sum::<usize>(),
+                bindings
+            );
+        }
     }
 
     #[tokio::test]

@@ -1,0 +1,111 @@
+{
+  "time": 1792136550.9543126,
+  "environments": {
+    "bybit-intra-arb01": {
+      "running_processes": [],
+      "preserved_config_count": 5,
+      "changed_configs": [],
+      "binary_hash_checks": {
+        "trade_signal": true,
+        "pre_trade": true,
+        "trade_engine": true,
+        "viz_server": true,
+        "persist_manager": true,
+        "account_monitor_bybit": true
+      },
+      "release_id": "b68065b7cb50bef48e111f341ae1551cfea4982336974537716e3dd87fc8c314"
+    },
+    "bybit-intra-arb02": {
+      "running_processes": [],
+      "preserved_config_count": 5,
+      "changed_configs": [],
+      "binary_hash_checks": {
+        "trade_signal": true,
+        "pre_trade": true,
+        "trade_engine": true,
+        "viz_server": true,
+        "persist_manager": true,
+        "account_monitor_bybit": true
+      },
+      "release_id": "b68065b7cb50bef48e111f341ae1551cfea4982336974537716e3dd87fc8c314"
+    }
+  },
+  "other_bybit_processes": [
+    {
+      "pid": 295256,
+      "cwd": "/home/ubuntu/bybit-binance-cross-arb01",
+      "exe": "/home/ubuntu/bybit-binance-cross-arb01/bybit_am_latency_probe"
+    },
+    {
+      "pid": 997930,
+      "cwd": "/home/ubuntu/spread_pbs/bybit-both",
+      "exe": "/home/ubuntu/spread_pbs/bybit-both/spread_pbs"
+    },
+    {
+      "pid": 997951,
+      "cwd": "/home/ubuntu/spread_pbs/bybit-both",
+      "exe": "/home/ubuntu/spread_pbs/bybit-both/spread_pbs"
+    },
+    {
+      "pid": 998065,
+      "cwd": "/home/ubuntu/depth_pub/bybit-both",
+      "exe": "/home/ubuntu/depth_pub/bybit-both/depth_pub"
+    },
+    {
+      "pid": 998149,
+      "cwd": "/home/ubuntu/trade_flow_feature/bybit-margin",
+      "exe": "/home/ubuntu/trade_flow_feature/bybit-margin/trade_flow_feature_pub"
+    },
+    {
+      "pid": 998232,
+      "cwd": "/home/ubuntu/trade_flow_feature/bybit-futures",
+      "exe": "/home/ubuntu/trade_flow_feature/bybit-futures/trade_flow_feature_pub"
+    },
+    {
+      "pid": 1224991,
+      "cwd": "/home/ubuntu/rolling_metrics/bybit-futures-binance-futures",
+      "exe": "/home/ubuntu/rolling_metrics/bybit-futures-binance-futures/rolling_metrics"
+    },
+    {
+      "pid": 1225163,
+      "cwd": "/home/ubuntu/rolling_metrics/bybit-margin-bybit-futures",
+      "exe": "/home/ubuntu/rolling_metrics/bybit-margin-bybit-futures/rolling_metrics"
+    },
+    {
+      "pid": 1268942,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/usr/bin/python3.12"
+    },
+    {
+      "pid": 1269081,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/home/ubuntu/bybit_mm_alpha/viz_server"
+    },
+    {
+      "pid": 1269222,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/home/ubuntu/bybit_mm_alpha/persist_manager"
+    },
+    {
+      "pid": 1269527,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/home/ubuntu/bybit_mm_alpha/trade_engine"
+    },
+    {
+      "pid": 1269672,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/home/ubuntu/bybit_mm_alpha/pre_trade"
+    },
+    {
+      "pid": 1269833,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/home/ubuntu/bybit_mm_alpha/account_monitor"
+    },
+    {
+      "pid": 1270199,
+      "cwd": "/home/ubuntu/bybit_mm_alpha",
+      "exe": "/home/ubuntu/bybit_mm_alpha/trade_signal"
+    }
+  ],
+  "listeners": "State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess\nLISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*          \nLISTEN 0      1024         0.0.0.0:10242      0.0.0.0:*          \nLISTEN 0      100    172.31.10.217:6360       0.0.0.0:*          \nLISTEN 0      511    172.31.10.217:6353       0.0.0.0:*          \nLISTEN 0      511    172.31.10.217:6352       0.0.0.0:*          \nLISTEN 0      511    172.31.10.217:6351       0.0.0.0:*          \nLISTEN 0      511          0.0.0.0:4191       0.0.0.0:*          \nLISTEN 0      128        127.0.0.1:34339      0.0.0.0:*          \nLISTEN 0      5            0.0.0.0:6322       0.0.0.0:*          \nLISTEN 0      4096      127.0.0.54:53         0.0.0.0:*          \nLISTEN 0      128        127.0.0.1:50052      0.0.0.0:*          \nLISTEN 0      4096         0.0.0.0:22         0.0.0.0:*          \nLISTEN 0      511        127.0.0.1:6379       0.0.0.0:*          \nLISTEN 0      5            0.0.0.0:18142      0.0.0.0:*          \nLISTEN 0      511            [::1]:6379          [::]:*          \nLISTEN 0      4096            [::]:22            [::]:*          \n"
+}

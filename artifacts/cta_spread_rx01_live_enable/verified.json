@@ -1,0 +1,16 @@
+{
+  "matched_market_targets": 92,
+  "signal_combinations": 46,
+  "strategy_count": 5,
+  "independent_inventory_unchanged": true,
+  "follow_queue_empty": true,
+  "protected_processes_unchanged": 44,
+  "status": {
+    "enabled": true,
+    "journal_healthy": true,
+    "publication_error": null,
+    "max_pos_u": 100.0,
+    "updated_ts_us": 1791951145114258,
+    "scheduled_entries": 0
+  }
+}

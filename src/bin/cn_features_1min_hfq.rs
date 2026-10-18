@@ -20,7 +20,7 @@ use polars::prelude::{
     StringChunked,
 };
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,6 +50,12 @@ struct Args {
     overwrite: bool,
     #[arg(long)]
     dry_run: bool,
+    /// Reuse the same formulas at the selected bar frequency. Coarse bars
+    /// require explicit source-derived segment/TradDay records.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    bar_minutes: u32,
+    #[arg(long)]
+    bar_segments_root: Option<PathBuf>,
 }
 
 struct DayFile {
@@ -75,6 +81,9 @@ fn main() -> Result<()> {
     }
     if args.workers == 0 {
         bail!("--workers must be positive");
+    }
+    if args.bar_minutes != 1 && args.bar_segments_root.is_none() {
+        bail!("coarse bars require --bar-segments-root; timestamp-gap heuristics are minute-only");
     }
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.workers)
@@ -225,7 +234,14 @@ fn replay_product(
         if day.day < start || day.day > end {
             continue;
         }
-        let (rows, skip) = read_day(&day.path, product)?;
+        let (mut rows, skip) = read_day(&day.path, product)?;
+        if let Some(root) = &args.bar_segments_root {
+            let path = root
+                .join(exchange)
+                .join(product)
+                .join(format!("{}.json", day.day.format("%Y%m%d")));
+            apply_bar_segments(&mut rows, &path, args.bar_minutes, day.day)?;
+        }
         skipped += skip;
         series.extend(rows);
     }
@@ -242,7 +258,7 @@ fn replay_product(
     let mut pending_values: Option<Vec<Option<f64>>> = None;
     for mut row in series {
         if let Some(prev) = prev_ts {
-            if is_session_break(prev, row.ts) {
+            if args.bar_segments_root.is_none() && is_session_break(prev, row.ts) {
                 row.quality_flags |= QUALITY_SEGMENT_BREAK;
             }
         }
@@ -264,7 +280,11 @@ fn replay_product(
             volume_multiple_verified: true,
         })?;
         pending_values = Some(state.factor_values(plan)?);
-        let day = trad_day_from_ts(ts);
+        let day = if args.bar_segments_root.is_some() {
+            NaiveDate::parse_from_str(&trading_day.to_string(), "%Y%m%d")?
+        } else {
+            trad_day_from_ts(ts)
+        };
         if day < start || day > end {
             continue;
         }
@@ -289,6 +309,77 @@ fn replay_product(
     }
     eprintln!("{exchange} {product} files={files} rows={rows_out} skipped_no_book={skipped}");
     Ok((files, rows_out, skipped))
+}
+
+#[derive(serde::Deserialize)]
+struct BarSegments {
+    bar_minutes: u32,
+    trading_day: u32,
+    ts: Vec<i64>,
+    segment_start_ts: Vec<i64>,
+    source_minutes: Vec<u32>,
+    end_ts: Vec<i64>,
+}
+
+fn apply_bar_segments(
+    rows: &mut [InputRow],
+    path: &Path,
+    bar_minutes: u32,
+    day: NaiveDate,
+) -> Result<()> {
+    let record: BarSegments = serde_json::from_reader(
+        File::open(path).with_context(|| format!("open bar segments {}", path.display()))?,
+    )
+    .with_context(|| format!("read bar segments {}", path.display()))?;
+    let trading_day = day.format("%Y%m%d").to_string().parse::<u32>()?;
+    if record.bar_minutes != bar_minutes
+        || record.trading_day != trading_day
+        || record.ts.len() != rows.len()
+        || record.source_minutes.len() != rows.len()
+        || record.end_ts.len() != rows.len()
+        || !record
+            .ts
+            .iter()
+            .zip(rows.iter())
+            .all(|(ts, row)| *ts == row.ts)
+    {
+        bail!("bar identity/frequency mismatch: {}", path.display());
+    }
+    let starts: HashSet<i64> = record.segment_start_ts.iter().copied().collect();
+    validate_bar_segments(&record, &starts)
+        .with_context(|| format!("invalid bar segments {}", path.display()))?;
+    for row in rows {
+        row.trading_day = record.trading_day;
+        if starts.contains(&row.ts) {
+            row.quality_flags |= QUALITY_SEGMENT_BREAK;
+        }
+    }
+    Ok(())
+}
+
+fn validate_bar_segments(record: &BarSegments, starts: &HashSet<i64>) -> Result<()> {
+    if record.ts.first().is_some_and(|ts| !starts.contains(ts))
+        || starts.len() != record.segment_start_ts.len()
+        || !starts.iter().all(|ts| record.ts.binary_search(ts).is_ok())
+    {
+        bail!("segment starts must be distinct existing bar timestamps including the first bar");
+    }
+    for i in 0..record.ts.len() {
+        if record.source_minutes[i] == 0
+            || record.source_minutes[i] > record.bar_minutes
+            || record.end_ts[i] != record.ts[i] + i64::from(record.source_minutes[i]) * 60
+        {
+            bail!("invalid bar duration at row {i}");
+        }
+        if i > 0
+            && (record.ts[i] <= record.ts[i - 1]
+                || record.ts[i] < record.end_ts[i - 1]
+                || (!starts.contains(&record.ts[i]) && record.ts[i] != record.end_ts[i - 1]))
+        {
+            bail!("overlap or undeclared segment gap at row {i}");
+        }
+    }
+    Ok(())
 }
 
 fn take_shifted_values(
@@ -504,7 +595,25 @@ fn is_session_break(prev: i64, next: i64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::take_shifted_values;
+    use super::{take_shifted_values, validate_bar_segments, BarSegments};
+    use std::collections::HashSet;
+
+    #[test]
+    fn coarse_segments_keep_partial_tails_and_explicit_breaks() {
+        let mut record = BarSegments {
+            bar_minutes: 5,
+            trading_day: 20210104,
+            ts: vec![0, 300, 1200],
+            segment_start_ts: vec![0, 1200],
+            source_minutes: vec![5, 2, 5],
+            end_ts: vec![300, 420, 1500],
+        };
+        let starts = HashSet::from([0, 1200]);
+        assert!(validate_bar_segments(&record, &starts).is_ok());
+        assert!(validate_bar_segments(&record, &HashSet::from([0])).is_err());
+        record.end_ts[1] = 600;
+        assert!(validate_bar_segments(&record, &starts).is_err());
+    }
 
     #[test]
     fn shift_one_emits_the_previous_factor_vector_and_resets_at_segment_break() {

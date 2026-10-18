@@ -91,6 +91,23 @@ checks. The 632 formulas are unchanged; operations that are mathematically
 undefined for such inputs remain `NULL`. Raw replay and live input continue to
 reject finite non-positive quote prices.
 
+The same HFQ parquet binary also accepts `--bar-minutes 5` or `15` with a required
+`--bar-segments-root`. The explicit JSON records contain source TradDay,
+ordered bar timestamps, segment-start timestamps, contributing minute counts,
+and actual bar end times. They preserve overnight/holiday partition identity
+and prevent minute-only gap heuristics from resetting every coarse bar.
+Formula row counts stay unchanged, and output still uses segment-local
+`shift(1)`. `scripts/build_cn_hfq_5min.py` is the Python correctness baseline
+for aggregation and the existing 96-label method; the publication verifier
+checks all files and independently recomputes representative difference,
+five-level imbalance and strict rolling-window factors in Python. The
+data contracts are maintained in `../preprocess/data_format/cn_hfq_5min.md`
+and `../preprocess/data_format/cn_hfq_15min.md`. The Python builder defaults to
+five minutes and accepts `--bar-minutes 15`; dataset names, label suffixes and
+embedded metadata follow that parameter. The verifier reads the frequency from
+the audited build report. A three-bar outer-level volume mean (factor_081) is
+also checked, because a 30-bar window cannot warm up in the 15min segments.
+
 After the whole-book presence check passes, missing values propagate according
 to each formula's actual dependencies:
 

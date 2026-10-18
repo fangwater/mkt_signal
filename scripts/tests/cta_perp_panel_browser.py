@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts'))
 from cta_perp_dashboard import make_handler
-from cta_perp_position_replay import PositionReplay
+from cta_perp_position_replay import PositionReplay, simulate
 from cta_perp_signal_history import SignalHistoryStore,MINUTE_MS,normalize_kline
 
 
@@ -127,9 +127,47 @@ def main():
                 page.locator('.symbol[data-symbol="ETHUSDT"]').click()
                 page.wait_for_function("() => document.querySelector('#factor-name').textContent==='baseline_004' && document.querySelector('#strategy-filter').value==='baseline_004'")
                 assert page.locator('#strategy-filter option').count()==1
+                config['position_algorithm']='v1'
+                config['entry'].update(factor_long_quantile=.6,factor_short_quantile=-.6)
+                config['execution'].update(factor_exit_quantile_long=.2,factor_exit_quantile_short=-.2)
+                (directory/'config.json').write_text(json.dumps(config))
+                observations=[]
+                for i,q in enumerate([.99,.99,.55,.01,.01,.45,.99,.99]):
+                    ts=first+i*MINUTE_MS
+                    observations.append(dict(symbol='FILUSDT',model_ts_ms=ts,
+                        inputs={f:dict(ready=True,score=1,quantile=q if w>0 else 1-q) for f,w in table['FILUSDT'].items()},
+                        nq=dict(ready=True,long_quantile=.9,short_quantile=.1,execution_ts_ms=ts+1,execution_bid=100,execution_ask=100)))
+                replay.result=simulate(observations,table,config,dict(start_ms=first,initial_equity_usdt=10000))
+                replay.key='symbol-mean-fixture'
+                last=replay.result['records'][-1]['snapshot']
+                status=json.loads((directory/'status.json').read_text())
+                status.update(position_algorithm='v1',allocation='per_symbol',strategies={'symbol_mean':{
+                    'FILUSDT':dict(position_flag=last['position_flag'],position_qty=last['position_qty'],
+                        entry_notional=config['max_pos_u'],position_usdt=config['max_pos_u'],score_ready=True,signal=last['signal'])}})
+                (directory/'status.json').write_text(json.dumps(status))
+                page.set_viewport_size(dict(width=1600,height=1050))
+                page.reload()
+                page.locator('.symbol[data-symbol="FILUSDT"]').click()
+                page.wait_for_function("() => document.querySelector('#factor-name').textContent==='因子算术平均' && document.querySelectorAll('#trade-rows tr').length>0")
+                assert page.locator('#strategy-filter option').count()==1
+                assert page.locator('#strategy-filter').input_value()=='symbol_mean'
+                page.locator('#trade-rows tr').first.click()
+                assert page.locator('.factor-snapshot').count()==5
+                assert '98%' in page.locator('#inspector').inner_text()
+                assert chart('option.series.slice(1,4).flatMap(s=>s.data).every(p=>p.record.snapshot.strategy_name==="symbol_mean")')
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                page.set_viewport_size(dict(width=390,height=844))
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                page.goto(f'http://127.0.0.1:{server.server_port}/')
+                page.wait_for_function("() => document.querySelector('#rows').textContent.includes('FILUSDT')")
+                fil=page.locator('#rows tr').filter(has_text='FILUSDT')
+                assert fil.count()==1
+                assert '因子算术平均' in fil.inner_text()
+                assert fil.locator('td').nth(4).inner_text()=='2.00000000'
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 assert not errors,errors
                 browser.close()
-                report=dict(symbols=16,default_factor='factor_036',factor_isolation=True,paired_connectors=True,
+                report=dict(symbol_mean_panel=True,symbol_mean_dashboard=True,all_contributions_visible=True,symbols=16,default_factor='factor_036',factor_isolation=True,paired_connectors=True,
                   repeated_signals_hidden=True,unclosed_trade_visible=True,nq_retained=True,nq_blocked_visible=True,
                   canvas_click=True,desktop_mobile_no_overflow=True,javascript_errors=errors)
                 (ROOT/'artifacts/cta_perp_factor_pairs_preview_validation.json').write_text(json.dumps(report,indent=2)+'\n')

@@ -1,0 +1,12 @@
+{
+  "source_commit": "a73d427de74bbff49fdb9dd8088cfdcf477a2d67",
+  "branch": "arbmm",
+  "binaries": {
+    "exec-pre-trade": "4a2e2be2dd378bcab066ca3748579d41f3e6167a22615626cb9019ddf717384a",
+    "trade_engine": "ef0bc7d5b6e4e5c1509c0afbebfb0a03206fe4e95d22c24baa950174b0879320",
+    "account_monitor": "bbb74b808f8a91330571f5a50681bcda6b2861f3946a707ed66bfe2f8eec3c50",
+    "trade_signal": "fbbcbb128e2e3078285c33d5d80e2c332723e0ecb7a6e620950455e46deec66c",
+    "viz_server": "63247f2fe6e9e042483904b44b2f79775ca284e47cc08f20f037ee6a40711f24",
+    "persist_manager": "d3f0cda99acfecd564b03d332bb87312446ebe207f63403f5d87082e682c818b"
+  }
+}

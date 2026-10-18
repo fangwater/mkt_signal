@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>CTA · 单因子交易面板</title>
+    <title>CTA · 仓位信号面板</title>
     <style>
       :root {
         color-scheme: dark;
@@ -825,7 +825,7 @@
       <div class="brand">
         <div class="monogram">F</div>
         <div>
-          <b>单因子交易面板</b>
+          <b>仓位信号面板</b>
           <div class="eyebrow">CTA PERP · INDEPENDENT FACTORS</div>
         </div>
       </div>
@@ -838,7 +838,7 @@
       <aside class="watchlist">
         <h2>币种 · USDT 永续</h2>
         <div id="symbols"></div>
-        <p class="scope-summary">右侧为可用因子数<br />每个因子独立观察交易</p>
+        <p class="scope-summary">v0 按因子独立交易<br />v1 按每币综合方向交易</p>
       </aside>
       <main>
         <div id="error" class="error-banner" hidden role="alert"></div>
@@ -864,11 +864,11 @@
         <div
           id="factor-list"
           class="factor-list"
-          aria-label="选择独立因子"
+          aria-label="选择仓位策略"
         ></div>
         <div class="stats">
           <div class="stat">
-            <span>本因子已平交易</span><b id="closed-trades">—</b
+            <span>当前策略已平交易</span><b id="closed-trades">—</b
             ><small id="win-rate">胜率 — · 只计已平仓</small>
           </div>
           <div class="stat">
@@ -876,11 +876,11 @@
             ><small id="position-qty">满仓多 / 满仓空 / 空仓</small>
           </div>
           <div class="stat">
-            <span>本因子 PnL · USDT</span><b id="pnl">—</b
+            <span>当前策略 PnL · USDT</span><b id="pnl">—</b
             ><small id="pnl-note">已实现 / 浮动</small>
           </div>
           <div class="stat">
-            <span>最新修正分位</span><b id="factor-quantile">—</b
+            <span>最新开平判断值</span><b id="factor-quantile">—</b
             ><small id="nq-status">NQ 开仓过滤保留</small>
           </div>
         </div>
@@ -890,11 +890,11 @@
             <section class="card">
               <div class="chart-toolbar">
                 <div class="chart-title">
-                  本因子的开仓与平仓<small
+                  当前策略的开仓与平仓<small
                     >分钟 K 线 / 持仓状态 / NQ 分位</small
                   >
                 </div>
-                <select id="strategy-filter" aria-label="选择单因子">
+                <select id="strategy-filter" aria-label="选择仓位策略">
                   <option value="">读取因子…</option>
                 </select>
                 <div class="time-controls">
@@ -910,7 +910,7 @@
                   role="img"
                 ></div>
                 <div id="chart-empty" class="chart-empty">
-                  读取独立因子交易…
+                  读取策略交易…
                 </div>
               </div>
               <div class="chart-footer">
@@ -941,7 +941,7 @@
                   <tbody id="trade-rows"></tbody>
                 </table>
                 <div id="trades-empty" class="empty">
-                  等待该因子的交易记录。
+                  等待当前策略的交易记录。
                 </div>
               </div>
             </section>
@@ -950,7 +950,7 @@
                 分钟因子观察<span id="observation-count">—</span>
               </summary>
               <p class="hint">
-                持仓期间的重复触发不会形成新的 B/S。这里保留分位和 NQ
+                持仓期间的重复触发不会形成新的 B/S。这里保留开平判断值和 NQ
                 快照，最多展示最近 120 条。
               </p>
               <div class="table-scroll">
@@ -959,7 +959,7 @@
                     <tr>
                       <th>时间 UTC</th>
                       <th>持仓 / 动作</th>
-                      <th>修正分位</th>
+                      <th>开平判断值</th>
                       <th>NQ</th>
                     </tr>
                   </thead>
@@ -975,7 +975,7 @@
             </div>
             <div id="inspector" class="inspector-body">
               <div class="hint">
-                点击 B/S 点、交易记录或 K 线，查看这个因子的交易与 NQ。
+                点击 B/S 点、交易记录或 K 线，查看当前策略的交易与 NQ。
               </div>
             </div>
           </section>

@@ -314,6 +314,33 @@ class HistoryTests(unittest.TestCase):
                         urllib.request.urlopen(base+'/api/signal-history?symbol=ETHUSDT&strategy=factor_999')
                     self.assertEqual(caught.exception.code,400);caught.exception.close()
 
+    def test_symbol_mean_is_one_selectable_strategy_in_api_and_replay(self):
+        from cta_perp_position_replay import PositionReplay, simulate
+        config=json.loads((ROOT/'config/cta_perp.json').read_text())
+        config['position_algorithm']='v1'
+        config_path=self.root/'mean_config.json';config_path.write_text(json.dumps(config))
+        table={'ETHUSDT':{'factor_036':1,'factor_051':-1}}
+        status_path=self.root/'mean_status.json';status_path.write_text(json.dumps({'symbol_factors':table}))
+        settings_path=self.root/'mean_replay.json';settings_path.write_text('{}')
+        observations=[dict(symbol='ETHUSDT',model_ts_ms=self.bucket,
+            inputs={f:dict(ready=True,score=1,quantile=.99 if w>0 else .01) for f,w in table['ETHUSDT'].items()},
+            nq=dict(ready=True,long_quantile=.9,short_quantile=.1,execution_ts_ms=self.bucket+1,execution_bid=100,execution_ask=100))]
+        replay=PositionReplay(self.store,config_path,status_path,settings_path)
+        replay.result=simulate(observations,table,config,dict(start_ms=self.bucket,initial_equity_usdt=10000));replay.key='mean'
+        server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(config_path,status_path,self.root/'execution.json',
+            ROOT/'web/cta_perp/index.html',self.store,targets=lambda:['ETHUSDT'],replay=replay))
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        base=f'http://127.0.0.1:{server.server_port}'
+        with patch('cta_perp_signal_history.now_ms',return_value=self.now):
+            with urllib.request.urlopen(base+'/api/signal-panel') as response:
+                self.assertEqual(json.load(response)['factor_strategies']['ETHUSDT'],['symbol_mean'])
+            with urllib.request.urlopen(base+'/api/signal-history?symbol=ETHUSDT&strategy=symbol_mean') as response:
+                result=json.load(response)['simulation']
+            self.assertEqual(len(result['records']),1)
+            self.assertEqual(len(result['open_positions']),1)
+            self.assertEqual(len(result['records'][0]['snapshot']['signal']['factor_votes']),2)
+
     def test_environment_local_service_collects_and_imports_without_repository_paths(self):
         class PublicVenue(BaseHTTPRequestHandler):
             def do_GET(handler):
@@ -336,6 +363,7 @@ class HistoryTests(unittest.TestCase):
         self.addCleanup(venue.shutdown)
         env=self.root/"binance-cta-perp-test"
         for name in ["scripts/cta_perp_dashboard.py","scripts/cta_perp_signal_history.py","scripts/cta_perp_position_replay.py",
+                     "scripts/cta_perp_config_server.py",
                      "scripts/cta_perp_factor_config.py","scripts/factor_validation_allowlist.txt",
                      "config/cta_perp.json","config/cta_perp_symbol_factors.json",
                      "web/cta_perp/index.html","web/cta_perp_signals/index.html",

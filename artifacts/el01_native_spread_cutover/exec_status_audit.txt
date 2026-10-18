@@ -1,0 +1,28 @@
+binance_exec_trade02 snapshot_types ['exec_pre_trade_state', 'exec_pre_trade_risk'] exec_entries 2
+binance_exec_trade02 age_ms 225 ready None rows 0 live_rows 0 pending_rows 0 completion_reasons {}
+binance_exec_trade10 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade10 age_ms 396 ready False rows 37 live_rows 26 pending_rows 27 completion_reasons {'': 33, 'target_reached': 3, 'target_tolerance': 1}
+binance_exec_trade11 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade11 age_ms 413 ready False rows 35 live_rows 30 pending_rows 28 completion_reasons {'': 35}
+binance_exec_trade12 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade12 age_ms 548 ready False rows 40 live_rows 30 pending_rows 28 completion_reasons {'': 35, 'exchange_minimum': 1, 'target_reached': 2, 'target_tolerance': 2}
+binance_exec_xy_lxy21_05 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_xy_lxy21_05 age_ms 648 ready False rows 29 live_rows 22 pending_rows 26 completion_reasons {'': 23, 'target_reached': 3, 'exchange_minimum': 1, 'target_tolerance': 2}
+binance_exec_trade13 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade13 age_ms 374 ready True rows 32 live_rows 0 pending_rows 0 completion_reasons {'target_tolerance': 19, 'exchange_minimum': 3, 'target_reached': 10}
+binance_exec_trade14 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade14 age_ms 825 ready False rows 39 live_rows 26 pending_rows 24 completion_reasons {'target_reached': 3, 'exchange_minimum': 2, '': 29, 'target_tolerance': 5}
+binance_exec_trade04 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade04 age_ms 943 ready True rows 182 live_rows 0 pending_rows 58 completion_reasons {'target_reached': 124, 'target_tolerance': 50, 'exchange_minimum': 8}
+binance_exec_trade09 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade09 age_ms 709 ready False rows 97 live_rows 27 pending_rows 34 completion_reasons {'target_reached': 62, '': 29, 'exchange_minimum': 2, 'target_tolerance': 4}
+binance_exec_trade01 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade01 age_ms 128 ready True rows 39 live_rows 0 pending_rows 32 completion_reasons {'target_tolerance': 28, 'target_reached': 7, 'exchange_minimum': 4}
+binance_exec_trade08 snapshot_types ['exec_pre_trade_state', 'exec_pre_trade_risk'] exec_entries 2
+binance_exec_trade08 age_ms 1024 ready None rows 0 live_rows 0 pending_rows 0 completion_reasons {}
+binance_exec_trade03 snapshot_types ['exec_pre_trade_risk', 'exec_pre_trade_state'] exec_entries 2
+binance_exec_trade03 age_ms 307 ready True rows 112 live_rows 29 pending_rows 27 completion_reasons {'target_tolerance': 77, '': 29, 'target_reached': 6}
+binance_exec_trade07 snapshot_types ['exec_pre_trade_state', 'exec_pre_trade_risk'] exec_entries 2
+binance_exec_trade07 age_ms 483 ready None rows 0 live_rows 0 pending_rows 0 completion_reasons {}
+binance_exec_trade06 snapshot_types ['exec_pre_trade_state', 'exec_pre_trade_risk'] exec_entries 2
+binance_exec_trade06 age_ms 326 ready None rows 0 live_rows 0 pending_rows 0 completion_reasons {}

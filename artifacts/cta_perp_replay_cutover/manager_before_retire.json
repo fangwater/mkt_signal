@@ -1,0 +1,808 @@
+{
+  "bindings": [
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791679532710058,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1791881703372911,
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_trade05",
+      "binding_name": "lgq_cta_symbol_mean",
+      "position_strategy_name": "lgq_cta_symbol_mean",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "updated_at_us": 1792069010793296,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+      "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "updated_at_us": 1791896967504867,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+      "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "updated_at_us": 1791896967504867,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "binance_cta_spread_rx01_baseline_141",
+      "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "updated_at_us": 1791896967504867,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "binance_cta_spread_rx01_baseline_164",
+      "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "updated_at_us": 1791896967504867,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "binance_cta_spread_rx01_factor_052",
+      "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "updated_at_us": 1791896967504867,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "binding_name": "binance_cta_spread_rx01_inventory",
+      "position_strategy_name": "binance_cta_spread_rx01_inventory",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "updated_at_us": 1791896967504867,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_TD_MT_029",
+      "position_strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_085",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_085",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_141",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_141",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_164",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_164",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "binding_name": "binance_cta_perp_rx03_baseline_200",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_200",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "updated_at_us": 1791964601839242,
+      "shares": 1
+    }
+  ],
+  "virtuals": [
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_TD_TI_002",
+      "position_strategy_name": "lgq_cta_TD_TI_002",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_TD_TI_024",
+      "position_strategy_name": "lgq_cta_TD_TI_024",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_004",
+      "position_strategy_name": "lgq_cta_baseline_004",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_141",
+      "position_strategy_name": "lgq_cta_baseline_141",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_164",
+      "position_strategy_name": "lgq_cta_baseline_164",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_baseline_200",
+      "position_strategy_name": "lgq_cta_baseline_200",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_factor_036",
+      "position_strategy_name": "lgq_cta_factor_036",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_factor_051",
+      "position_strategy_name": "lgq_cta_factor_051",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_factor_170",
+      "position_strategy_name": "lgq_cta_factor_170",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 0
+    },
+    {
+      "virtual_id": "virtual02",
+      "binding_name": "lgq_cta_symbol_mean",
+      "position_strategy_name": "lgq_cta_symbol_mean",
+      "order_strategy_name": "lgq_cta_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual03",
+      "binding_name": "binance_cta_spread_rx01_TD_TI_024",
+      "position_strategy_name": "binance_cta_spread_rx01_TD_TI_024",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual03",
+      "binding_name": "binance_cta_spread_rx01_TD_TI_027",
+      "position_strategy_name": "binance_cta_spread_rx01_TD_TI_027",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual03",
+      "binding_name": "binance_cta_spread_rx01_baseline_141",
+      "position_strategy_name": "binance_cta_spread_rx01_baseline_141",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual03",
+      "binding_name": "binance_cta_spread_rx01_baseline_164",
+      "position_strategy_name": "binance_cta_spread_rx01_baseline_164",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual03",
+      "binding_name": "binance_cta_spread_rx01_factor_052",
+      "position_strategy_name": "binance_cta_spread_rx01_factor_052",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual03",
+      "binding_name": "binance_cta_spread_rx01_inventory",
+      "position_strategy_name": "binance_cta_spread_rx01_inventory",
+      "order_strategy_name": "binance_cta_spread_rx01_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_TD_MT_029",
+      "position_strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_085",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_085",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_141",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_141",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_164",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_164",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    },
+    {
+      "virtual_id": "virtual04",
+      "binding_name": "binance_cta_perp_rx03_baseline_200",
+      "position_strategy_name": "binance_cta_perp_rx03_baseline_200",
+      "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+      "shares": 1
+    }
+  ],
+  "followers": [
+    {
+      "source_id": "binance_exec_trade05",
+      "virtual_id": "virtual02",
+      "multiplier": 1,
+      "updated_at_us": 1791679532710058
+    },
+    {
+      "source_id": "binance_exec_trade06",
+      "virtual_id": "virtual03",
+      "multiplier": 1,
+      "updated_at_us": 1791896967504867
+    },
+    {
+      "source_id": "binance_exec_trade07",
+      "virtual_id": "virtual04",
+      "multiplier": 1,
+      "updated_at_us": 1791964601839242
+    }
+  ],
+  "virtual": {
+    "virtual_id": "virtual02",
+    "name": "lgq_cta",
+    "updated_at_us": 1792069010793296,
+    "created_by_user_id": 1
+  },
+  "targets": [
+    {
+      "strategy_name": "lgq_cta_TD_TI_002",
+      "targets": {
+        "BNBUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_TD_TI_024",
+      "targets": {
+        "XLMUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_004",
+      "targets": {
+        "ETHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_141",
+      "targets": {
+        "ETHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_164",
+      "targets": {
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_baseline_200",
+      "targets": {
+        "SOLUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_factor_036",
+      "targets": {
+        "FILUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AVAXUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_factor_051",
+      "targets": {
+        "BNBUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "FILUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_factor_170",
+      "targets": {
+        "DOTUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XRPUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "LINKUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    },
+    {
+      "strategy_name": "lgq_cta_symbol_mean",
+      "targets": {
+        "ADAUSDT": {
+          "qty": -1364.256480218281,
+          "signal": 0
+        },
+        "AXSUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "BELUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "BTCUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "CRVUSDT": {
+          "qty": -873.6167734420501,
+          "signal": 0
+        },
+        "DOTUSDT": {
+          "qty": -278.9140944589067,
+          "signal": 0
+        },
+        "ENJUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ETCUSDT": {
+          "qty": -39.04216553878188,
+          "signal": 0
+        },
+        "ETHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "GRTUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "KNCUSDT": {
+          "qty": -2465.0780608052587,
+          "signal": 0
+        },
+        "KSMUSDT": {
+          "qty": -69.83240223463687,
+          "signal": 0
+        },
+        "LTCUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "NEOUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ONTUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "RLCUSDT": {
+          "qty": -344.9068751437112,
+          "signal": 0
+        },
+        "RSRUSDT": {
+          "qty": -158814.18740074112,
+          "signal": 0
+        },
+        "SKLUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "SNXUSDT": {
+          "qty": -1401.2143858010274,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": -2.948982601002654,
+          "signal": 0
+        },
+        "TRBUSDT": {
+          "qty": -17.190006876002748,
+          "signal": 0
+        },
+        "UNIUSDT": {
+          "qty": -43.70629370629371,
+          "signal": 0
+        },
+        "VETUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "XLMUSDT": {
+          "qty": -1678.4155756965424,
+          "signal": 0
+        },
+        "XTZUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "YFIUSDT": {
+          "qty": -0.1366742596810934,
+          "signal": 0
+        },
+        "ZECUSDT": {
+          "qty": -0.2761185100645197,
+          "signal": 0
+        },
+        "ZENUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZILUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "ZRXUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AAVEUSDT": {
+          "qty": -2.0263424518743665,
+          "signal": 0
+        },
+        "ALGOUSDT": {
+          "qty": -2770.083102493075,
+          "signal": 0
+        },
+        "ATOMUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "AVAXUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "BANDUSDT": {
+          "qty": -1358.0805794477135,
+          "signal": 0
+        },
+        "COMPUSDT": {
+          "qty": -13.921113689095128,
+          "signal": 0
+        },
+        "DASHUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "DOGEUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "EGLDUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "IOSTUSDT": {
+          "qty": -385653.6829926726,
+          "signal": 0
+        },
+        "IOTAUSDT": {
+          "qty": -6653.359946773121,
+          "signal": 0
+        },
+        "KAVAUSDT": {
+          "qty": -4377.64482708303,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": -65.73181419807186,
+          "signal": 0
+        },
+        "QTUMUSDT": {
+          "qty": "clear",
+          "signal": 0
+        },
+        "1INCHUSDT": {
+          "qty": -3301.0563380281687,
+          "signal": 0
+        },
+        "SUSHIUSDT": {
+          "qty": -1403.8371548900327,
+          "signal": 0
+        },
+        "THETAUSDT": {
+          "qty": "clear",
+          "signal": 0
+        }
+      }
+    }
+  ],
+  "pending": []
+}

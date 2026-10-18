@@ -1,0 +1,1 @@
+{"continuous_minutes": [{"model_ts_ms": 1791962820000, "minute": "07:27", "ready_pairs": 34}, {"model_ts_ms": 1791962880000, "minute": "07:28", "ready_pairs": 34}, {"model_ts_ms": 1791962940000, "minute": "07:29", "ready_pairs": 34}], "journal_states": {"observed": 272}, "real_publications": 0}

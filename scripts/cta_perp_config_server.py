@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -27,12 +28,21 @@ HEDGE_VENUE = "binance-futures"
 
 MAX_BODY_BYTES = 64 * 1024
 
-TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution"}
+TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution", "position_algorithm", "symbol_overrides"}
 ENTRY_FIELDS = {
     "factor_long_quantile", "factor_short_quantile", "nq_change_enabled",
     "nq_long_quantile", "nq_short_quantile",
 }
 EXECUTION_FIELDS = {"factor_exit_quantile_long", "factor_exit_quantile_short"}
+OVERRIDE_FIELDS = {"factor_long_quantile", "factor_short_quantile"} | EXECUTION_FIELDS
+SYMBOL_MEAN_STRATEGY = "symbol_mean"
+
+
+def position_strategy_factors(row: dict, algorithm: str) -> dict:
+    active = {factor: weight for factor, weight in row.items() if weight != 0}
+    if algorithm == "v1":
+        return {SYMBOL_MEAN_STRATEGY: active} if active else {}
+    return {factor: {factor: weight} for factor, weight in active.items()}
 
 
 def _object(raw: Any, field: str) -> dict[str, Any]:
@@ -62,11 +72,43 @@ def _number(raw: Any, field: str) -> float:
     return value
 
 
+def position_decision_value(x: float, algorithm: str) -> float:
+    if algorithm == "v0":
+        return x
+    if algorithm == "v1":
+        return 2 * x - 1
+    raise ValueError("position_algorithm must be v0 or v1")
+
+
+def effective_config(config: dict, symbol: str) -> dict:
+    result = {**config, "entry": dict(config["entry"]),
+              "execution": dict(config["execution"]), "symbol_overrides": {}}
+    for field, value in config.get("symbol_overrides", {}).get(symbol, {}).items():
+        if value is not None:
+            result["execution" if field in EXECUTION_FIELDS else "entry"][field] = value
+    return result
+
+
+def validate_position_thresholds(config: dict) -> None:
+    minimum = position_decision_value(0.0, config["position_algorithm"])
+    entry, execution = config["entry"], config["execution"]
+    long, short = entry["factor_long_quantile"], entry["factor_short_quantile"]
+    if not minimum <= short < long <= 1.0:
+        raise ValueError(f"entry factor thresholds must satisfy {minimum} <= short < long <= 1")
+    if not minimum <= execution["factor_exit_quantile_long"] < long:
+        raise ValueError("execution.factor_exit_quantile_long must be below entry.factor_long_quantile and within the algorithm range")
+    if not short < execution["factor_exit_quantile_short"] <= 1.0:
+        raise ValueError("execution.factor_exit_quantile_short must be above entry.factor_short_quantile and within the algorithm range")
+
+
 def normalize_config(raw: Any) -> dict[str, Any]:
     root = _object(raw, "config")
     _reject_unknown(root, TOP_FIELDS, "config")
     if "execution" not in root:
         raise ValueError("config.execution is required")
+    algorithm = root.get("position_algorithm", "v0")
+    if algorithm not in ("v0", "v1"):
+        raise ValueError("position_algorithm must be v0 or v1")
 
     amount = _number(root.get("max_pos_u", 200.0), "max_pos_u")
     if amount <= 0:
@@ -76,8 +118,6 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     _reject_unknown(entry, ENTRY_FIELDS, "entry")
     factor_long = _number(entry.get("factor_long_quantile", 0.9), "entry.factor_long_quantile")
     factor_short = _number(entry.get("factor_short_quantile", 0.1), "entry.factor_short_quantile")
-    if not (0.0 <= factor_short < factor_long <= 1.0):
-        raise ValueError("entry factor quantiles must satisfy 0 <= short < long <= 1")
     nq_long = _number(entry.get("nq_long_quantile", 0.5), "entry.nq_long_quantile")
     nq_short = _number(entry.get("nq_short_quantile", 0.5), "entry.nq_short_quantile")
     if not (0.0 <= nq_long <= 1.0 and 0.0 <= nq_short <= 1.0):
@@ -93,18 +133,11 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         execution.get("factor_exit_quantile_short", 0.7),
         "execution.factor_exit_quantile_short",
     )
-    if not 0.0 <= exit_long < factor_long:
-        raise ValueError(
-            "execution.factor_exit_quantile_long must be below entry.factor_long_quantile"
-        )
-    if not factor_short < exit_short <= 1.0:
-        raise ValueError(
-            "execution.factor_exit_quantile_short must be above entry.factor_short_quantile"
-        )
-
-    return {
+    result = {
         "enabled": _bool(root.get("enabled", False), "enabled"),
         "max_pos_u": amount,
+        "position_algorithm": algorithm,
+        "symbol_overrides": {},
         "entry": {
             "factor_long_quantile": factor_long,
             "factor_short_quantile": factor_short,
@@ -119,6 +152,24 @@ def normalize_config(raw: Any) -> dict[str, Any]:
             "factor_exit_quantile_short": exit_short,
         },
     }
+    validate_position_thresholds(result)
+    overrides = _object(root.get("symbol_overrides", {}), "symbol_overrides")
+    if len(overrides) > 256:
+        raise ValueError("symbol_overrides supports at most 256 symbols")
+    for symbol, raw_row in sorted(overrides.items()):
+        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9]{1,32}", symbol):
+            raise ValueError(f"invalid symbol_overrides symbol: {symbol}")
+        field = f"symbol_overrides.{symbol}"
+        row = _object(raw_row, field)
+        _reject_unknown(row, OVERRIDE_FIELDS, field)
+        result["symbol_overrides"][symbol] = {
+            key: _number(value, f"{field}.{key}") for key, value in row.items() if value is not None
+        }
+        try:
+            validate_position_thresholds(effective_config(result, symbol))
+        except ValueError as error:
+            raise ValueError(f"{field}: {error}") from error
+    return result
 
 
 class ConfigConflict(ValueError):
@@ -149,6 +200,13 @@ class ConfigStore:
             current, current_revision = self._load_unlocked()
             if not expected_revision or expected_revision != current_revision:
                 raise ConfigConflict("configuration changed; reload before saving")
+            if current["position_algorithm"] != config["position_algorithm"]:
+                positions_path = self.path.parent.parent / "run/cta_perp_position_flags.json"
+                if positions_path.exists():
+                    positions = json.loads(positions_path.read_text())
+                    if any(p.get("flag", 0) != 0 or p.get("qty", 0) != 0
+                           for rows in positions.values() for p in rows.values()):
+                        raise ValueError("算法切换会改变持仓归属，请先关闭现有仓位；单份金额与阈值可直接调整")
             payload = (json.dumps(config, indent=2, ensure_ascii=True) + "\n").encode()
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)

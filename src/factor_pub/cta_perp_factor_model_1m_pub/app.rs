@@ -39,6 +39,33 @@ const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 
+// These formulas use OHLCV or depth only. Unreviewed formulas retain the
+// existing strict requirement for real trade-size classification metadata.
+fn requires_amount_thresholds(factors: &[String]) -> bool {
+    factors.iter().any(|factor| {
+        !matches!(
+            factor.as_str(),
+            "baseline_200"
+                | "baseline_164"
+                | "TD_MT_019"
+                | "factor_113"
+                | "baseline_036"
+                | "baseline_146"
+                | "baseline_141"
+                | "baseline_005"
+                | "TD_TI_017"
+                | "baseline_028"
+                | "TD_MT_029"
+                | "factor_051"
+                | "baseline_116"
+                | "baseline_117"
+                | "factor_170"
+                | "factor_036"
+                | "baseline_185"
+        )
+    })
+}
+
 struct FactorOutput {
     name: String,
     factor_index: usize,
@@ -402,15 +429,38 @@ pub struct CtaPerpFactorModel1mPubApp {
 struct FactorHistoryWriter {
     root: PathBuf,
     current: Option<(String, BufWriter<File>)>,
+    generation: String,
+    caught_up: bool,
+    latest: std::collections::BTreeMap<String, i64>,
+    last_status: Instant,
 }
 
 impl FactorHistoryWriter {
     fn new(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).context("create CTA factor history directory")?;
-        Ok(Self {
+        let writer = Self {
             root: root.to_path_buf(),
             current: None,
-        })
+            generation: uuid::Uuid::new_v4().to_string(),
+            caught_up: false,
+            latest: Default::default(),
+            last_status: Instant::now(),
+        };
+        writer.write_status()?;
+        Ok(writer)
+    }
+
+    fn write_status(&self) -> Result<()> {
+        let path = self.root.join("recovery.json");
+        let tmp = path.with_extension("json.tmp");
+        fs::write(
+            &tmp,
+            serde_json::to_vec(&serde_json::json!({
+                "generation": self.generation, "caught_up": self.caught_up,
+                "latest": self.latest, "updated_ms": now_millis(),
+            }))?,
+        )?;
+        fs::rename(tmp, path).context("save factor recovery progress")
     }
 
     fn record(
@@ -449,11 +499,14 @@ impl FactorHistoryWriter {
         serde_json::to_writer(
             &mut *writer,
             &serde_json::json!({
+                "generation": self.generation,
                 "symbol":symbol, "model_ts_ms":ts, "inputs":inputs, "nq":nq,
             }),
         )?;
         writer.write_all(b"\n")?;
-        writer.flush().context("flush CTA factor history")
+        writer.flush().context("flush CTA factor history")?;
+        self.latest.insert(symbol.to_string(), ts);
+        Ok(())
     }
 }
 
@@ -477,17 +530,30 @@ impl CtaPerpFactorModel1mPubApp {
         )?;
         BaselineReplayState::validate_factor_plan(&plan)
             .context("validate CTA perp factor plan")?;
-        let allowed_symbols =
-            load_enabled_symbols(&config.tlen_server, venue, &venue_slug, &config.universe).await?;
+        let needs_thresholds = requires_amount_thresholds(&config.universe.factors);
+        let allowed_symbols = if needs_thresholds {
+            load_enabled_symbols(&config.tlen_server, venue, &venue_slug, &config.universe).await?
+        } else {
+            config
+                .universe
+                .symbols
+                .iter()
+                .map(|s| normalize_symbol_for_venue(s, venue))
+                .collect()
+        };
         config.universe.require_complete(&allowed_symbols, venue)?;
-        let amount_thresholds = load_amount_thresholds_from_tlen_server(
-            &config.tlen_server,
-            venue,
-            &venue_slug,
-            TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE,
-        )
-        .await?;
-        for symbol in &allowed_symbols {
+        let amount_thresholds = if needs_thresholds {
+            load_amount_thresholds_from_tlen_server(
+                &config.tlen_server,
+                venue,
+                &venue_slug,
+                TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE,
+            )
+            .await?
+        } else {
+            HashMap::new()
+        };
+        for symbol in allowed_symbols.iter().filter(|_| needs_thresholds) {
             anyhow::ensure!(
                 amount_thresholds.contains_key(symbol),
                 "missing trade-flow amount thresholds: {symbol}"
@@ -570,6 +636,8 @@ impl CtaPerpFactorModel1mPubApp {
             }
         }
         app.publish_enabled = true;
+        app.history.caught_up = true;
+        app.history.write_status()?;
         info!(
             "CTA perp shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 nq=120/120/60",
             app.venue_slug,
@@ -590,6 +658,10 @@ impl CtaPerpFactorModel1mPubApp {
                 self.consume_record(&record.topic, &record.payload);
             }
             self.maybe_log_stats();
+            if self.history.last_status.elapsed() >= Duration::from_secs(1) {
+                self.history.write_status()?;
+                self.history.last_status = Instant::now();
+            }
         }
     }
 
@@ -617,9 +689,7 @@ impl CtaPerpFactorModel1mPubApp {
                 continue;
             }
             self.consume_nq_books(&symbol, &info.incs);
-            let Some(threshold) = self.amount_thresholds.get(&symbol).copied() else {
-                continue;
-            };
+            let threshold = self.amount_thresholds.get(&symbol).copied();
             let mut events = Vec::with_capacity(info.incs.len() + info.trades.len());
             events.extend(info.incs.iter().map(PeriodEvent::Book));
             events.extend(info.trades.iter().map(PeriodEvent::Trade));
@@ -647,13 +717,22 @@ impl CtaPerpFactorModel1mPubApp {
                         }
                         PeriodEvent::Trade(trade) => {
                             if let Some(is_buy) = parse_trade_side(&trade.side) {
-                                aggregator.on_trade_with_threshold(
-                                    timestamp_as_micros(trade.timestamp),
-                                    is_buy,
-                                    trade.price,
-                                    trade.amount,
-                                    threshold,
-                                );
+                                if let Some(threshold) = threshold {
+                                    aggregator.on_trade_with_threshold(
+                                        timestamp_as_micros(trade.timestamp),
+                                        is_buy,
+                                        trade.price,
+                                        trade.amount,
+                                        threshold,
+                                    );
+                                } else {
+                                    aggregator.on_trade(
+                                        timestamp_as_micros(trade.timestamp),
+                                        is_buy,
+                                        trade.price,
+                                        trade.amount,
+                                    );
+                                }
                             }
                         }
                     }
@@ -814,51 +893,56 @@ impl CtaPerpFactorModel1mPubApp {
     }
 
     fn catch_up(&mut self, config: &KafkaInputConfig) -> Result<()> {
-        let watermarks = self.consumer.query_topic_watermarks(
-            &config.consumer.topics,
-            config.consumer.metadata_timeout_ms,
-            config.consumer.watermark_timeout_ms,
-        )?;
-        let targets: HashMap<(String, i32), i64> = watermarks
-            .into_iter()
-            .filter(|watermark| watermark.high > watermark.low)
-            .map(|watermark| {
-                (
-                    (watermark.topic, watermark.partition),
-                    watermark.high.saturating_sub(1),
-                )
-            })
-            .collect();
-        if targets.is_empty() {
-            bail!("CTA perp Kafka topic has no retained records");
-        }
         let deadline = Instant::now() + Duration::from_secs(config.catchup_timeout_secs);
-        let mut reached = HashSet::new();
-        while reached.len() < targets.len() {
-            if Instant::now() >= deadline {
-                bail!(
-                    "CTA perp Kafka catch-up timed out reached={}/{}",
-                    reached.len(),
-                    targets.len()
-                );
+        let mut consumed: HashMap<(String, i32), i64> = HashMap::new();
+        loop {
+            let targets: HashMap<(String, i32), i64> = self
+                .consumer
+                .query_topic_watermarks(
+                    &config.consumer.topics,
+                    config.consumer.metadata_timeout_ms,
+                    config.consumer.watermark_timeout_ms,
+                )?
+                .into_iter()
+                .filter(|w| w.high > w.low)
+                .map(|w| ((w.topic, w.partition), w.high - 1))
+                .collect();
+            if targets.is_empty() {
+                bail!("CTA perp Kafka topic has no retained records");
             }
-            let Some(record) = self.consumer.poll(self.poll_timeout_ms) else {
-                continue;
-            };
-            let record = record.context("read CTA perp catch-up record")?;
-            let key = (record.topic.clone(), record.partition);
             if targets
-                .get(&key)
-                .is_some_and(|target| record.offset >= *target)
+                .iter()
+                .all(|(key, target)| consumed.get(key).is_some_and(|offset| offset >= target))
             {
-                reached.insert(key);
+                break;
             }
-            self.consume_record(&record.topic, &record.payload);
+            while !targets
+                .iter()
+                .all(|(key, target)| consumed.get(key).is_some_and(|offset| offset >= target))
+            {
+                if Instant::now() >= deadline {
+                    bail!("CTA perp Kafka catch-up timed out");
+                }
+                let Some(record) = self.consumer.poll(self.poll_timeout_ms) else {
+                    continue;
+                };
+                let record = record.context("read CTA perp catch-up record")?;
+                consumed.insert((record.topic.clone(), record.partition), record.offset);
+                self.consume_record(&record.topic, &record.payload);
+            }
+            // Re-read the head: replay time itself must not leave a live backlog.
         }
+        anyhow::ensure!(
+            self.stats.decode_errors == 0 && self.stats.evaluation_errors == 0,
+            "CTA perp recovery encountered decode/evaluation errors"
+        );
         Ok(())
     }
 
     async fn maybe_reload_symbols(&mut self) {
+        if !requires_amount_thresholds(&self.universe.factors) {
+            return;
+        }
         if self.last_symbol_reload.elapsed() < self.symbol_reload_interval {
             return;
         }
@@ -923,11 +1007,7 @@ fn create_shared_outputs(venue_slug: &str, factors: &[String]) -> Result<Vec<Fac
 }
 
 pub fn output_service_path(venue_slug: &str, factor: &str) -> String {
-    format!(
-        "model_output/cta_perp-{}-1m-{}",
-        venue_slug,
-        factor.to_ascii_lowercase()
-    )
+    crate::cta_perp::model_service::model_service_path(venue_slug, factor)
 }
 
 fn parse_trade_side(value: &str) -> Option<bool> {
@@ -976,6 +1056,103 @@ mod tests {
             window_bars,
             min_periods,
             clip_zscore: 3.0,
+        }
+    }
+
+    #[test]
+    fn reviewed_ohlcv_depth_factors_ignore_trade_size_buckets() {
+        use mkt_parsers::msg::trade_flow_feature_msg::{
+            TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
+        };
+        let names: Vec<String> = [
+            "baseline_200",
+            "baseline_164",
+            "TD_MT_019",
+            "factor_113",
+            "baseline_036",
+            "baseline_146",
+            "baseline_141",
+            "baseline_005",
+            "TD_TI_017",
+            "baseline_028",
+            "TD_MT_029",
+            "factor_051",
+            "baseline_116",
+            "baseline_117",
+            "factor_170",
+            "factor_036",
+            "baseline_185",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert!(!requires_amount_thresholds(&names));
+        assert!(requires_amount_thresholds(&["net_buy_medium".into()]));
+        assert!(requires_amount_thresholds(&["unknown".into()]));
+        let plan = SymbolFactorPlan::from_factor_names("test", names.clone()).unwrap();
+        let mut plain = BaselineReplayState::default();
+        let mut classified = BaselineReplayState::default();
+        for bar in 0..500 {
+            let mid = 100.0 + bar as f64 * 0.01 + (bar as f64 * 0.1).sin();
+            let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
+            for (name, value) in [
+                ("open", mid - 0.05),
+                ("high", mid + 1.0),
+                ("low", mid - 1.0),
+                ("close", mid),
+                ("vwap", mid),
+                ("buy_vwap", mid - 0.03),
+                ("sell_vwap", mid + 0.03),
+            ] {
+                values[TRADE_FLOW_FEATURE_FIELD_NAMES
+                    .iter()
+                    .position(|s| *s == name)
+                    .unwrap()] = value;
+            }
+            for side in [-1.0, 1.0] {
+                for level in 0..20 {
+                    values.extend([mid + side * (level as f64 + 1.0) * 0.01, 10.0]);
+                }
+            }
+            let mut different = values.clone();
+            for (i, name) in TRADE_FLOW_FEATURE_FIELD_NAMES.iter().enumerate() {
+                if name.contains("large") || name.contains("medium") || name.contains("small") {
+                    values[i] = 0.0;
+                    different[i] = (bar + 1) as f64 * (i + 1) as f64;
+                }
+            }
+            let ts = 1_704_067_200_000 + bar * 60_000;
+            plain
+                .push(
+                    TradeFlowFeatureMsg::from_indexed_values(
+                        "ETHUSDT".into(),
+                        TradingVenue::BinanceFutures.to_u8(),
+                        ts,
+                        &values,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            classified
+                .push(
+                    TradeFlowFeatureMsg::from_indexed_values(
+                        "ETHUSDT".into(),
+                        TradingVenue::BinanceFutures.to_u8(),
+                        ts,
+                        &different,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            if bar >= 300 {
+                for ((name, a), b) in names
+                    .iter()
+                    .zip(plain.factor_values(&plan))
+                    .zip(classified.factor_values(&plan))
+                {
+                    assert!(a.is_finite() && (a - b).abs() < 1e-10, "{name}: {a} != {b}");
+                }
+            }
         }
     }
 

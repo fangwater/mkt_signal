@@ -1,0 +1,29 @@
+{
+  "deployed": true,
+  "helper_actions_executed": [
+    "prepare",
+    "retire"
+  ],
+  "local_safety_tests": {
+    "passed": 11,
+    "failed": 0
+  },
+  "remote_stage": "/home/ubuntu/cta_perp_replay_cutover_stage_20261015",
+  "remote_auxiliary_hashes_verified": true,
+  "remote_prepare_dry_run": {
+    "dry_run": true,
+    "action": "prepare",
+    "source_id": "binance_exec_trade05",
+    "virtual_id": "virtual02",
+    "old_strategy_count": 9,
+    "result": "passed"
+  },
+  "pending": null,
+  "completed_at_utc": "2026-10-15 13:59 UTC",
+  "final_target_verification": "final_target_verification.json",
+  "exec05_repair": "exec05_leverage_cap/ and exec05_engine_match/",
+  "deployment_completed": true,
+  "remote_temporary_paths_removed": true,
+  "final_verification": "final_target_verification.json",
+  "cleanup_verification": "cleanup_verified.json"
+}

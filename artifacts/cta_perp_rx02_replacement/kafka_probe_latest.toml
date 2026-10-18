@@ -1,0 +1,11 @@
+topics = ["binance-futures"]
+brokers = "127.0.0.1:21501"
+group_id = "cta_rx02_scope_probe_1792048902129212988_latest"
+client_id = "cta_rx02_scope_probe_1792048902129212988_latest"
+offset_reset = "latest"
+payload_compression = "zlib"
+enable_auto_commit = false
+security_protocol = "none"
+max_messages = 2
+print_symbols = true
+broker_addr_rewrites = [{ from_host = "10.140.140.55", to_host = "127.0.0.1", to_port = 21501 }, { from_host = "156.231.137.189", to_host = "127.0.0.1", to_port = 21501 }]

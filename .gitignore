@@ -133,3 +133,16 @@ local_binance_ed25519_test/
 /artifacts/cta_special_per_pair_*_release/
 /artifacts/rx*_equity_reconciliation_*.json
 /artifacts/rx*_manager_fee_update_*.json
+
+# Private JP recovery bundles (contain credentials and live strategy settings).
+/backups/jp_recovery/
+
+# Reproducible deployment payloads and temporary source snapshots.
+/artifacts/**/*.tar
+/artifacts/**/*.tar.gz
+/artifacts/**/*.frozen
+/artifacts/**/bundle/
+/artifacts/**/staging/
+/artifacts/**/before-files/
+/artifacts/**/commit-files/
+/artifacts/**/before-docs/

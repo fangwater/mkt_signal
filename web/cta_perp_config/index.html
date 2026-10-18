@@ -259,7 +259,7 @@
     <main>
       <div class="subnav">
         <a href="#cta-signal">CTA Perp 信号</a>
-        <a href="#symbol-lists">币种与独立因子策略</a>
+        <a href="#symbol-lists">币种与因子</a>
         <a href="/manager/">CTA Manager · 执行配置 ↗</a>
       </div>
 
@@ -274,8 +274,8 @@
           </div>
         </div>
         <div class="hint">
-          统一开多、开空、退多、退空分位和
-          NQ。满多、满空、空仓三个状态，同向信号保持原 qty。保存后约 1
+          设置全局开多、开空、退多、退空阈值和 NQ；下方可按币种覆盖四个开平阈值。
+          满多、满空、空仓三个状态，同向信号保持原 qty。保存后约 1
           秒生效，下一根新闭合 bar 使用新设置。执行参数由 CTA Manager 管理。
         </div>
         <details class="hint" id="nq-help">
@@ -303,13 +303,23 @@
           </p>
         </details>
         <div class="kv-table" id="signal-table"></div>
+        <p class="hint">百分位用法：v0 直接使用 x，范围 [0, 1]；v1 使用 2x − 1，范围 [−1, 1]，例如 80% → 60%。四个开平阈值直接比较该算法的结果，切换算法不会自动换算阈值。v1 等待全部启用因子到齐同一根分钟后取等权算术平均，再比较开平阈值；NQ 使用原分位数。切换算法需先关闭现有仓位。</p>
+        <h3>币种开平阈值覆盖</h3>
+        <p class="hint">两套算法共用。留空继承对应全局值；删除一行恢复该币种全部默认值，与上方配置一起保存。</p>
+        <div style="overflow-x: auto">
+          <table id="overrides-table" style="width: 100%; text-align: left">
+            <thead><tr><th>Symbol</th><th>开多</th><th>开空</th><th>退多</th><th>退空</th><th></th></tr></thead>
+            <tbody id="override-rows"></tbody>
+          </table>
+        </div>
+        <button id="override-add" class="secondary" type="button">添加币种覆盖</button>
         <div id="signal-status" class="status"></div>
       </section>
 
       <section id="symbol-lists" class="panel">
         <div class="section-header">
           <h2>
-            币种与独立因子策略 <span class="badge" id="symbol-count"></span>
+            币种与因子 <span class="badge" id="symbol-count"></span>
           </h2>
           <div class="actions">
             <button id="sym-add" class="ghost" type="button">校验 JSON</button>
@@ -353,10 +363,16 @@
       byId("signal-key").textContent = "config/cta_perp.json";
       const signalRows = [
         [
+          "position_algorithm",
+          "select",
+          [["v0", "v0 · x · 因子独立"], ["v1", "v1 · 2x − 1 · 算术平均"]],
+          "v0 各因子独立判断；v1 对同一币种的全部因子值取算术平均，统一判断开平。",
+        ],
+        [
           "max_pos_u",
           "number",
           null,
-          "单份 USDT：每个已启用的 symbol × factor 组合独立使用此金额。开仓换算 qty，持仓保持原数量，退出平原 qty；修改金额在后续开仓生效。",
+          "单份 USDT：每次开仓使用此金额，v0 按独立因子、v1 按币种综合信号开仓。开仓换算 qty，持仓保持原数量，退出平原 qty；修改金额在后续开仓生效。",
         ],
         [
           "enabled",
@@ -365,31 +381,31 @@
             ["false", "false"],
             ["true", "true"],
           ],
-          "true 向 CTA Manager 发布因子仓位；实际账户按 Virtual 配置跟随。",
+          "true 向 CTA Manager 发布目标仓位；实际账户按 Virtual 配置跟随。",
         ],
         [
           "factor_long_quantile",
           "number",
           null,
-          "修正后的因子分位严格大于该值时开满多。",
+          "所选算法的判断值严格大于该值时开满多。",
         ],
         [
           "factor_short_quantile",
           "number",
           null,
-          "修正后的因子分位严格小于该值时开满空。",
+          "所选算法的判断值严格小于该值时开满空。",
         ],
         [
           "factor_exit_quantile_long",
           "number",
           null,
-          "修正分位低于此值时全平该因子的多仓，使用原 qty。",
+          "判断值低于此值时全平当前信号的多仓，使用原 qty。",
         ],
         [
           "factor_exit_quantile_short",
           "number",
           null,
-          "修正分位高于此值时全平该因子的空仓，使用原 qty。",
+          "判断值高于此值时全平当前信号的空仓，使用原 qty。",
         ],
         [
           "nq_change_enabled",
@@ -435,11 +451,59 @@
         el.textContent = text;
         el.className = "status" + (kind ? " " + kind : "");
       }
+      const overrideFields = [
+        "factor_long_quantile", "factor_short_quantile",
+        "factor_exit_quantile_long", "factor_exit_quantile_short",
+      ];
+      function addOverride(symbol = "", values = {}) {
+        const tr = document.createElement("tr");
+        for (const key of ["symbol", ...overrideFields]) {
+          const td = document.createElement("td"), input = document.createElement("input");
+          input.dataset.field = key;
+          input.setAttribute("aria-label", key);
+          input.style.width = key === "symbol" ? "130px" : "100px";
+          input.value = key === "symbol" ? symbol : (values[key] ?? "");
+          input.placeholder = key === "symbol" ? "BTCUSDT" : "继承全局";
+          if (key !== "symbol") input.inputMode = "decimal";
+          td.appendChild(input);
+          tr.appendChild(td);
+        }
+        const td = document.createElement("td"), remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "ghost";
+        remove.textContent = "删除";
+        remove.addEventListener("click", () => tr.remove());
+        td.appendChild(remove);
+        tr.appendChild(td);
+        byId("override-rows").appendChild(tr);
+      }
+      function collectOverrides() {
+        const result = {};
+        for (const tr of byId("override-rows").children) {
+          const symbol = tr.querySelector('[data-field="symbol"]').value.trim().toUpperCase();
+          if (!/^[A-Z0-9]{1,32}$/.test(symbol) || Object.hasOwn(result, symbol))
+            throw new Error("覆盖配置中的币种无效或重复：" + symbol);
+          const row = {};
+          for (const key of overrideFields) {
+            const raw = tr.querySelector(`[data-field="${key}"]`).value.trim();
+            if (!raw) continue;
+            const value = Number(raw);
+            if (!Number.isFinite(value)) throw new Error(`${symbol}/${key} 必须是有限数字`);
+            row[key] = value;
+          }
+          result[symbol] = row;
+        }
+        return result;
+      }
       function populate(config, nextRevision) {
         revision = nextRevision;
         byId("revision").textContent = revision.slice(0, 12);
         byId("enabled").value = config.enabled ? "true" : "false";
         byId("max_pos_u").value = config.max_pos_u ?? "";
+        byId("position_algorithm").value = config.position_algorithm ?? "v0";
+        byId("override-rows").replaceChildren();
+        for (const [symbol, values] of Object.entries(config.symbol_overrides || {}))
+          addOverride(symbol, values);
         const entry = config.entry || {};
         for (const key of [
           "factor_long_quantile",
@@ -485,6 +549,8 @@
         return {
           enabled: byId("enabled").value === "true",
           max_pos_u: amount,
+          position_algorithm: byId("position_algorithm").value,
+          symbol_overrides: collectOverrides(),
           entry,
           execution,
         };
@@ -645,6 +711,7 @@
         }
       });
       byId("signal-save").addEventListener("click", save);
+      byId("override-add").addEventListener("click", () => addOverride());
       byId("sym-save").addEventListener("click", saveFactors);
       load();
       loadFactors();

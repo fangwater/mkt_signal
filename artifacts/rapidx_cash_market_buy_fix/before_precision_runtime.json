@@ -1,0 +1,612 @@
+{
+  "captured_at_us": 1791952525265889,
+  "processes": [
+    {
+      "pid": 176562,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/home/ubuntu/binance-cta-spread-rx01/cta_spread_signal",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 195036,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 196044,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 196324,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/account_monitor",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 375418,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 406886,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 411079,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 421006,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "exe": "/home/ubuntu/binance-cta-perp-rx02/cta_perp_signal",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 490165,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/account_monitor",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 490380,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 492190,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 663465,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/home/ubuntu/binance-cta-spread-rx01/cta_spread_factor_model_1m_pub",
+      "affinity": [
+        17
+      ]
+    },
+    {
+      "pid": 1209275,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1577379,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1664842,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1727948,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1727950,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "exe": "/home/ubuntu/binance_exec_trade02/viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 1806616,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2174591,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2175056,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2176152,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/account_monitor",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2177387,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/home/ubuntu/binance_exec_trade04/viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2177637,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2987736,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 2993382,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3003411,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3028399,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3036362,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3038156,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/rapidx_account_monitor",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3040745,
+      "cwd": "/home/ubuntu/crypto_cta_manager",
+      "exe": "/home/ubuntu/crypto_cta_manager/bin/cta_web",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3046353,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/rapidx_account_monitor",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3129308,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3130319,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/home/ubuntu/binance_exec_trade03/trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3131781,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3175453,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3183433,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3381925,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "exe": "/home/ubuntu/binance_exec_trade06/trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3390010,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3477383,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3477503,
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "exe": "/home/ubuntu/binance_exec_trade05/exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3666136,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3667391,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/account_monitor",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3667720,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/home/ubuntu/binance_exec_trade01/viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3667967,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "exe": "/usr/bin/python3.12",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 4133794,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "exe": "/home/ubuntu/binance-cta-perp-rx02/cta_perp_factor_model_1m_pub",
+      "affinity": [
+        18
+      ]
+    }
+  ],
+  "hashes": {
+    "/home/ubuntu/binance-cta-spread-rx01/cta_spread_signal": "4069055ff3a20582f727d8cecdc6a14af7d619af7ca12ed625bad765add330b4",
+    "/home/ubuntu/binance_exec_trade04/env.sh": "b990f701fd8183fd1f9a13df2fee33401d37dbcbd9b05afa3703c2f045601152",
+    "/home/ubuntu/binance_exec_trade04/trade_engine.toml": "87b34c72bafe10728a2157bcd524f2e46b31a9be691b445ee046ee7443906dec",
+    "/home/ubuntu/binance_exec_trade02/env.sh": "7599b2b792debbe09ac3adaa86b0fb6c122c63a32a3231117782ac384167ba06",
+    "/home/ubuntu/binance_exec_trade02/trade_engine.toml": "87b34c72bafe10728a2157bcd524f2e46b31a9be691b445ee046ee7443906dec",
+    "/home/ubuntu/binance_exec_trade05/env.sh": "2d8048cacc519d31725230ea1fc7a9b28690ba8c952cecc587eb54129a890b3b",
+    "/home/ubuntu/binance_exec_trade05/trade_engine.toml": "b410d0512cc44ec64835d43593b9542ac2837f06369ddd058d9a0fbb040a6363",
+    "/home/ubuntu/binance_exec_trade01/env.sh": "02ba2337f571c0b5dfdb2f7c7bd3d4f425601b1c1e080bc3d6e94363485ef316",
+    "/home/ubuntu/binance_exec_trade01/trade_engine.toml": "b40c54f7627a6722ea5a3c99aaed4fd7db2e0add8d949054286ef8804cf18028",
+    "/home/ubuntu/binance_exec_trade03/env.sh": "0f2b9b3add61f4bbfb4bff90b12f65f24e39e577e2838a0ad8a8b202cb848991",
+    "/home/ubuntu/binance_exec_trade03/trade_engine.toml": "87b34c72bafe10728a2157bcd524f2e46b31a9be691b445ee046ee7443906dec",
+    "/home/ubuntu/binance_exec_trade06/env.sh": "bad8f799c34acec3dc89fde1c1e7d14127a9ad432acf0ae238d1d0f366dfab86",
+    "/home/ubuntu/binance_exec_trade06/trade_engine.toml": "b410d0512cc44ec64835d43593b9542ac2837f06369ddd058d9a0fbb040a6363",
+    "/home/ubuntu/binance-cta-spread-rx01/env.sh": "c003b5269ecf5384f1fcd9b52a461965e6edd05570480c934e8db0585fe2155d",
+    "/home/ubuntu/binance-cta-perp-rx02/env.sh": "be47b79d6fcd90a98307130d0ef3d6bf68057885f8ff840864081b257c807665",
+    "/home/ubuntu/binance-cta-spread-rx01/config/cta_spread.json": "f5a92b72fe5a3a58a5d5b131c28613e434fd3da149af9e9738986f289fcdc44c"
+  },
+  "position_state_hash": "524670fd6d73dfc63b5d0e1ea44f8da5f0ff75d820c7adc763908edfd9bcb593",
+  "config_enabled": true,
+  "status": {
+    "enabled": true,
+    "journal_healthy": true,
+    "publication_error": null,
+    "max_pos_u": 100.0,
+    "updated_ts_us": 1791952524953250,
+    "scheduled_entries": 0
+  },
+  "observation_count": 46,
+  "ready_observation_count": 46,
+  "latest_model_ts_ms": 1791952500000,
+  "exec_strategy_catalog_hash": "437fe142b7315409329402f4180fb0a1407593fb77223fe8ce9fe2a0e171e63e"
+}

@@ -1,0 +1,42 @@
+0 [I] "Config::global_config()" 
+| Using config file at "config/iceoryx2.toml" 
+service=spread_pbs/binance-futures/ask_bid_spread service_id=2656935dd29b83f7911a793f78c514dc2a5bcb47 pattern=PublishSubscribe
+publish_subscribe max_nodes=20 max_publishers=1 max_subscribers=64 history_size=100 subscriber_max_buffer_size=8192
+registered_nodes=14
+node_id=171893404357223857495039755963 pid=1787579 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=174303252728965092884960294937 pid=3192857 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=164897431601876320858193335961 pid=333465 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=160868933328352306101074554034 pid=27826 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=158907139989453907596446426674 pid=4089394 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=168345175514275413040556135589 pid=251045 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=161680246275631813280187882279 pid=2431783 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=168188901376205859561154322192 pid=3710736 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=159844202712433570376756252776 pid=1069160 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=158549300861441832754736038038 pid=32918 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=160410356789207851728185044446 pid=2076126 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=161496112296688440673862433638 pid=2112358 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=165225855625583322773293149440 pid=830720 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+node_id=162169707146925411935597277181 pid=1486845 status=alive name=trade_signal_binance_futures_askbid exe=exec-pre-trade
+removed node_id=9254491417412345655810469812 from service=spread_pbs/binance-futures/ask_bid_spread
+0 [I] "Config::global_config()" 
+| Using config file at "config/iceoryx2.toml" 
+service=dat_pbs/binance-futures/derivatives service_id=312877cd291ea0cd210ec49d477142674e4bcc86 pattern=PublishSubscribe
+publish_subscribe max_nodes=20 max_publishers=1 max_subscribers=64 history_size=50 subscriber_max_buffer_size=8192
+registered_nodes=14
+node_id=92126563416719963137762870971 pid=1787579 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=84858507144583546422765622937 pid=333465 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=97652522884461969066411583026 pid=4089394 status=alive name=pre_trade_derivatives exe=exec-pre-trade
+node_id=94173687575228488100911036441 pid=3192857 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=88575432365973146033233056933 pid=251045 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=79664029930901667491873837160 pid=1069160 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=88150147182360885464888024848 pid=3710736 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=81078294280212407198676970674 pid=27826 status=alive name=pre_trade_derivatives exe=exec-pre-trade
+node_id=81835681620733566287327075111 pid=2431783 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=96953552711534057840344858774 pid=32918 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=80357204782486138810915597790 pid=2076126 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=81273269982504758750946016102 pid=2112358 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=85077971213221301844339109120 pid=830720 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+node_id=82046529252111305378633265149 pid=1486845 status=alive name=pre_trade_derivatives_0 exe=exec-pre-trade
+removed node_id=167878252081661836624889524148 from service=dat_pbs/binance-futures/derivatives
+0 [I] "Config::global_config()" 
+| Using config file at "config/iceoryx2.toml" 

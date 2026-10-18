@@ -1,0 +1,65 @@
+{
+  "utc": "2026-10-14T22:47:59.096329+00:00",
+  "extra_processes": [
+    {
+      "pid": 3243019,
+      "name": "delist_risk_server",
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "cpu_mask": "0-5,48-95",
+      "sha256": "8c31f9e3e3fe53b99efd640d2cdba2d8750b64ec666a0f5e1a0ccae6314aa702"
+    },
+    {
+      "pid": 3252075,
+      "name": "config_server",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpu_mask": "0-5,48-95"
+    }
+  ],
+  "pre_trade_startup_evidence": [
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4957.00000000 next_open_qty=9015639.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1191 open_next_usdt=182093.4750 current_futures_qty=-9010750.00000000 add_futures_qty=-4957.00000000 next_futures_qty=-9015707.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1191 futures_next_usdt=182094.8323 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4957.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4960.00000000 next_open_qty=9015642.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1796 open_next_usdt=182093.5356 current_futures_qty=-9010750.00000000 add_futures_qty=-4960.00000000 next_futures_qty=-9015710.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1796 futures_next_usdt=182094.8929 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4960.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4960.00000000 next_open_qty=9015642.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1796 open_next_usdt=182093.5356 current_futures_qty=-9010750.00000000 add_futures_qty=-4960.00000000 next_futures_qty=-9015710.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1796 futures_next_usdt=182094.8929 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4960.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4960.00000000 next_open_qty=9015642.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1796 open_next_usdt=182093.5356 current_futures_qty=-9010750.00000000 add_futures_qty=-4960.00000000 next_futures_qty=-9015710.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1796 futures_next_usdt=182094.8929 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4960.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4960.00000000 next_open_qty=9015642.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1796 open_next_usdt=182093.5356 current_futures_qty=-9010750.00000000 add_futures_qty=-4960.00000000 next_futures_qty=-9015710.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1796 futures_next_usdt=182094.8929 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4960.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4960.00000000 next_open_qty=9015642.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1796 open_next_usdt=182093.5356 current_futures_qty=-9010750.00000000 add_futures_qty=-4960.00000000 next_futures_qty=-9015710.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1796 futures_next_usdt=182094.8929 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4960.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4960.00000000 next_open_qty=9015642.79963000 open_current_usdt=181993.3560 open_order_usdt=100.1796 open_next_usdt=182093.5356 current_futures_qty=-9010750.00000000 add_futures_qty=-4960.00000000 next_futures_qty=-9015710.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.1796 futures_next_usdt=182094.8929 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4960.00000000 open_qty_multiplier=1.00000000",
+    "[2026-10-14T22:47:57Z INFO  mkt_signal::pre_trade::binance_fr_position_limit_guard] Binance FR position-limit reject detail: symbol=TUTUSDT side=BUY mark_price=0.02019751 current_open_qty=9010682.79963000 add_open_qty=4962.00000000 next_open_qty=9015644.79963000 open_current_usdt=181993.3560 open_order_usdt=100.2200 open_next_usdt=182093.5760 current_futures_qty=-9010750.00000000 add_futures_qty=-4962.00000000 next_futures_qty=-9015712.00000000 futures_current_usdt=181994.7132 futures_order_usdt=100.2200 futures_next_usdt=182094.9333 exceeded_open=true exceeded_futures=true max_notional_value=180000.0000 buffer=3900.0000 buffer_multiplier=1.20 price_buffer_ratio=0.0150 cap=176100.0000 pending_limit_orders=10 amount_u=100.0000 leverage=Some(5.0) current_notional=Some(-181837.0251075) bracket_notional_cap=Some(15000000.0) raw_open_qty=4962.00000000 open_qty_multiplier=1.00000000"
+  ],
+  "signal_logs": [
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-error__2026-10-13_00-00-00.log",
+      "size": 110700018,
+      "new_startup_seen": false,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    },
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-error__2026-10-14_00-00-00.log",
+      "size": 105787341,
+      "new_startup_seen": false,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    },
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-error__2026-10-12_00-00-00.log",
+      "size": 115252341,
+      "new_startup_seen": false,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    },
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-error.log",
+      "size": 80603594,
+      "new_startup_seen": true,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    },
+    {
+      "path": "/home/ubuntu/.pm2/logs/fr-ts-bn-arb04-out.log",
+      "size": 0,
+      "new_startup_seen": false,
+      "recent_panic_or_fatal": 0,
+      "recent_51023_count": 0
+    }
+  ]
+}

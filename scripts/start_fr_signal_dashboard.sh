@@ -54,7 +54,7 @@ if [[ -z "$PORT" ]]; then
 fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE}, exchange=${EXCHANGE}, port=${PORT})"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" </dev/null >/dev/null 2>&1 || true
 
 RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \

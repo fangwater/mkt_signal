@@ -1,0 +1,100 @@
+{
+  "account": {
+    "source_id": "binance_exec_trade07",
+    "estimated_fee_rate": 0.000175,
+    "maker_fee_rate": -2e-05,
+    "taker_fee_rate": 0.000175,
+    "theoretical_twap_fee_rate": 0.0004,
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade07",
+        "binding_name": "binance_cta_perp_rx03_TD_MT_029",
+        "position_strategy_name": "binance_cta_perp_rx03_TD_MT_029",
+        "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791964601839242
+      },
+      {
+        "source_id": "binance_exec_trade07",
+        "binding_name": "binance_cta_perp_rx03_baseline_085",
+        "position_strategy_name": "binance_cta_perp_rx03_baseline_085",
+        "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791964601839242
+      },
+      {
+        "source_id": "binance_exec_trade07",
+        "binding_name": "binance_cta_perp_rx03_baseline_141",
+        "position_strategy_name": "binance_cta_perp_rx03_baseline_141",
+        "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791964601839242
+      },
+      {
+        "source_id": "binance_exec_trade07",
+        "binding_name": "binance_cta_perp_rx03_baseline_164",
+        "position_strategy_name": "binance_cta_perp_rx03_baseline_164",
+        "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791964601839242
+      },
+      {
+        "source_id": "binance_exec_trade07",
+        "binding_name": "binance_cta_perp_rx03_baseline_200",
+        "position_strategy_name": "binance_cta_perp_rx03_baseline_200",
+        "order_strategy_name": "binance_cta_perp_rx03_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1791964601839242
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "virtual_id": "virtual04",
+      "multiplier": 1.0
+    },
+    "pending_publishes": []
+  },
+  "risk": {
+    "max_pending_limit_orders": "10",
+    "exec_max_pending_limit_buy_orders": "10",
+    "exec_max_pending_limit_sell_orders": "10",
+    "exec_order_rate_limit_per_min": "400",
+    "exec_order_rate_limit_10s": "200"
+  },
+  "order_parameters": {
+    "algorithm": "ctaker",
+    "pov": {
+      "participation_rate": 0.1,
+      "max_batch_usdt": 300.0,
+      "max_carry_usdt": 600.0,
+      "volume_stale_ms": 5000,
+      "quote_stale_ms": 1000,
+      "duration_ms": 3600000,
+      "liquidity": "maker_then_taker",
+      "limit_price": null
+    },
+    "chase": {
+      "batch_floor_usdt": 100.0,
+      "max_batch": 4,
+      "max_open_batches": 2,
+      "maker_recenter_trigger_bps": 5.0,
+      "maker_amend_cooldown_ms": 1000,
+      "maker_timeout_sec": 120,
+      "target_tolerance_usdt": 10.0,
+      "strategy_order_rate_limit_per_min": 0,
+      "strategy_order_rate_limit_10s": 0
+    },
+    "signal_execution_enabled": false,
+    "single_order_usdt": 100.0,
+    "orders_per_batch": 1,
+    "max_batch": 1,
+    "maker_price_anchor": "own_best",
+    "tick_spacing": 1,
+    "batch_interval_ms": 0,
+    "maker_timeout_ms": 1000,
+    "max_maker_requotes": 0,
+    "target_tolerance_usdt": 0.0
+  },
+  "rule_symbols": 744,
+  "runtime_parameters_equal_rx02": true
+}

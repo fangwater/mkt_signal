@@ -1,42 +1,59 @@
 #!/usr/bin/env python3
-"""Causal replay of independent full-long/full-short/flat factor strategies."""
+"""Causal replay of full-long/full-short/flat factor and symbol-mean strategies."""
 from __future__ import annotations
 import hashlib
 import json
 import math
 import threading
 from pathlib import Path
+from cta_perp_config_server import effective_config, normalize_config, position_decision_value, position_strategy_factors
 
 EPS=4*2.220446049250313e-16
 
 
 def factor_snapshot(factor,weight,observations,config):
-    source=observations['inputs'].get(factor)
-    if not source or source.get('ready') is not True:return None
-    score,q=source.get('score'),source.get('quantile')
-    if not isinstance(score,(float,int)) or not math.isfinite(score) or not isinstance(q,(float,int)) or not math.isfinite(q) or not 0<=q<=1:return None
-    corrected=q if weight>0 else 1-q
-    entry=config['entry']
-    side=1 if corrected-entry['factor_long_quantile']>EPS else -1 if entry['factor_short_quantile']-corrected>EPS else 0
-    nq=observations['nq']
-    allowed=side!=0
+    return combined_snapshot({factor: weight}, observations, config)
+
+
+def combined_snapshot(factors, observations, config):
+    config=effective_config(config,observations['symbol'])
+    entry=config['entry'];votes=[]
+    for factor,weight in sorted(factors.items()):
+        if weight==0:continue
+        source=observations['inputs'].get(factor)
+        if not source or source.get('ready') is not True:return None
+        if source.get('model_ts_ms', observations['model_ts_ms']) != observations['model_ts_ms']:return None
+        score,q=source.get('score'),source.get('quantile')
+        if not isinstance(score,(float,int)) or not math.isfinite(score) or not isinstance(q,(float,int)) or not math.isfinite(q) or not 0<=q<=1:return None
+        corrected=q if weight>0 else 1-q
+        decision_value=position_decision_value(corrected,config.get('position_algorithm','v0'))
+        vote=1 if decision_value-entry['factor_long_quantile']>EPS else -1 if entry['factor_short_quantile']-decision_value>EPS else 0
+        votes.append(dict(factor=factor,sign='+' if weight>0 else '-',weight=1.0 if weight>0 else -1.0,
+                          score=score,corrected_score=score if weight>0 else -score,
+                          quantile=q,corrected_quantile=corrected,decision_value=decision_value,vote=vote))
+    if not votes:return None
+    for vote in votes:vote['normalized_weight']=1/len(votes)
+    corrected=math.fsum(v['corrected_quantile'] for v in votes)/len(votes)
+    decision_value=math.fsum(v['decision_value'] for v in votes)/len(votes)
+    side=1 if decision_value-entry['factor_long_quantile']>EPS else -1 if entry['factor_short_quantile']-decision_value>EPS else 0
+    nq=observations['nq'];allowed=side!=0
     if entry['nq_change_enabled']:
         nq_q=nq.get('long_quantile') if side>0 else nq.get('short_quantile')
         allowed=allowed and nq.get('ready') is True and isinstance(nq_q,(int,float)) and math.isfinite(nq_q) and 0<=nq_q<=1
         if allowed:allowed=nq_q>=entry['nq_long_quantile'] if side>0 else nq_q<=entry['nq_short_quantile']
-    return dict(model_ts_ms=observations['model_ts_ms'],score=side,quantile=corrected,score_ready=True,execution_coefficient=1.0,
-        factor_votes=[dict(factor=factor,sign='+' if weight>0 else '-',weight=weight,normalized_weight=1.0,score=score,
-                          corrected_score=score if weight>0 else -score,quantile=q,corrected_quantile=corrected,vote=side)],
-        nq_long_value=nq.get('long_value'),nq_short_value=nq.get('short_value'),nq_long_quantile=nq.get('long_quantile'),
+    return dict(model_ts_ms=observations['model_ts_ms'],score=side,quantile=corrected,decision_value=decision_value,score_ready=True,execution_coefficient=1.0,
+        factor_votes=votes,nq_long_value=nq.get('long_value'),nq_short_value=nq.get('short_value'),nq_long_quantile=nq.get('long_quantile'),
         nq_short_quantile=nq.get('short_quantile'),filter_ready=nq.get('ready'),decision='long' if allowed and side>0 else 'short' if allowed else 'flat')
 
 
 def simulate(rows,table,config,settings):
+    config=normalize_config(config)
     start=settings['start_ms'];initial=float(settings['initial_equity_usdt']);fee_rate=float(settings.get('taker_fee_rate',0))
     if not math.isfinite(initial) or initial<=0 or not math.isfinite(fee_rate) or fee_rate<0:raise ValueError('invalid replay equity or fee')
     amount=config['max_pos_u']
     if isinstance(amount,bool) or not isinstance(amount,(int,float)) or not math.isfinite(amount) or amount<=0:raise ValueError('max_pos_u must be a positive finite USDT amount')
-    factors={factor for row in table.values() for factor,w in row.items() if w!=0}
+    scopes={symbol:position_strategy_factors(row,config['position_algorithm']) for symbol,row in table.items()}
+    factors={factor for row in scopes.values() for factor in row}
     revision=hashlib.sha256(json.dumps([table,config,settings],sort_keys=True,separators=(',',':')).encode()).hexdigest()
     positions,marks,records,trades,warmup,earliest={},{},[],[],{},{}
     realized=fees_paid=0.0;invalid_prices=0;last_bar_ms=None;seen=set()
@@ -44,22 +61,22 @@ def simulate(rows,table,config,settings):
     for observation in ordered:
         symbol,bar=observation['symbol'],observation['model_ts_ms']
         if symbol not in table or bar<start:continue
+        effective=effective_config(config,symbol)
         nq=observation['nq'];ts=nq.get('execution_ts_ms',0);bid=nq.get('execution_bid');ask=nq.get('execution_ask')
         if not isinstance(bid,(float,int)) or not isinstance(ask,(float,int)) or not math.isfinite(bid) or not math.isfinite(ask) or bid<=0 or ask<bid or not bar<=ts<=bar+120000:
             invalid_prices+=1;continue
         marks[symbol]=(bid+ask)/2;last_bar_ms=max(last_bar_ms or bar,bar)
-        for factor,weight in sorted(table[symbol].items()):
-            if weight==0:continue
+        for factor,bindings in sorted(scopes[symbol].items()):
             key=(factor,symbol)
             if (*key,bar) in seen:continue
             seen.add((*key,bar));earliest[key]=min(earliest.get(key,bar),bar)
-            signal=factor_snapshot(factor,weight,observation,config)
+            signal=combined_snapshot(bindings,observation,effective)
             if signal is None:warmup[key]=warmup.get(key,0)+1;continue
-            position=positions.get(key);actions=[];execution=config['execution'];q=signal['quantile']
+            position=positions.get(key);actions=[];execution=effective['execution'];q=signal['decision_value']
             record=dict(event_id=f'replay:{revision}:{factor}:{symbol}:{bar}',signal_id=f'replay:{revision}:{factor}:{symbol}:{bar}',
                 strategy_name=factor,symbol=symbol,model_ts_ms=bar,event_ts_us=ts*1000,state='observed',reason='hold',
-                snapshot=dict(enabled=False,source='independent_factor_replay',strategy_name=factor,entry=config['entry'],execution=execution,
-                              max_pos_u=amount,symbol_factors={factor:weight},signal=signal),publication=dict(levels=[],error=None),simulation=dict(actions=actions))
+                snapshot=dict(enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],entry=effective['entry'],execution=execution,
+                              max_pos_u=amount,symbol_factors=bindings,signal=signal),publication=dict(levels=[],error=None),simulation=dict(actions=actions))
             exit_ready=position and (execution['factor_exit_quantile_long']-q>EPS if position['side']>0 else q-execution['factor_exit_quantile_short']>EPS)
             if exit_ready:
                 price=bid if position['side']>0 else ask;gross=position['side']*position['qty']*(price-position['average_price'])
@@ -99,7 +116,7 @@ def simulate(rows,table,config,settings):
                     warmup_minutes=sum(s['warmup_minutes'] for s in items),position_qty=math.fsum(s['position_qty'] for s in items))
     summaries={}
     for symbol,row in table.items():
-        by_factor={f:stats(f,symbol) for f,w in row.items() if w!=0}
+        by_factor={f:stats(f,symbol) for f in scopes[symbol]}
         summaries[symbol]={**combine(list(by_factor.values())),'strategies':by_factor}
     strategy_summaries={f:{**combine([summary['strategies'][f] for summary in summaries.values() if f in summary['strategies']]),
                            'symbols':{s:v['strategies'][f] for s,v in summaries.items() if f in v['strategies']}} for f in sorted(factors)}
@@ -109,8 +126,8 @@ def simulate(rows,table,config,settings):
                          average_entry_price=p['average_price'],qty=p['qty'],entry_notional=p['entry_notional'],
                          mark_price=marks[symbol],unrealized_pnl=p['side']*p['qty']*(marks[symbol]-p['average_price']),
                          entry_fees=p['entry_fees']) for (factor,symbol),p in positions.items()]
-    return dict(revision=revision,start_ms=start,end_ms=last_bar_ms,settings=settings,max_pos_u=amount,allocation='per_symbol_factor',
-                method='independent_factor_full_position_flags',price_method='first_post_bar_bid_ask_no_slippage',gross_results=fee_rate==0,
+    return dict(revision=revision,start_ms=start,end_ms=last_bar_ms,settings=settings,max_pos_u=amount,position_algorithm=config['position_algorithm'],symbol_overrides=config['symbol_overrides'],allocation='per_symbol' if config['position_algorithm']=='v1' else 'per_symbol_factor',
+                method='symbol_mean_full_position_flags' if config['position_algorithm']=='v1' else 'independent_factor_full_position_flags',price_method='first_post_bar_bid_ask_no_slippage',gross_results=fee_rate==0,
                 closed_trades=count,wins=wins,win_rate=wins/count if count else None,realized_pnl=realized-fees_paid,unrealized_pnl=unrealized,
                 equity=initial+realized-fees_paid+unrealized,fees=fees_paid,invalid_price_minutes=invalid_prices,
                 summaries=summaries,strategy_summaries=strategy_summaries,records=records,trades=trades,open_positions=open_positions)

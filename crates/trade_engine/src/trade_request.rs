@@ -866,7 +866,7 @@ impl BinanceNewOrderParams {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prepared_request_from_parts_with_quote_order_qty(
+    pub fn prepared_request_from_parts_with_quote_order_qty(
         req_type: TradeRequestType,
         create_time: i64,
         client_order_id: i64,
