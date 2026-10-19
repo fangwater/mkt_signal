@@ -1,7 +1,36 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-18 08:52 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-18 13:38 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-18 13:34–13:38 UTC，修复 Binance FR arb02/03/04 无新增订单的阈值依赖：
+Binance rolling 的 bidask/askbid 原 min_periods=40000、1秒采样，主机重启后
+预热未完成，全部分位数为null，导致 FR spread_missing_refs 覆盖全部在线币。
+经用户授权，仅将这两个因子的 min_periods 改为1，rolling_window=86400、
+resample_interval_ms=1000、分位点及其余参数不变；三套已重载有效阈值并产生新订单。
+随后从本地 arbmm 4b35b157 构建发布 rolling_metrics，7项 release 单元测试通过；
+校验SHA-256后原子替换 Binance 单套二进制，通过环境内 scripts/rolling_metrics
+启停脚本恢复，PID697198，CPU mask仍为0-5,48-95。未更新 Gate/Bitget rolling，
+未重启九套FR组件，未改源IP或路由。新版重建内存样本，min_periods=1已生成新阈值。
+二进制、配置备份及校验记录：`~/backups/binance_rolling_upgrade_20261018/`；
+门槛修改前后参数：`~/backups/binance_rolling_min_periods_20261018/`。
+
+2026-10-18 09:06–09:10 UTC，用户授权检查并开启九套 FR 交易：
+Binance arb02/03/04、Gate arb01/02/03、Bitget arb01/02/03 的 trade_signal
+均通过环境本地脚本逐套启动，每套共8进程，persist_manager 全部存活；
+signal CPU mask 均为 `0-5,48-95`。persist_manager 实测除 Bitget arb01
+为 `0-5,48-95` 外，其余八套为15；未修改绑核、local_ips 或网络配置。
+启动前已对齐可下单敞口；Binance 审计轮询一度触发共享出口 IP 6000 weight/min
+限流，减速后完成余单，并恢复因限流在初始化阶段退出的 arb03 pre_trade。
+最终九套账户均 free_trade，Viz/Config 正常，signal 行情缓存覆盖全部在线币；
+Gate/Bitget 已观察到 pre_trade 接收开平仓信号，Binance 抽样窗口无信号触发。
+Gate arb01/02 仍因非FR列表内的零碎现货 SLVON/TSLAX/CRCLX 缺合约 mark 而
+跳过集中度检查，未改写风控参数；Gate 个别币仍有 rl_vol 快照未就绪告警。
+九套 signal start/stop 的 PM2 delete 已改为仅按精确进程名删除，避免 namespace
+连带删除基础组件，仓库脚本同步修复并通过 bash -n。
+已按用户要求清理本次临时操作日志，保留订单/成交JSON和最终核验快照；
+最终记录：`~/backups/fr_enable_20261018/final-state.json`、`post-enable-health.json`、
+`cleanup.json`；各环境成交证据在 `~/backups/<env>_neutral_20261018/`。
 
 2026-10-18 08:43–08:50 UTC，JP 重启后经环境本地脚本恢复
 `binance_exec_trade01`–`07`，每套 persist_manager、trade_engine、账户监控、
@@ -17,9 +46,15 @@ factor_config 校验脚本恢复（16币46组合、47币192组合、14币34组�
 Exec06/07 缺失的风险 hash 按部署脚本及原 activation risk_reference 一致值恢复。
 因子依赖 `~/tlen_config_shared/scripts/start_tlen_config_server.sh` 的6322服务，
 已先恢复该服务再重启之前因依赖缺失退出的 RX01/RX03 factor。
-08:50–08:52 三套因子仍在回放原配置3天 Kafka 历史，尚未实时就绪，不能据进程
-在线判断实时推送完成。未修改 env.sh、二进制、local_ips、ENI/EIP或路由。
-证据：`artifacts/jp_exec_recovery_20261018/`，远端配置/仓位备份及启动日志：
+三套因子完成原配置3天 Kafka 历史预热：RX02 于09:15:28、RX03于09:17:34、
+RX01于09:18:58 UTC建立实时输出。09:19–09:20验收：RX01 46/46组合、
+RX02 47/47币种、RX03 34/34组合均实时就绪；signal→Exec目标分别核对92/47/34项，
+无差异、无发布错误，Manager health=ok、待投递/错误队列均0，7套Exec仓位快照
+均在1秒内更新且position_ready=true。BNB自动储备另有保护告警：Exec03提示
+上次操作结果未知，Exec04最新轮询因共享出口权重预算耗尽而未发请求；未解除
+保护或手动重试。少量执行记录受最小下单量/不可交易状态限制。
+未修改 env.sh、二进制、local_ips、ENI/EIP或路由。
+远端配置/仓位备份及启动日志：
 `~/backups/jp_exec_signal_recovery_20261018/`。
 
 2026-10-18 08:28–08:37 UTC，恢复 Binance FR arb02/03/04、Gate FR arb01/02/03、

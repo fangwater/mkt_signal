@@ -1,13 +1,15 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-18 08:52 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-18 09:20 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 2026-10-18 JP 重启恢复 Exec01–07 及 RX01 Spread / RX02、RX03 Perp 信号链路。
 CTA Manager user service 已自动恢复。沿用所有环境现有 env.sh、trade_engine.toml、
 Exec01–07 的10041–10047/18161–18167及CTA看板/配置入口，无IP、ENI/EIP、
 路由、网关或二进制变更。三套 Redis 因子配置及 Exec06/07 缺失的风险配置按
-本地部署证据恢复；08:52 UTC factor 仍在3天 Kafka 预热，未宣布实时信号就绪。
-完整启动/验收记录：`artifacts/jp_exec_recovery_20261018/`；CPU见核心分配登记。
+本地部署证据恢复。09:19–09:20 UTC 三套factor已完成3天Kafka预热，
+RX01/02/03分别46/47/34项实时就绪，signal→Exec的92/47/34项目标一致，
+Manager health=ok、7个source、待投递和错误队列均0。
+远端配置/仓位备份及启动日志：`~/backups/jp_exec_signal_recovery_20261018/`；CPU见核心分配登记。
 
 2026-10-15 13:59 UTC RX02/RX03 Perp 静默回放完成并恢复最终目标发布；RX02 为
 v1/17因子/47币，RX03 保持 v0/原14币。仍使用4191网关及

@@ -175,12 +175,12 @@ fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
 if [[ -n "$LEGACY_PROC_NAME" ]]; then
-  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+  npx pm2 delete "$LEGACY_PROC_NAME" </dev/null >/dev/null 2>&1 || true
 fi
 if [[ -n "$BUGGY_PROC_NAME" && "$BUGGY_PROC_NAME" != "$PROC_NAME" ]]; then
-  npx pm2 delete "$BUGGY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+  npx pm2 delete "$BUGGY_PROC_NAME" </dev/null >/dev/null 2>&1 || true
 fi
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" </dev/null >/dev/null 2>&1 || true
 
 RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \

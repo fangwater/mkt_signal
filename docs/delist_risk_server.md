@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-15 UTC
+最后更新：2026-10-19 UTC
 
 Public HTTP service for upcoming delist / margin / loan / futures-off risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -39,6 +39,18 @@ http://127.0.0.1:8787/healthz
 No API token. Do not put secrets in query strings.
 
 ## Current JP deployment
+
+On 2026-10-19 02:08 UTC, `/delist/` returned HTTP 502 because neither the
+backend nor its SG Redis tunnel was running after the October 18 host reboots.
+Both were restored through the environment-local
+`/home/ubuntu/delist_risk_server/scripts/start_delist_risk_server.sh`, using
+the existing binary and configuration. No reboot persistence was added; include
+this script in host recovery. The public page and health endpoint returned
+HTTP 200, with `ok=true`, `postgres=true`, `degraded=false`, fourteen monitored
+accounts, and healthy JP/SG Redis. Both processes had zero restarts and CPU mask
+`0-5,48-95`; source IPs and listeners were unchanged. The existing automatic
+risk policy resumed and added arb04 VELODROMEUSDT to `fr_dump_symbols`, removing
+it from `fr_fwd_trade_symbols`; the scan reported no flatten candidates.
 
 Republished on 2026-10-14 22:46 UTC in `/home/ubuntu/delist_risk_server` on
 `jp-meta-elvpn` from the synchronized local `arbmm` worktree at `6ff0248e`
