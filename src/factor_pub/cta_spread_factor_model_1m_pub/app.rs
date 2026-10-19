@@ -16,11 +16,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::amount_threshold::AmountThreshold;
 use crate::depth_pub::orderbook::OrderBook;
-use crate::factor_pub::cta_factor_universe::{load_enabled_symbols, CtaFactorUniverse};
+use crate::factor_pub::cta_factor_universe::CtaFactorUniverse;
+use crate::factor_pub::cta_nq::{observe_nq, NqObservation, NQ_QUANTILE_WINDOW};
 use crate::factor_pub::fusion_factor_pub::app::{
     load_amount_thresholds_from_tlen_server, BaselineReplayState,
 };
-use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
@@ -35,6 +35,68 @@ const BAR_MS: i64 = 60_000;
 const PENDING_JOIN_RETENTION_MS: i64 = 4 * 24 * 60 * 60 * 1_000;
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
+
+// Reviewed OHLCV/depth formulas do not need trade-size buckets. Unreviewed
+// formulas remain unavailable without real size metadata.
+fn requires_amount_thresholds(factor: &str) -> bool {
+    !matches!(
+        factor,
+        "TD_MT_013"
+            | "TD_MT_016"
+            | "TD_MT_022"
+            | "TD_PR_008"
+            | "TD_PR_011"
+            | "TD_PR_013"
+            | "TD_PT_003"
+            | "TD_PT_025"
+            | "TD_PT_027"
+            | "TD_TI_024"
+            | "TD_TI_026"
+            | "TD_TI_027"
+            | "TD_VI_010"
+            | "TD_VI_020"
+            | "TP_VPI_003"
+            | "TP_VPI_017"
+            | "baseline_005"
+            | "baseline_019"
+            | "baseline_022"
+            | "baseline_026"
+            | "baseline_028"
+            | "baseline_065"
+            | "baseline_068"
+            | "baseline_077"
+            | "baseline_079"
+            | "baseline_081"
+            | "baseline_092"
+            | "baseline_105"
+            | "baseline_117"
+            | "baseline_140"
+            | "baseline_141"
+            | "baseline_148"
+            | "baseline_163"
+            | "baseline_164"
+            | "baseline_195"
+            | "baseline_198"
+            | "buy_avg_price"
+            | "factor_022"
+            | "factor_023"
+            | "factor_110"
+            | "factor_114"
+            | "factor_125"
+            | "factor_152"
+            | "factor_163"
+            | "factor_164"
+            | "factor_165"
+            | "factor_169"
+            | "factor_170"
+            | "factor_171"
+            | "factor_trades_008"
+            | "factor_trades_025"
+            | "factor_trades_034"
+            | "factor_trades_035"
+            | "factor_trades_050"
+    )
+}
 
 struct FactorOutput {
     name: String,
@@ -190,6 +252,7 @@ impl SymbolFactorState {
         msg: TradeFlowFeatureMsg,
         plan: &SymbolFactorPlan,
         record: bool,
+        size_metadata_ready: bool,
     ) -> Result<Option<Vec<FactorObservation>>> {
         if self.last_ts.is_some_and(|last| msg.ts <= last) {
             return Ok(None);
@@ -205,7 +268,17 @@ impl SymbolFactorState {
                 .into_iter()
                 .zip(self.windows.iter_mut())
                 .zip(self.normalize.iter_mut())
-                .map(|((raw, window), normalize)| {
+                .zip(plan.factor_names())
+                .map(|(((raw, window), normalize), name)| {
+                    if !size_metadata_ready && requires_amount_thresholds(name) {
+                        normalize.observe(f64::NAN);
+                        window.observe_slot(f64::NAN);
+                        return FactorObservation {
+                            score: f64::NAN,
+                            quantile: None,
+                            ready: false,
+                        };
+                    }
                     let score = normalize.observe(raw).unwrap_or(f64::NAN);
                     let observed = window.observe_slot(score);
                     let quantile = observed.then(|| window.percentile_rank_last()).flatten();
@@ -220,11 +293,14 @@ impl SymbolFactorState {
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 struct SpreadObservation {
     value: Option<f64>,
     quantile: Option<f64>,
     ready: bool,
+    source_ts_ms: Option<i64>,
+    #[serde(skip)]
+    nq: NqObservation,
 }
 
 struct MinuteBook {
@@ -295,6 +371,10 @@ struct SpreadState {
     pending: std::collections::BTreeMap<i64, [Option<f64>; 2]>,
     window: ExactRollingWindow,
     last_ts: i64,
+    previous: Option<(i64, SpreadObservation)>,
+    nq_closes: VecDeque<f64>,
+    nq_long: ExactRollingWindow,
+    nq_short: ExactRollingWindow,
 }
 impl Default for SpreadState {
     fn default() -> Self {
@@ -304,6 +384,10 @@ impl Default for SpreadState {
             pending: Default::default(),
             window: ExactRollingWindow::new(FACTOR_WINDOW),
             last_ts: 0,
+            previous: None,
+            nq_closes: VecDeque::new(),
+            nq_long: ExactRollingWindow::new(NQ_QUANTILE_WINDOW),
+            nq_short: ExactRollingWindow::new(NQ_QUANTILE_WINDOW),
         }
     }
 }
@@ -342,16 +426,31 @@ impl SpreadState {
                 .map(|(s, f)| (s - f) / s);
             self.window.observe_slot(value.unwrap_or(f64::NAN));
             let quantile = value.and_then(|_| self.window.percentile_rank_last());
-            joined.push((
-                ts,
-                SpreadObservation {
-                    value,
-                    quantile,
-                    ready: value.is_some()
-                        && quantile.is_some()
-                        && self.window.len() >= FACTOR_MIN_SAMPLES,
-                },
-            ));
+            let nq = observe_nq(
+                perp.unwrap_or(f64::NAN),
+                &mut self.nq_closes,
+                &mut self.nq_long,
+                &mut self.nq_short,
+            );
+            let current = SpreadObservation {
+                value,
+                quantile,
+                ready: value.is_some()
+                    && quantile.is_some()
+                    && self.window.len() >= FACTOR_MIN_SAMPLES,
+                source_ts_ms: Some(ts),
+                nq: NqObservation::default(),
+            };
+            // Entry at t uses only the spread observed at t-1 minute. Never
+            // carry a previous value across a missing minute.
+            let mut lagged = self
+                .previous
+                .filter(|(old, _)| *old == ts - BAR_MS)
+                .map(|(_, observation)| observation)
+                .unwrap_or_default();
+            lagged.nq = nq;
+            joined.push((ts, lagged));
+            self.previous = Some((ts, current));
             self.last_ts = ts;
         }
         // A stalled venue must not grow memory indefinitely.
@@ -387,7 +486,6 @@ impl PeriodEvent<'_> {
 pub struct CtaSpreadFactorModel1mPubApp {
     venue: TradingVenue,
     venue_slug: String,
-    tlen_server: TlenServerConfig,
     universe: CtaFactorUniverse,
     plan: SymbolFactorPlan,
     consumer: RawKafkaConsumer,
@@ -406,8 +504,6 @@ pub struct CtaSpreadFactorModel1mPubApp {
     pending_spread: HashMap<(String, i64), SpreadObservation>,
     outputs: Vec<FactorOutput>,
     publish_enabled: bool,
-    symbol_reload_interval: Duration,
-    last_symbol_reload: Instant,
     last_pending_prune: Instant,
     last_stats_log: Instant,
     stats: Stats,
@@ -419,15 +515,48 @@ pub struct CtaSpreadFactorModel1mPubApp {
 struct FactorHistoryWriter {
     root: PathBuf,
     current: Option<(String, BufWriter<File>)>,
+    generation: String,
+    caught_up: bool,
+    first: std::collections::BTreeMap<String, i64>,
+    latest: std::collections::BTreeMap<String, i64>,
+    last_status: Instant,
+    missing_amount_thresholds: Vec<String>,
+    size_dependent_factors: Vec<String>,
 }
 
 impl FactorHistoryWriter {
     fn new(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).context("create CTA factor history directory")?;
-        Ok(Self {
+        let writer = Self {
             root: root.to_path_buf(),
             current: None,
-        })
+            generation: uuid::Uuid::new_v4().to_string(),
+            caught_up: false,
+            first: Default::default(),
+            latest: Default::default(),
+            last_status: Instant::now(),
+            missing_amount_thresholds: Vec::new(),
+            size_dependent_factors: Vec::new(),
+        };
+        writer.write_status(&Stats::default())?;
+        Ok(writer)
+    }
+
+    fn write_status(&self, stats: &Stats) -> Result<()> {
+        let path = self.root.join("warmup.json");
+        let temp = path.with_extension("json.tmp");
+        fs::write(
+            &temp,
+            serde_json::to_vec(&serde_json::json!({
+                "generation":self.generation,"caught_up":self.caught_up,
+                "first":self.first,"latest":self.latest,"updated_ms":now_millis(),
+                "records":stats.records,"published":stats.published,"publish_failed":stats.publish_failed,
+                "decode_errors":stats.decode_errors,"evaluation_errors":stats.evaluation_errors,
+                "missing_amount_thresholds":self.missing_amount_thresholds,
+                "size_dependent_factors":self.size_dependent_factors,
+            }))?,
+        )?;
+        fs::rename(temp, path).context("save Spread factor warm-up progress")
     }
 
     fn record(
@@ -466,11 +595,15 @@ impl FactorHistoryWriter {
         serde_json::to_writer(
             &mut *writer,
             &serde_json::json!({
-                "symbol":symbol, "model_ts_ms":ts, "inputs":inputs, "spread":spread,
+                "generation":self.generation,
+                "symbol":symbol, "model_ts_ms":ts, "inputs":inputs, "spread":spread, "nq":spread.nq,
             }),
         )?;
         writer.write_all(b"\n")?;
-        writer.flush().context("flush CTA factor history")
+        writer.flush().context("flush CTA factor history")?;
+        self.first.entry(symbol.to_string()).or_insert(ts);
+        self.latest.insert(symbol.to_string(), ts);
+        Ok(())
     }
 }
 
@@ -494,9 +627,12 @@ impl CtaSpreadFactorModel1mPubApp {
         )?;
         BaselineReplayState::validate_factor_plan(&plan)
             .context("validate CTA spread factor plan")?;
-        let allowed_symbols =
-            load_enabled_symbols(&config.tlen_server, venue, &venue_slug, &config.universe).await?;
-        config.universe.require_complete(&allowed_symbols, venue)?;
+        let allowed_symbols: HashSet<String> = config
+            .universe
+            .symbols
+            .iter()
+            .map(|symbol| normalize_symbol_for_venue(symbol, venue))
+            .collect();
         let amount_thresholds = load_amount_thresholds_from_tlen_server(
             &config.tlen_server,
             venue,
@@ -504,11 +640,14 @@ impl CtaSpreadFactorModel1mPubApp {
             TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE,
         )
         .await?;
-        for symbol in &allowed_symbols {
-            anyhow::ensure!(
-                amount_thresholds.contains_key(symbol),
-                "missing trade-flow amount thresholds: {symbol}"
-            );
+        let mut missing: Vec<String> = allowed_symbols
+            .iter()
+            .filter(|symbol| !amount_thresholds.contains_key(*symbol))
+            .cloned()
+            .collect();
+        missing.sort();
+        if !missing.is_empty() {
+            warn!("CTA Spread trade-size thresholds absent; only size-dependent factors stay unready: {missing:?}");
         }
         let startup_ms = now_millis();
         let mut kafka_config = config.kafka.consumer.clone();
@@ -531,7 +670,6 @@ impl CtaSpreadFactorModel1mPubApp {
         let mut app = Self {
             venue,
             venue_slug,
-            tlen_server: config.tlen_server.clone(),
             universe: config.universe.clone(),
             plan,
             consumer,
@@ -551,19 +689,28 @@ impl CtaSpreadFactorModel1mPubApp {
             pending_spread: HashMap::new(),
             outputs: Vec::new(),
             publish_enabled: false,
-            symbol_reload_interval: Duration::from_secs(config.tlen_server.symbol_reload_secs),
-            last_symbol_reload: Instant::now(),
             last_pending_prune: Instant::now(),
             last_stats_log: Instant::now(),
             stats: Stats::default(),
             history: FactorHistoryWriter::new(history_path)?,
         };
+        app.history.missing_amount_thresholds = missing;
+        app.history.size_dependent_factors = app
+            .universe
+            .factors
+            .iter()
+            .filter(|name| requires_amount_thresholds(name))
+            .cloned()
+            .collect();
+        app.history.write_status(&app.stats)?;
         app.catch_up(&config.kafka)?;
+        anyhow::ensure!(
+            app.stats.decode_errors == 0 && app.stats.evaluation_errors == 0,
+            "CTA Spread Kafka replay had decode/evaluation errors"
+        );
         if replay_only {
-            anyhow::ensure!(
-                app.stats.decode_errors == 0 && app.stats.evaluation_errors == 0,
-                "CTA replay had decode/evaluation errors"
-            );
+            app.history.caught_up = true;
+            app.history.write_status(&app.stats)?;
             info!("CTA history replay complete; no IPC publishers created");
             return Ok(app);
         }
@@ -588,8 +735,10 @@ impl CtaSpreadFactorModel1mPubApp {
             }
         }
         app.publish_enabled = true;
+        app.history.caught_up = true;
+        app.history.write_status(&app.stats)?;
         info!(
-            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440",
+            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440/lag1m nq=120/120/60",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
@@ -602,13 +751,16 @@ impl CtaSpreadFactorModel1mPubApp {
 
     pub async fn run(&mut self) -> Result<()> {
         loop {
-            self.maybe_reload_symbols().await;
             if let Some(record) = self.consumer.poll(self.poll_timeout_ms) {
                 let record = record.context("read CTA spread factor Kafka record")?;
                 self.consume_record(&record.topic, &record.payload);
             }
             self.flush_unfiltered_factors();
             self.maybe_log_stats();
+            if self.history.last_status.elapsed() >= Duration::from_secs(1) {
+                self.history.write_status(&self.stats)?;
+                self.history.last_status = Instant::now();
+            }
         }
     }
 
@@ -639,9 +791,7 @@ impl CtaSpreadFactorModel1mPubApp {
             if cash {
                 continue;
             }
-            let Some(threshold) = self.amount_thresholds.get(&symbol).copied() else {
-                continue;
-            };
+            let threshold = self.amount_thresholds.get(&symbol).copied();
             let mut events = Vec::with_capacity(info.incs.len() + info.trades.len());
             events.extend(info.incs.iter().map(PeriodEvent::Book));
             events.extend(info.trades.iter().map(PeriodEvent::Trade));
@@ -669,13 +819,22 @@ impl CtaSpreadFactorModel1mPubApp {
                         }
                         PeriodEvent::Trade(trade) => {
                             if let Some(is_buy) = parse_trade_side(&trade.side) {
-                                aggregator.on_trade_with_threshold(
-                                    timestamp_as_micros(trade.timestamp),
-                                    is_buy,
-                                    trade.price,
-                                    trade.amount,
-                                    threshold,
-                                );
+                                if let Some(threshold) = threshold {
+                                    aggregator.on_trade_with_threshold(
+                                        timestamp_as_micros(trade.timestamp),
+                                        is_buy,
+                                        trade.price,
+                                        trade.amount,
+                                        threshold,
+                                    );
+                                } else {
+                                    aggregator.on_trade(
+                                        timestamp_as_micros(trade.timestamp),
+                                        is_buy,
+                                        trade.price,
+                                        trade.amount,
+                                    );
+                                }
                             }
                         }
                     }
@@ -709,7 +868,22 @@ impl CtaSpreadFactorModel1mPubApp {
         }
     }
 
-    fn consume_bar(&mut self, symbol: &str, bar: BaselineBar) {
+    fn consume_bar(&mut self, symbol: &str, mut bar: BaselineBar) {
+        let size_metadata_ready = self.amount_thresholds.contains_key(symbol);
+        if !size_metadata_ready {
+            bar.large_order = f64::NAN;
+            bar.medium_order = f64::NAN;
+            bar.small_order = f64::NAN;
+            bar.large_buy = f64::NAN;
+            bar.large_sell = f64::NAN;
+            bar.medium_buy = f64::NAN;
+            bar.medium_sell = f64::NAN;
+            bar.small_buy = f64::NAN;
+            bar.small_sell = f64::NAN;
+            bar.net_buy_large = f64::NAN;
+            bar.net_buy_medium = f64::NAN;
+            bar.net_buy_small = f64::NAN;
+        }
         let payload = match bar.to_trade_flow_feature_payload(symbol, self.venue.to_u8()) {
             Ok(value) => value,
             Err(err) => {
@@ -733,8 +907,12 @@ impl CtaSpreadFactorModel1mPubApp {
             .or_insert_with(|| {
                 SymbolFactorState::new(&self.normalize, self.plan.factor_names().len())
             })
-            .evaluate(msg, &self.plan, ts >= self.history_start_ms)
-        {
+            .evaluate(
+                msg,
+                &self.plan,
+                ts >= self.history_start_ms,
+                size_metadata_ready,
+            ) {
             Ok(Some(value)) => value,
             Ok(None) => return,
             Err(err) => {
@@ -766,6 +944,42 @@ impl CtaSpreadFactorModel1mPubApp {
             return;
         }
         for output in &mut self.outputs {
+            if output.name == "nq" {
+                output.seq_no = output.seq_no.saturating_add(1);
+                let nq = spread.nq;
+                let msg = ModelMsg::create(
+                    symbol.to_string(),
+                    ts,
+                    now_millis(),
+                    output.seq_no,
+                    nq.long_value.unwrap_or(f64::NAN),
+                    nq.long_quantile,
+                    nq.ready,
+                    MODEL_STATUS_OK,
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .with_decision_context(
+                    None,
+                    None,
+                    nq.long_value,
+                    None,
+                    nq.short_value,
+                    None,
+                    nq.ready,
+                )
+                .with_filter_quantiles(nq.long_quantile, nq.short_quantile);
+                let published = msg
+                    .to_bytes()
+                    .map(|p| output.publisher.publish(&p))
+                    .unwrap_or(false);
+                if published {
+                    self.stats.published += 1;
+                } else {
+                    self.stats.publish_failed += 1;
+                }
+                continue;
+            }
             let Some(factor) = factors.get(output.factor_index) else {
                 self.stats.publish_failed = self.stats.publish_failed.saturating_add(1);
                 warn!(
@@ -834,6 +1048,7 @@ impl CtaSpreadFactorModel1mPubApp {
                     value: None,
                     quantile: None,
                     ready: false,
+                    ..Default::default()
                 });
             self.publish_if_complete(&symbol, ts);
         }
@@ -900,35 +1115,12 @@ impl CtaSpreadFactorModel1mPubApp {
                 reached.insert(key);
             }
             self.consume_record(&record.topic, &record.payload);
+            if self.history.last_status.elapsed() >= Duration::from_secs(1) {
+                self.history.write_status(&self.stats)?;
+                self.history.last_status = Instant::now();
+            }
         }
         Ok(())
-    }
-
-    async fn maybe_reload_symbols(&mut self) {
-        if self.last_symbol_reload.elapsed() < self.symbol_reload_interval {
-            return;
-        }
-        self.last_symbol_reload = Instant::now();
-        match load_enabled_symbols(
-            &self.tlen_server,
-            self.venue,
-            &self.venue_slug,
-            &self.universe,
-        )
-        .await
-        {
-            Ok(symbols) if !symbols.is_empty() => {
-                self.allowed_symbols = symbols;
-                self.factor_states
-                    .retain(|symbol, _| self.allowed_symbols.contains(symbol));
-                self.spread_states
-                    .retain(|symbol, _| self.allowed_symbols.contains(symbol));
-                self.aggregators
-                    .retain(|symbol, _| self.allowed_symbols.contains(symbol));
-            }
-            Ok(_) => warn!("CTA spread symbol reload returned empty set; retaining previous"),
-            Err(err) => warn!("CTA spread symbol reload failed: {err:#}"),
-        }
     }
 
     fn maybe_log_stats(&mut self) {
@@ -945,20 +1137,22 @@ impl CtaSpreadFactorModel1mPubApp {
             self.factor_states.len(),
             self.spread_states.len()
         );
-        self.stats = Stats::default();
         self.last_stats_log = Instant::now();
     }
 }
 
 fn create_shared_outputs(venue_slug: &str, factors: &[String]) -> Result<Vec<FactorOutput>> {
     let mut outputs = Vec::with_capacity(factors.len());
-    for (factor_index, name) in factors.iter().enumerate() {
+    // NQ arrives before the factors that consume it at the same closed minute.
+    for (factor_index, name) in std::iter::once((usize::MAX, "nq"))
+        .chain(factors.iter().enumerate().map(|(i, f)| (i, f.as_str())))
+    {
         let service = output_service_path(venue_slug, name);
         let node_name = format!("cta_spread_factor_{}_{}", venue_slug, name)
             .replace('-', "_")
             .to_ascii_lowercase();
         outputs.push(FactorOutput {
-            name: name.clone(),
+            name: name.to_string(),
             factor_index,
             publisher: ModelPublisher::new(&node_name, &service)?,
             service,
@@ -1017,6 +1211,121 @@ fn now_millis() -> i64 {
 mod tests {
     use super::*;
 
+    fn feature(bar: i64, missing_buckets: bool) -> TradeFlowFeatureMsg {
+        use mkt_parsers::msg::trade_flow_feature_msg::{
+            TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
+        };
+        let mid = 100.0 + bar as f64 * 0.01 + (bar as f64 * 0.1).sin();
+        let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
+        for (index, name) in TRADE_FLOW_FEATURE_FIELD_NAMES.iter().enumerate() {
+            values[index] = match *name {
+                "open" => mid - 0.1,
+                "high" => mid + 1.0,
+                "low" => mid - 1.0,
+                "close" | "vwap" | "buy_vwap" | "sell_vwap" => mid,
+                "volume" => 100.0 + (bar % 13) as f64,
+                "amount" => mid * (100.0 + (bar % 13) as f64),
+                name if name.contains("large")
+                    || name.contains("medium")
+                    || name.contains("small") =>
+                {
+                    if missing_buckets {
+                        f64::NAN
+                    } else {
+                        (bar + 1) as f64 * (index + 1) as f64
+                    }
+                }
+                _ => 1.0,
+            };
+        }
+        for side in [-1.0, 1.0] {
+            for level in 0..20 {
+                values.extend([
+                    mid + side * (level as f64 + 1.0) * 0.01,
+                    10.0 + (bar % 7) as f64,
+                ]);
+            }
+        }
+        TradeFlowFeatureMsg::from_indexed_values(
+            "ETHUSDT".into(),
+            TradingVenue::BinanceFutures.to_u8(),
+            1_704_067_200_000 + bar * BAR_MS,
+            &values,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reviewed_factors_do_not_depend_on_missing_size_buckets() {
+        let config =
+            CtaSpreadFactorPubConfig::load("config/cta_spread_factor_model_1m_pub.toml").unwrap();
+        let names: Vec<_> = config
+            .universe
+            .factors
+            .into_iter()
+            .filter(|f| !requires_amount_thresholds(f))
+            .collect();
+        assert_eq!(names.len(), 54);
+        assert!(requires_amount_thresholds("baseline_046"));
+        assert!(requires_amount_thresholds("net_buy_small"));
+        assert!(requires_amount_thresholds("unreviewed"));
+        let plan = SymbolFactorPlan::from_factor_names("size independent", names.clone()).unwrap();
+        let (mut classified, mut missing) = (
+            BaselineReplayState::default(),
+            BaselineReplayState::default(),
+        );
+        let mut seen = vec![false; names.len()];
+        for minute in 0..700 {
+            classified.push(feature(minute, false)).unwrap();
+            missing.push(feature(minute, true)).unwrap();
+            for (index, (a, b)) in classified
+                .factor_values(&plan)
+                .into_iter()
+                .zip(missing.factor_values(&plan))
+                .enumerate()
+            {
+                assert!(
+                    a == b || a.is_nan() && b.is_nan(),
+                    "{}: {a} != {b}",
+                    names[index]
+                );
+                seen[index] |= a.is_finite();
+            }
+        }
+        for (name, seen) in names.iter().zip(seen) {
+            assert!(seen, "{name} never exercised after warm-up");
+        }
+    }
+
+    #[test]
+    fn missing_metadata_blocks_size_factors_even_after_previous_readiness() {
+        let names = vec![
+            "baseline_005".into(),
+            "baseline_046".into(),
+            "net_buy_small".into(),
+        ];
+        let plan = SymbolFactorPlan::from_factor_names("missing size metadata", names).unwrap();
+        let mut state = SymbolFactorState::new(&normalize_config(2, 2), 3);
+        for minute in 0..1600 {
+            let observations = state
+                .evaluate(feature(minute, false), &plan, true, true)
+                .unwrap()
+                .unwrap();
+            if minute == 1599 {
+                assert!(observations.iter().all(|o| o.ready), "{observations:?}");
+            }
+        }
+        let observations = state
+            .evaluate(feature(1600, true), &plan, true, false)
+            .unwrap()
+            .unwrap();
+        assert!(observations[0].ready);
+        for observation in &observations[1..] {
+            assert!(!observation.ready);
+            assert!(observation.score.is_nan() && observation.quantile.is_none());
+        }
+    }
+
     fn normalize_config(window_bars: usize, min_periods: usize) -> NormalizeConfig {
         NormalizeConfig {
             window_bars,
@@ -1035,24 +1344,21 @@ mod tests {
 
     #[test]
     fn publisher_exposes_configured_factor_services() {
-        assert_eq!(
-            toml::from_str::<super::CtaSpreadFactorPubConfig>(include_str!(
-                "../../../config/cta_spread_factor_model_1m_pub.toml"
-            ))
-            .expect("repository config")
+        let config: CtaSpreadFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_spread_factor_model_1m_pub.toml"
+        ))
+        .unwrap();
+        config.universe.validate().unwrap();
+        assert_eq!(config.universe.symbols.len(), 48);
+        assert_eq!(config.universe.factors.len(), 56);
+        assert!(config
             .universe
             .factors
-            .iter()
-            .map(|factor| output_service_path("binance-futures", factor))
-            .collect::<Vec<_>>(),
-            vec![
-                "model_output/cta_spread-binance-futures-1m-baseline_164",
-                "model_output/cta_spread-binance-futures-1m-baseline_141",
-                "model_output/cta_spread-binance-futures-1m-factor_170",
-                "model_output/cta_spread-binance-futures-1m-factor_113",
-                "model_output/cta_spread-binance-futures-1m-factor_052",
-            ]
-        );
+            .contains(&"factor_trades_034".to_string()));
+        assert!(config
+            .universe
+            .factors
+            .contains(&"net_buy_small".to_string()));
     }
 
     #[test]
@@ -1075,22 +1381,81 @@ mod tests {
         assert!(state.on_close(false, 120_000, 102.0).is_empty());
         let first = state.on_close(true, 60_000, 100.0);
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].1.value, Some(-0.01));
+        assert_eq!(first[0].1.value, None);
         let second = state.on_close(true, 120_000, f64::NAN);
-        assert_eq!(second[0].1.value, None);
-        assert_eq!(second[0].1.quantile, None);
-        assert!(!second[0].1.ready);
+        assert_eq!(second[0].1.value, Some(-0.01));
+        assert_eq!(second[0].1.source_ts_ms, Some(60_000));
+        state.on_close(false, 180_000, 102.0);
+        let third = state.on_close(true, 180_000, 100.0);
+        assert_eq!(third[0].1.value, None);
+        assert_eq!(third[0].1.quantile, None);
+        assert!(!third[0].1.ready);
         assert!(state.on_close(true, 60_000, 999.0).is_empty());
     }
     #[test]
     fn spread_needs_a_full_warmup_and_keeps_a_single_rank() {
         let mut state = SpreadState::default();
-        for n in 1..=FACTOR_MIN_SAMPLES {
+        for n in 1..=FACTOR_MIN_SAMPLES + 1 {
             let ts = n as i64 * BAR_MS;
             state.on_close(false, ts, 100.0);
             let bars = state.on_close(true, ts, 100.0 + n as f64 / 1000.0);
-            assert_eq!(bars[0].1.ready, n == FACTOR_MIN_SAMPLES);
-            assert!(bars[0].1.quantile.is_some());
+            assert_eq!(bars[0].1.ready, n > FACTOR_MIN_SAMPLES);
+            assert_eq!(bars[0].1.quantile.is_some(), n > 1);
+            assert_eq!(bars[0].1.nq.ready, n >= 60);
+            if n > 1 {
+                assert_eq!(bars[0].1.source_ts_ms, Some(ts - BAR_MS));
+            }
         }
+    }
+
+    #[test]
+    fn warmup_status_tracks_only_the_current_publisher_run() {
+        let root = std::env::temp_dir().join(format!("spread-warmup-{}", uuid::Uuid::new_v4()));
+        let mut writer = FactorHistoryWriter::new(&root).unwrap();
+        let status = || -> serde_json::Value {
+            serde_json::from_slice(&fs::read(root.join("warmup.json")).unwrap()).unwrap()
+        };
+        assert_eq!(status()["caught_up"], false);
+        let generation = writer.generation.clone();
+        writer
+            .record(
+                "ETHUSDT",
+                1_791_590_400_000,
+                &["factor_169".into()],
+                &[FactorObservation {
+                    score: 1.0,
+                    quantile: Some(0.95),
+                    ready: true,
+                }],
+                &SpreadObservation {
+                    quantile: Some(0.4),
+                    ready: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        writer.caught_up = true;
+        writer
+            .write_status(&Stats {
+                records: 123,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(status()["generation"], generation);
+        assert_eq!(status()["caught_up"], true);
+        assert_eq!(status()["records"], 123);
+        assert_eq!(status()["first"]["ETHUSDT"], 1_791_590_400_000_i64);
+        assert_eq!(status()["latest"]["ETHUSDT"], 1_791_590_400_000_i64);
+        let row: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("20261010.jsonl")).unwrap())
+                .unwrap();
+        assert_eq!(row["generation"], generation);
+        drop(writer);
+        let restarted = FactorHistoryWriter::new(&root).unwrap();
+        assert_ne!(status()["generation"], generation);
+        assert_eq!(status()["caught_up"], false);
+        assert_eq!(status()["latest"], serde_json::json!({}));
+        drop(restarted);
+        fs::remove_dir_all(root).unwrap();
     }
 }

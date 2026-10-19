@@ -11,6 +11,20 @@ import re
 from pathlib import Path
 from typing import Any
 
+MAX_FACTORS = 128
+
+
+def source_factor(strategy: str) -> str:
+    """Signed sleeves share one calculation but retain independent positions."""
+    return re.sub(r"_(positive|negative)$", "", strategy)
+
+
+def canonical_strategy(raw: str) -> str:
+    value = raw.strip().lower()
+    base = source_factor(value)
+    suffix = value[len(base):]
+    return (base.upper() if base.startswith(("td_", "tp_")) else base) + suffix
+
 
 def factor_key(env: str) -> str:
     if not re.fullmatch(r"binance-cta-spread-[a-z0-9][a-z0-9_-]*", env):
@@ -31,7 +45,7 @@ def normalize_table(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or len(raw) > 256:
         raise ValueError("symbol_factors must be an object with at most 256 symbols")
     allowlist = Path(__file__).with_name("factor_validation_allowlist.txt").read_text(encoding="utf-8")
-    allowed = set(re.findall(r"(?:factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium"}
+    allowed = set(re.findall(r"(?:factor_trades_\d{3}|factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium", "net_buy_small", "buy_avg_price"}
     table, services = {}, set()
     for raw_symbol, row in raw.items():
         if not isinstance(raw_symbol, str):
@@ -39,16 +53,14 @@ def normalize_table(raw: Any) -> dict[str, Any]:
         symbol = raw_symbol.strip().upper()
         if not re.fullmatch(r"[A-Z0-9]{1,28}USDT", symbol) or symbol in table:
             raise ValueError(f"invalid or duplicate symbol: {symbol}")
-        if not isinstance(row, dict) or not 1 <= len(row) <= 32:
-            raise ValueError(f"{symbol}: requires 1..32 factor -> signed weight entries")
+        if not isinstance(row, dict) or not 1 <= len(row) <= MAX_FACTORS:
+            raise ValueError(f"{symbol}: requires 1..{MAX_FACTORS} strategy -> signed weight entries")
         normalized = {}
         for raw_factor, weight in row.items():
             if not isinstance(raw_factor, str):
                 raise ValueError(f"{symbol}: factor must be a string")
-            factor = raw_factor.strip().lower()
-            if factor.startswith(("td_", "tp_")):
-                factor = factor.upper()
-            if factor not in allowed or factor in normalized:
+            factor = canonical_strategy(raw_factor)
+            if source_factor(factor) not in allowed or factor in normalized:
                 raise ValueError(f"{symbol}: invalid or duplicate factor {factor}")
             if isinstance(weight, bool) or not isinstance(weight, (int, float)):
                 raise ValueError(f"{symbol}/{factor}: signed weight must be a number")
@@ -58,14 +70,16 @@ def normalize_table(raw: Any) -> dict[str, Any]:
                 finite = False
             if not finite:
                 raise ValueError(f"{symbol}/{factor}: signed weight must be finite")
+            if (factor.endswith("_positive") and weight < 0) or (factor.endswith("_negative") and weight > 0):
+                raise ValueError(f"{symbol}/{factor}: direction disagrees with strategy suffix")
             normalized[factor] = float(weight)
             if weight != 0:
-                services.add(factor)
+                services.add(source_factor(factor))
         if not any(w != 0 for w in normalized.values()):
             raise ValueError(f"{symbol}: absolute weights must have a positive total")
         table[symbol] = dict(sorted(normalized.items()))
-    if len(services) > 32:
-        raise ValueError("factor table requires more than 32 model services")
+    if len(services) > MAX_FACTORS:
+        raise ValueError(f"factor table requires more than {MAX_FACTORS} model services")
     return dict(sorted(table.items()))
 
 
@@ -81,7 +95,7 @@ def validate_available(table: dict, universe: dict) -> None:
         if symbol not in symbols:
             raise ValueError(f"{symbol}: symbol is not computed by the current publisher")
         for factor in row:
-            if factor not in factors:
+            if source_factor(factor) not in factors:
                 raise ValueError(f"{symbol}/{factor}: factor is unavailable in the current publisher")
 
 

@@ -73,6 +73,10 @@ if [[ ! -f "$TARGET_DIR/env.sh" ]]; then
 export IPC_NAMESPACE='$ENV_NAME'
 # Configure the host's Manager gateway before enabling position publication.
 # export CTA_MANAGER_API_URL='http://127.0.0.1:4191/manager/api'
+# Or publish to every URL in this comma-separated list (takes precedence):
+# export CTA_MANAGER_API_URLS='http://127.0.0.1:4191/manager/api,http://manager-other:4191/manager/api'
+# CTA_PUBLISH_TOKEN applies to all URLs; optional CTA_PUBLISH_TOKENS is a
+# JSON object of URL -> token overrides. Keep token values in this file only.
 export CTA_POSITION_STRATEGY_PREFIX='${ENV_NAME//-/_}_'
 export CTA_VIRTUAL_ACCOUNT_NAME='cta_${FAMILY}'
 ENV

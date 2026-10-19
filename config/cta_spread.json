@@ -4,11 +4,13 @@
   "entry": {
     "factor_long_quantile": 0.9,
     "factor_short_quantile": 0.1,
-    "spread_lower_quantile": 0.3,
-    "spread_upper_quantile": 0.7
+    "spread_long_quantile": 0.7,
+    "spread_short_quantile": 0.3,
+    "nq_long_quantile": 0.5,
+    "nq_short_quantile": 0.5
   },
   "execution": {
-    "factor_exit_quantile_long": 0.3,
-    "factor_exit_quantile_short": 0.7
+    "factor_exit_quantile_long": 0.7,
+    "factor_exit_quantile_short": 0.3
   }
 }

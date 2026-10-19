@@ -92,9 +92,30 @@ pub fn cash_entry_allowed(flag: i8, bar: &WeightedBar, config: &CtaSpreadConfig)
     else {
         return false;
     };
+    let Some(nq) = &bar.nq else {
+        return false;
+    };
+    let nq_q = if flag > 0 {
+        nq.filter_long_quantile
+    } else {
+        nq.filter_short_quantile
+    };
+    if !nq.filter_ready
+        || !nq_q.is_some_and(|q| {
+            q.is_finite()
+                && (0.0..=1.0).contains(&q)
+                && if flag > 0 {
+                    q >= config.entry.nq_long_quantile
+                } else {
+                    q <= config.entry.nq_short_quantile
+                }
+        })
+    {
+        return false;
+    }
     // Every directional entry uses cash. The basis must favour that cash side.
-    (flag > 0 && config.entry.spread_lower_quantile - q > 4.0 * f64::EPSILON)
-        || (flag < 0 && q - config.entry.spread_upper_quantile > 4.0 * f64::EPSILON)
+    (flag > 0 && config.entry.spread_long_quantile - q > 4.0 * f64::EPSILON)
+        || (flag < 0 && q - config.entry.spread_short_quantile > 4.0 * f64::EPSILON)
 }
 
 pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaSpreadConfig) -> i8 {
@@ -137,7 +158,13 @@ mod tests {
     use crate::cta_spread::factors::{aggregate_bar, SymbolFactors};
     use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
     fn config() -> CtaSpreadConfig {
-        serde_json::from_str(include_str!("../../config/cta_spread.json")).unwrap()
+        {
+            let mut config: CtaSpreadConfig =
+                serde_json::from_str(include_str!("../../config/cta_spread.json")).unwrap();
+            config.entry.spread_long_quantile = 0.3;
+            config.entry.spread_short_quantile = 0.7;
+            config
+        }
     }
     fn bar(factor: f64, spread: Option<f64>) -> WeightedBar {
         let input = ModelOutputScoreLookupResult {
@@ -159,7 +186,7 @@ mod tests {
             score_ts_ms: 60000,
             note: String::new(),
         };
-        aggregate_bar(
+        let mut result = aggregate_bar(
             &SymbolFactors {
                 factors: vec!["factor_036".into()],
                 weights: vec![1.0],
@@ -167,8 +194,34 @@ mod tests {
             &[input],
             &config().entry,
         )
-        .unwrap()
+        .unwrap();
+        let mut nq = result.spread.clone();
+        nq.filter_long_quantile = Some(0.5);
+        nq.filter_short_quantile = Some(0.5);
+        nq.filter_ready = true;
+        result.nq = Some(nq);
+        result
     }
+    #[test]
+    fn nq_and_spread_must_both_allow_entries_and_reversals() {
+        let mut c = config();
+        c.entry.spread_long_quantile = 0.7;
+        c.entry.spread_short_quantile = 0.3;
+        let mut long = bar(0.99, Some(0.6));
+        assert_eq!(next_position_flag(0, &long, &c), 1);
+        long.nq.as_mut().unwrap().filter_long_quantile = Some(0.49);
+        assert_eq!(next_position_flag(0, &long, &c), 0);
+        assert_eq!(next_position_flag(-1, &long, &c), 0);
+        long.nq = None;
+        assert_eq!(next_position_flag(0, &long, &c), 0);
+        let mut short = bar(0.01, Some(0.4));
+        assert_eq!(next_position_flag(0, &short, &c), -1);
+        short.nq.as_mut().unwrap().filter_short_quantile = Some(0.51);
+        assert_eq!(next_position_flag(0, &short, &c), 0);
+        short.nq.as_mut().unwrap().filter_ready = false;
+        assert_eq!(next_position_flag(1, &short, &c), 0);
+    }
+
     #[test]
     fn cash_entries_require_spread_favouring_the_factor_direction() {
         let c = config();
@@ -196,11 +249,21 @@ mod tests {
     }
     #[test]
     fn spread_never_exits_or_blocks_factor_exit() {
-        let c = config();
-        assert_eq!(next_position_flag(1, &bar(0.6, None), &c), 1);
-        assert_eq!(next_position_flag(-1, &bar(0.4, Some(0.5)), &c), -1);
-        assert_eq!(next_position_flag(1, &bar(0.1, None), &c), 0);
-        assert_eq!(next_position_flag(-1, &bar(0.9, None), &c), 0);
+        let c: CtaSpreadConfig = serde_json::from_str(r#"{"execution":{}}"#).unwrap();
+        c.validate().unwrap();
+        for (current, quantile, expected) in [
+            (1, 0.8, 1),
+            (1, 0.7, 1),
+            (1, 0.69, 0),
+            (-1, 0.2, -1),
+            (-1, 0.3, -1),
+            (-1, 0.31, 0),
+        ] {
+            assert_eq!(
+                next_position_flag(current, &bar(quantile, None), &c),
+                expected
+            );
+        }
     }
     #[test]
     fn cash_exit_is_hedged_and_later_entries_replace_both_targets() {

@@ -18,6 +18,7 @@ cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 printf '{"apps":[{"name":"%s","script":"%s","args":["%s","--bind","%s","--port","%s","--config","config/cta_spread.json","--index","web/cta_spread_config/index.html"],"cwd":"%s"}]}\n' \
   "$PROC_NAME" "$PYTHON_BIN" "$APP_SCRIPT" "$BIND" "$PORT" "$BASE_DIR" >"$cfg_file"
+"$PYTHON_BIN" "$APP_SCRIPT" --config "${BASE_DIR}/config/cta_spread.json" --check
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_cta_spread_config_server.sh"
 "$PMDAEMON_BIN" --config "$cfg_file" start --name "$PROC_NAME"
 echo "[INFO] started $PROC_NAME at http://${BIND}:${PORT}"

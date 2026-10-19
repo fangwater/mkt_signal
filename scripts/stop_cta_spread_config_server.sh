@@ -9,7 +9,9 @@ PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 command -v "$PMDAEMON_BIN" >/dev/null 2>&1 || { echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2; exit 1; }
 dir_tag="$(basename "$BASE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"
 PROC_NAME="${PMDAEMON_NAME:-cta_spread_cfg_${dir_tag}}"
-"$PMDAEMON_BIN" delete "$PROC_NAME" >/dev/null 2>&1 || true
+# Bound registry cleanup so a stalled process snapshot cannot prevent stopping
+# this configuration service through its environment-local script.
+timeout -k 1s 45s "$PMDAEMON_BIN" delete "$PROC_NAME" >/dev/null 2>&1 || true
 leaked=()
 for comm in python python3; do
   mapfile -t found < <(safe_find_running_pids "$comm" "$BASE_DIR" "cta_spread_config_server.py" || true)

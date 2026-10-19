@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod common;
 pub mod connection;
 pub mod cta_perp;
+mod cta_position_publisher;
 pub mod cta_spread;
 pub mod depth_pub;
 pub mod factor_pub;

@@ -34,7 +34,7 @@ cd "$BASE_DIR"
 "${PYTHON_BIN:-python3}" "${BASE_DIR}/scripts/cta_perp_factor_config.py" \
   --env-name "$ENV_NAME" --check >/dev/null
 if [[ "$config_enabled" == "true" ]]; then
-  [[ -n "${CTA_MANAGER_API_URL:-}" ]] || { echo '[ERROR] CTA_MANAGER_API_URL is required'; exit 1; }
+  [[ -n "${CTA_MANAGER_API_URLS:-${CTA_MANAGER_API_URL:-}}" ]] || { echo '[ERROR] CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required'; exit 1; }
 fi
 "${BASE_DIR}/scripts/start_cta_perp_factor_model_1m_pub.sh"
 "${BASE_DIR}/scripts/start_cta_perp_config_server.sh"

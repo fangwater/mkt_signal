@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from cta_spread_factor_config import source_factor
 
 MINUTE = 60_000
 DAY = 1440 * MINUTE
@@ -61,8 +62,11 @@ def replay(records, factor, sign, config):
     entry, execution = config['entry'], config['execution']
     direction, points, events = 0, [], []
     for row in records:
-        sample = row['inputs'].get(factor, {})
+        sample = row['inputs'].get(source_factor(factor), {})
         spread = row['spread']
+        nq = row.get('nq', {})
+        nq_long, nq_short = nq.get('long_quantile'), nq.get('short_quantile')
+        nq_ready = bool(nq.get('ready')) and quantile(nq_long) and quantile(nq_short)
         raw = sample.get('quantile')
         q = (raw if sign > 0 else 1 - raw) if quantile(raw) else None
         sq = spread.get('quantile')
@@ -71,8 +75,8 @@ def replay(records, factor, sign, config):
         vote, next_direction, reason = 0, direction, 'factor_unready'
         if ready:
             vote = 1 if q - entry['factor_long_quantile'] > EPSILON else -1 if entry['factor_short_quantile'] - q > EPSILON else 0
-            allowed = spread_ready and ((vote > 0 and entry['spread_lower_quantile'] - sq > EPSILON)
-                                        or (vote < 0 and sq - entry['spread_upper_quantile'] > EPSILON))
+            allowed = spread_ready and nq_ready and ((vote > 0 and entry['spread_long_quantile'] - sq > EPSILON and nq_long >= entry['nq_long_quantile'])
+                                        or (vote < 0 and sq - entry['spread_short_quantile'] > EPSILON and nq_short <= entry['nq_short_quantile']))
             if direction and vote == -direction:
                 next_direction = vote if allowed else 0
                 reason = 'reversal' if allowed else 'blocked_reversal_exit'
@@ -87,6 +91,7 @@ def replay(records, factor, sign, config):
                 reason = 'spread_blocked' if vote else 'no_entry'
         point = dict(ts=row['model_ts_ms'], quantile=q, spread_quantile=sq,
                      spread_value=spread.get('value'), ready=ready, spread_ready=spread_ready,
+                     nq_long_quantile=nq_long, nq_short_quantile=nq_short, nq_ready=nq_ready,
                      direction=next_direction, vote=vote, reason=reason)
         if next_direction != direction:
             if direction:

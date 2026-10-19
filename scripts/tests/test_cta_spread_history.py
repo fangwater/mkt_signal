@@ -17,13 +17,15 @@ from cta_spread_signal_history import SpreadHistory, SpotMinuteClient, replay, M
 from cta_spread_dashboard import make_handler, live_ready
 
 CONFIG = json.loads((ROOT / 'config/cta_spread.json').read_text())
+CONFIG['entry'].update(spread_long_quantile=.3, spread_short_quantile=.7)
 START = 1_790_000_040_000
 
 
 def row(i, q, spread=.2, ready=True, spread_ready=True, factor='factor_170'):
     return dict(symbol='ETHUSDT', model_ts_ms=START + i * MINUTE,
                 inputs={factor: dict(score=1., quantile=q, ready=ready)},
-                spread=dict(value=.001, quantile=spread, ready=spread_ready))
+                spread=dict(value=.001, quantile=spread, ready=spread_ready),
+                nq=dict(long_quantile=.5,short_quantile=.5,ready=True))
 
 
 class ReplayTests(unittest.TestCase):
@@ -35,6 +37,17 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(live_ready(sample,START,False))
         sample['signal']['filter_ready']=False
         self.assertFalse(live_ready(sample,START,True))
+
+    def test_both_filters_are_required_but_do_not_block_exit(self):
+        records = [row(0,.99),row(1,.01,.8)]
+        records[0]['nq']['long_quantile'] = .49
+        self.assertEqual(replay(records[:1],'factor_170',1,CONFIG)[0][0]['direction'],0)
+        records[0]['nq']['long_quantile'] = .5
+        records[1]['nq']['ready'] = False
+        points, events = replay(records,'factor_170',1,CONFIG)
+        self.assertEqual([p['direction'] for p in points], [1,0])
+        self.assertEqual(events[-1]['reason'], 'blocked_reversal_exit')
+        self.assertEqual(replay([row(0,.99)],'factor_170_positive',1,CONFIG)[0][0]['direction'],1)
 
     def test_entry_hold_exit_and_reversal(self):
         records = [row(0,.99),row(1,.99),row(2,.2,.5),row(3,.01,.8),row(4,.99,.2)]
@@ -93,7 +106,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.latest()['ETHUSDT']['inputs']['factor_170']['quantile'],.01)
 
     def test_state_seeded_before_display_window_and_no_fake_prices(self):
-        self.journal.write_text('\n'.join(json.dumps(r) for r in [row(0,.99),row(62,.5)])+'\n')
+        self.journal.write_text('\n'.join(json.dumps(r) for r in [row(0,.99),row(62,.8)])+'\n')
         self.store.import_history(self.path)
         with patch('cta_spread_signal_history.now_ms',return_value=START+62*MINUTE):
             series=self.store.series('ETHUSDT','factor_170',1,CONFIG,1)

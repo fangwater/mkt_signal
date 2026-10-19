@@ -48,6 +48,8 @@ def main():
                     assert page.locator('#' + field).count() == 0, field
                 assert page.locator('main > section').count() == 2
                 assert page.locator('a[href="/manager/"]').count() == 1
+                assert page.locator('#factor_exit_quantile_long').input_value() == '0.7'
+                assert page.locator('#factor_exit_quantile_short').input_value() == '0.3'
                 page.locator('#factor_long_quantile').fill('0.88')
                 page.locator('#factor_exit_quantile_long').fill('0.35')
                 assert page.locator('#cta-signal #max_pos_u').count() == 1
@@ -57,8 +59,8 @@ def main():
                 config, _ = store.load()
                 assert config['entry']['factor_long_quantile'] == .88
                 assert config['execution']['factor_exit_quantile_long'] == .35
-                assert config['entry']['spread_lower_quantile'] == .3
-                assert config['entry']['spread_upper_quantile'] == .7
+                assert config['entry']['spread_long_quantile'] == .7
+                assert config['entry']['spread_short_quantile'] == .3
                 assert page.locator('#nq_change_enabled').count() == 0
                 assert config['enabled'] is False
                 assert config['max_pos_u'] == 2000
@@ -66,6 +68,7 @@ def main():
                 saved_sizing = redis.values[env + ':cta_factor_strategies']
                 saved_factors = redis.values[env + ':cta_symbol_factors']
                 page.locator('#factor_exit_quantile_long').fill('.95')
+                page.locator('details').filter(has=page.locator('#factor-json')).locator('summary').click()
                 page.locator('#factor-json').fill('{"FILUSDT":{"TD_TI_027":1}}')
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT') as rejected:
                     page.locator('#save-all').click()
@@ -74,6 +77,23 @@ def main():
                 assert redis.values[env + ':cta_factor_strategies'] == saved_sizing
                 assert store.load()[0]['max_pos_u'] == 2000
                 assert redis.values[manager_key] == original_exec
+                # Research import previews all 794 sleeves without a Redis write.
+                page.locator('#reload-all').click()
+                page.wait_for_function("() => document.querySelector('#signal-status').textContent === '读取完成'")
+                before_import = dict(redis.values)
+                page.locator('#deployment-file').set_input_files(str(ROOT / 'config/cta_spread_deployment.json'))
+                page.wait_for_function("() => document.querySelector('#sym-status').textContent.includes('794')")
+                assert redis.values == before_import
+                assert page.locator('#nq_long_quantile').input_value() == '0.5'
+                assert page.locator('#spread_long_quantile').input_value() == '0.7'
+                page.locator('#factor-search').fill('factor_169')
+                assert page.locator('#factor-editor input').count() == 2
+                with page.expect_response(lambda response: response.url.endswith('/api/symbol-factors') and response.request.method == 'POST'):
+                    page.locator('#save-all').click()
+                table = json.loads(redis.values[env + ':cta_symbol_factors'])
+                assert sum(len(row) for row in table.values()) == 794
+                assert table['AXSUSDT']['factor_169_positive'] == 1
+                assert table['AXSUSDT']['factor_169_negative'] == -1
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')

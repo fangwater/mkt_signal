@@ -7,6 +7,7 @@ use crate::cta_perp::factor_channel::{PositionObservation, WeightedFactorChannel
 use crate::cta_perp::factors::{runtime_factor_config_key, SymbolFactorTable, WeightedBar};
 use crate::cta_perp::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
 use crate::cta_perp::positions::{full_qty, next_position_flag};
+use crate::cta_position_publisher::{PositionPublisher, Publication};
 use anyhow::{ensure, Context, Result};
 use log::{info, warn};
 use runtime_common::time_util::get_timestamp_us;
@@ -61,10 +62,8 @@ pub struct CtaPerpSignalApp {
     config_modified: Option<SystemTime>,
     config: CtaPerpConfig,
     factors: WeightedFactorChannel,
-    manager: reqwest::Client,
-    manager_url: Option<String>,
+    publisher: PositionPublisher,
     strategy_prefix: String,
-    last_published: BTreeMap<String, Value>,
     publication_error: Option<String>,
     configuration_error: Option<String>,
     positions: Positions,
@@ -88,30 +87,11 @@ impl CtaPerpSignalApp {
         let factors = WeightedFactorChannel::new(factor_key, "cta_perp_model_input", false).await?;
         MktChannel::init_bbo_singleton_readonly(config.venue(), config.venue())
             .context("initialize CTA sizing BBO")?;
-        let manager_url = std::env::var("CTA_MANAGER_API_URL").ok();
-        if let Some(url) = &manager_url {
-            let parsed = reqwest::Url::parse(url).context("invalid CTA Manager URL")?;
-            ensure!(
-                parsed.scheme() == "http" || parsed.scheme() == "https",
-                "invalid Manager URL scheme"
-            );
-        }
+        let publisher = PositionPublisher::from_env()?;
         ensure!(
-            !config.enabled || manager_url.is_some(),
-            "CTA_MANAGER_API_URL is required when publishing positions"
+            !config.enabled || !publisher.is_empty(),
+            "CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required when publishing positions"
         );
-        let mut headers = reqwest::header::HeaderMap::new();
-        if let Ok(token) = std::env::var("CTA_PUBLISH_TOKEN") {
-            let mut value = reqwest::header::HeaderValue::from_str(&token)
-                .map_err(|_| anyhow::anyhow!("invalid CTA publish token header"))?;
-            value.set_sensitive(true);
-            headers.insert("X-CTA-Publish-Token", value);
-        }
-        let manager = reqwest::Client::builder()
-            .no_proxy()
-            .default_headers(headers)
-            .timeout(Duration::from_secs(5))
-            .build()?;
         let positions = if Path::new(SHADOW_PATH).exists() {
             serde_json::from_slice(&fs::read(SHADOW_PATH)?)
                 .context("read CTA observation positions")?
@@ -128,11 +108,9 @@ impl CtaPerpSignalApp {
             config_modified,
             config,
             factors,
-            manager,
-            manager_url,
+            publisher,
             strategy_prefix: std::env::var("CTA_POSITION_STRATEGY_PREFIX")
                 .unwrap_or_else(|_| format!("{env}_")),
-            last_published: BTreeMap::new(),
             publication_error: None,
             configuration_error: None,
             positions,
@@ -167,14 +145,17 @@ impl CtaPerpSignalApp {
             }
         }
     }
-    async fn publish_targets(&mut self) -> Result<()> {
+    fn publish_targets(&mut self) -> Result<()> {
+        self.record_deliveries()?;
         if !self.config.enabled || self.recovery.is_some() || self.recovery_error.is_some() {
+            self.publisher.pause();
             return Ok(());
         }
-        let base = self
-            .manager_url
-            .as_ref()
-            .context("CTA_MANAGER_API_URL is required")?;
+        ensure!(
+            !self.publisher.is_empty(),
+            "CTA Manager publication URL is required"
+        );
+        let mut publications = BTreeMap::new();
         let scope = strategy_scope(self.factors.table(), self.config.position_algorithm);
         let names: BTreeSet<String> = scope
             .keys()
@@ -195,40 +176,36 @@ impl CtaPerpSignalApp {
                     .or_insert_with(|| target_value(0.0));
             }
             let payload = json!({"strategy_name":format!("{}{factor}",self.strategy_prefix),"targets":targets});
-            if self.last_published.get(&factor) == Some(&payload) {
+            publications.insert(factor.clone(), Publication {
+                payload,
+                context: json!({"factor":factor,"observations":self.observations.get(&factor),
+                    "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
+            });
+        }
+        self.publisher.submit(publications);
+        Ok(())
+    }
+    fn record_deliveries(&mut self) -> Result<()> {
+        for delivery in self.publisher.drain_deliveries() {
+            let payload = &delivery.publication.payload;
+            let context = &delivery.publication.context;
+            let Some(factor) = context["factor"].as_str() else {
                 continue;
-            }
-            let response = self
-                .manager
-                .post(format!(
-                    "{}/catalog/position-strategies",
-                    base.trim_end_matches('/')
-                ))
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|_| anyhow::anyhow!("CTA Manager position publication unavailable"))?;
-            ensure!(
-                response.status().is_success(),
-                "CTA Manager position publication failed: status={}",
-                response.status()
-            );
-            let now = get_timestamp_us();
-            for (symbol, target) in &targets {
-                if let Some(row) = self
-                    .observations
-                    .get(&factor)
-                    .and_then(|rows| rows.get(symbol))
-                {
+            };
+            let Some(targets) = payload["targets"].as_object() else {
+                continue;
+            };
+            let now = delivery.published_ts_us;
+            for (symbol, target) in targets {
+                if let Some(row) = context["observations"].get(symbol) {
                     self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
                         "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
                             "signal":row["signal"],"position_algorithm":row["position_algorithm"],
                             "entry":row["entry"],"execution":row["execution"],"max_pos_u":row["max_pos_u"]}),
-                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"published_ts_us":now})), ..Default::default() });
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
                 }
             }
-            self.last_published.insert(factor, payload);
         }
         Ok(())
     }
@@ -275,9 +252,9 @@ impl CtaPerpSignalApp {
                 self.sync_factor_scope();
                 self.publication_error = self
                     .publish_targets()
-                    .await
                     .err()
-                    .map(|error| format!("{error:#}"));
+                    .map(|error| format!("{error:#}"))
+                    .or_else(|| self.publisher.error());
                 if let Some(error) = &self.publication_error {
                     warn!("CTA publication failed; retry next refresh: {error}");
                 }
@@ -317,7 +294,7 @@ impl CtaPerpSignalApp {
         }
         self.sync_factor_scope();
         self.entry_live_after_ms = 0;
-        self.last_published.clear();
+        self.publisher.reset();
         self.write_status()?;
         // Leave a durable audit, and do not replay again after a normal signal restart.
         fs::rename(REQUEST_PATH, "run/cta_perp_recovery_completed.json")?;
@@ -345,14 +322,14 @@ impl CtaPerpSignalApp {
                 }
                 if next.position_algorithm != self.config.position_algorithm {
                     self.observations.clear();
-                    self.last_published.clear();
+                    self.publisher.reset();
                 }
                 if next.enabled && !self.config.enabled {
-                    self.last_published.clear();
+                    self.publisher.reset();
                     self.entry_live_after_ms = get_timestamp_us() / 1000;
                 }
-                if next.enabled && self.manager_url.is_none() {
-                    warn!("CTA publish enable rejected: CTA_MANAGER_API_URL is required");
+                if next.enabled && self.publisher.is_empty() {
+                    warn!("CTA publish enable rejected: CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required");
                     return;
                 }
                 self.configuration_error = None;
@@ -488,7 +465,7 @@ impl CtaPerpSignalApp {
         let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_PERP_VENUE_NAME,
             "position_algorithm":self.config.position_algorithm,"symbol_overrides":self.config.symbol_overrides,
             "recovering":self.recovery.is_some(),"recovery_records":self.recovery.as_ref().map(|r|r.records),"recovery_error":self.recovery_error,
-            "configuration_error":self.configuration_error,"publication_error":self.publication_error,"manager_strategy_prefix":self.strategy_prefix,
+            "configuration_error":self.configuration_error,"publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
             "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
             "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":self.config.position_algorithm.allocation(),"strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});

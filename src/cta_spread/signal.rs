@@ -1,3 +1,4 @@
+use crate::cta_position_publisher::{PositionPublisher, Publication};
 use crate::cta_spread::config::{
     CtaSpreadConfig, CTA_SPREAD_MAX_QUOTE_AGE_MS, CTA_SPREAD_SIGNAL_POLL_INTERVAL_MS,
     CTA_SPREAD_STATUS_PATH, CTA_SPREAD_VENUE_NAME,
@@ -28,10 +29,8 @@ pub struct CtaSpreadSignalApp {
     config_modified: Option<SystemTime>,
     config: CtaSpreadConfig,
     factors: WeightedFactorChannel,
-    manager: reqwest::Client,
-    manager_url: Option<String>,
+    publisher: PositionPublisher,
     strategy_prefix: String,
-    last_published: BTreeMap<String, Value>,
     publication_error: Option<String>,
     positions: Positions,
     observations: BTreeMap<String, BTreeMap<String, Value>>,
@@ -52,30 +51,11 @@ impl CtaSpreadSignalApp {
             WeightedFactorChannel::new(factor_key, "cta_spread_model_input", false).await?;
         MktChannel::init_bbo_singleton_readonly(TradingVenue::BinanceMargin, config.venue())
             .context("initialize CTA sizing BBO")?;
-        let manager_url = std::env::var("CTA_MANAGER_API_URL").ok();
-        if let Some(url) = &manager_url {
-            let parsed = reqwest::Url::parse(url).context("invalid CTA Manager URL")?;
-            ensure!(
-                parsed.scheme() == "http" || parsed.scheme() == "https",
-                "invalid Manager URL scheme"
-            );
-        }
+        let publisher = PositionPublisher::from_env()?;
         ensure!(
-            !config.enabled || manager_url.is_some(),
-            "CTA_MANAGER_API_URL is required when publishing positions"
+            !config.enabled || !publisher.is_empty(),
+            "CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required when publishing positions"
         );
-        let mut headers = reqwest::header::HeaderMap::new();
-        if let Ok(token) = std::env::var("CTA_PUBLISH_TOKEN") {
-            let mut value = reqwest::header::HeaderValue::from_str(&token)
-                .map_err(|_| anyhow::anyhow!("invalid CTA publish token header"))?;
-            value.set_sensitive(true);
-            headers.insert("X-CTA-Publish-Token", value);
-        }
-        let manager = reqwest::Client::builder()
-            .no_proxy()
-            .default_headers(headers)
-            .timeout(Duration::from_secs(5))
-            .build()?;
         let positions: Positions = if Path::new(SHADOW_PATH).exists() {
             serde_json::from_slice(&fs::read(SHADOW_PATH)?)
                 .context("read CTA observation positions")?
@@ -96,11 +76,9 @@ impl CtaSpreadSignalApp {
             config_modified,
             config,
             factors,
-            manager,
-            manager_url,
+            publisher,
             strategy_prefix: std::env::var("CTA_POSITION_STRATEGY_PREFIX")
                 .unwrap_or_else(|_| format!("{env}_")),
-            last_published: BTreeMap::new(),
             publication_error: None,
             positions,
             observations: BTreeMap::new(),
@@ -141,14 +119,17 @@ impl CtaSpreadSignalApp {
             }
         }
     }
-    async fn publish_targets(&mut self) -> Result<()> {
+    fn publish_targets(&mut self) -> Result<()> {
+        self.record_deliveries()?;
         if !self.config.enabled {
+            self.publisher.pause();
             return Ok(());
         }
-        let base = self
-            .manager_url
-            .as_ref()
-            .context("CTA_MANAGER_API_URL is required")?;
+        ensure!(
+            !self.publisher.is_empty(),
+            "CTA Manager publication URL is required"
+        );
+        let mut publications = BTreeMap::new();
         let names: BTreeSet<String> = self
             .factors
             .table()
@@ -186,39 +167,35 @@ impl CtaSpreadSignalApp {
                 }
             }
             let payload = position_payload(format!("{}{factor}", self.strategy_prefix), &targets);
-            if self.last_published.get(&factor) == Some(&payload) {
+            publications.insert(factor.clone(), Publication {
+                payload,
+                context: json!({"factor":factor,"observations":self.observations.get(&factor),
+                    "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
+            });
+        }
+        self.publisher.submit(publications);
+        Ok(())
+    }
+    fn record_deliveries(&mut self) -> Result<()> {
+        for delivery in self.publisher.drain_deliveries() {
+            let payload = &delivery.publication.payload;
+            let context = &delivery.publication.context;
+            let Some(factor) = context["factor"].as_str() else {
                 continue;
-            }
-            let response = self
-                .manager
-                .post(format!(
-                    "{}/catalog/position-strategies",
-                    base.trim_end_matches('/')
-                ))
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|_| anyhow::anyhow!("CTA Manager position publication unavailable"))?;
-            ensure!(
-                response.status().is_success(),
-                "CTA Manager position publication failed: status={}",
-                response.status()
-            );
-            let now = get_timestamp_us();
-            for (symbol, target) in &targets {
-                if let Some(row) = self
-                    .observations
-                    .get(&factor)
-                    .and_then(|rows| rows.get(symbol))
-                {
+            };
+            let Some(targets) = payload["targets"].as_object() else {
+                continue;
+            };
+            let now = delivery.published_ts_us;
+            for (symbol, target) in targets {
+                if let Some(row) = context["observations"].get(symbol) {
                     self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
                         "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
-                            "signal":row["signal"],"entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
-                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[cash_symbol(symbol)?]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now})), ..Default::default() });
+                            "signal":row["signal"],"entry":context["entry"],"execution":context["execution"],"max_pos_u":context["max_pos_u"]}),
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[cash_symbol(symbol)?]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
                 }
             }
-            self.last_published.insert(factor, payload);
         }
         Ok(())
     }
@@ -235,9 +212,9 @@ impl CtaSpreadSignalApp {
                 self.write_status()?;
                 self.publication_error = self
                     .publish_targets()
-                    .await
                     .err()
-                    .map(|error| format!("{error:#}"));
+                    .map(|error| format!("{error:#}"))
+                    .or_else(|| self.publisher.error());
                 if let Some(error) = &self.publication_error {
                     warn!("CTA publication failed; retry next refresh: {error}");
                 }
@@ -269,11 +246,11 @@ impl CtaSpreadSignalApp {
         match CtaSpreadConfig::load(&self.config_path) {
             Ok(next) => {
                 if next.enabled && !self.config.enabled {
-                    self.last_published.clear();
+                    self.publisher.reset();
                     self.entry_live_after_ms = get_timestamp_us() / 1000;
                 }
-                if next.enabled && self.manager_url.is_none() {
-                    warn!("CTA publish enable rejected: CTA_MANAGER_API_URL is required");
+                if next.enabled && self.publisher.is_empty() {
+                    warn!("CTA publish enable rejected: CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required");
                     return;
                 }
                 self.config = next;
@@ -383,7 +360,7 @@ impl CtaSpreadSignalApp {
             }
         }
         let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_SPREAD_VENUE_NAME,
-            "publication_error":self.publication_error,"manager_strategy_prefix":self.strategy_prefix,
+            "publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
             "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
             "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":"per_symbol_factor","strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
@@ -474,7 +451,12 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
 fn signal_snapshot(bar: &WeightedBar, flag: i8) -> Value {
     json!({"model_ts_ms":bar.model_ts_ms,"score":bar.value,"quantile":bar.quantile,"score_ready":true,"execution_coefficient":1.0,
         "factor_votes":bar.votes,"position_flag":flag,"decision":if flag > 0 { "long" } else if flag < 0 { "short" } else { "flat" },
-        "spread_value":bar.spread.filter_long_value,"spread_quantile":bar.spread.filter_long_quantile,"filter_ready":bar.spread.filter_ready})
+        "spread_value":bar.spread.filter_long_value,"spread_quantile":bar.spread.filter_long_quantile,
+        "spread_ready":bar.spread.filter_ready,
+        "nq_long_quantile":bar.nq.as_ref().and_then(|n| n.filter_long_quantile),
+        "nq_short_quantile":bar.nq.as_ref().and_then(|n| n.filter_short_quantile),
+        "nq_ready":bar.nq.as_ref().is_some_and(|n| n.filter_ready),
+        "filter_ready":bar.spread.filter_ready && bar.nq.as_ref().is_some_and(|n| n.filter_ready)})
 }
 
 fn cash_symbol(symbol: &str) -> Result<&str> {
@@ -507,7 +489,13 @@ mod tests {
     use crate::cta_spread::factors::{aggregate_bar, SymbolFactors};
     use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
     fn config() -> CtaSpreadConfig {
-        serde_json::from_str(include_str!("../../config/cta_spread.json")).unwrap()
+        {
+            let mut config: CtaSpreadConfig =
+                serde_json::from_str(include_str!("../../config/cta_spread.json")).unwrap();
+            config.entry.spread_long_quantile = 0.3;
+            config.entry.spread_short_quantile = 0.7;
+            config
+        }
     }
     fn bar(factor: f64, spread: Option<f64>) -> WeightedBar {
         let input = ModelOutputScoreLookupResult {
@@ -529,7 +517,7 @@ mod tests {
             score_ts_ms: 60000,
             note: String::new(),
         };
-        aggregate_bar(
+        let mut result = aggregate_bar(
             &SymbolFactors {
                 factors: vec!["factor_036".into()],
                 weights: vec![1.0],
@@ -537,7 +525,13 @@ mod tests {
             &[input],
             &config().entry,
         )
-        .unwrap()
+        .unwrap();
+        let mut nq = result.spread.clone();
+        nq.filter_long_quantile = Some(0.5);
+        nq.filter_short_quantile = Some(0.5);
+        nq.filter_ready = true;
+        result.nq = Some(nq);
+        result
     }
 
     const NOW: i64 = 60_000_000;

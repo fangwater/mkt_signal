@@ -117,11 +117,22 @@ impl WeightedFactorChannel {
                     factors: vec![factor.clone()],
                     weights: vec![weight.signum()],
                 };
+                let mut bar = aggregate_bar(&single, &[input], entry);
+                if let Some(bar) = &mut bar {
+                    let nq = self.hub.cached_score(
+                        &model_service("nq"),
+                        &symbol,
+                        TradingVenue::BinanceFutures,
+                    );
+                    if nq.score_ts_ms == ts {
+                        bar.nq = Some(nq);
+                    }
+                }
                 updates.push(IndependentFactorObservation {
                     symbol: symbol.clone(),
                     factor: factor.clone(),
                     model_ts_ms: ts,
-                    bar: aggregate_bar(&single, &[input], entry),
+                    bar,
                 });
             }
         }

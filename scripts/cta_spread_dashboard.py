@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from cta_spread_factor_config import source_factor
 from cta_spread_signal_history import SpreadHistory, SpreadCollector, configured_table, finite, quantile
 
 
@@ -52,8 +53,9 @@ def make_handler(config_path: Path, status_path: Path, index_path: Path,
                 if not weights.get(factor):
                     continue
                 observation = latest.get(symbol, {})
-                sample = observation.get('inputs', {}).get(factor, {})
+                sample = observation.get('inputs', {}).get(source_factor(factor), {})
                 spread = observation.get('spread', {})
+                nq = observation.get('nq', {})
                 q = sample.get('quantile')
                 sign = 1 if weights[factor] > 0 else -1
                 live = status.get('strategies', {}).get(factor, {}).get(symbol, {})
@@ -61,6 +63,7 @@ def make_handler(config_path: Path, status_path: Path, index_path: Path,
                     quantile=(q if sign > 0 else 1-q) if quantile(q) else None,
                     ready=bool(sample.get('ready')) and quantile(q) and finite(sample.get('score')),
                     spread_ready=bool(spread.get('ready')) and quantile(spread.get('quantile')),
+                    nq_ready=bool(nq.get('ready')), nq_long_quantile=nq.get('long_quantile'), nq_short_quantile=nq.get('short_quantile'),
                     spread_quantile=spread.get('quantile'), model_ts_ms=observation.get('model_ts_ms'),
                     live_ready=live_ready(live, result['server_ts_us'] // 1000, result['signal_state'] == 'online'), position_flag=live.get('position_flag', 0)))
             strategies.append(dict(factor=factor, symbols=symbols))

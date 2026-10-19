@@ -149,19 +149,25 @@ mod tests {
     }
 
     #[test]
-    fn configured_factors_match_raw_formulas_after_warmup() {
+    fn reviewed_factors_match_raw_formulas_after_warmup() {
         use mkt_parsers::msg::trade_flow_feature_msg::{
             TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
         };
 
-        let config: super::super::cta_perp_factor_model_1m_pub::cfg::CtaPerpFactorPubConfig =
-            toml::from_str(include_str!(
-                "../../config/cta_perp_factor_model_1m_pub.toml"
-            ))
-            .unwrap();
-        config.universe.validate().unwrap();
-        let plan =
-            SymbolFactorPlan::from_factor_names("test", config.universe.factors.clone()).unwrap();
+        // The closed-form expectations below describe this fixed synthetic
+        // input, independently of the currently deployed strategy universe.
+        let factors = [
+            "factor_036",
+            "factor_051",
+            "factor_170",
+            "factor_004",
+            "TD_TI_002",
+            "baseline_004",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let plan = SymbolFactorPlan::from_factor_names("test", factors.clone()).unwrap();
         let mut evaluator = BaselineReplayState::default();
         let mut raw = Vec::new();
         for bar in 0..500 {
@@ -210,8 +216,8 @@ mod tests {
             // Six successive 30-bar means each lag this linear path by 0.145.
             ("baseline_004", -3.0 * 104.99 + 21.0 * 0.145),
         ]);
-        assert_eq!(raw.len(), config.universe.factors.len());
-        for (name, actual) in config.universe.factors.iter().zip(raw) {
+        assert_eq!(raw.len(), factors.len());
+        for (name, actual) in factors.iter().zip(raw) {
             assert!(
                 (actual - expected[name.as_str()]).abs() < 1e-6,
                 "{name}: {actual}"

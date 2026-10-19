@@ -14,6 +14,14 @@ use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
 
 pub type SymbolFactorTable = BTreeMap<String, SymbolFactors>;
 pub const WEIGHTED_RULE_NAME: &str = "weighted";
+pub const MAX_FACTORS: usize = 128;
+
+pub fn source_factor(strategy: &str) -> &str {
+    strategy
+        .strip_suffix("_positive")
+        .or_else(|| strategy.strip_suffix("_negative"))
+        .unwrap_or(strategy)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FactorSign {
@@ -34,8 +42,8 @@ impl TryFrom<BTreeMap<String, f64>> for SymbolFactors {
     type Error = anyhow::Error;
     fn try_from(values: BTreeMap<String, f64>) -> Result<Self> {
         ensure!(
-            !values.is_empty() && values.len() <= 32,
-            "symbol requires 1..=32 factor weights"
+            !values.is_empty() && values.len() <= MAX_FACTORS,
+            "symbol requires 1..=128 factor weights"
         );
         let (factors, weights) = values.into_iter().unzip();
         Ok(Self { factors, weights })
@@ -65,7 +73,7 @@ pub fn runtime_factor_config_key() -> Result<String> {
 pub fn model_service(factor: &str) -> String {
     format!(
         "model_output/cta_spread-binance-futures-1m-{}",
-        factor.to_ascii_lowercase()
+        source_factor(factor).to_ascii_lowercase()
     )
 }
 
@@ -88,14 +96,15 @@ pub fn parse_factor_table(raw: &str) -> Result<SymbolFactorTable> {
         );
         let n = row.factors.len();
         ensure!(
-            n > 0 && n <= 32 && row.weights.len() == n,
-            "{symbol}: factor weights must contain 1..=32 entries"
+            n > 0 && n <= MAX_FACTORS && row.weights.len() == n,
+            "{symbol}: factor weights must contain 1..=128 entries"
         );
         let mut names = HashSet::new();
         for factor in &mut row.factors {
             *factor = factor.trim().to_ascii_lowercase();
             if factor.starts_with("td_") || factor.starts_with("tp_") {
-                *factor = factor.to_ascii_uppercase();
+                let base = source_factor(factor);
+                *factor = format!("{}{}", base.to_ascii_uppercase(), &factor[base.len()..]);
             }
             ensure!(
                 names.insert(factor.clone()),
@@ -106,7 +115,21 @@ pub fn parse_factor_table(raw: &str) -> Result<SymbolFactorTable> {
             row.weights.iter().all(|w| w.is_finite()) && row.weights.iter().any(|w| *w != 0.0),
             "{symbol}: signed weights must be finite and have a positive absolute total"
         );
-        let plan = SymbolFactorPlan::from_factor_names(&symbol, row.factors.clone())?;
+        for (factor, weight) in row.factors.iter().zip(&row.weights) {
+            ensure!(
+                !(factor.ends_with("_positive") && *weight < 0.0)
+                    && !(factor.ends_with("_negative") && *weight > 0.0),
+                "{symbol}/{factor}: direction disagrees with strategy suffix"
+            );
+        }
+        let mut sources: Vec<String> = row
+            .factors
+            .iter()
+            .map(|f| source_factor(f).to_string())
+            .collect();
+        sources.sort();
+        sources.dedup();
+        let plan = SymbolFactorPlan::from_factor_names(&symbol, sources)?;
         BaselineReplayState::validate_factor_plan(&plan)
             .with_context(|| format!("{symbol}: validate factors"))?;
         ensure!(
@@ -115,8 +138,8 @@ pub fn parse_factor_table(raw: &str) -> Result<SymbolFactorTable> {
         );
     }
     ensure!(
-        table_services(&canonical).len() <= 32,
-        "CTA factor table requires more than 32 model services"
+        table_services(&canonical).len() <= MAX_FACTORS + 1,
+        "CTA factor table requires more than 128 model services"
     );
     Ok(canonical)
 }
@@ -146,6 +169,7 @@ pub fn table_services(table: &SymbolFactorTable) -> Vec<String> {
         .collect();
     services.sort();
     services.dedup();
+    services.push(model_service("nq"));
     services
 }
 
@@ -170,6 +194,7 @@ pub struct WeightedBar {
     pub quantile: f64,
     pub votes: Vec<FactorVote>,
     pub spread: ModelOutputScoreLookupResult,
+    pub nq: Option<ModelOutputScoreLookupResult>,
 }
 
 impl WeightedBar {
@@ -266,6 +291,7 @@ pub fn aggregate_bar(
         quantile: quantile.clamp(0.0, 1.0),
         votes,
         spread: inputs[first].clone(),
+        nq: None,
     })
 }
 
@@ -521,7 +547,7 @@ mod tests {
         assert_eq!(bar.coefficient, 1.0);
         assert_eq!(bar.votes.len(), 1);
         let table = BTreeMap::from([("ETHUSDT".into(), row)]);
-        assert_eq!(table_services(&table).len(), 1);
+        assert_eq!(table_services(&table).len(), 2);
     }
 
     #[test]
@@ -567,9 +593,33 @@ mod tests {
         for (symbol, row) in configured {
             assert!(publisher.universe.symbols.contains(&symbol));
             for factor in row.factors {
-                assert!(publisher.universe.factors.contains(&factor));
+                assert!(publisher
+                    .universe
+                    .factors
+                    .contains(&source_factor(&factor).to_string()));
             }
         }
+    }
+
+    #[test]
+    fn opposite_sleeves_share_calculation_without_overwriting_positions() {
+        let table = parse_factor_table(include_str!("../../config/cta_spread_symbol_factors.json"))
+            .unwrap();
+        assert_eq!(table.len(), 48);
+        assert_eq!(table.values().map(|r| r.factors.len()).sum::<usize>(), 794);
+        let row = &table["AXSUSDT"];
+        for (name, sign) in [("factor_169_positive", 1.0), ("factor_169_negative", -1.0)] {
+            assert_eq!(
+                row.weights[row.factors.iter().position(|f| f == name).unwrap()],
+                sign
+            );
+        }
+        assert_eq!(
+            model_service("factor_169_positive"),
+            model_service("factor_169_negative")
+        );
+        assert_eq!(table_services(&table).len(), 57); // 56 calculations and NQ
+        assert!(parse_factor_table(r#"{"AXSUSDT":{"factor_169_positive":-1}}"#).is_err());
     }
 
     #[tokio::test]

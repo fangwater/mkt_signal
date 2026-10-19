@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone file-backed configuration server for disposable CTA spread envs."""
+"""CTA Spread configuration with NQ/basis entry gates and independent sleeves."""
 
 from __future__ import annotations
 
@@ -25,12 +25,13 @@ from cta_spread_factor_config import read_factor_table, save_factor_table, avail
 OPEN_VENUE = "binance-futures"
 HEDGE_VENUE = "binance-futures"
 
-MAX_BODY_BYTES = 64 * 1024
+MAX_BODY_BYTES = 512 * 1024
 
 TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution"}
 ENTRY_FIELDS = {
     "factor_long_quantile", "factor_short_quantile",
-    "spread_lower_quantile", "spread_upper_quantile",
+    "spread_long_quantile", "spread_short_quantile",
+    "nq_long_quantile", "nq_short_quantile",
 }
 EXECUTION_FIELDS = {"factor_exit_quantile_long", "factor_exit_quantile_short"}
 
@@ -78,19 +79,21 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     factor_short = _number(entry.get("factor_short_quantile", 0.1), "entry.factor_short_quantile")
     if not (0.0 <= factor_short < factor_long <= 1.0):
         raise ValueError("entry factor quantiles must satisfy 0 <= short < long <= 1")
-    spread_lower = _number(entry.get("spread_lower_quantile", 0.3), "entry.spread_lower_quantile")
-    spread_upper = _number(entry.get("spread_upper_quantile", 0.7), "entry.spread_upper_quantile")
-    if not (0.0 <= spread_lower < spread_upper <= 1.0):
-        raise ValueError("entry spread quantiles must satisfy 0 <= lower < upper <= 1")
+    gates = {name: _number(entry.get(name, default), f"entry.{name}") for name, default in [
+        ("spread_long_quantile", 0.7), ("spread_short_quantile", 0.3),
+        ("nq_long_quantile", 0.5), ("nq_short_quantile", 0.5),
+    ]}
+    if not all(0 <= value <= 1 for value in gates.values()):
+        raise ValueError("entry spread and NQ quantiles must be in [0, 1]")
 
     execution = _object(root["execution"], "execution")
     _reject_unknown(execution, EXECUTION_FIELDS, "execution")
     exit_long = _number(
-        execution.get("factor_exit_quantile_long", 0.3),
+        execution.get("factor_exit_quantile_long", 0.7),
         "execution.factor_exit_quantile_long",
     )
     exit_short = _number(
-        execution.get("factor_exit_quantile_short", 0.7),
+        execution.get("factor_exit_quantile_short", 0.3),
         "execution.factor_exit_quantile_short",
     )
     if not 0.0 <= exit_long < factor_long:
@@ -108,8 +111,7 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         "entry": {
             "factor_long_quantile": factor_long,
             "factor_short_quantile": factor_short,
-            "spread_lower_quantile": spread_lower,
-            "spread_upper_quantile": spread_upper,
+            **gates,
         },
         "execution": {
             "factor_exit_quantile_long": exit_long,
@@ -229,6 +231,20 @@ def make_handler(
                 self._json(500, {"error": str(exc)})
 
         def do_POST(self) -> None:  # noqa: N802
+            if urlparse(self.path).path == "/api/deployment-preview":
+                try:
+                    from cta_spread_deployment import prepare_deployment
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= MAX_BODY_BYTES:
+                        raise ValueError("invalid request body size")
+                    raw = json.loads(self.rfile.read(length), object_pairs_hook=reject_duplicate_keys)
+                    prepared = prepare_deployment(raw, store.load()[0])
+                    from cta_spread_factor_config import validate_available
+                    validate_available(prepared["symbol_factors"], available_universe(store.path.parent / "cta_spread_factor_model_1m_pub.toml"))
+                    self._json(200, prepared)
+                except (ValueError, KeyError, TypeError) as exc:
+                    self._json(400, {"error": str(exc)})
+                return
             if urlparse(self.path).path == "/api/symbol-factors":
                 if redis_client is None or not env_name:
                     self._json(503, {"error": "Redis factor configuration is unavailable"})

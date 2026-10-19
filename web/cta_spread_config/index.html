@@ -280,9 +280,9 @@
         </div>
         <details class="hint" id="spread-help">
           <summary>期现价差：过滤现货开仓方向</summary>
-          <p>spread = (现货 mid − 永续 mid) / 现货 mid。两市场按同一闭合分钟配对；2880 个分钟槽位，至少 1440 个有效样本，包含当前值。</p>
-          <p>所有开仓都在现货：低于 q30 只放行多头买现货，高于 q70 只放行空头卖现货。方向不匹配、中间区间、边界、缺失或未预热均不入场。</p>
-          <p>价差不触发退出。因子退出时保留现货，合约目标为现货数量的相反数。反向因子通过价差过滤时直接发布反转后的完整目标；未通过时只退出旧方向。</p>
+          <p>spread = (现货 mid − 永续 mid) / 现货 mid。两市场按同一闭合分钟配对；2880 个分钟槽位，至少 1440 个有效样本；开仓使用前一分钟的价差分位。</p>
+          <p>所有开仓都在现货，并同时通过 NQ 与价差过滤。默认多头要求 NQ 分位 ≥ 0.5、价差分位 &lt; 0.7；空头要求 NQ 分位 ≤ 0.5、价差分位 &gt; 0.3。价差 0.3–0.7 区间可放行两种方向，最终由各自因子及 NQ 决定；任一过滤缺失或未预热均不入场。</p>
+          <p>价差不触发退出。因子退出时保留现货，合约目标为现货数量的相反数。反向因子同时通过 NQ 与价差过滤时直接发布反转后的完整目标；未通过时只退出旧方向。</p>
         </details>
         <div class="kv-table" id="signal-table"></div>
         <div id="signal-status" class="status"></div>
@@ -294,6 +294,7 @@
             币种与独立因子策略 <span class="badge" id="symbol-count"></span>
           </h2>
           <div class="actions">
+            <label class="ghost">导入研究清单 <input id="deployment-file" type="file" accept=".json" style="max-width:180px"></label>
             <button id="sym-add" class="ghost" type="button">校验 JSON</button>
             <button id="sym-load" class="secondary" type="button">读取</button>
             <button id="sym-save" type="button">保存</button>
@@ -302,9 +303,12 @@
         <div class="hint">
           整份 JSON 配置 symbol → factor →
           方向。负数反转因子方向，正数保持方向，0
-          停用。每个因子独立形成满多、满空、空仓三种状态；数值幅度不参与仓位分配。保存时检查币种、因子和数值；不通过不会覆盖配置。交易开关关闭时只计算和观察信号。
+          停用。每个策略独立形成满多、满空、空仓三种状态；数值幅度不参与仓位分配。保存时检查币种、因子和数值；不通过不会覆盖配置。交易开关关闭时只计算和观察信号。
         </div>
         <p class="hint" id="available-factors"></p>
+        <input id="factor-search" placeholder="筛选策略或币种" aria-label="筛选策略或币种" style="margin-top:12px;width:100%">
+        <div id="factor-editor" style="overflow-x:auto"></div>
+        <details><summary>完整 JSON</summary>
         <textarea
           id="factor-json"
           class="mono"
@@ -318,7 +322,7 @@
             box-sizing: border-box;
           "
           placeholder='{"FILUSDT":{"factor_036":-1,"factor_051":-1},"XRPUSDT":{"factor_170":-1,"TD_TI_002":1}}'
-        ></textarea>
+        ></textarea></details>
         <div id="sym-status" class="status"></div>
       </section>
     </main>
@@ -334,6 +338,8 @@
       byId("env-name").value = envName;
       byId("signal-key").textContent = "config/cta_spread.json";
       const signalRows = [
+        ["nq_long_quantile", "number", null, "做多要求 NQ 分位 ≥ 此值；120 分钟窗口，默认 0.5。"],
+        ["nq_short_quantile", "number", null, "做空要求 NQ 分位 ≤ 此值；120 分钟窗口，默认 0.5。"],
         [
           "max_pos_u",
           "number",
@@ -365,25 +371,25 @@
           "factor_exit_quantile_long",
           "number",
           null,
-          "修正分位低于此值时退出该因子的多方向，保留现货并用合约对冲。",
+          "修正分位低于此值时退出该因子的多方向，默认 0.7；保留现货并用合约对冲。",
         ],
         [
           "factor_exit_quantile_short",
           "number",
           null,
-          "修正分位高于此值时退出该因子的空方向，保留现货并用合约对冲。",
+          "修正分位高于此值时退出该因子的空方向，默认 0.3；保留现货并用合约对冲。",
         ],
         [
-          "spread_lower_quantile",
+          "spread_long_quantile",
           "number",
           null,
-          "做多时价差历史分位低于此阈值才放行，默认 0.3。",
+          "做多时前一分钟价差分位严格低于此值，默认 0.7。",
         ],
         [
-          "spread_upper_quantile",
+          "spread_short_quantile",
           "number",
           null,
-          "做空时价差历史分位高于此阈值才放行，默认 0.7。",
+          "做空时前一分钟价差分位严格高于此值，默认 0.3。",
         ],
       ];
       function row(key, control, desc) {
@@ -417,8 +423,10 @@
         for (const key of [
           "factor_long_quantile",
           "factor_short_quantile",
-          "spread_lower_quantile",
-          "spread_upper_quantile",
+          "spread_long_quantile",
+          "spread_short_quantile",
+          "nq_long_quantile",
+          "nq_short_quantile",
         ]) {
           byId(key).value = entry[key] ?? "";
         }
@@ -435,8 +443,10 @@
         for (const key of [
           "factor_long_quantile",
           "factor_short_quantile",
-          "spread_lower_quantile",
-          "spread_upper_quantile",
+          "spread_long_quantile",
+          "spread_short_quantile",
+          "nq_long_quantile",
+          "nq_short_quantile",
           "factor_exit_quantile_long",
           "factor_exit_quantile_short",
         ]) {
@@ -507,8 +517,10 @@
         availableSymbols = new Set(body.available?.symbols || []);
         byId("available-factors").textContent =
           "可用因子：" + [...availableFactors].join(", ");
-        byId("symbol-count").textContent =
-          `${Object.keys(table).length} symbols`;
+        const strategies = new Set(Object.values(table).flatMap(row => Object.keys(row)));
+        const combinations = Object.values(table).reduce((n,row) => n + Object.values(row).filter(Boolean).length, 0);
+        byId("symbol-count").textContent = `${Object.keys(table).length} 币 / ${strategies.size} 策略 / ${combinations} 组合`;
+        renderFactorEditor();
       }
       function collectFactors() {
         const table = JSON.parse(byId("factor-json").value);
@@ -525,18 +537,17 @@
             Array.isArray(row) ||
             typeof row !== "object" ||
             !Object.keys(row).length ||
-            Object.keys(row).length > 32
+            Object.keys(row).length > 128
           )
-            throw new Error(symbol + " 需要 1–32 个 factor → weight");
+            throw new Error(symbol + " 需要 1–128 个 strategy → weight");
           let nonzero = false;
           const names = new Set();
           for (const [name, weight] of Object.entries(row)) {
-            const factor = /^(td|tp)_/i.test(name.trim())
-              ? name.trim().toUpperCase()
-              : name.trim().toLowerCase();
-            if (!availableFactors.has(factor) || names.has(factor))
+            const factor = name.trim().replace(/_(positive|negative)$/, "");
+            const canonical = /^(td|tp)_/i.test(factor) ? factor.toUpperCase() : factor.toLowerCase();
+            if (!availableFactors.has(canonical) || names.has(name))
               throw new Error(symbol + "/" + factor + "：因子不可用或重复");
-            names.add(factor);
+            names.add(name);
             if (typeof weight !== "number" || !Number.isFinite(weight))
               throw new Error(symbol + "/" + factor + "：权重必须是有限数字");
             nonzero ||= weight !== 0;
@@ -545,6 +556,55 @@
         }
         return table;
       }
+      function renderFactorEditor() {
+        let table;
+        try { table = JSON.parse(byId("factor-json").value); } catch { return; }
+        const query = byId("factor-search").value.trim().toUpperCase();
+        const grouped = new Map();
+        for (const [symbol,row] of Object.entries(table)) for (const [strategy,weight] of Object.entries(row)) {
+          if (!grouped.has(strategy)) grouped.set(strategy, []);
+          grouped.get(strategy).push([symbol,weight]);
+        }
+        const root = byId("factor-editor"); root.replaceChildren();
+        const grid = document.createElement("table"); grid.style.width = "100%";
+        const head = grid.insertRow();
+        for (const label of ["策略", "方向", "币种（逗号分隔）"]) head.insertCell().textContent = label;
+        for (const [strategy,members] of [...grouped].sort()) {
+          if (query && !strategy.toUpperCase().includes(query) && !members.some(([symbol]) => symbol.includes(query))) continue;
+          const tr = grid.insertRow(); tr.insertCell().textContent = strategy;
+          const signs = new Set(members.map(([,w]) => Math.sign(w)));
+          tr.insertCell().textContent = [...signs].map(w => w > 0 ? "+" : w < 0 ? "−" : "停用").join("/");
+          const input = document.createElement("input"); input.style.width = "100%";
+          input.value = members.map(([symbol]) => symbol).join(", ");
+          input.setAttribute("aria-label", strategy + " 币种");
+          input.addEventListener("change", () => {
+            const symbols = input.value.split(/[,，\s]+/).filter(Boolean).map(s => s.toUpperCase());
+            if (new Set(symbols).size !== symbols.length || symbols.some(s => !availableSymbols.has(s))) {
+              setStatus("sym-status", "币种不可用或重复", "err"); return;
+            }
+            if (signs.size !== 1) { setStatus("sym-status", "该策略有多种方向，请在 JSON 中修改", "err"); return; }
+            for (const symbol of Object.keys(table)) { delete table[symbol][strategy]; if (!Object.keys(table[symbol]).length) delete table[symbol]; }
+            for (const symbol of symbols) { table[symbol] ||= {}; table[symbol][strategy] = members[0][1]; }
+            byId("factor-json").value = JSON.stringify(table,null,2);
+            setStatus("sym-status", "已修改，尚未保存", "warn");
+          });
+          tr.insertCell().append(input);
+        }
+        root.append(grid);
+      }
+      byId("factor-search").addEventListener("input", renderFactorEditor);
+      byId("factor-json").addEventListener("change", renderFactorEditor);
+      byId("deployment-file").addEventListener("change", async event => {
+        const file = event.target.files[0]; if (!file) return;
+        try {
+          const response = await fetch("api/deployment-preview", {method:"POST", headers:{"Content-Type":"application/json"}, body:await file.text()});
+          const body = await response.json(); if (!response.ok) throw new Error(body.error);
+          populate(body.config, revision);
+          byId("factor-json").value = JSON.stringify(body.symbol_factors,null,2);
+          renderFactorEditor();
+          setStatus("sym-status", `${body.summary.symbols} 币 / ${body.summary.strategies} 策略 / ${body.summary.combinations} 组合；发布关闭，尚未保存`, "warn");
+        } catch(error) { setStatus("sym-status",error.message,"err"); }
+      });
       async function loadFactors() {
         setStatus("sym-status", "读取中...");
         try {

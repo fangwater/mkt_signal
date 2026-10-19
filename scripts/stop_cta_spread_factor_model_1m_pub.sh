@@ -20,7 +20,7 @@ source "${SCRIPT_DIR}/process_match_lib.sh"
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 command -v "$PMDAEMON_BIN" >/dev/null 2>&1 || { echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2; exit 1; }
 PROC_NAME="${PMDAEMON_NAME:-cta_spread_factor_shared_binance_futures}"
-"$PMDAEMON_BIN" delete "$PROC_NAME" >/dev/null 2>&1 || true
+timeout -k 1s 45s "$PMDAEMON_BIN" delete "$PROC_NAME" >/dev/null 2>&1 || true
 mapfile -t leaked < <(safe_find_running_pids cta_spread_factor_model_1m_pub "$BASE_DIR" "binance-futures" || true)
 [[ ${#leaked[@]} -eq 0 ]] || kill "${leaked[@]}" >/dev/null 2>&1 || true
 echo "[INFO] stopped $PROC_NAME"

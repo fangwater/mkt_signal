@@ -31,9 +31,7 @@ use super::cfg::{CtaPerpFactorPubConfig, KafkaInputConfig, NormalizeConfig};
 
 const FACTOR_WINDOW: usize = 2_880;
 const FACTOR_MIN_SAMPLES: usize = 1_440;
-const NQ_LOOKBACK_BARS: usize = 120;
-const NQ_QUANTILE_WINDOW: usize = 120;
-const NQ_MIN_PERIODS: usize = 60;
+use crate::factor_pub::cta_nq::{observe_nq, NqObservation, NQ_LOOKBACK_BARS, NQ_QUANTILE_WINDOW};
 const BAR_MS: i64 = 60_000;
 const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
@@ -250,18 +248,6 @@ impl SymbolFactorState {
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-struct NqObservation {
-    long_value: Option<f64>,
-    long_quantile: Option<f64>,
-    short_value: Option<f64>,
-    short_quantile: Option<f64>,
-    ready: bool,
-    execution_ts_ms: i64,
-    execution_bid: Option<f64>,
-    execution_ask: Option<f64>,
-}
-
 struct NqState {
     orderbook: OrderBook,
     next_update_id: i64,
@@ -329,46 +315,12 @@ impl NqState {
     }
 
     fn close_bar(&mut self) -> NqObservation {
-        let close = self.current_close;
-        self.closes.push_back(close);
-        while self.closes.len() > NQ_LOOKBACK_BARS {
-            self.closes.pop_front();
-        }
-        let finite: Vec<f64> = self
-            .closes
-            .iter()
-            .copied()
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .collect();
-        let long_value = (close.is_finite() && !finite.is_empty()).then(|| {
-            let minimum = finite.iter().copied().fold(f64::INFINITY, f64::min);
-            (close - minimum) / minimum
-        });
-        let short_value = (close.is_finite() && !finite.is_empty()).then(|| {
-            let maximum = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            (close - maximum) / maximum
-        });
-        self.long_window
-            .observe_slot(long_value.unwrap_or(f64::NAN));
-        self.short_window
-            .observe_slot(short_value.unwrap_or(f64::NAN));
-        let long_quantile = self.long_window.percentile_rank_last();
-        let short_quantile = self.short_window.percentile_rank_last();
-        NqObservation {
-            long_value,
-            long_quantile,
-            short_value,
-            short_quantile,
-            ready: long_value.is_some()
-                && short_value.is_some()
-                && self.long_window.len() >= NQ_MIN_PERIODS
-                && self.short_window.len() >= NQ_MIN_PERIODS
-                && long_quantile.is_some()
-                && short_quantile.is_some(),
-            execution_ts_ms: 0,
-            execution_bid: None,
-            execution_ask: None,
-        }
+        observe_nq(
+            self.current_close,
+            &mut self.closes,
+            &mut self.long_window,
+            &mut self.short_window,
+        )
     }
 }
 

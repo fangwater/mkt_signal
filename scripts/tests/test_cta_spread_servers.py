@@ -21,15 +21,37 @@ class SpreadConfigTests(unittest.TestCase):
     def test_disabled_defaults_and_spread_bounds(self):
         config = normalize_config(self.config)
         self.assertFalse(config['enabled'])
-        self.assertEqual(config['entry']['spread_lower_quantile'], .3)
-        self.assertEqual(config['entry']['spread_upper_quantile'], .7)
-        for low, high in [(.7,.3),(.3,.3),(-.1,.7),(.3,1.1),(float('nan'),.7)]:
+        self.assertEqual(config['entry']['spread_long_quantile'], .7)
+        self.assertEqual(config['entry']['spread_short_quantile'], .3)
+        missing_exits = copy.deepcopy(self.config)
+        missing_exits['execution'] = {}
+        self.assertEqual(normalize_config(missing_exits)['execution'], {
+            'factor_exit_quantile_long': .7, 'factor_exit_quantile_short': .3})
+        self.assertEqual(config['execution'], normalize_config(missing_exits)['execution'])
+        for low, high in [(-.1,.7),(.3,1.1),(float('nan'),.7)]:
             invalid = copy.deepcopy(config)
-            invalid['entry'].update(spread_lower_quantile=low, spread_upper_quantile=high)
+            invalid['entry'].update(spread_long_quantile=low, spread_short_quantile=high)
             with self.assertRaises(ValueError): normalize_config(invalid)
         invalid = copy.deepcopy(config)
         invalid['entry']['nq_change_enabled'] = True
         with self.assertRaises(ValueError): normalize_config(invalid)
+
+    def test_deployment_preserves_opposite_sleeves_and_full_universe(self):
+        from cta_spread_deployment import prepare_deployment
+        source = json.loads((ROOT / 'config/cta_spread_deployment.json').read_text())
+        prepared = prepare_deployment(source, self.config)
+        self.assertEqual(prepared['summary'], {'symbols':48, 'strategies':57, 'combinations':794})
+        self.assertEqual(len(prepared['universe']['factors']), 56)
+        row = prepared['symbol_factors']['AXSUSDT']
+        self.assertEqual(row['factor_169_positive'], 1)
+        self.assertEqual(row['factor_169_negative'], -1)
+        self.assertIn('factor_trades_034', row)
+        self.assertEqual(prepared['symbol_factors'], json.loads((ROOT/'config/cta_spread_symbol_factors.json').read_text()))
+        self.assertFalse(prepared['config']['enabled'])
+        self.assertEqual(prepared['config']['entry']['nq_long_quantile'], .5)
+        source['n_sleeves'] -= 1
+        with self.assertRaises(ValueError): prepare_deployment(source, self.config)
+        with self.assertRaises(ValueError): normalize_table({'AXSUSDT':{'factor_169_negative':1}})
 
     def test_config_revision_rejects_lost_updates(self):
         with tempfile.TemporaryDirectory() as root:
@@ -37,10 +59,10 @@ class SpreadConfigTests(unittest.TestCase):
             path.write_text(json.dumps(self.config))
             store = ConfigStore(path)
             config, revision = store.load()
-            config['entry']['spread_lower_quantile'] = .2
+            config['entry']['spread_long_quantile'] = .2
             store.save(config, revision)
             with self.assertRaises(ConfigConflict): store.save(self.config, revision)
-            self.assertEqual(store.load()[0]['entry']['spread_lower_quantile'], .2)
+            self.assertEqual(store.load()[0]['entry']['spread_long_quantile'], .2)
 
     def test_family_and_market_isolation_and_factor_revision(self):
         with self.assertRaises(ValueError): factor_key('binance-cta-perp-test')

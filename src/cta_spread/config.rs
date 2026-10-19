@@ -27,19 +27,22 @@ fn default_factor_short_quantile() -> f64 {
     0.1
 }
 
-fn default_spread_lower_quantile() -> f64 {
+fn default_spread_long_quantile() -> f64 {
+    0.7
+}
+fn default_spread_short_quantile() -> f64 {
     0.3
 }
-fn default_spread_upper_quantile() -> f64 {
-    0.7
+fn default_nq_quantile() -> f64 {
+    0.5
 }
 
 fn default_factor_exit_quantile_long() -> f64 {
-    0.3
+    0.7
 }
 
 fn default_factor_exit_quantile_short() -> f64 {
-    0.7
+    0.3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -60,8 +63,10 @@ pub struct CtaSpreadConfig {
 pub struct EntryConfig {
     pub factor_long_quantile: f64,
     pub factor_short_quantile: f64,
-    pub spread_lower_quantile: f64,
-    pub spread_upper_quantile: f64,
+    pub spread_long_quantile: f64,
+    pub spread_short_quantile: f64,
+    pub nq_long_quantile: f64,
+    pub nq_short_quantile: f64,
 }
 
 impl Default for EntryConfig {
@@ -69,8 +74,10 @@ impl Default for EntryConfig {
         Self {
             factor_long_quantile: default_factor_long_quantile(),
             factor_short_quantile: default_factor_short_quantile(),
-            spread_lower_quantile: default_spread_lower_quantile(),
-            spread_upper_quantile: default_spread_upper_quantile(),
+            spread_long_quantile: default_spread_long_quantile(),
+            spread_short_quantile: default_spread_short_quantile(),
+            nq_long_quantile: default_nq_quantile(),
+            nq_short_quantile: default_nq_quantile(),
         }
     }
 }
@@ -121,16 +128,15 @@ impl CtaSpreadConfig {
             bail!("entry factor quantiles must satisfy 0 <= short < long <= 1");
         }
         if ![
-            self.entry.spread_lower_quantile,
-            self.entry.spread_upper_quantile,
+            self.entry.spread_long_quantile,
+            self.entry.spread_short_quantile,
+            self.entry.nq_long_quantile,
+            self.entry.nq_short_quantile,
         ]
         .into_iter()
         .all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
         {
-            bail!("entry spread quantiles must be finite values in [0, 1]");
-        }
-        if self.entry.spread_lower_quantile >= self.entry.spread_upper_quantile {
-            bail!("spread lower quantile must be below upper quantile");
+            bail!("entry spread and NQ quantiles must be finite values in [0, 1]");
         }
         if !(self.execution.factor_exit_quantile_long.is_finite()
             && self.execution.factor_exit_quantile_long >= 0.0
