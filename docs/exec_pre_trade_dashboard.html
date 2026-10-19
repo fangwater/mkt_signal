@@ -411,6 +411,7 @@
           if (reason === "target_reached") return "已达到目标仓位";
           if (reason === "target_tolerance") return "剩余量已进入 Target Tolerance";
           if (reason === "exchange_minimum") return "剩余量低于交易所 minQty / minNotional";
+          if (reason === "borrow_unavailable") return "借币不足，已放弃本次执行";
           if (reason === "symbol_not_tradable") return "品种不可交易，已停止下单";
           if (reason === "mixed") return "包含多种结束原因";
           return "执行已结束";

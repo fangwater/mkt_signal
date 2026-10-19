@@ -130,6 +130,17 @@ pub trait TradeEngineResponse {
         self.is_open_request() && !self.is_request_success()
     }
 
+    /// RapidX borrowing-pool exhaustion is a terminal constraint for this target.
+    /// Keep transport failures and rate limits on their ordinary retry paths.
+    fn is_rapidx_borrow_unavailable(&self) -> bool {
+        self.is_open_rejected()
+            && matches!(
+                self.exchange_enum(),
+                Some(Exchange::Binance | Exchange::Okex)
+            )
+            && matches!(self.error_code(), 401126 | 406017)
+    }
+
     /// The Hyperliquid action may have reached the exchange, but its WS acknowledgement was not
     /// usable. The local order must remain non-terminal until orderStatus reconciliation completes.
     fn is_hyperliquid_action_ambiguous(&self) -> bool {
@@ -369,6 +380,51 @@ pub trait TradeEngineResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rapidx_borrow_exhaustion_only_classifies_rejected_opens() {
+        for (exchange, open, cancel) in [
+            (
+                Exchange::Binance,
+                TradeRequestType::BinanceLtpNewSpotOrder,
+                TradeRequestType::BinanceLtpCancelSpotOrder,
+            ),
+            (
+                Exchange::Okex,
+                TradeRequestType::OkexNewMarginOrder,
+                TradeRequestType::OkexCancelMarginOrder,
+            ),
+        ] {
+            for code in [401126, 406017] {
+                for status in [200, 400] {
+                    let response = TradeEngineResponseMessage::new(
+                        status,
+                        open as u32,
+                        exchange as u32,
+                        123,
+                        code,
+                    );
+                    assert!(response.is_rapidx_borrow_unavailable());
+                }
+                let response =
+                    TradeEngineResponseMessage::new(400, cancel as u32, exchange as u32, 123, code);
+                assert!(!response.is_rapidx_borrow_unavailable());
+            }
+            for code in [0, 429, 401034, -2019, 51008] {
+                let response =
+                    TradeEngineResponseMessage::new(200, open as u32, exchange as u32, 123, code);
+                assert!(!response.is_rapidx_borrow_unavailable());
+            }
+        }
+        let unrelated = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewUMOrder as u32,
+            Exchange::Bybit as u32,
+            123,
+            401126,
+        );
+        assert!(!unrelated.is_rapidx_borrow_unavailable());
+    }
 
     #[test]
     fn is_success_requires_http_ok_and_no_error_code() {

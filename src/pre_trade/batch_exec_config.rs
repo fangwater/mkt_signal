@@ -211,10 +211,10 @@ impl BatchExecLeverageInitState {
                 self.version
             );
         }
-        if self.leverage != crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE {
+        if self.leverage != self.scope.default_leverage() {
             anyhow::bail!(
                 "BatchExec leverage-init target mismatch: expected={} actual={}",
-                crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE,
+                self.scope.default_leverage(),
                 self.leverage
             );
         }
@@ -227,6 +227,11 @@ impl BatchExecLeverageInitState {
     }
 
     fn with_scope(mut self, scope: BatchExecLeverageInitScope) -> Self {
+        let leverage = scope.default_leverage();
+        if self.scope != scope || self.leverage != leverage {
+            self.symbols.clear();
+        }
+        self.leverage = leverage;
         self.scope = scope;
         self
     }
@@ -246,6 +251,14 @@ impl BatchExecLeverageInitState {
 }
 
 impl BatchExecLeverageInitScope {
+    fn default_leverage(&self) -> u8 {
+        if self.backend == runtime_common::execution_backend::ExecBackend::Ltp.as_str() {
+            crate::pre_trade::leverage_guard::RAPIDX_EXEC_DEFAULT_LEVERAGE
+        } else {
+            crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE
+        }
+    }
+
     fn current(venue: TradingVenue) -> Result<Self> {
         let exchange = match venue {
             TradingVenue::BinanceFutures
@@ -682,22 +695,11 @@ impl BatchExecConfigReloader {
             .await
             .with_context(|| format!("load Redis key {LEVERAGE_INIT_KEY}"))?
             .unwrap_or_else(BatchExecLeverageInitState::empty);
-        loaded_leverage_init
+        let scope = BatchExecLeverageInitScope::current(venue)?;
+        let leverage_init = loaded_leverage_init.with_scope(scope);
+        leverage_init
             .validate()
             .with_context(|| format!("invalid BatchExec leverage-init key={LEVERAGE_INIT_KEY}"))?;
-        let scope = BatchExecLeverageInitScope::current(venue)?;
-        let leverage_init = if loaded_leverage_init.scope == scope {
-            loaded_leverage_init
-        } else {
-            info!(
-                "BatchExec leverage-init scope changed; clearing audit symbols: previous_venue={} previous_backend={} venue={} backend={}",
-                loaded_leverage_init.scope.venue,
-                loaded_leverage_init.scope.backend,
-                scope.venue,
-                scope.backend,
-            );
-            BatchExecLeverageInitState::empty().with_scope(scope)
-        };
         info!(
             "BatchExec leverage-init audit loaded: venue={} backend={} leverage={} initialized_symbols={}; RapidX symbols require process-start confirmation",
             leverage_init.scope.venue,
@@ -2930,6 +2932,31 @@ mod tests {
                 .abs()
                 < POSITION_ALLOCATION_EPS
         );
+    }
+
+    #[test]
+    fn rapidx_default_leverage_change_invalidates_previous_confirmations() {
+        let scope = BatchExecLeverageInitScope {
+            venue: "binance-futures".into(),
+            backend: "ltp".into(),
+            rapidx_portfolio_id: Some("portfolio".into()),
+        };
+        let mut state = BatchExecLeverageInitState::empty();
+        state.scope = scope.clone();
+        state.symbols.insert("BANDUSDT".into());
+        assert!(state.validate().is_err()); // Previous 5x target.
+        let refreshed = state.with_scope(scope);
+        refreshed.validate().unwrap();
+        assert_eq!(refreshed.leverage, 4);
+        assert!(refreshed.symbols.is_empty());
+        assert!(refreshed.confirmed_on_startup().is_empty());
+        let native = refreshed.with_scope(BatchExecLeverageInitScope {
+            venue: "binance-futures".into(),
+            backend: "native".into(),
+            rapidx_portfolio_id: None,
+        });
+        assert_eq!(native.leverage, 5);
+        native.validate().unwrap();
     }
 
     #[test]

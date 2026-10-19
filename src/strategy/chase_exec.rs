@@ -156,6 +156,7 @@ pub enum ChaseExecCompletionReason {
     TargetReached,
     TargetTolerance,
     ExchangeMinimum,
+    BorrowUnavailable,
     SymbolNotTradable,
 }
 
@@ -165,6 +166,7 @@ impl ChaseExecCompletionReason {
             Self::TargetReached => "target_reached",
             Self::TargetTolerance => "target_tolerance",
             Self::ExchangeMinimum => "exchange_minimum",
+            Self::BorrowUnavailable => "borrow_unavailable",
             Self::SymbolNotTradable => "symbol_not_tradable",
         }
     }

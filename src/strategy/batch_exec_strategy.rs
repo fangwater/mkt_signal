@@ -507,6 +507,7 @@ enum BatchExecCompletionReason {
     TargetReached,
     TargetTolerance,
     ExchangeMinimum,
+    BorrowUnavailable,
     SymbolNotTradable,
 }
 
@@ -516,6 +517,7 @@ impl BatchExecCompletionReason {
             Self::TargetReached => "target_reached",
             Self::TargetTolerance => "target_tolerance",
             Self::ExchangeMinimum => "exchange_minimum",
+            Self::BorrowUnavailable => "borrow_unavailable",
             Self::SymbolNotTradable => "symbol_not_tradable",
         }
     }
@@ -967,6 +969,7 @@ pub struct BatchExecStrategy {
     order_seq: u32,
     next_batch_at_us: i64,
     completion_reason: Option<BatchExecCompletionReason>,
+    borrow_unavailable_generation: Option<i64>,
     reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
 }
@@ -1007,9 +1010,18 @@ impl BatchExecStrategy {
             order_seq: 0,
             next_batch_at_us: 0,
             completion_reason: None,
+            borrow_unavailable_generation: None,
             reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
         }
+    }
+
+    // Configuration/allocation refreshes may clear completion_reason. Keep the
+    // borrowing constraint attached to the accepted target generation itself.
+    fn borrow_unavailable(&self) -> bool {
+        self.active_target.as_ref().is_some_and(|target| {
+            self.borrow_unavailable_generation == Some(target.generation_time)
+        })
     }
 
     pub fn exec_venue(&self) -> TradingVenue {
@@ -1491,6 +1503,9 @@ impl BatchExecStrategy {
             return None;
         }
         let target = self.active_target.as_ref()?;
+        if self.borrow_unavailable() {
+            return Some(BatchExecCompletionReason::BorrowUnavailable);
+        }
         self.completion_reason.or_else(|| {
             ((target.target.qty - position_qty).abs() <= QTY_EPS)
                 .then_some(BatchExecCompletionReason::TargetReached)
@@ -1884,6 +1899,7 @@ impl BatchExecStrategy {
             position_qty,
             pending.generation_time
         );
+        self.borrow_unavailable_generation = None;
         self.active_target = Some(ActiveTarget {
             target: pending.target,
             generation_time: pending.generation_time,
@@ -1896,6 +1912,9 @@ impl BatchExecStrategy {
     }
 
     fn maybe_start_or_requote_batch(&mut self, now_ts: i64) {
+        if self.borrow_unavailable() {
+            return;
+        }
         if self.exec_venue.is_inverse_futures() && self.mark_price().is_none() {
             return;
         }
@@ -3059,6 +3078,17 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         client_order_id: i64,
     ) {
         let retry_post_only_immediately = response.is_post_only_rejected();
+        let borrow_unavailable = response.is_rapidx_borrow_unavailable()
+            && self.child_orders.contains_key(&client_order_id);
+        if borrow_unavailable {
+            self.borrow_unavailable_generation =
+                self.active_target.as_ref().map(|t| t.generation_time);
+            // Mark before finishing the rejected child so its remainder cannot
+            // become a ready-to-submit batch. Preserve all live/orphan evidence.
+            for batch in self.batches.values_mut() {
+                batch.phase = BatchPhase::CancellingForTarget;
+            }
+        }
         warn!(
             "BatchExecStrategy: strategy_id={} child open failed order_id={} code={}({})",
             self.strategy_id,
@@ -3072,7 +3102,22 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
             }
         }
         self.finish_child_order(client_order_id);
-        if retry_post_only_immediately {
+        if borrow_unavailable {
+            let batch_ids = self.batches.keys().copied().collect::<Vec<_>>();
+            for batch_seq in batch_ids {
+                self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForTarget);
+            }
+            self.batches.retain(|seq, batch| {
+                !batch.child_order_ids.is_empty()
+                    || self
+                        .orphaned_child_orders
+                        .values()
+                        .any(|meta| meta.batch_seq == *seq)
+            });
+            self.next_batch_at_us = i64::MAX;
+            self.completion_reason = Some(BatchExecCompletionReason::BorrowUnavailable);
+            warn!("BatchExecStrategy: strategy_id={} symbol={} target execution stopped: borrow_unavailable generation={:?}", self.strategy_id, self.symbol, self.borrow_unavailable_generation);
+        } else if retry_post_only_immediately {
             self.next_batch_at_us = get_timestamp_us();
             debug!(
                 "BatchExecStrategy: strategy_id={} symbol={} post-only rejection released for immediate retry order_id={}",
@@ -3873,6 +3918,116 @@ mod tests {
         assert!(batch.child_order_ids.is_empty());
         assert!(strategy.child_orders.is_empty());
         assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+    }
+
+    fn borrowing_reject_strategy() -> BatchExecStrategy {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.25)]);
+        let meta = strategy.orphaned_child_orders.remove(&101).unwrap();
+        strategy.child_orders.insert(101, meta);
+        strategy
+            .batches
+            .get_mut(&1)
+            .unwrap()
+            .child_order_ids
+            .insert(101);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget {
+                clear: false,
+                qty: 2.0,
+                signal: 0,
+            },
+            generation_time: 1,
+            from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        strategy
+    }
+
+    #[test]
+    fn borrowing_rejection_abandons_batches_without_losing_fills_or_retrying() {
+        for code in [401126, 406017] {
+            let mut strategy = borrowing_reject_strategy();
+            let mut ready = strategy.batches.get(&1).unwrap().clone();
+            ready.phase = BatchPhase::ReadyToSubmit;
+            ready.child_order_ids.clear();
+            strategy.batches.insert(2, ready);
+            let response = TradeEngineResponseMessage::new(
+                200,
+                TradeRequestType::BinanceLtpNewSpotOrder as u32,
+                Exchange::Binance as u32,
+                101,
+                code,
+            );
+            strategy.handle_hedge_open_failed(&response, "insufficient lending pool", 101);
+
+            assert_eq!(strategy.virtual_position_qty, Some(0.25));
+            assert!(!strategy.has_execution_in_flight());
+            assert_eq!(
+                strategy.settled_completion_reason(0.25),
+                Some(BatchExecCompletionReason::BorrowUnavailable)
+            );
+            assert_eq!(strategy.next_batch_at_us, i64::MAX);
+            // Allocation/config refreshes must not release the rejected target.
+            strategy.completion_reason = None;
+            strategy.next_batch_at_us = 0;
+            strategy.maybe_start_or_requote_batch(get_timestamp_us());
+            assert!(strategy.batches.is_empty());
+            assert!(strategy.borrow_unavailable());
+            strategy.update_target(
+                BatchExecTarget {
+                    clear: false,
+                    qty: 3.0,
+                    signal: 0,
+                },
+                1,
+                vec![],
+            );
+            assert!(strategy.pending_target.is_none());
+            assert!(strategy.borrow_unavailable());
+        }
+    }
+
+    #[test]
+    fn borrowing_rejection_waits_for_orphans_and_preserves_late_fills() {
+        let mut strategy = borrowing_reject_strategy();
+        let mut orphan = strategy.child_orders.get(&101).unwrap().clone();
+        orphan.accounted_fill_base_qty = 0.0;
+        strategy.orphaned_child_orders.insert(102, orphan);
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceLtpNewSpotOrder as u32,
+            Exchange::Binance as u32,
+            101,
+            401126,
+        );
+        strategy.handle_hedge_open_failed(&response, "insufficient lending pool", 101);
+        assert!(strategy.has_execution_in_flight());
+        assert_eq!(strategy.settled_completion_reason(0.25), None);
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(102, 0.2)));
+        assert!((strategy.virtual_position_qty.unwrap() - 0.45).abs() < QTY_EPS);
+        assert!(!strategy.has_execution_in_flight());
+        assert_eq!(
+            strategy.settled_completion_reason(0.45),
+            Some(BatchExecCompletionReason::BorrowUnavailable)
+        );
+    }
+
+    #[test]
+    fn rate_limit_rejection_keeps_batch_retryable() {
+        let mut strategy = borrowing_reject_strategy();
+        let response = TradeEngineResponseMessage::new(
+            429,
+            TradeRequestType::BinanceLtpNewSpotOrder as u32,
+            Exchange::Binance as u32,
+            101,
+            429,
+        );
+        strategy.handle_hedge_open_failed(&response, "rate limited", 101);
+        assert!(!strategy.borrow_unavailable());
+        assert_eq!(
+            strategy.batches.get(&1).unwrap().phase,
+            BatchPhase::ReadyToSubmit
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ type HmacSha512 = Hmac<Sha512>;
 
 const TARGET_LEVERAGES: [u8; 1] = [5];
 pub const BATCH_EXEC_DEFAULT_LEVERAGE: u8 = 5;
+pub const RAPIDX_EXEC_DEFAULT_LEVERAGE: u8 = 4;
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
@@ -281,7 +282,7 @@ pub async fn set_batch_exec_default_leverage(
         return trade_engine::ltp_init_leverage::set_and_verify_exec_default_leverage(
             venue,
             symbol,
-            BATCH_EXEC_DEFAULT_LEVERAGE,
+            RAPIDX_EXEC_DEFAULT_LEVERAGE,
         )
         .await;
     }

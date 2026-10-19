@@ -277,6 +277,7 @@ pub struct ChaseExecStrategy {
     /// Local exec rate-limit defer for new places and amends.
     submit_blocked_until_us: i64,
     completion_reason: Option<ChaseExecCompletionReason>,
+    borrow_unavailable_generation: Option<i64>,
     reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
 }
@@ -319,9 +320,18 @@ impl ChaseExecStrategy {
             order_seq: 0,
             submit_blocked_until_us: 0,
             completion_reason: None,
+            borrow_unavailable_generation: None,
             reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
         }
+    }
+
+    // Configuration/allocation refreshes may clear completion_reason. Keep the
+    // borrowing constraint attached to the accepted target generation itself.
+    fn borrow_unavailable(&self) -> bool {
+        self.active_target.as_ref().is_some_and(|target| {
+            self.borrow_unavailable_generation == Some(target.generation_time)
+        })
     }
 
     pub fn exec_venue(&self) -> TradingVenue {
@@ -842,6 +852,10 @@ impl ChaseExecStrategy {
         } else {
             Side::Sell
         };
+        if self.borrow_unavailable() {
+            self.submit_blocked_until_us = 0;
+        }
+        self.borrow_unavailable_generation = None;
         self.active_target = Some(ActiveTarget {
             target: pending.target,
             generation_time: pending.generation_time,
@@ -1268,6 +1282,9 @@ impl ChaseExecStrategy {
     /// Fill-water-level release. Taker-committed remainder drains first; maker
     /// batches then refill the configured number of open batch-equivalents.
     fn maybe_release(&mut self, now_ts: i64) {
+        if self.borrow_unavailable() {
+            return;
+        }
         if self.exec_venue.is_inverse_futures() && self.mark_price().is_none() {
             return;
         }
@@ -2121,7 +2138,14 @@ impl ChaseExecStrategy {
             .as_ref()
             .map(|target| self.taker_pending_base_qty * (target.target.qty - position_qty).signum())
             .unwrap_or(self.taker_pending_base_qty);
-        let execution_complete = self.completion_reason.is_some() && self.children.is_empty();
+        let completion_reason = if self.borrow_unavailable() {
+            Some(ChaseExecCompletionReason::BorrowUnavailable)
+        } else {
+            self.completion_reason
+        };
+        let execution_complete = completion_reason.is_some()
+            && !self.has_execution_in_flight()
+            && self.pending_target.is_none();
         ChaseExecSnapshot {
             algorithm: "chase_exec".to_string(),
             pov: None,
@@ -2140,8 +2164,7 @@ impl ChaseExecStrategy {
             has_execution_in_flight: self.has_execution_in_flight(),
             taker_obligation_pending: self.taker_pending_base_qty != 0.0,
             execution_complete,
-            completion_reason: self
-                .completion_reason
+            completion_reason: completion_reason
                 .map(|reason| reason.as_str().to_string())
                 .unwrap_or_default(),
         }
@@ -2215,6 +2238,18 @@ impl HedgeOrderReconcileCommon for ChaseExecStrategy {
         // permissions) are likely deterministic; without a backoff the
         // release pass would spin a new open request every clock tick.
         let post_only_rejected = response.is_post_only_rejected();
+        let borrow_unavailable =
+            response.is_rapidx_borrow_unavailable() && self.children.contains_key(&client_order_id);
+        if borrow_unavailable {
+            self.borrow_unavailable_generation =
+                self.active_target.as_ref().map(|t| t.generation_time);
+            for meta in self.orphaned_children.values_mut() {
+                meta.cancel_for_target = true;
+            }
+            if let Some(meta) = self.children.get_mut(&client_order_id) {
+                meta.cancel_for_target = true;
+            }
+        }
         warn!(
             "ChaseExecStrategy: strategy_id={} child open failed order_id={} code={}({}) post_only_rejected={}",
             self.strategy_id,
@@ -2224,7 +2259,13 @@ impl HedgeOrderReconcileCommon for ChaseExecStrategy {
             post_only_rejected
         );
         self.finish_child_order(client_order_id);
-        if !post_only_rejected {
+        if borrow_unavailable {
+            self.cancel_all_children_for_target();
+            self.taker_pending_base_qty = 0.0;
+            self.submit_blocked_until_us = i64::MAX;
+            self.completion_reason = Some(ChaseExecCompletionReason::BorrowUnavailable);
+            warn!("ChaseExecStrategy: strategy_id={} symbol={} target execution stopped: borrow_unavailable generation={:?}", self.strategy_id, self.symbol, self.borrow_unavailable_generation);
+        } else if !post_only_rejected {
             self.submit_blocked_until_us = self
                 .submit_blocked_until_us
                 .max(get_timestamp_us().saturating_add(OPEN_REJECT_BACKOFF_US));
@@ -2857,6 +2898,48 @@ mod tests {
 
         assert!(!strategy.children.contains_key(&order_id));
         assert!(strategy.submit_blocked_until_us >= before + OPEN_REJECT_BACKOFF_US);
+    }
+
+    #[test]
+    fn borrowing_rejection_stops_taker_releases_and_accounts_late_orphan_fill() {
+        for code in [401126, 406017] {
+            let mut strategy = make_strategy();
+            strategy.active_target = Some(active_target(3.0, 0, 7));
+            strategy.virtual_position_qty = Some(0.25);
+            let mut child = maker_child_meta(Side::Buy, 1.0, 0.0, 7);
+            child.is_taker = true;
+            strategy.children.insert(101, child.clone());
+            strategy.orphaned_children.insert(102, child);
+            strategy.taker_pending_base_qty = 0.5;
+            let response = TradeEngineResponseMessage::new(
+                200,
+                TradeRequestType::BinanceLtpNewSpotOrder as u32,
+                Exchange::Binance as u32,
+                101,
+                code,
+            );
+            strategy.handle_hedge_open_failed(&response, "insufficient lending pool", 101);
+            assert!(strategy.borrow_unavailable());
+            assert!(strategy.children.is_empty());
+            assert_eq!(strategy.taker_pending_base_qty, 0.0);
+            assert!(strategy.has_execution_in_flight());
+            assert!(strategy.apply_exec_orphan_terminal(&ExecOrphanTerminal {
+                client_order_id: 102,
+                source_kind: OrphanSourceKind::Hedge,
+                terminal_ts: 42,
+                side: Side::Buy,
+                order_base_qty: 1.0,
+                filled_base_qty: 0.2,
+                price: 100.0,
+            }));
+            assert!((strategy.virtual_position_qty.unwrap() - 0.45).abs() < QTY_EPS);
+            assert!(!strategy.has_execution_in_flight());
+            strategy.completion_reason = None;
+            strategy.submit_blocked_until_us = 0;
+            strategy.maybe_release(get_timestamp_us());
+            assert!(strategy.children.is_empty());
+            assert!(strategy.borrow_unavailable());
+        }
     }
 
     #[test]
