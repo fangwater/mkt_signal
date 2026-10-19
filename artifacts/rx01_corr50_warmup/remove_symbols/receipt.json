@@ -1,0 +1,18 @@
+{
+  "removed": [
+    "ICXUSDT",
+    "STORJUSDT"
+  ],
+  "removed_combinations": 79,
+  "symbols": 48,
+  "strategies": 57,
+  "combinations": 794,
+  "enabled": false,
+  "factor_generation": "9389c457-cff7-4fce-a392-90f8f9ea438d",
+  "publisher_restart": false,
+  "execute": true,
+  "observed_utc": "2026-10-19T07:01:08.045235+00:00",
+  "revision": "c1867d732067711c354eb44b1e223a5f91ce63de76976ae017c99abfda247a59",
+  "backup": "/home/ubuntu/binance-cta-spread-rx01/run/corr50_remove_symbols_20261019T065917Z/backup",
+  "files_verified": 3
+}

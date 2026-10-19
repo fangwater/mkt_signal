@@ -1,7 +1,105 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-18 13:38 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-19 13:10 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-19 13:10 UTC，收窄Chase新目标的退避重置条件，仅解除借币不足状态；
+保留其他拒单的原退避。经本机release重建与SHA-256核验，只补发Exec06执行器，
+PID3552480→3581326，CPU mask仍为 `0-5`，Viz保持3552394。当前38个已激活永续
+完成核验：36个4倍、BEL/ZIL上限3倍，BAND4倍。仓位推送恢复原配置，借币不足11个
+目标已完成且无429。最终执行器SHA-256：
+`e1b3824b0bc7a7ef4c2620f3f10ab6ca076b050698928d6f4ca360bdce4e9777`。
+最终回执：`~/binance_exec_trade06/run/borrow_stop_20261019T130500Z/`。
+
+2026-10-19 12:54–12:55 UTC，发布 RX01 `binance_exec_trade06` 的 RapidX 借币不足
+终止执行修复及默认4倍杠杆。仅通过环境本地脚本更换 exec-pre-trade PID3224367
+→3552480、Viz PID3199538→3552394，两者实测 CPU mask 仍为 `0-5`。
+构建源为本机已同步的 arbmm `b4251236` 加当前补丁，上传后逐文件校验 SHA-256 并
+原子安装；短暂停止仓位推送，核验账户快照和杠杆后恢复原配置。
+36个已激活永续已实际回读确认：34个4倍，BEL/ZIL因场内上限3倍；BAND为4倍。
+启动后11个借币不足目标已结束，active_batches/live_order_qty/pending_qty均0，无429。
+其余Exec组件、RX01 signal/config/dashboard及CPU17 publisher保留原PID和绑核。
+部署备份与回执：`~/binance_exec_trade06/run/borrow_stop_20261019T125000Z/`；
+本地证据：`artifacts/rapidx_borrow_stop_20261019/`。下方10:02–10:20记录为快照切换历史。
+
+2026-10-19 10:02–10:20 UTC，RX01 Spread / Exec06 按用户要求先 taker 清仓，
+再建立新账户及策略快照，并于10:17:05 UTC恢复交易。清仓后永续、负债和挂单均0，
+约2.7593 USDT的20种现货零头保留在inventory；新快照时间戳
+`1792404818623482`（10:13:38 UTC），历史订单及旧快照保留。
+57个因子策略从零仓启用，旧factor_052绑定份额归零；当前线上单组合10 USDT、
+退出long=0.3/short=0.7的现场设置保留。773/794组合因子就绪，21个缺大小阈值的组合留空。
+publisher PID2798755/CPU17、signal PID2879622及配置服务PID2879569保持；
+新增dashboard PID3207816。Exec06 persist_manager/account_monitor/Viz/Config/
+trade_engine/exec-pre-trade分别PID3199097/3199439/3199538/3199632/3207923/3224367，
+全部实测CPU mask `0-5`；未启动Exec trade_signal。1632个Manager→Redis目标一致，
+Manager健康、待投递0，已看到恢复后的新成交。原二进制、env.sh、source IP和绑核配置保持。
+远端备份与回执：`~/binance-cta-spread-rx01/run/reenable_20261019/`；
+本地核验：`artifacts/rx01_reenable_20261019/verification.json`。
+
+2026-10-19 07:26–07:30 UTC，仅修正并发布 Spread 退出默认值：long=0.7、short=0.3。
+Rust、配置服务、页面说明及本仓部署副本一致；原始ds研究文件保留。通过环境本地脚本
+重载 RX01 signal PID2879622、配置服务 PID2879569，CPU mask均仍为 `0-5,48-95`。
+publisher PID2798755/CPU17及Kafka generation保持，794条内部仓位仍为0，
+发布关闭、Exec06和dashboard停机。RX02/RX03 Perp配置及94个受保护进程未改。
+本地release signal SHA-256为 `70f529dbada7969b345565338bb08b5d8e5ac24b11ef481e380a05130b77b52a`；
+43项Rust、18项Python测试通过，配置页、健康检查及48币/794组合导入预览通过。
+备份及回执：`~/binance-cta-spread-rx01/run/spread_exit_defaults_20261019T072100Z/`；
+本地核验：`artifacts/rx01_corr50_warmup/spread_exit_defaults/validation.json`。
+
+2026-10-19 07:10–07:12 UTC，RX01 Spread Kafka因子回溯完成并追至实时。
+48币均有历史，762/794个组合因子就绪；21个因大小阈值缺失按用户要求留空，
+另11个 `factor_114` 仍未就绪。07:10快照中693个组合的NQ和spread过滤同时就绪，
+该数量随实时数据变化。累计解码/计算/发布错误均0，794条内部仓位仍为0，
+发布关闭，Exec06及dashboard停机，其他受保护进程及账户配置保持。
+07:12只读核验发现线上exit已改为long=0.7、short=0.3，保留该现场修改；
+原研究JSON及本地模板仍为0.3/0.7。证据：`artifacts/rx01_corr50_warmup/final.json`
+及 `final_config.json`，库级回归1298项通过、0失败、3忽略。
+
+2026-10-19 07:03 UTC，按用户要求删除 RX01 Spread 的 ICXUSDT、STORJUSDT 配置，
+减少79组合，现为48币/57组/794组合，内部状态全为零。Redis通过配置服务CAS更新，
+磁盘策略表、publisher universe和部署JSON同步；原始ds研究文件保留。
+为保留Kafka预热进度，publisher PID2798755/CPU17未重启，内存仍为本轮启动快照，
+signal仅采用新的48币范围；磁盘48币universe在publisher下次启动时生效。
+signal通过环境本地脚本恢复为PID2830224，CPU mask仍 `0-5,48-95`，发布关闭；
+配置服务保持，dashboard及Exec06停机。三个Spread停止脚本的pmdaemon清理超时
+从5秒改为45秒，避免冷加载尚未完成就中断删除、留下旧进程登记。
+备份及回执：`~/binance-cta-spread-rx01/run/corr50_remove_symbols_20261019T065917Z/`。
+
+2026-10-19 06:47 UTC，按用户选择为 RX01 Spread 预热因子、备份并重置旧内部状态，
+从当前时点起仓；未回溯历史仓位、未向 Manager/Exec 发布目标。旧5组/46组合状态
+已备份，新57组/873组合内部仓位全为0。publisher 与 signal 在本地 arbmm release
+构建、SHA-256核验及原子安装后，经环境本地脚本启动：publisher PID2798755，
+CPU17；signal PID2798817，CPU mask `0-5,48-95`，`enabled=false`。
+配置服务 PID2708645 继续运行，dashboard、Exec06保持停机。Kafka预热进行中；
+29币缺少成交大小阈值，按用户要求保持空缺，相关 `baseline_046` / `net_buy_small`
+组合不就绪，其余54个底层因子独立计算。未修改共享TLen元数据、source IP或绑核配置。
+备份及发布回执：`~/binance-cta-spread-rx01/run/corr50_warmup_20261019T064500Z/`；
+本地核验：`artifacts/rx01_corr50_warmup/`。
+
+2026-10-19 06:04 UTC，JP RX01 Spread 按 `ds/twoex_deploy_corr50.json`
+更新为50币、57个有符号因子组（56个底层因子）、873组合，单份100 USDT，
+`enabled=false`。本地 arbmm release 构建的 signal/publisher 经SHA-256核验后
+原子安装，同时重构并发布配置服务及NQ/前一分钟spread双过滤；仅配置服务启动，
+PID2708645，CPU mask `0-5,48-95`，loopback19174健康。signal、CPU17 publisher、
+dashboard和Exec06继续停机，未新增隔离核分配。原仓位状态、env.sh及Exec06交易配置
+哈希保持；新清单尚未预热或启用交易。备份及发布回执：
+`~/binance-cta-spread-rx01/run/corr50_publish_20261019T055900Z/`；
+本地核验：`artifacts/rx01_corr50_deploy/validation.json`。
+
+2026-10-19 05:12 UTC，按用户要求通过 `scripts/stop-exec.sh` 调用 JP
+`binance_exec_trade06` 环境本地脚本，停止 trade_engine、exec-pre-trade、
+account_monitor、persist_manager、viz_server、config_server，复核无匹配进程。
+Exec06 无独立隔离核绑定；RX01 Spread 保持停机，未调整 source IP 或绑核配置。
+05:18 UTC RX01 保留现货及负债，通过11个币的USDT永续成交对齐净敞口。
+复核普通/条件挂单均为0、工具pending为空；逐币仅剩低于数量/金额门槛的尾差，
+绝对市值合计约37.53 USDT（不可用不同币抵消判断中性）。
+证据：`artifacts/rx01_neutralize_20261019/verification.json`；远端交易journal保留在
+`~/binance-cta-rx01/run/rapidx_neutralize.json`。恢复交易前须重新核对实际仓位与内部目标。
+
+2026-10-19 05:09 UTC，按用户要求暂停 JP `binance-cta-spread-rx01`。
+通过环境本地 `scripts/stop_cta_spread.sh --execute` 停止 signal、factor publisher、
+dashboard、config server，核查该环境 cwd 下无剩余进程。CPU17 的 Spread publisher
+已停止，保留原绑核配置供恢复；未操作 Exec06、账户仓位或 source IP。
 
 2026-10-18 13:34–13:38 UTC，修复 Binance FR arb02/03/04 无新增订单的阈值依赖：
 Binance rolling 的 bidask/askbid 原 min_periods=40000、1秒采样，主机重启后
@@ -383,7 +481,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-13 新清单已实时就绪，PID663465/5线程；CTA_SPREAD_FACTOR_MODEL_1M_CORE=17 |
+| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-19 Kafka已追实时，PID2798755；48币/794组合，10:17 UTC清仓及新快照后恢复signal发布和Exec06交易 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-13 原地迁入，5 线程；CTA_PERP_FACTOR_MODEL_1M_CORE=18 |
 | 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 2026-10-14 独立RX03实盘信号publisher，PID2038356/5线程；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
@@ -516,6 +614,29 @@ L3 说明:c7i.metal-24xl 的 L3 为全芯片共享(`shared_cpu_list=0-47`),
 ## sg(SSH: `sg`,ip-172-31-7-123,c7a.4xlarge,apse1-az3)
 
 CPU 布局:`0-7` housekeeping,`8-15` 隔离;AMD 实例无 SMT,全部为物理核。
+
+2026-10-19 08:21–08:28 UTC，按操作者要求，将原 intra arb02 账户的预备 Exec 02
+改为 `bybit_exec_trade01`（`bybit-01`），归 LGQ configure，跟随既有 virtual01，
+10项绑定、1项启用、multiplier=1，执行模板及五项风控保留。旧Exec 02禁用、解绑、
+份额归零且全停；新Exec只启动Config PID3656055、Viz3656122、persist3656242、
+account_monitor3656401，Manager为PID3656412，均运行0–7。
+exec-pre-trade/trade_engine/trade_signal及两套intra继续全停，RX02未接实时推送。
+11个无关MM/公共行情进程身份及20份既有非Manager配置哈希不变，8–15核分配不变。
+Viz/Config仅监听 `127.0.0.1:10041/18161`，4191 `/exec_trade01/`鉴权、WS通过。
+08:22:01.653 UTC新建12条账户快照：6条现货净持仓、6条USDT永续，余额/借币/利息
+保留为不可变审计依据；现货和永续FIFO分离，未增加现货执行范围。旧订单不再要求归档，
+原数据保留原目录，没有复制或重标为新Exec历史。复算确认12条初始持仓，历史成交和费用均0。
+证据见独立Manager仓库 `artifacts/sg_exec01_20261019/`及`docs/sg_deployment.md`。
+
+2026-10-19 08:01 UTC，仅更新 SG CTA Manager 后端、前端及三个分析工具，
+release `20261019T080045Z`、Manager checkout `6e422e1`。Manager PID3647035，
+affinity仍为0–7，health=ok；补齐报价币手续费字段及上海零点每日权益表。
+15个受保护进程、21份现场配置、策略/权限/快照/跟随配置哈希一致，8–15核分配不变。
+LGQ 的 `bybit_exec_trade02`（`bybit-02`）账户监控、persist、Viz、Config仍运行，
+exec-pre-trade/trade_engine/trade_signal及两套intra保持停止，RX02未接实时推送。
+当时尚无 `bybit_exec_trade01`；arb02原约551 MiB数据仍在旧目录，旧运行文件备份
+不含订单数据。后续按用户指示免归档并切至01，见上文。升级核验见独立Manager仓库
+`artifacts/sg_manager_20261019/`及`docs/sg_deployment.md`。
 
 2026-10-16 10:15 UTC 新增 lgq 的 `bybit_exec_trade02`（Manager 别名 `bybit-02`）。
 账户监控、persist_manager、Viz、Exec Config 运行于 housekeeping 0–7；

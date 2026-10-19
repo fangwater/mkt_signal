@@ -1,0 +1,5 @@
+{
+  "scripts/stop_cta_spread_signal.sh": "d7d7c3b2462ad2ac00a567fa601b2a158e48d6b717a0a02511211787fb02823e",
+  "scripts/stop_cta_spread_factor_model_1m_pub.sh": "d03b35a7586ee0002660fcebcfb343bd586c82e6b654802ae54f7d58504aee4d",
+  "scripts/stop_cta_spread_config_server.sh": "1195239401722874fefe5f0878eb051a8b9682c6c5b8223abfdb5dc6fe3349ca"
+}

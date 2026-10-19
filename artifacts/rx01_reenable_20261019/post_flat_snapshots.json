@@ -1,0 +1,388 @@
+{
+  "snapshot_ts_us": 1792404818623482,
+  "observed_utc": "2026-10-19T10:14:16.355739+00:00",
+  "backup": "/home/ubuntu/binance-cta-spread-rx01/run/reenable_20261019/post_flat_backup_20261019T101338Z",
+  "snapshots": {
+    "nav_snapshot": {
+      "source_id": "binance_exec_trade06",
+      "snapshot_ts_us": 1792404818623482,
+      "positions": [
+        {
+          "symbol": "AAVE",
+          "venue_code": 0,
+          "quantity": 0.000687878022326776,
+          "reference_price": 152.35596752
+        },
+        {
+          "symbol": "ADA",
+          "venue_code": 0,
+          "quantity": 0.04514721890338722,
+          "reference_price": 0.2197039
+        },
+        {
+          "symbol": "AVAX",
+          "venue_code": 0,
+          "quantity": 0.006793276331231991,
+          "reference_price": 9.74877677
+        },
+        {
+          "symbol": "BCH",
+          "venue_code": 0,
+          "quantity": 0.000654539556186251,
+          "reference_price": 279.60739368
+        },
+        {
+          "symbol": "BNB",
+          "venue_code": 0,
+          "quantity": 0.000373976031089237,
+          "reference_price": 725.94952427
+        },
+        {
+          "symbol": "BTC",
+          "venue_code": 0,
+          "quantity": 6.66401093008e-06,
+          "reference_price": 82703.44608696
+        },
+        {
+          "symbol": "CRV",
+          "venue_code": 0,
+          "quantity": 0.07917,
+          "reference_price": 0.35596126
+        },
+        {
+          "symbol": "DASH",
+          "venue_code": 0,
+          "quantity": 0.00090172479553685,
+          "reference_price": 49.37078384
+        },
+        {
+          "symbol": "DOGE",
+          "venue_code": 0,
+          "quantity": 0.36257877476639255,
+          "reference_price": 0.07968927
+        },
+        {
+          "symbol": "DOT",
+          "venue_code": 0,
+          "quantity": 0.004345548761602213,
+          "reference_price": 1.11454578
+        },
+        {
+          "symbol": "ETH",
+          "venue_code": 0,
+          "quantity": 2.2673049834761e-05,
+          "reference_price": 2434.3027907
+        },
+        {
+          "symbol": "FIL",
+          "venue_code": 0,
+          "quantity": 0.005844149677560008,
+          "reference_price": 1.04250135
+        },
+        {
+          "symbol": "LINK",
+          "venue_code": 0,
+          "quantity": 0.007689927931494899,
+          "reference_price": 12.15166119
+        },
+        {
+          "symbol": "LTC",
+          "venue_code": 0,
+          "quantity": 0.000533462248188214,
+          "reference_price": 60.01117647
+        },
+        {
+          "symbol": "NEAR",
+          "venue_code": 0,
+          "quantity": 0.010231202689798647,
+          "reference_price": 5.05338919
+        },
+        {
+          "symbol": "SOL",
+          "venue_code": 0,
+          "quantity": 2.4506150976195e-05,
+          "reference_price": 105.43936658
+        },
+        {
+          "symbol": "UNI",
+          "venue_code": 0,
+          "quantity": 0.006493329929791071,
+          "reference_price": 7.3798448
+        },
+        {
+          "symbol": "XLM",
+          "venue_code": 0,
+          "quantity": 0.08083895218215899,
+          "reference_price": 0.17814825
+        },
+        {
+          "symbol": "XRP",
+          "venue_code": 0,
+          "quantity": 0.04256219863967968,
+          "reference_price": 1.31211682
+        },
+        {
+          "symbol": "ZEC",
+          "venue_code": 0,
+          "quantity": 0.000950867531390818,
+          "reference_price": 1164.24152854
+        }
+      ]
+    },
+    "nav_strategy_snapshot": {
+      "source_id": "binance_exec_trade06",
+      "snapshot_ts_us": 1792404818623482,
+      "positions": [
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "AAVE",
+          "venue_code": 0,
+          "quantity": 0.000687878022326776,
+          "reference_price": 152.35596752
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "ADA",
+          "venue_code": 0,
+          "quantity": 0.04514721890338722,
+          "reference_price": 0.2197039
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "AVAX",
+          "venue_code": 0,
+          "quantity": 0.006793276331231991,
+          "reference_price": 9.74877677
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "BCH",
+          "venue_code": 0,
+          "quantity": 0.000654539556186251,
+          "reference_price": 279.60739368
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "BNB",
+          "venue_code": 0,
+          "quantity": 0.000373976031089237,
+          "reference_price": 725.94952427
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "BTC",
+          "venue_code": 0,
+          "quantity": 6.66401093008e-06,
+          "reference_price": 82703.44608696
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "CRV",
+          "venue_code": 0,
+          "quantity": 0.07917,
+          "reference_price": 0.35596126
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "DASH",
+          "venue_code": 0,
+          "quantity": 0.00090172479553685,
+          "reference_price": 49.37078384
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "DOGE",
+          "venue_code": 0,
+          "quantity": 0.36257877476639255,
+          "reference_price": 0.07968927
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "DOT",
+          "venue_code": 0,
+          "quantity": 0.004345548761602213,
+          "reference_price": 1.11454578
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "ETH",
+          "venue_code": 0,
+          "quantity": 2.2673049834761e-05,
+          "reference_price": 2434.3027907
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "FIL",
+          "venue_code": 0,
+          "quantity": 0.005844149677560008,
+          "reference_price": 1.04250135
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "LINK",
+          "venue_code": 0,
+          "quantity": 0.007689927931494899,
+          "reference_price": 12.15166119
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "LTC",
+          "venue_code": 0,
+          "quantity": 0.000533462248188214,
+          "reference_price": 60.01117647
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "NEAR",
+          "venue_code": 0,
+          "quantity": 0.010231202689798647,
+          "reference_price": 5.05338919
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "SOL",
+          "venue_code": 0,
+          "quantity": 2.4506150976195e-05,
+          "reference_price": 105.43936658
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "UNI",
+          "venue_code": 0,
+          "quantity": 0.006493329929791071,
+          "reference_price": 7.3798448
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "XLM",
+          "venue_code": 0,
+          "quantity": 0.08083895218215899,
+          "reference_price": 0.17814825
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "XRP",
+          "venue_code": 0,
+          "quantity": 0.04256219863967968,
+          "reference_price": 1.31211682
+        },
+        {
+          "strategy_name": "binance_cta_spread_rx01_inventory",
+          "symbol": "ZEC",
+          "venue_code": 0,
+          "quantity": 0.000950867531390818,
+          "reference_price": 1164.24152854
+        }
+      ]
+    }
+  },
+  "remaining_cash": [
+    {
+      "coin": "AAVE",
+      "qty": "0.000687878022326776",
+      "mark": "152.35596752"
+    },
+    {
+      "coin": "ADA",
+      "qty": "0.045147218903387221",
+      "mark": "0.2197039"
+    },
+    {
+      "coin": "AVAX",
+      "qty": "0.006793276331231991",
+      "mark": "9.74877677"
+    },
+    {
+      "coin": "BCH",
+      "qty": "0.000654539556186251",
+      "mark": "279.60739368"
+    },
+    {
+      "coin": "BNB",
+      "qty": "0.000373976031089237",
+      "mark": "725.94952427"
+    },
+    {
+      "coin": "BTC",
+      "qty": "0.00000666401093008",
+      "mark": "82703.44608696"
+    },
+    {
+      "coin": "CRV",
+      "qty": "0.07917",
+      "mark": "0.35596126"
+    },
+    {
+      "coin": "DASH",
+      "qty": "0.00090172479553685",
+      "mark": "49.37078384"
+    },
+    {
+      "coin": "DOGE",
+      "qty": "0.362578774766392576",
+      "mark": "0.07968927"
+    },
+    {
+      "coin": "DOT",
+      "qty": "0.004345548761602213",
+      "mark": "1.11454578"
+    },
+    {
+      "coin": "ETH",
+      "qty": "0.000022673049834761",
+      "mark": "2434.3027907"
+    },
+    {
+      "coin": "FIL",
+      "qty": "0.005844149677560008",
+      "mark": "1.04250135"
+    },
+    {
+      "coin": "LINK",
+      "qty": "0.007689927931494899",
+      "mark": "12.15166119"
+    },
+    {
+      "coin": "LTC",
+      "qty": "0.000533462248188214",
+      "mark": "60.01117647"
+    },
+    {
+      "coin": "NEAR",
+      "qty": "0.010231202689798647",
+      "mark": "5.05338919"
+    },
+    {
+      "coin": "SOL",
+      "qty": "0.000024506150976195",
+      "mark": "105.43936658"
+    },
+    {
+      "coin": "UNI",
+      "qty": "0.006493329929791071",
+      "mark": "7.3798448"
+    },
+    {
+      "coin": "XLM",
+      "qty": "0.080838952182158986",
+      "mark": "0.17814825"
+    },
+    {
+      "coin": "XRP",
+      "qty": "0.042562198639679682",
+      "mark": "1.31211682"
+    },
+    {
+      "coin": "ZEC",
+      "qty": "0.000950867531390818",
+      "mark": "1164.24152854"
+    }
+  ],
+  "gross_cash_dust_usdt": "2.75926122025381025990910280",
+  "perpetual_positions": 0,
+  "debts": 0,
+  "open_orders": 0,
+  "factor_positions": 0,
+  "historical_orders_changed": false,
+  "usdt_balance": "19231.303582507853122495"
+}

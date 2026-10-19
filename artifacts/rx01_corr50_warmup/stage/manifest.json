@@ -1,0 +1,6 @@
+{
+  "cta_spread_signal": "fbb034c3ecca257d49c4a7ba7393f3fef8877dba36702da8094ae9388dfed67c",
+  "cta_spread_factor_model_1m_pub": "37e9b480165ecfcb16845ec713a2dc19aaf8c7a121afb109ddedea38fdfa4fe2",
+  "scripts/stop_cta_spread_factor_model_1m_pub.sh": "a40a9f36d65c0d063c195ad4af2ce4650fefb0e8a06cc74254f53c732a51e7f7",
+  "scripts/stop_cta_spread_signal.sh": "74af13bfaed2d942104c61d63576297447002500b3802457bb1f23e168f67657"
+}

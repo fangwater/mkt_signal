@@ -1,0 +1,33 @@
+[universe]
+symbols = ["1INCHUSDT", "AAVEUSDT", "ADAUSDT", "ALGOUSDT", "ATOMUSDT", "AXSUSDT", "BANDUSDT", "BATUSDT", "BELUSDT", "BNBUSDT", "COMPUSDT", "CRVUSDT", "DASHUSDT", "DOTUSDT", "EGLDUSDT", "ENJUSDT", "ETCUSDT", "FILUSDT", "GRTUSDT", "ICXUSDT", "IOSTUSDT", "IOTAUSDT", "KAVAUSDT", "KNCUSDT", "KSMUSDT", "NEARUSDT", "NEOUSDT", "ONTUSDT", "QTUMUSDT", "RLCUSDT", "RSRUSDT", "RUNEUSDT", "SKLUSDT", "SNXUSDT", "SOLUSDT", "STORJUSDT", "SUSHIUSDT", "THETAUSDT", "TRBUSDT", "TRXUSDT", "UNIUSDT", "VETUSDT", "XLMUSDT", "XRPUSDT", "XTZUSDT", "YFIUSDT", "ZECUSDT", "ZENUSDT", "ZILUSDT", "ZRXUSDT"]
+factors = ["TD_MT_013", "TD_MT_016", "TD_MT_022", "TD_PR_008", "TD_PR_011", "TD_PR_013", "TD_PT_003", "TD_PT_025", "TD_PT_027", "TD_TI_024", "TD_TI_026", "TD_TI_027", "TD_VI_010", "TD_VI_020", "TP_VPI_003", "TP_VPI_017", "baseline_005", "baseline_019", "baseline_022", "baseline_026", "baseline_028", "baseline_046", "baseline_065", "baseline_068", "baseline_077", "baseline_079", "baseline_081", "baseline_092", "baseline_105", "baseline_117", "baseline_140", "baseline_141", "baseline_148", "baseline_163", "baseline_164", "baseline_195", "baseline_198", "buy_avg_price", "factor_022", "factor_023", "factor_110", "factor_114", "factor_125", "factor_152", "factor_163", "factor_164", "factor_165", "factor_169", "factor_170", "factor_171", "factor_trades_008", "factor_trades_025", "factor_trades_034", "factor_trades_035", "factor_trades_050", "net_buy_small"]
+
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
+
+# Keep this identical to the V005/rx01 offline normalize_factors contract.
+[normalize]
+window_bars = 1440
+min_periods = 1000
+clip_zscore = 3.0
+
+[kafka]
+lookback_secs = 259200
+catchup_timeout_secs = 5400
+topic = "binance-futures"
+cash_topic = "binance-spot"
+topics = ["binance-futures", "binance-spot"]
+brokers = "156.231.137.189:1501"
+group_id = "cta_spread_factor_model_1m"
+client_id = "cta_spread_factor_model_1m"
+offset_reset = "earliest"
+payload_compression = "zlib"
+poll_timeout_ms = 1000
+enable_auto_commit = false
+enable_partition_eof = false
+security_protocol = "none"
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]

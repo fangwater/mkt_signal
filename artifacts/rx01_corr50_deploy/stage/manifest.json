@@ -1,0 +1,17 @@
+{
+  "scripts/cta_spread_config_server.py": "5592983932cbd786ce8a9a26c34753fedfa164d37df027c22206aa476047f6a8",
+  "scripts/cta_spread_factor_config.py": "ce13b6e384a351d27a991e9c39f6d0066b19f3d4c59975708c7af653dc5c7499",
+  "scripts/cta_spread_deployment.py": "9e5128482bc977f38c33ceee5731da41e56dfe82f08852b24e4c9630dbd9bffa",
+  "scripts/cta_spread_dashboard.py": "2dc34b607a43c8ed6acb2835f5f08d12b5844c1a4f9a5d3e1c3a8a9be8459ba2",
+  "scripts/cta_spread_signal_history.py": "e4648bae3441375b2e1bf4f0dff8b7cb4d7ae1922bf12ff2c581e9ed0599f2ad",
+  "scripts/factor_validation_allowlist.txt": "59d19566e4f2c81f611df634a97cd70c95ca4a48a0a65a1dd1b521860aa367f2",
+  "web/cta_spread_config/index.html": "7f039d04e9ef69dd297bc6924bde34d8e41952b73f924167ec9e7c751562e84a",
+  "web/cta_spread/index.html": "8c7fd8fd0438eda460299b3f731c0ff99f3eba4d1c85b3a08a6702c98f43737a",
+  "web/cta_spread_signals/panel.js": "90f7e729f0fb8774f2d770a544ef77f1db898e73401839b0a60e164db7a90a1c",
+  "config/cta_spread.json": "8a129be233d3de73ef68530ff56d973d7a0c444660889f8e987c8dacc51a14ac",
+  "config/cta_spread_symbol_factors.json": "5617cc0838443c7d52c4c6cef3d28440823abd01e44f4c1be1a98b8995189e18",
+  "config/cta_spread_factor_model_1m_pub.toml": "3aa497a225422b2457c03e48374d85c64909f870858da667a841f62e016e3b1d",
+  "config/cta_spread_deployment.json": "5ae8c39b61dfdafb8726884454c8de891b6dd26897f72e1184ae1db073ad302e",
+  "cta_spread_signal": "cbe2edb6e015b6c12530476cdefa6ae3852ef7c0e82e0874737ff04eee46301a",
+  "cta_spread_factor_model_1m_pub": "f73b58ed555b80da2744c482173efe9dad1cf42e5ebc29eb259f13eca7e5580d"
+}

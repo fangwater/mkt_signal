@@ -1,0 +1,167 @@
+{
+  "release": {
+    "release_id": "20261019T130500Z",
+    "base_commit": "b425123630f602e5c52e4e4f861d17164438d40e",
+    "branch": "arbmm",
+    "built_on": "local_active_worktree",
+    "built_at": "2026-10-19T13:06:13.813776+00:00",
+    "binaries": {
+      "exec-pre-trade": "e1b3824b0bc7a7ef4c2620f3f10ab6ca076b050698928d6f4ca360bdce4e9777"
+    },
+    "source_patch_sha256": "18125a458450ce1bc5b3f1f7d0d7083c570f67a7a1f93fa4ef5c3cdb9e546aee",
+    "untracked_build_sources": {
+      "src/cta_position_publisher.rs": "df85642a660c574f4c137cd011ba3ba63dd238dfd1665f9fe6ad96b87d6cc99d",
+      "src/factor_pub/cta_nq.rs": "05c0fe7b6e8b16f9175ef9e09b9fae9aee4cfb9bccb94e325ad098765297a6ae"
+    },
+    "rapidx_exec_default_leverage": 4
+  },
+  "live_verified_at": "2026-10-19T13:11:26.359238+00:00",
+  "health": {
+    "ts_us": 1792415522563091,
+    "manager_health": {
+      "status": "ok",
+      "source_count": 7,
+      "generated_at_us": 1792415484283373,
+      "last_attempt_at_us": 1792415481757571,
+      "refresh_interval_secs": 60,
+      "last_refresh_error": null
+    },
+    "pending_publishes": [],
+    "enabled": true,
+    "config_preserved": true,
+    "publication_error": null,
+    "journal_healthy": true,
+    "publisher_caught_up": true,
+    "snapshot_ts_us": 1792404818623482,
+    "snapshot_counts": "20|20",
+    "borrow_stopped_targets": 11,
+    "borrow_pool_errors": 11,
+    "rate_limit_errors": 0
+  },
+  "processes": [
+    {
+      "pid": 3199097,
+      "comm": "persist_manager",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199439,
+      "comm": "rapidx_account_",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3199632,
+      "comm": "python3",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3207923,
+      "comm": "trade_engine",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3552394,
+      "comm": "viz_server",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3581326,
+      "comm": "exec-pre-trade",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "position_ready": true,
+  "confirmed_leverages": {
+    "1INCHUSDT": 4,
+    "AAVEUSDT": 4,
+    "ADAUSDT": 4,
+    "ALGOUSDT": 4,
+    "AXSUSDT": 4,
+    "BANDUSDT": 4,
+    "BATUSDT": 4,
+    "BELUSDT": 3,
+    "COMPUSDT": 4,
+    "CRVUSDT": 4,
+    "DASHUSDT": 4,
+    "DOTUSDT": 4,
+    "ENJUSDT": 4,
+    "FILUSDT": 4,
+    "GRTUSDT": 4,
+    "IOSTUSDT": 4,
+    "IOTAUSDT": 4,
+    "KAVAUSDT": 4,
+    "KNCUSDT": 4,
+    "KSMUSDT": 4,
+    "NEARUSDT": 4,
+    "ONTUSDT": 4,
+    "QTUMUSDT": 4,
+    "RSRUSDT": 4,
+    "RUNEUSDT": 4,
+    "SKLUSDT": 4,
+    "SNXUSDT": 4,
+    "SOLUSDT": 4,
+    "SUSHIUSDT": 4,
+    "THETAUSDT": 4,
+    "TRBUSDT": 4,
+    "UNIUSDT": 4,
+    "VETUSDT": 4,
+    "XLMUSDT": 4,
+    "XTZUSDT": 4,
+    "ZENUSDT": 4,
+    "ZILUSDT": 3,
+    "ZRXUSDT": 4
+  },
+  "borrow_stopped_targets": 11,
+  "borrow_pool_errors": 11,
+  "rate_limit_errors": 0,
+  "tests": {
+    "related_passed": 1747,
+    "ignored": 3,
+    "chase_final_passed": 25,
+    "full_run_unrelated_failures": 8,
+    "full_run_failure_path": "src/bin/cme_tas_census.rs",
+    "full_run_failure_reason": "TAS rule catalog contains additional event types"
+  }
+}

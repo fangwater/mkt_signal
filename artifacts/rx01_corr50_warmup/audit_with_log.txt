@@ -1,0 +1,494 @@
+[2026-10-19T06:47:45Z INFO  runtime_common::affinity] pinned current thread to cpu core 17
+[2026-10-19T06:47:46Z WARN  mkt_signal::factor_pub::cta_spread_factor_model_1m_pub::app] CTA Spread trade-size thresholds absent; only size-dependent factors stay unready: ["1INCHUSDT", "ALGOUSDT", "BANDUSDT", "BATUSDT", "BELUSDT", "COMPUSDT", "EGLDUSDT", "ENJUSDT", "GRTUSDT", "ICXUSDT", "IOSTUSDT", "IOTAUSDT", "KAVAUSDT", "KNCUSDT", "KSMUSDT", "NEOUSDT", "QTUMUSDT", "RLCUSDT", "RUNEUSDT", "SKLUSDT", "SNXUSDT", "STORJUSDT", "SUSHIUSDT", "THETAUSDT", "TRBUSDT", "VETUSDT", "XTZUSDT", "YFIUSDT", "ZRXUSDT"]
+[2026-10-19T06:47:46Z INFO  period_pbs::kafka] Kafka broker address rewrite 10.140.140.55:1501 -> 156.231.137.189:1501
+[2026-10-19T06:47:46Z INFO  period_pbs::kafka] Kafka broker address rewrite 10.140.140.55:1501 -> 156.231.137.189:1501
+{
+  "processes": {
+    "43876": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "43996": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "cpus": "15"
+    },
+    "44293": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "44350": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "44461": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "44581": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "cpus": "15"
+    },
+    "44889": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "44946": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "45056": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpus": "0-5,48-95"
+    },
+    "45178": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpus": "15"
+    },
+    "45486": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpus": "0-5,48-95"
+    },
+    "45543": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpus": "0-5,48-95"
+    },
+    "47756": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "47920": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "48089": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "cpus": "0-5,48-95"
+    },
+    "60648": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "60809": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "cpus": "15"
+    },
+    "61143": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "61465": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "61632": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "61805": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "61932": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "cpus": "15"
+    },
+    "62192": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "62350": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "62407": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "62577": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "62705": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "cpus": "15"
+    },
+    "62997": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "63195": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "63265": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "63432": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "63556": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "63801": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "63990": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "64049": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "cpus": "0-5,48-95"
+    },
+    "64192": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "64315": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "cpus": "15"
+    },
+    "64572": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "64734": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "64795": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "cpus": "0-5,48-95"
+    },
+    "64965": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "65088": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "cpus": "15"
+    },
+    "65382": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "65577": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "65640": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "cpus": "0-5,48-95"
+    },
+    "84400": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "cpus": "0-5,48-95"
+    },
+    "84780": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "cpus": "0-5,48-95"
+    },
+    "85012": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "cpus": "0-5,48-95"
+    },
+    "85178": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "cpus": "0-5,48-95"
+    },
+    "85308": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "cpus": "0-5,48-95"
+    },
+    "85514": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "cpus": "0-5,48-95"
+    },
+    "85925": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "cpus": "0-5,48-95"
+    },
+    "86311": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "cpus": "0-5,48-95"
+    },
+    "86546": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "cpus": "0-5,48-95"
+    },
+    "87496": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "cpus": "0-5,48-95"
+    },
+    "88791": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "cpus": "0-5,48-95"
+    },
+    "89027": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "cpus": "0-5,48-95"
+    },
+    "89461": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "cpus": "0-5,48-95"
+    },
+    "89855": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "cpus": "0-5,48-95"
+    },
+    "90108": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "cpus": "0-5,48-95"
+    },
+    "90287": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "cpus": "0-5,48-95"
+    },
+    "90416": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "cpus": "0-5,48-95"
+    },
+    "90639": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "cpus": "0-5,48-95"
+    },
+    "91219": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "cpus": "0-5,48-95"
+    },
+    "91622": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "cpus": "0-5,48-95"
+    },
+    "91888": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "cpus": "0-5,48-95"
+    },
+    "92076": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "cpus": "0-5,48-95"
+    },
+    "92209": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "cpus": "0-5,48-95"
+    },
+    "94386": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "cpus": "0-5,48-95"
+    },
+    "94898": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "cpus": "0-5,48-95"
+    },
+    "95314": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "cpus": "0-5,48-95"
+    },
+    "95709": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "cpus": "0-5,48-95"
+    },
+    "95871": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "cpus": "0-5,48-95"
+    },
+    "96109": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade05",
+      "cpus": "0-5,48-95"
+    },
+    "100190": {
+      "comm": "cta_perp_factor",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "cpus": "18"
+    },
+    "100253": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "cpus": "0-5,48-95"
+    },
+    "100312": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "cpus": "0-5,48-95"
+    },
+    "100371": {
+      "comm": "cta_perp_signal",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "cpus": "0-5,48-95"
+    },
+    "100495": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "cpus": "0-5,48-95"
+    },
+    "100556": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "cpus": "0-5,48-95"
+    },
+    "100626": {
+      "comm": "cta_perp_signal",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "cpus": "0-5,48-95"
+    },
+    "100976": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "cpus": "0-5,48-95"
+    },
+    "101151": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "cpus": "0-5,48-95"
+    },
+    "101408": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "cpus": "15"
+    },
+    "101876": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "cpus": "23"
+    },
+    "102472": {
+      "comm": "account_monitor",
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "cpus": "20"
+    },
+    "104833": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/tlen_config_shared",
+      "cpus": "0-5,48-95"
+    },
+    "105323": {
+      "comm": "persist_manager",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "cpus": "0-5,48-95"
+    },
+    "105844": {
+      "comm": "trade_engine",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "cpus": "0-5,48-95"
+    },
+    "106272": {
+      "comm": "exec-pre-trade",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "cpus": "0-5,48-95"
+    },
+    "106434": {
+      "comm": "viz_server",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "cpus": "0-5,48-95"
+    },
+    "106578": {
+      "comm": "cta_perp_factor",
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "cpus": "19"
+    },
+    "106833": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "cpus": "0-5,48-95"
+    },
+    "2708645": {
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    },
+    "2798755": {
+      "comm": "cta_spread_fact",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "17"
+    },
+    "2798817": {
+      "comm": "cta_spread_sign",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    }
+  },
+  "files": {
+    "/home/ubuntu/binance-cta-spread-rx01/env.sh": "c003b5269ecf5384f1fcd9b52a461965e6edd05570480c934e8db0585fe2155d",
+    "/home/ubuntu/binance-cta-spread-rx01/run/cta_spread_position_flags.json": "4b564b6d5ab719f7124b8e7bab7faf6cef804890091f9c6da5ac08add178c83c",
+    "/home/ubuntu/binance_exec_trade06/env.sh": "bad8f799c34acec3dc89fde1c1e7d14127a9ad432acf0ae238d1d0f366dfab86",
+    "/home/ubuntu/binance_exec_trade06/config/trade_engine.toml": null
+  }
+}

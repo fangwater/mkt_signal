@@ -1,0 +1,2 @@
+Kafka watermarks: earliest_offset is the low watermark; high_offset is the next offset
+topic=binance-futures partition=0 earliest_offset=11265830 high_offset=11324994 available_messages=59164

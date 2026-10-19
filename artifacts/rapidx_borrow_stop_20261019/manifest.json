@@ -1,0 +1,17 @@
+{
+  "release_id": "20261019T125000Z",
+  "base_commit": "b425123630f602e5c52e4e4f861d17164438d40e",
+  "branch": "arbmm",
+  "built_on": "local_active_worktree",
+  "built_at": "2026-10-19T12:52:09.328139+00:00",
+  "binaries": {
+    "exec-pre-trade": "72b5df9cd038e6bafacb1ffa431c829ea5664a8287f591ec4596fa0e2c705968",
+    "viz_server": "8d153f2caaa77358398cc3c1f359a985045f3a8a800bc85afd530574d03ee685"
+  },
+  "source_patch_sha256": "9e75cea5c57189d0411d4493a65851516f07ea8257704d408970fddedb8da5be",
+  "untracked_build_sources": {
+    "src/cta_position_publisher.rs": "df85642a660c574f4c137cd011ba3ba63dd238dfd1665f9fe6ad96b87d6cc99d",
+    "src/factor_pub/cta_nq.rs": "05c0fe7b6e8b16f9175ef9e09b9fae9aee4cfb9bccb94e325ad098765297a6ae"
+  },
+  "rapidx_exec_default_leverage": 4
+}

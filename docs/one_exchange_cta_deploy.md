@@ -217,7 +217,7 @@ RX02 当前 `enabled=true`，用户授权 trade05 实盘执行。signal 环境�
 }
 ```
 
-信号通过 `CTA_MANAGER_API_URL=http://127.0.0.1:4191/manager/api` 的仓位策略发布 API 更新 targets，不再直接写 Exec Redis 文档。`CTA_POSITION_STRATEGY_PREFIX=lgq_cta_`；Manager 持有订单参数、虚拟份数和跟随关系，再写 `<exec-env>:binance-futures:batch_exec:<strategy>` 与 `strategy_names`。同一 targets 不重复发布；失败在下一次刷新重试，并在首页显示 publication_error。移除的因子/币仍发送零目标以清掉原策略。五份策略共用执行模板 `lgq_cta_ctaker`，算法 `ctaker`；`targets` 例如：
+信号通过 `CTA_MANAGER_API_URL=http://127.0.0.1:4191/manager/api` 的仓位策略发布 API 更新 targets；Perp/Spread 也支持 `env.sh` 中的逗号分隔列表 `CTA_MANAGER_API_URLS`（优先使用），详见 [多个 Manager 推送地址](cta_signal_families.md#多个-manager-推送地址)，不再直接写 Exec Redis 文档。`CTA_POSITION_STRATEGY_PREFIX=lgq_cta_`；Manager 持有订单参数、虚拟份数和跟随关系，再写 `<exec-env>:binance-futures:batch_exec:<strategy>` 与 `strategy_names`。同一 targets 不重复发布；失败在下一次刷新重试，并在首页显示 publication_error。移除的因子/币仍发送零目标以清掉原策略。五份策略共用执行模板 `lgq_cta_ctaker`，算法 `ctaker`；`targets` 例如：
 
 ```json
 {"BNBUSDT":{"qty":0.3,"signal":0},"FILUSDT":{"qty":0,"signal":0}}

@@ -146,3 +146,9 @@ local_binance_ed25519_test/
 /artifacts/**/before-files/
 /artifacts/**/commit-files/
 /artifacts/**/before-docs/
+
+# Locally built CTA binaries copied into deployment staging directories.
+/artifacts/**/stage/cta_spread_signal
+/artifacts/**/stage/cta_spread_factor_model_1m_pub
+# Temporary source snapshots; release manifests retain their checksums.
+/artifacts/**/*.patch

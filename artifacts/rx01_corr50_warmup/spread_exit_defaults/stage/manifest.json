@@ -1,0 +1,6 @@
+{
+  "cta_spread_signal": "70f529dbada7969b345565338bb08b5d8e5ac24b11ef481e380a05130b77b52a",
+  "scripts/cta_spread_config_server.py": "05d227fafe01b2ca6b484bdb1378d5f942e2256a675042bcf19a4ddbb0d0cfbf",
+  "config/cta_spread_deployment.json": "5bed35350c97f16d153631a0cf84b959d78c7f0b5fab2f1caac2dd640642802f",
+  "web/cta_spread_config/index.html": "91a3d93d2aedb973b066a50017a4f83bb429ca29424abe00a452935aecc25cd5"
+}

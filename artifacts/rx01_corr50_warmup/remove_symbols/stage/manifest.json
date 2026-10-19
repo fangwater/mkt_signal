@@ -1,0 +1,5 @@
+{
+  "config/cta_spread_symbol_factors.json": "040e52916fd0318b3023ce0419d2074102cb029e8a820485a34c072065ec6a7c",
+  "config/cta_spread_factor_model_1m_pub.toml": "1eb15b86660729ac4b29602610ad58777a77606b3b8eff6436d9b8c83beb21cc",
+  "config/cta_spread_deployment.json": "ccc3a8267744e5f6f5735cec8bda828c4d3313b9c032a991e1b0c951963563f4"
+}

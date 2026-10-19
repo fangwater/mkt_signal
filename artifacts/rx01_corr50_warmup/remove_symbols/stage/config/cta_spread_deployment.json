@@ -1,0 +1,1223 @@
+{
+  "version": "twap3m_twoex_v10_nq120_exit30_s57",
+  "rule": {
+    "pass": "both windows ann>0.10 and auc<0.15 on the symbol 4h nav",
+    "correlation": "position after percentile hysteresis, NQ 0.50 and spread gate; pooled across 57 symbols; corr>0.5 keeps higher OOS 4h sharpe",
+    "entry": {
+      "long": 0.9,
+      "short": 0.1
+    },
+    "exit": {
+      "long": 0.3,
+      "short": 0.7
+    },
+    "nq": {
+      "long_quantile": 0.5,
+      "short_quantile": 0.5,
+      "lookback": 120,
+      "quantile_window": 120
+    },
+    "spread": {
+      "long_quantile": 0.7,
+      "short_quantile": 0.3,
+      "lag": "previous minute"
+    }
+  },
+  "n_factors": 57,
+  "n_sleeves": 794,
+  "factors": [
+    {
+      "factor": "TD_PR_011",
+      "sign": 1,
+      "n_symbols": 10,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "GRTUSDT",
+        "IOTAUSDT",
+        "RLCUSDT",
+        "RUNEUSDT",
+        "SOLUSDT",
+        "TRBUSDT",
+        "VETUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_MT_022",
+      "sign": -1,
+      "n_symbols": 23,
+      "symbols": [
+        "1INCHUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "CRVUSDT",
+        "ENJUSDT",
+        "FILUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_trades_034",
+      "sign": 1,
+      "n_symbols": 14,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BELUSDT",
+        "CRVUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_trades_008",
+      "sign": -1,
+      "n_symbols": 20,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_trades_025",
+      "sign": -1,
+      "n_symbols": 16,
+      "symbols": [
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_019",
+      "sign": -1,
+      "n_symbols": 23,
+      "symbols": [
+        "1INCHUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "CRVUSDT",
+        "ENJUSDT",
+        "FILUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZENUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_022",
+      "sign": 1,
+      "n_symbols": 15,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "net_buy_small",
+      "sign": -1,
+      "n_symbols": 16,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZENUSDT"
+      ]
+    },
+    {
+      "factor": "factor_trades_050",
+      "sign": -1,
+      "n_symbols": 20,
+      "symbols": [
+        "1INCHUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "NEOUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_TI_026",
+      "sign": 1,
+      "n_symbols": 17,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_171",
+      "sign": -1,
+      "n_symbols": 27,
+      "symbols": [
+        "1INCHUSDT",
+        "AAVEUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "DASHUSDT",
+        "DOTUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "VETUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZENUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_TI_024",
+      "sign": -1,
+      "n_symbols": 30,
+      "symbols": [
+        "ALGOUSDT",
+        "ATOMUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "BNBUSDT",
+        "COMPUSDT",
+        "DASHUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "ETCUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "NEARUSDT",
+        "NEOUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "SUSHIUSDT",
+        "THETAUSDT",
+        "VETUSDT",
+        "XTZUSDT",
+        "ZENUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_PR_008",
+      "sign": 1,
+      "n_symbols": 24,
+      "symbols": [
+        "1INCHUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "COMPUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KSMUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "RUNEUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "SUSHIUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_105",
+      "sign": -1,
+      "n_symbols": 29,
+      "symbols": [
+        "1INCHUSDT",
+        "ADAUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "DASHUSDT",
+        "DOTUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "NEOUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RLCUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "THETAUSDT",
+        "TRBUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZENUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_148",
+      "sign": 1,
+      "n_symbols": 5,
+      "symbols": [
+        "BATUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SUSHIUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_046",
+      "sign": -1,
+      "n_symbols": 14,
+      "symbols": [
+        "1INCHUSDT",
+        "ADAUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TP_VPI_017",
+      "sign": -1,
+      "n_symbols": 20,
+      "symbols": [
+        "1INCHUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "NEOUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "TRBUSDT",
+        "XTZUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_169",
+      "sign": -1,
+      "n_symbols": 12,
+      "symbols": [
+        "AXSUSDT",
+        "BANDUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT"
+      ]
+    },
+    {
+      "factor": "factor_trades_035",
+      "sign": 1,
+      "n_symbols": 17,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "CRVUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "RUNEUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_164",
+      "sign": 1,
+      "n_symbols": 17,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "CRVUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TP_VPI_003",
+      "sign": -1,
+      "n_symbols": 26,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "DASHUSDT",
+        "DOTUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "ETCUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KSMUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "THETAUSDT",
+        "TRBUSDT",
+        "VETUSDT",
+        "XLMUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_026",
+      "sign": -1,
+      "n_symbols": 9,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SNXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_169",
+      "sign": 1,
+      "n_symbols": 9,
+      "symbols": [
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "KNCUSDT",
+        "SKLUSDT",
+        "SNXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_164",
+      "sign": 1,
+      "n_symbols": 38,
+      "symbols": [
+        "AAVEUSDT",
+        "ALGOUSDT",
+        "ATOMUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BNBUSDT",
+        "COMPUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "DOTUSDT",
+        "ENJUSDT",
+        "ETCUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "NEARUSDT",
+        "NEOUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RLCUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "SOLUSDT",
+        "SUSHIUSDT",
+        "THETAUSDT",
+        "TRBUSDT",
+        "UNIUSDT",
+        "VETUSDT",
+        "XLMUSDT",
+        "XRPUSDT",
+        "XTZUSDT",
+        "YFIUSDT",
+        "ZECUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_TI_027",
+      "sign": -1,
+      "n_symbols": 23,
+      "symbols": [
+        "AAVEUSDT",
+        "ADAUSDT",
+        "ATOMUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "DOTUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RLCUSDT",
+        "RSRUSDT",
+        "RUNEUSDT",
+        "SNXUSDT",
+        "SUSHIUSDT",
+        "TRBUSDT",
+        "XTZUSDT",
+        "ZENUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_MT_016",
+      "sign": -1,
+      "n_symbols": 19,
+      "symbols": [
+        "ALGOUSDT",
+        "ATOMUSDT",
+        "BANDUSDT",
+        "BELUSDT",
+        "DOTUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "THETAUSDT",
+        "TRBUSDT",
+        "VETUSDT",
+        "XLMUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_023",
+      "sign": 1,
+      "n_symbols": 17,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "XTZUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_198",
+      "sign": -1,
+      "n_symbols": 13,
+      "symbols": [
+        "1INCHUSDT",
+        "AXSUSDT",
+        "BELUSDT",
+        "DASHUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "TRBUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_028",
+      "sign": -1,
+      "n_symbols": 13,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "DASHUSDT",
+        "EGLDUSDT",
+        "ENJUSDT",
+        "KAVAUSDT",
+        "KSMUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "TRBUSDT",
+        "VETUSDT",
+        "ZENUSDT"
+      ]
+    },
+    {
+      "factor": "TD_PT_027",
+      "sign": 1,
+      "n_symbols": 11,
+      "symbols": [
+        "AXSUSDT",
+        "ENJUSDT",
+        "GRTUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "RUNEUSDT",
+        "SNXUSDT",
+        "TRBUSDT",
+        "TRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_079",
+      "sign": -1,
+      "n_symbols": 11,
+      "symbols": [
+        "ALGOUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SNXUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_195",
+      "sign": -1,
+      "n_symbols": 20,
+      "symbols": [
+        "AAVEUSDT",
+        "ADAUSDT",
+        "ALGOUSDT",
+        "DASHUSDT",
+        "GRTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SNXUSDT",
+        "TRBUSDT",
+        "UNIUSDT",
+        "VETUSDT",
+        "XLMUSDT",
+        "YFIUSDT",
+        "ZECUSDT",
+        "ZENUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_077",
+      "sign": -1,
+      "n_symbols": 12,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "DASHUSDT",
+        "ENJUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "YFIUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "factor_165",
+      "sign": -1,
+      "n_symbols": 10,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_022",
+      "sign": -1,
+      "n_symbols": 15,
+      "symbols": [
+        "1INCHUSDT",
+        "AAVEUSDT",
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BANDUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "GRTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "RSRUSDT",
+        "ZECUSDT",
+        "ZENUSDT",
+        "ZILUSDT"
+      ]
+    },
+    {
+      "factor": "factor_152",
+      "sign": 1,
+      "n_symbols": 10,
+      "symbols": [
+        "AXSUSDT",
+        "BANDUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SNXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_PT_003",
+      "sign": 1,
+      "n_symbols": 11,
+      "symbols": [
+        "AXSUSDT",
+        "BATUSDT",
+        "ENJUSDT",
+        "GRTUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SOLUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_PR_013",
+      "sign": -1,
+      "n_symbols": 9,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "GRTUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "TRBUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_068",
+      "sign": -1,
+      "n_symbols": 10,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SNXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_081",
+      "sign": 1,
+      "n_symbols": 10,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZILUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_005",
+      "sign": -1,
+      "n_symbols": 13,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "RLCUSDT",
+        "SOLUSDT",
+        "TRBUSDT",
+        "XTZUSDT",
+        "ZENUSDT"
+      ]
+    },
+    {
+      "factor": "factor_114",
+      "sign": -1,
+      "n_symbols": 11,
+      "symbols": [
+        "AXSUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "RLCUSDT",
+        "SKLUSDT",
+        "ZENUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_117",
+      "sign": -1,
+      "n_symbols": 8,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "BELUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "TRBUSDT",
+        "ZENUSDT"
+      ]
+    },
+    {
+      "factor": "TD_MT_013",
+      "sign": -1,
+      "n_symbols": 7,
+      "symbols": [
+        "AXSUSDT",
+        "ENJUSDT",
+        "KAVAUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "TRBUSDT"
+      ]
+    },
+    {
+      "factor": "TD_PT_025",
+      "sign": -1,
+      "n_symbols": 6,
+      "symbols": [
+        "BANDUSDT",
+        "ENJUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_163",
+      "sign": 1,
+      "n_symbols": 9,
+      "symbols": [
+        "AXSUSDT",
+        "ENJUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "ZENUSDT",
+        "ZILUSDT"
+      ]
+    },
+    {
+      "factor": "TD_VI_020",
+      "sign": -1,
+      "n_symbols": 5,
+      "symbols": [
+        "AXSUSDT",
+        "BANDUSDT",
+        "IOTAUSDT",
+        "ZENUSDT",
+        "ZILUSDT"
+      ]
+    },
+    {
+      "factor": "factor_125",
+      "sign": -1,
+      "n_symbols": 9,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "BNBUSDT",
+        "DASHUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "SKLUSDT"
+      ]
+    },
+    {
+      "factor": "factor_110",
+      "sign": 1,
+      "n_symbols": 7,
+      "symbols": [
+        "BELUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "TRXUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_VI_010",
+      "sign": -1,
+      "n_symbols": 8,
+      "symbols": [
+        "BANDUSDT",
+        "BELUSDT",
+        "ENJUSDT",
+        "KNCUSDT",
+        "KSMUSDT",
+        "ONTUSDT",
+        "SKLUSDT",
+        "SNXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_140",
+      "sign": 1,
+      "n_symbols": 11,
+      "symbols": [
+        "ALGOUSDT",
+        "ENJUSDT",
+        "GRTUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RUNEUSDT",
+        "XTZUSDT"
+      ]
+    },
+    {
+      "factor": "factor_163",
+      "sign": 1,
+      "n_symbols": 5,
+      "symbols": [
+        "BELUSDT",
+        "ENJUSDT",
+        "KAVAUSDT",
+        "RSRUSDT",
+        "SKLUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_065",
+      "sign": -1,
+      "n_symbols": 7,
+      "symbols": [
+        "AXSUSDT",
+        "BANDUSDT",
+        "ENJUSDT",
+        "KAVAUSDT",
+        "SKLUSDT",
+        "SNXUSDT",
+        "ZILUSDT"
+      ]
+    },
+    {
+      "factor": "factor_170",
+      "sign": -1,
+      "n_symbols": 8,
+      "symbols": [
+        "ALGOUSDT",
+        "AXSUSDT",
+        "EGLDUSDT",
+        "ETCUSDT",
+        "NEARUSDT",
+        "TRBUSDT",
+        "XTZUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_092",
+      "sign": -1,
+      "n_symbols": 3,
+      "symbols": [
+        "AXSUSDT",
+        "ONTUSDT",
+        "RSRUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_141",
+      "sign": 1,
+      "n_symbols": 8,
+      "symbols": [
+        "ATOMUSDT",
+        "AXSUSDT",
+        "DASHUSDT",
+        "NEARUSDT",
+        "SOLUSDT",
+        "THETAUSDT",
+        "ZENUSDT",
+        "ZILUSDT"
+      ]
+    },
+    {
+      "factor": "buy_avg_price",
+      "sign": -1,
+      "n_symbols": 4,
+      "symbols": [
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "ZRXUSDT"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,795 @@
+{
+  "observed_utc": "2026-10-19T07:27:37.110031+00:00",
+  "caught_up": true,
+  "generation": "9389c457-cff7-4fce-a392-90f8f9ea438d",
+  "records": 119698,
+  "heartbeat_age_ms": 695,
+  "decode_errors": 0,
+  "evaluation_errors": 0,
+  "publish_failed": 0,
+  "first_minute": 1792215480000,
+  "latest_minute": 1792394820000,
+  "symbols_with_history": 48,
+  "missing_history": [],
+  "enabled": false,
+  "journal_healthy": true,
+  "publication_error": null,
+  "combinations": 794,
+  "missing_threshold_symbols": [
+    "1INCHUSDT",
+    "ALGOUSDT",
+    "BANDUSDT",
+    "BATUSDT",
+    "BELUSDT",
+    "COMPUSDT",
+    "EGLDUSDT",
+    "ENJUSDT",
+    "GRTUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "KNCUSDT",
+    "KSMUSDT",
+    "NEOUSDT",
+    "QTUMUSDT",
+    "RLCUSDT",
+    "RUNEUSDT",
+    "SKLUSDT",
+    "SNXUSDT",
+    "SUSHIUSDT",
+    "THETAUSDT",
+    "TRBUSDT",
+    "VETUSDT",
+    "XTZUSDT",
+    "YFIUSDT",
+    "ZRXUSDT"
+  ],
+  "expected_blank_combinations": [
+    [
+      "1INCHUSDT",
+      "baseline_046"
+    ],
+    [
+      "1INCHUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ALGOUSDT",
+      "baseline_046"
+    ],
+    [
+      "BATUSDT",
+      "net_buy_small"
+    ],
+    [
+      "BELUSDT",
+      "baseline_046"
+    ],
+    [
+      "BELUSDT",
+      "net_buy_small"
+    ],
+    [
+      "COMPUSDT",
+      "baseline_046"
+    ],
+    [
+      "COMPUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ENJUSDT",
+      "net_buy_small"
+    ],
+    [
+      "IOSTUSDT",
+      "baseline_046"
+    ],
+    [
+      "IOSTUSDT",
+      "net_buy_small"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_046"
+    ],
+    [
+      "IOTAUSDT",
+      "net_buy_small"
+    ],
+    [
+      "KAVAUSDT",
+      "baseline_046"
+    ],
+    [
+      "KNCUSDT",
+      "net_buy_small"
+    ],
+    [
+      "KSMUSDT",
+      "net_buy_small"
+    ],
+    [
+      "QTUMUSDT",
+      "net_buy_small"
+    ],
+    [
+      "SKLUSDT",
+      "baseline_046"
+    ],
+    [
+      "SKLUSDT",
+      "net_buy_small"
+    ],
+    [
+      "SNXUSDT",
+      "net_buy_small"
+    ],
+    [
+      "ZRXUSDT",
+      "baseline_046"
+    ]
+  ],
+  "ready_combinations": 746,
+  "ready_with_both_filters": 627,
+  "ready_without_both_filters": [
+    [
+      "1INCHUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "1INCHUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "1INCHUSDT",
+      "TD_PR_011"
+    ],
+    [
+      "1INCHUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "1INCHUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "1INCHUSDT",
+      "baseline_019"
+    ],
+    [
+      "1INCHUSDT",
+      "baseline_022"
+    ],
+    [
+      "1INCHUSDT",
+      "baseline_105"
+    ],
+    [
+      "1INCHUSDT",
+      "baseline_198"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_022"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_023"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_164"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_171"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_trades_034"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_trades_035"
+    ],
+    [
+      "1INCHUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "BANDUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "BANDUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "BANDUSDT",
+      "TD_PT_025"
+    ],
+    [
+      "BANDUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "BANDUSDT",
+      "TD_TI_027"
+    ],
+    [
+      "BANDUSDT",
+      "TD_VI_010"
+    ],
+    [
+      "BANDUSDT",
+      "TD_VI_020"
+    ],
+    [
+      "BANDUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "BANDUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_022"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_065"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_077"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_105"
+    ],
+    [
+      "BANDUSDT",
+      "baseline_164"
+    ],
+    [
+      "BANDUSDT",
+      "factor_023"
+    ],
+    [
+      "BANDUSDT",
+      "factor_152"
+    ],
+    [
+      "BANDUSDT",
+      "factor_164"
+    ],
+    [
+      "BANDUSDT",
+      "factor_169_negative"
+    ],
+    [
+      "BANDUSDT",
+      "factor_169_positive"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_034"
+    ],
+    [
+      "BANDUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_PR_011"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_TI_027"
+    ],
+    [
+      "IOTAUSDT",
+      "TD_VI_020"
+    ],
+    [
+      "IOTAUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_005"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_019"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_022"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_026"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_068"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_079"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_081"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_105"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_140"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_163"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_164"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_195"
+    ],
+    [
+      "IOTAUSDT",
+      "baseline_198"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_022"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_023"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_125"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_152"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_164"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_165"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_169_negative"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_171"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_trades_034"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_trades_035"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "KSMUSDT",
+      "TD_MT_013"
+    ],
+    [
+      "KSMUSDT",
+      "TD_MT_016"
+    ],
+    [
+      "KSMUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "KSMUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "KSMUSDT",
+      "TD_PT_003"
+    ],
+    [
+      "KSMUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "KSMUSDT",
+      "TD_VI_010"
+    ],
+    [
+      "KSMUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "KSMUSDT",
+      "baseline_028"
+    ],
+    [
+      "KSMUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "KSMUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "KSMUSDT",
+      "factor_trades_034"
+    ],
+    [
+      "KSMUSDT",
+      "factor_trades_050"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_MT_022"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_PR_008"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_PR_013"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_PT_025"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_PT_027"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_TI_024"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_TI_026"
+    ],
+    [
+      "QTUMUSDT",
+      "TD_TI_027"
+    ],
+    [
+      "QTUMUSDT",
+      "TP_VPI_003"
+    ],
+    [
+      "QTUMUSDT",
+      "TP_VPI_017"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_019"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_026"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_077"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_079"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_081"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_105"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_140"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_164"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_195"
+    ],
+    [
+      "QTUMUSDT",
+      "baseline_198"
+    ],
+    [
+      "QTUMUSDT",
+      "buy_avg_price"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_022"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_023"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_110"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_152"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_164"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_171"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_trades_008"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_trades_025"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_trades_035"
+    ],
+    [
+      "QTUMUSDT",
+      "factor_trades_050"
+    ]
+  ],
+  "latest_by_symbol": {
+    "1INCHUSDT": 1792394820000,
+    "AAVEUSDT": 1792394820000,
+    "ADAUSDT": 1792394820000,
+    "ALGOUSDT": 1792394820000,
+    "ATOMUSDT": 1792394820000,
+    "AXSUSDT": 1792394820000,
+    "BANDUSDT": 1792394820000,
+    "BATUSDT": 1792394820000,
+    "BELUSDT": 1792394820000,
+    "BNBUSDT": 1792394820000,
+    "COMPUSDT": 1792394820000,
+    "CRVUSDT": 1792394820000,
+    "DASHUSDT": 1792394820000,
+    "DOTUSDT": 1792394760000,
+    "EGLDUSDT": 1792394820000,
+    "ENJUSDT": 1792394820000,
+    "ETCUSDT": 1792394820000,
+    "FILUSDT": 1792394820000,
+    "GRTUSDT": 1792394820000,
+    "IOSTUSDT": 1792394820000,
+    "IOTAUSDT": 1792394820000,
+    "KAVAUSDT": 1792394820000,
+    "KNCUSDT": 1792394820000,
+    "KSMUSDT": 1792394820000,
+    "NEARUSDT": 1792394820000,
+    "NEOUSDT": 1792394820000,
+    "ONTUSDT": 1792394820000,
+    "QTUMUSDT": 1792394820000,
+    "RLCUSDT": 1792394820000,
+    "RSRUSDT": 1792394820000,
+    "RUNEUSDT": 1792394820000,
+    "SKLUSDT": 1792394820000,
+    "SNXUSDT": 1792394820000,
+    "SOLUSDT": 1792394820000,
+    "SUSHIUSDT": 1792394760000,
+    "THETAUSDT": 1792394820000,
+    "TRBUSDT": 1792394820000,
+    "TRXUSDT": 1792394820000,
+    "UNIUSDT": 1792394820000,
+    "VETUSDT": 1792394760000,
+    "XLMUSDT": 1792394820000,
+    "XRPUSDT": 1792394820000,
+    "XTZUSDT": 1792394820000,
+    "YFIUSDT": 1792394820000,
+    "ZECUSDT": 1792394820000,
+    "ZENUSDT": 1792394820000,
+    "ZILUSDT": 1792394820000,
+    "ZRXUSDT": 1792394820000
+  },
+  "other_unready": [
+    [
+      "AXSUSDT",
+      "factor_114"
+    ],
+    [
+      "DOTUSDT",
+      "baseline_105"
+    ],
+    [
+      "DOTUSDT",
+      "baseline_164"
+    ],
+    [
+      "DOTUSDT",
+      "factor_171"
+    ],
+    [
+      "EGLDUSDT",
+      "baseline_028"
+    ],
+    [
+      "EGLDUSDT",
+      "baseline_105"
+    ],
+    [
+      "EGLDUSDT",
+      "factor_170"
+    ],
+    [
+      "EGLDUSDT",
+      "factor_171"
+    ],
+    [
+      "IOSTUSDT",
+      "factor_114"
+    ],
+    [
+      "IOTAUSDT",
+      "factor_114"
+    ],
+    [
+      "KAVAUSDT",
+      "factor_114"
+    ],
+    [
+      "KNCUSDT",
+      "factor_114"
+    ],
+    [
+      "KSMUSDT",
+      "factor_114"
+    ],
+    [
+      "NEARUSDT",
+      "factor_114"
+    ],
+    [
+      "ONTUSDT",
+      "factor_114"
+    ],
+    [
+      "RLCUSDT",
+      "factor_114"
+    ],
+    [
+      "SKLUSDT",
+      "factor_114"
+    ],
+    [
+      "SUSHIUSDT",
+      "baseline_148"
+    ],
+    [
+      "SUSHIUSDT",
+      "baseline_164"
+    ],
+    [
+      "VETUSDT",
+      "baseline_028"
+    ],
+    [
+      "VETUSDT",
+      "baseline_164"
+    ],
+    [
+      "VETUSDT",
+      "baseline_195"
+    ],
+    [
+      "VETUSDT",
+      "factor_171"
+    ],
+    [
+      "ZENUSDT",
+      "baseline_195"
+    ],
+    [
+      "ZENUSDT",
+      "factor_114"
+    ],
+    [
+      "ZENUSDT",
+      "factor_171"
+    ],
+    [
+      "ZENUSDT",
+      "net_buy_small"
+    ]
+  ],
+  "processes": [
+    {
+      "pid": 2798755,
+      "comm": "cta_spread_fact",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "17"
+    },
+    {
+      "pid": 2879569,
+      "comm": "python3",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 2879622,
+      "comm": "cta_spread_sign",
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "cpus": "0-5,48-95"
+    }
+  ],
+  "positions_zero": true,
+  "state_combinations": 794
+}

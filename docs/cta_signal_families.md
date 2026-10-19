@@ -1,5 +1,138 @@
 # CTA 仓位信号：Perp 与 Spread
 
+最后更新：2026-10-19 13:10 UTC
+
+2026-10-19 13:10 UTC，Exec06执行器补发完成：Chase新目标仅解除借币不足状态，
+普通拒单退避保持原行为。当前38个已激活永续中36个4倍，BEL/ZIL按上限3倍，
+BAND回读4倍；RX01已恢复原配置推送。最终回执目录为
+`~/binance_exec_trade06/run/borrow_stop_20261019T130500Z/`。
+
+2026-10-19 12:55 UTC，RX01 Spread → Exec06 已发布 RapidX 借币不足修复：
+下单拒绝码401126/406017使当前目标以 `borrow_unavailable` 结束，保留已成交仓位，
+取消同目标其余挂单并等待迟到成交核对，后续新目标才重新评估；配置刷新不会反复释放
+相同目标。限流和网络错误继续使用原处理路径。Exec页面显示“借币不足，已放弃本次执行”。
+启动后实盘11个目标触发该分支，均无剩余批次、挂单或pending数量，429为0。
+RapidX Exec 默认杠杆4倍；已激活36个永续中34个实际回读4倍，BEL/ZIL因场内上限
+回读3倍，BAND已为4倍。RX01推送恢复原enabled=true、max_pos_u=10及全部信号参数，
+账户/策略快照与订单历史保留。publisher预热与generation继续，signal未重启。
+发布回执：`artifacts/rapidx_borrow_stop_20261019/`。
+
+2026-10-19 10:17:05 UTC，RX01 Spread → Exec06 在taker清仓及新快照后恢复实盘发布。
+新账户与策略快照时间戳 `1792404818623482`（10:13:38 UTC），永续和负债均归零，
+20种低于交易门槛的现货零头合计约2.7593 USDT归inventory；历史订单和旧快照保留。
+virtual03继续由LGQ管理并仅跟随Exec06，现有57因子策略+inventory共58个有效绑定，
+旧factor_052绑定份额0。57因子策略从零仓起步，当前线上单组合10 USDT，
+entry因子0.9/0.1、spread0.3/0.7、NQ0.5/0.5、exit0.3/0.7现场设置保留。
+48币/794组合中773个因子就绪，21个缺大小阈值的组合继续留空；publisher及Kafka
+generation未重启。57个策略发布均成功，1632个Manager→Redis目标核验一致，
+Manager健康且待投递0，已观察到新成交。当前线上仍沿用本机单地址发布；下文多地址
+能力仅完成本地实现及验证，未在本次恢复中发布新二进制。
+备份、成交清仓回执及新快照：`~/binance-cta-spread-rx01/run/reenable_20261019/`；
+本地核验：`artifacts/rx01_reenable_20261019/verification.json`。
+
+## 多个 Manager 推送地址
+
+Perp（RX02/RX03）和 Spread（RX01）共用多地址发布器。每个信号环境的
+`env.sh` 可以配置多个 Manager API 基地址，逗号分隔，修改后重启该环境的 signal：
+
+```bash
+export CTA_MANAGER_API_URLS='http://127.0.0.1:4191/manager/api,http://manager-sg:4191/manager/api'
+```
+
+把 `manager-sg` 替换为可达的 SG 地址。程序向每个基地址追加
+`/catalog/position-strategies` 并发送同一策略名称及完整 targets。
+`CTA_MANAGER_API_URLS` 设置时优先于原 `CTA_MANAGER_API_URL`；没有设置列表时，
+原单地址配置继续有效。列表中的首尾空格、末尾斜线会规范化，重复地址只推一次；
+空项、无效地址以及带用户名、密码、query 或 fragment 的地址拒绝启动。
+配置文件/配置页的 `enabled` 仍控制是否发布，env 修改不热加载。
+
+默认所有地址使用已有的 `CTA_PUBLISH_TOKEN`。不同 Manager 使用不同 token 时，
+在同一个私有 `env.sh` 中配置按 API 基地址匹配的覆盖值，例如：
+
+```bash
+# 下列值仅为占位符；实际凭据只保存在主机的私有 env.sh 中。
+export CTA_PUBLISH_TOKENS='{"http://127.0.0.1:4191/manager/api":"JP_TOKEN","http://manager-sg:4191/manager/api":"SG_TOKEN"}'
+```
+
+覆盖表中未列出的地址使用 `CTA_PUBLISH_TOKEN`（如果已设置）。每个 Manager
+仍须预先配置对应策略的发布权限、虚拟账户绑定、份额和真实账户跟随；
+增加地址只广播仓位策略，不会复制 Manager 目录、权限或绑定配置。
+RX01 Spread 同时包含现货和永续目标，接收账户必须支持相应市场；
+只支持 USDT 永续的原生 Bybit Exec 不应直接绑定该现货／永续策略。
+
+每个地址独立发送、确认、去重及重试；某个地址超时不会阻塞信号计算或其他地址。
+成功后相同 targets 不重复推送；失败每秒重试，单请求超时 5 秒。等待期间目标变化时，
+重试采用最新完整目标，不回放已被取代的开平仓。每个地址只保留一个在途客户端请求，
+等待响应或超时后再发送新目标，避免主动并发发送造成目标倒序。关闭发布后停止未发送任务及重试；
+已经发出的请求仍可能完成。重新启用或重启 signal 会重新发送当前完整目标。
+超时可能发生在 Manager 已处理请求之后，因此网络异常下仍可能重复投递同一完整目标。
+
+状态文件的 `manager_publications` 按地址记录待确认策略、最近成功时间及错误，
+`publication_error` 汇总失败地址。成功回执的信号 journal 保留实际发送时的
+原始观察数据和 `manager_url`，失败不伪造成功。凭据不写入状态或 journal，
+HTTP 重定向不跟随。此能力的本地实现不会自动修改线上环境的推送地址。
+本地验证通过 1,306 项 Rust 库测试（3 项忽略，包含 8 项多地址发布测试）及
+26 项 Perp/Spread 配置服务回归；这条记录不表示线上已经发布。
+
+2026-10-19 07:26–07:30 UTC，按用户最终范围只修正 Spread：退出long默认0.7、
+short默认0.3，严格比较且边界不退出。Rust默认值、配置服务缺省值、本仓示例、
+部署副本及页面说明同步；原始ds研究文件保留。RX01 signal与配置服务已通过本地
+release构建、SHA-256核验、原子安装及环境本地脚本重载。线上原有0.7/0.3、
+单份100 USDT及发布关闭设置均保留，794条内部仓位仍为0；因子publisher未重启，
+Kafka generation保持，Exec06及dashboard停机。Perp默认值、线上配置和进程未调整。
+页面同时纠正旧价差说明：默认多头使用前一分钟价差分位<0.7、空头>0.3，
+并各自通过NQ过滤；0.3–0.7区间允许两方向，最终由各因子及NQ决定。
+43项Rust与18项Python测试通过，配置页、健康接口及48币/57组/794组合导入预览通过。
+证据：`artifacts/rx01_corr50_warmup/spread_exit_defaults/validation.json`；
+远端备份：`~/binance-cta-spread-rx01/run/spread_exit_defaults_20261019T072100Z/`。
+
+2026-10-19 07:10–07:12 UTC，RX01 Spread完成本轮Kafka因子回溯并追至实时，
+48币均有历史，762/794个配置组合的因子就绪。21个依赖缺失大小阈值的组合留空，
+另11个 `factor_114` 仍未就绪；未降低样本门槛或填造缺失值。07:10快照中693个组合
+同时具有就绪的NQ及spread过滤，实时数据缺失会使该数量变化；累计解码、计算、
+发布错误均0。794条内部仓位仍为零，发布关闭，Exec06和dashboard停机。
+07:12核对线上配置服务，exit已由现场修改为long=0.7、short=0.3，保留该修改；
+研究JSON及本地模板中的0.3/0.7是研究原值，不是当前线上值，不可直接覆盖现场设置。
+证据：`artifacts/rx01_corr50_warmup/final.json`、`final_config.json`。
+
+2026-10-19 07:03 UTC，按用户要求清除 ICXUSDT、STORJUSDT 的配置，减少79组合，
+现为48币/57个有符号因子组/794组合。研究部署JSON的本仓副本、磁盘策略表和
+publisher universe同步，Redis通过配置服务的revision/CAS更新；原始ds文件未改。
+signal停止后删除这两币已归零的内部状态，再通过环境本地脚本恢复，发布仍关闭，
+Exec06、dashboard继续停机。publisher未重启，保留当前generation的Kafka预热；
+它的内存保留启动时50币快照，signal只采用新的48币表，磁盘48币universe在下次
+publisher启动时生效。当前27币缺少大小阈值，影响21个配置组合，按用户要求留空。
+库级回归1298项通过、0失败、3忽略。备份及回执：
+`~/binance-cta-spread-rx01/run/corr50_remove_symbols_20261019T065917Z/`；
+本地证据：`artifacts/rx01_corr50_warmup/remove_symbols/`。
+
+2026-10-19 06:47 UTC，用户选择“预热因子，重置旧状态，从当前时点起仓”。
+旧内部仓位状态（5组/46组合，12条非零flag）已备份，新的57组/873组合全部归零；
+本次不重算历史仓位，不向Manager/Exec写入目标，也不改变交易所实际仓位。
+publisher及signal完成本地release构建、SHA-256核验发布，经环境本地脚本启动，
+Kafka因子预热进行中，`enabled=false`；Exec06和dashboard保持停机。
+29币的成交大小阈值缺失，用户要求暂时保持空缺；25个配置组合依赖这些缺失阈值，
+对应 `baseline_046` / `net_buy_small` 的分值和分位为空、ready=false，
+其余54个底层因子继续计算，不以0伪造成交大小分类。
+阈值在publisher启动时读取，补齐后需重启并重新预热；未知因子默认要求阈值。
+本轮generation及Kafka水位、心跳、累计解码/计算/发布错误记录在
+`data/cta_spread/factor_history/warmup.json`，历史JSONL保留并标记generation。
+43项Spread测试通过；备份及发布回执：
+`~/binance-cta-spread-rx01/run/corr50_warmup_20261019T064500Z/`；
+本地核验：`artifacts/rx01_corr50_warmup/`。
+
+2026-10-19 06:04 UTC，RX01 Spread 按研究文件
+`ds/twoex_deploy_corr50.json` 更新并发布，源文件保存在
+`config/cta_spread_deployment.json`。共50币、57个有符号因子组、873个组合；
+底层因子56个，factor_169的正反两组分别使用 `_positive` / `_negative` 标识，
+10个重复symbol × factor配对保留两份独立策略，不相互覆盖。
+实盘环境单份金额保留100 USDT，发布开关设为false；signal和publisher二进制
+已本地release构建、校验发布，但仍停机。配置服务已重构并启动，支持研究JSON导入
+预览、按策略编辑币种及统一的NQ/spread参数；保存仍使用原文件修订校验及Redis CAS。
+Exec06和dashboard保持停机，原仓位状态保留；恢复前须对齐中性化后的实际仓位、
+内部目标及Manager/Exec绑定，不能仅打开发布开关。证据：
+`artifacts/rx01_corr50_deploy/validation.json`；远端备份及回执：
+`~/binance-cta-spread-rx01/run/corr50_publish_20261019T055900Z/`。
 
 2026-10-15 本地新增 Perp 静默仓位恢复：显式的
 `run/cta_perp_recovery_request.json` 指定本轮因子发布器 generation，信号在历史
@@ -10,8 +143,6 @@
 本次尚未上线：Manager 当前仅接受数字 qty，显式 `clear` 的端到端接入仍待
 用户确认是否允许更新共享 Manager；准备状态和验证见
 `artifacts/cta_perp_replay_cutover/README.md`。
-
-最后更新：2026-10-15
 
 ## Perp 百分位算法与 symbol 开平阈值（本地实现，未部署）
 
@@ -350,7 +481,9 @@ Manager 的绑定/虚拟账户配置份数，Exec 执行聚合后的实际目标
 两套 publisher 分别以各自 `config/cta_{perp,spread}_factor_model_1m_pub.toml`
 的 universe 决定币种和因子，不读取共享 `factor_plan_1m` 或
 `amount_thresholds_1m` 清单。TLen 的通用 `amount_thresholds` 仅提供回放所需
-的成交大小分类阈值；缺失阈值时启动校验报错，不扩大或借用另一套策略清单。
+的成交大小分类阈值，不扩大或借用另一套策略清单。Spread允许保留缺失阈值的币种，
+仅屏蔽依赖大小分类的因子（当前为 `baseline_046` / `net_buy_small`）；
+缺失的分类字段为NaN，未知因子默认也要求阈值，不伪造可交易值。
 Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 旧普通 CTA 因子发布器、CTA/CtaSpecial 专用执行分支、规则服务及页面入口已移除。
 通用 Intra 不再接受旧 CTA 环境，旧 CTA 开仓消息也会被拒绝；停止脚本仍可识别
@@ -369,21 +502,25 @@ Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 `spread = (spot_mid - perpetual_mid) / spot_mid`
 
 2880 个分钟槽位，至少 1440 个有效配对，当前值包含在窗口内。缺失分钟占槽位、
-不补旧价格，分位使用相同值的中间排名。配置的 q30/q70 指分位排名门槛，
-不是把两个市场的价格绝对大小当成套利条件。因子分位保留原因果归一化算法。
+不补旧价格，分位使用相同值的中间排名。第t分钟因子使用第t-1分钟的spread分位，
+前一分钟缺失时不入场。NQ使用当前闭合分钟的永续mid，沿用Perp的计算口径：
+极值窗口和分位窗口均120分钟，至少60个有效样本。因子分位保留原因果归一化算法。
 
-| 因子开仓信号 | spread rank < .30 | .30 ≤ rank ≤ .70 | spread rank > .70 |
+以下三个条件须同时成立才允许开仓，阈值来自本次研究JSON：
+
+| 方向 | 修正sign后的因子分位 | 当前分钟NQ分位 | 前一分钟spread分位 |
 |---|---|---|---|
-| q > .90 做多 | 买现货 | 不开仓 | 不开仓 |
-| q < .10 做空 | 不开仓 | 不开仓 | 卖空现货 |
+| 买现货 | q > .90 | long ≥ .50 | rank < .70 |
+| 卖空现货 | q < .10 | short ≤ .50 | rank > .30 |
 
-开仓始终使用现货目标：因子多头仅在低价差分位开仓，因子空头仅在高价差分位开仓。
-方向不匹配或价差未就绪不入场。使用当前有效且不超过 5 秒的现货 BBO 换算数量。
+spread的 .30–.70 区间对两个方向都可通过；最终方向由因子信号和相应NQ共同决定。
+任一过滤未就绪不入场。使用当前有效且不超过 5 秒的现货 BBO 换算数量。
 即使现货流缺失，因子仍可用于退出：实时缺少配对超过 5 秒时发布带
 `filter_ready=false` 的因子 bar，不以旧价差替代。因子本身未就绪时保持状态。
 现货卖空要求 RapidX Binance 的 MARGIN 模式；不要把这套双向策略配置为 SPOT。
 
-exit long / exit short 仍由修正后的因子分位触发，价差不触发或阻止退出。
+Spread默认退出多头在修正后的因子分位q < .70时触发，退出空头在q > .30时触发，
+NQ与价差均不触发或阻止退出。
 退出时保留现货目标，设置 `perpetual_qty = -cash_qty`，方向数量归零。
 因此方向退出后仍可能持有期现仓位，不能把它的 PnL 全部记为已实现。
 实际成交、两市场独立 FIFO 和 PnL 使用 Manager；Spread 页面展示信号目标，
@@ -399,19 +536,19 @@ Spread 发布裸币种现货和 USDT 永续两个目标；Perp 发布合约目�
 
 两套 config server 独立维护，配置读取、保存、版本冲突校验和 symbol × factor
 编辑流程一致。共用相同的发布开关、单份 USDT 和因子开仓/退出参数结构，
-Perp 使用 NQ 开仓过滤参数，Spread 使用历史 mid 价差分位过滤参数。
+Perp 使用 NQ 开仓过滤参数，Spread 同时使用NQ和前一分钟mid价差分位过滤参数。
 执行配置入口统一位于 Manager。
 
-反向开仓信号同时通过价差过滤时，直接反转，不等待下一根 bar：
+反向开仓信号同时通过NQ和价差过滤时，直接反转，不等待下一根 bar：
 用新方向的一份数量构造完整目标：现货为该数量，永续为0，替换上一轮两腿。
 一次向 Manager 发布最终两个绝对目标。没有中间清仓请求。
-反向信号未通过新现货方向的价差过滤，或现货 BBO 无效，则只对冲旧方向，不开反向仓位。
+反向信号未通过新现货方向的NQ/价差过滤，或现货 BBO 无效，则只对冲旧方向，不开反向仓位。
 持仓期间同向信号不重算数量；退出后新入场同样替换两腿目标，不累积旧库存。
 重复发布始终是幂等的完整绝对目标。
 
-例如现货 +2 / 永续 0，反向做空数量为 -3 且价差处于高分位：
+例如现货 +2 / 永续 0，反向做空数量为 -3 且NQ/价差过滤都通过：
 发布现货 -3 / 永续 0，净方向为 -3。再退出空方向时发布现货 -3 / 永续 +3，
-净方向归零。没有通过高分位过滤时，只发布现货 +2 / 永续 -2。
+净方向归零。没有通过开空过滤时，只发布现货 +2 / 永续 -2。
 执行尚未完成时再次更新，Exec 以最新目标减实际已执行数量计算差额。
 
 每个组合持久化方向、方向数量、现货数量、合约数量和入场金额。
