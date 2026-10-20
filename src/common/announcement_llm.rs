@@ -32,6 +32,8 @@ const BODY_CHAR_LIMIT: usize = 12_000;
 
 const SYSTEM_PROMPT: &str = r#"Extract risk events from one exchange delist announcement.
 This service tracks listing and delisting lifecycle events only. Gift card, pay, convert, mining, earn, copy-trading, bots, watchlists, monitoring tags, and other risk labels are not listing/delisting events. If those are the only subject, set relevant=false and actions=[].
+Standalone lending/borrowing suspensions, collateral eligibility changes, and mandatory loan repayments are NOT delisting events. If trading remains available and no trading-book removal or opening restriction is announced, return relevant=false and actions=[]. Never infer a trading halt or futures settlement from automatic loan repayment.
+Example: "Gate disables ARIA and BANK lending on October 19; outstanding loans are automatically repaid on October 20; spot trading is unaffected" -> {"relevant":false,"actions":[]}.
 Return JSON only. Do not invent tickers, venues, or times that are not in the text.
 If a field is unknown, use an empty string or empty array.
 utc must be ISO-8601 UTC like 2026-09-03T03:00:00Z, or "".
@@ -43,7 +45,8 @@ Never leave venue unknown when exchange_hint is known. Spot delist = {exchange}-
 action:
 - delist = trading of that book will stop (spot/margin/futures)
 - disable_open = opening new futures positions stops before final settlement/delist; a switch to reduce-only is disable_open
-- disable_margin / disable_loan = borrow or loan stops before full delist
+- disable_margin / disable_loan = ancillary borrow/loan cutoff only when this same announcement explicitly delists the same assets/pairs on that trading book. Emit the actual delist action too. An unrelated token or a different trading book being delisted does not make a lending-only change relevant.
+An actual margin-pair removal, with margin trading stopped or positions closed, is delist on {exchange}-margin even if ordinary spot trading continues. A lending-only suspension is not margin-pair removal.
 Emit at most one action per (venue, action, utc).
 Emit every distinct operational cutoff as its own action. For example, reduce-only at 07:30 and final delist/settlement at 08:00 must produce both disable_open at 07:30 and delist at 08:00, with the affected symbols on both actions.
 assets vs symbols:

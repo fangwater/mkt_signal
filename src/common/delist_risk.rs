@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::common::announcement_llm::{LlmAction, LlmExtractInput};
@@ -282,6 +282,72 @@ impl RiskBook {
         self.ingest_llm(input, relevant, &actions);
     }
 
+    /// Borrow cutoffs belong to this board only as milestones of an explicit
+    /// delist in the same announcement and market. Apply this on reads too so
+    /// persisted extractions made with an older prompt cannot recreate false hits.
+    pub fn lifecycle_events(&self) -> impl Iterator<Item = RiskEvent> + '_ {
+        self.events.iter().filter_map(|event| {
+            if matches!(event.action.as_str(), "delist" | "disable_open") {
+                return Some(event.clone());
+            }
+            if !matches!(event.action.as_str(), "disable_margin" | "disable_loan")
+                || event.announcement_id.is_empty()
+            {
+                return None;
+            }
+            let delists = self.events.iter().filter(|other| {
+                other.action == "delist"
+                    && other.source == event.source
+                    && other.exchange == event.exchange
+                    && other.venue == event.venue
+                    && other.announcement_id == event.announcement_id
+            });
+            let mut delisted_assets = BTreeSet::new();
+            let mut delisted_symbols = BTreeSet::new();
+            for other in delists {
+                let pairs: BTreeSet<_> = other
+                    .symbols
+                    .iter()
+                    .chain(&other.assets)
+                    .map(|s| normalize_symbol(s))
+                    .filter(|s| looks_like_pair(s))
+                    .collect();
+                // Match the account view's exact-pair precedence, including
+                // older extracts that also repeated a pair's base in assets.
+                if pairs.is_empty() {
+                    delisted_assets.extend(other.assets.iter().map(|s| normalize_symbol(s)));
+                } else {
+                    delisted_symbols.extend(pairs);
+                }
+            }
+            let affected_assets: BTreeSet<_> =
+                event.assets.iter().map(|s| normalize_symbol(s)).collect();
+            let mut filtered = event.clone();
+            filtered.assets = affected_assets
+                .intersection(&delisted_assets)
+                .cloned()
+                .collect();
+            let mut symbols: BTreeSet<_> = event
+                .symbols
+                .iter()
+                .map(|s| normalize_symbol(s))
+                .filter(|s| {
+                    delisted_symbols.contains(s)
+                        || pair_base(s).is_some_and(|base| delisted_assets.contains(base))
+                })
+                .collect();
+            // A token-wide borrow notice accompanying a single-pair removal
+            // must not mark the token's other pairs as delisting.
+            symbols.extend(
+                delisted_symbols
+                    .into_iter()
+                    .filter(|s| pair_base(s).is_some_and(|base| affected_assets.contains(base))),
+            );
+            filtered.symbols = symbols.into_iter().collect();
+            (!filtered.assets.is_empty() || !filtered.symbols.is_empty()).then_some(filtered)
+        })
+    }
+
     pub fn query(&self, q: &RiskQuery) -> RiskQueryResponse {
         let now_ms = Utc::now().timestamp_millis();
         let horizon_ms = q
@@ -289,8 +355,7 @@ impl RiskBook {
             .filter(|days| *days > 0)
             .map(|days| now_ms + days.saturating_mul(86_400_000));
         let mut items: Vec<RiskEventView> = self
-            .events
-            .iter()
+            .lifecycle_events()
             .filter(|event| event_matches(event, q, now_ms, horizon_ms))
             .map(|event| RiskEventView {
                 exchange: event.exchange.clone(),
@@ -393,6 +458,10 @@ fn is_delist_lifecycle_action(action: &str) -> bool {
         action,
         "delist" | "disable_open" | "disable_margin" | "disable_loan"
     )
+}
+
+fn pair_base(symbol: &str) -> Option<&str> {
+    quote_suffix(symbol).and_then(|quote| symbol.strip_suffix(quote))
 }
 
 pub fn events_from_official_snapshot(
@@ -748,6 +817,107 @@ mod tests {
 
         assert_eq!(book.events.len(), 1);
         assert_eq!(book.events[0].action, "delist");
+    }
+
+    #[test]
+    fn cached_lending_only_notice_is_excluded_from_risk_and_venue_counts() {
+        let mut book = RiskBook::default();
+        for utc in ["2026-10-19T08:00:00Z", "2026-10-20T08:00:00Z"] {
+            let mut event = sample_event("ARIA", "gate-margin", utc, "disable_loan");
+            event.exchange = "gate".into();
+            event.announcement_id = "https://www.gate.io/article/102264".into();
+            event.assets.push("BANK".into());
+            book.events.push(event);
+        }
+        let cached: RiskBook =
+            serde_json::from_str(&serde_json::to_string(&book).unwrap()).unwrap();
+        let query = RiskQuery {
+            include_past: true,
+            ..Default::default()
+        };
+        assert_eq!(cached.events.len(), 2, "retain extraction evidence");
+        let risk = cached.query(&query);
+        assert_eq!(risk.count, 0);
+        assert!(!risk.abnormal);
+        assert!(cached.venue_summaries(&query).is_empty());
+    }
+
+    #[test]
+    fn lending_cutoffs_require_same_announcement_exchange_source_and_market() {
+        let loan = sample_event("ARIA", "gate-margin", "", "disable_loan");
+        let mut delist = loan.clone();
+        delist.action = "delist".into();
+        let has_loan = |other| {
+            let book = RiskBook {
+                events: vec![loan.clone(), other],
+                ..Default::default()
+            };
+            let found = book
+                .lifecycle_events()
+                .any(|event| event.action == "disable_loan");
+            found
+        };
+        assert!(has_loan(delist.clone()));
+        for field in [
+            "announcement",
+            "exchange",
+            "source",
+            "venue",
+            "asset",
+            "action",
+        ] {
+            let mut unrelated = delist.clone();
+            match field {
+                "announcement" => unrelated.announcement_id = "different".into(),
+                "exchange" => unrelated.exchange = "gate".into(),
+                "source" => unrelated.source = "official".into(),
+                "venue" => unrelated.venue = "gate-futures".into(),
+                "asset" => unrelated.assets = vec!["BANK".into()],
+                "action" => unrelated.action = "disable_open".into(),
+                _ => unreachable!(),
+            }
+            assert!(!has_loan(unrelated), "unrelated {field}");
+        }
+    }
+
+    #[test]
+    fn mixed_announcement_keeps_only_borrow_cutoffs_for_delisted_targets() {
+        let mut loan = sample_event("ARIA", "gate-margin", "", "disable_loan");
+        loan.assets.extend(["BANK".into(), "SUI".into()]);
+        loan.symbols = vec!["ARIAUSDT".into(), "BANKUSDT".into()];
+        let delist = sample_event("BANK", "gate-margin", "", "delist");
+        let mut pair_delist = sample_event("SUI", "gate-margin", "", "delist");
+        pair_delist.symbols = vec!["SUIBNB".into()];
+        let book = RiskBook {
+            events: vec![loan, delist, pair_delist],
+            ..Default::default()
+        };
+        let cutoff = book
+            .lifecycle_events()
+            .find(|event| event.action == "disable_loan")
+            .unwrap();
+        assert_eq!(cutoff.assets, vec!["BANK"]);
+        assert_eq!(cutoff.symbols, vec!["BANKUSDT", "SUIBNB"]);
+    }
+
+    #[test]
+    fn borrow_cutoff_survives_when_related_delist_is_outside_query_horizon() {
+        let loan = sample_event("BANK", "gate-margin", "", "disable_margin");
+        let mut delist = loan.clone();
+        delist.action = "delist".into();
+        let future = Utc::now() + ChronoDuration::days(60);
+        delist.utc = future.to_rfc3339();
+        delist.utc_ms = Some(future.timestamp_millis());
+        let book = RiskBook {
+            events: vec![loan, delist],
+            ..Default::default()
+        };
+        let risk = book.query(&RiskQuery {
+            days: Some(30),
+            ..Default::default()
+        });
+        assert_eq!(risk.count, 1);
+        assert_eq!(risk.exchanges["binance"].items[0].action, "disable_margin");
     }
 
     #[test]

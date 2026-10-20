@@ -1,13 +1,14 @@
 # Delist Risk Server
 
-最后更新：2026-10-19 UTC
+最后更新：2026-10-20 UTC
 
-Public HTTP service for upcoming delist / margin / loan / futures-off risk on
+Public HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
 extracts land in one book. Full dump, grouped by exchange.
 
-This is a **risk hint**, not a product timetable. Spot and loan both count as
-`{exchange}-margin`. Futures / perpetual use `{exchange}-futures` or
+This is a **risk hint**, not a product timetable. Spot, margin and borrowing
+cutoffs associated with a margin/spot delist use `{exchange}-margin`.
+Futures / perpetual use `{exchange}-futures` or
 `{exchange}-coin-futures`.
 
 ## Public URL
@@ -39,6 +40,50 @@ http://127.0.0.1:8787/healthz
 No API token. Do not put secrets in query strings.
 
 ## Current JP deployment
+
+On 2026-10-20 06:20 UTC, republished the lending-only classification fix to
+`/home/ubuntu/delist_risk_server` on `jp-meta-elvpn`. Built locally from the
+synchronized `arbmm` worktree at `bc7223fe` with the current delist changes;
+uploaded the release and frontend to temporary paths, verified SHA-256, and
+atomically installed both before restarting through the existing environment
+start script. Release SHA-256:
+`f80f6b8f968741119305299fb9d5b67ae5364c9f1841d9fae98711c7fba05af4`.
+Frontend SHA-256:
+`d0179b769d5296af79d2f21b49b43b1b76264f055f080bfc77754fb0447a7e12`.
+Validation passed 1320 library/service tests with 3 ignored, Rust formatting,
+and frontend JavaScript syntax checks.
+
+All three Gate accounts now report `tone=ok`, `risk_n=0`: the five ARIA/BANK
+lending-only hits are excluded without changing their 68/68/45-symbol trading
+universes or account configuration. All 147 explicit delist/disable-open events
+returned before deployment remain present. Cached extractions are filtered on
+read; no forced model re-extraction was requested. The public page and health
+endpoint return HTTP 200; PostgreSQL, NAV and JP/SG Redis are healthy, with
+`degraded=false`. Both automatic dump and flatten candidate lists are empty.
+The service and SG tunnel retain CPU mask `0-5,48-95`; credentials, startup
+scripts, listeners and network configuration are unchanged. Deployment evidence
+is in `artifacts/delist_risk_server/20261020T061825Z/`; the remote environment's
+`run/deploy_20261020T061825Z/` holds the previous binary/page, risk-book snapshot,
+before/after checks and startup log for rollback.
+
+On 2026-10-20 03:48 UTC, the operator requested removal of all currently
+flagged Binance FR symbols after a direct Binance account audit. The
+environment-local Config APIs removed VELODROMEUSDT from arb02; HOTUSDT,
+IOTXUSDT, THEUSDT, TSTUSDT, VELODROMEUSDT and XVGUSDT from arb03; and the same
+set except XVGUSDT from arb04. Matching entries were removed from the forward,
+dump and UniMMR close lists. Backward lists were empty, and position-dump lists
+were empty or absent. Remaining account universes are 68, 71 and 42 symbols
+respectively. Config read-back and running trade_signal logs confirmed the
+updates; `/accounts` reports `tone=ok` and `risk_n=0` for all Binance accounts.
+The exchange-wide risk declarations remain available.
+
+All flagged balances and positions were zero except arb04 VELODROME:
+0.097775 tokens in the margin wallet and a 3-token perpetual short, worth
+approximately 0.0035 and 0.1065 USDT respectively. Those dust positions were
+retained; this operation submitted no orders and restarted no processes.
+Before/after lists and API responses are backed up in each environment under
+`run/remove_delist_symbols_20261020T034829Z.json`. This explicit manual removal
+does not change the automatic removal policy or CPU/source-IP allocations.
 
 On 2026-10-19 02:08 UTC, `/delist/` returned HTTP 502 because neither the
 backend nor its SG Redis tunnel was running after the October 18 host reboots.
@@ -290,6 +335,21 @@ curl -sS 'http://<host>:4191/delist/risk?days=30&include_past=true'
 `action`: `delist`, `disable_open`, `disable_margin`, `disable_loan`.
 Monitoring/watchlist tags, trading-bot removals, and other risk labels are excluded from the risk book.
 
+Standalone lending/borrowing suspensions, collateral eligibility changes and
+mandatory loan repayments do not count as delisting. `disable_margin` and
+`disable_loan` appear in risk queries only when the same source announcement
+also contains an explicit `delist` on the same exchange and venue for the
+affected assets/pairs. Pair-only removals remain pair-only. The association is
+checked before date/horizon filters so an early borrowing cutoff is retained
+even when the actual delist is further away. Actual margin-pair trading removal
+is still `delist`, including when ordinary spot trading continues.
+
+This rule is enforced when reading the book, including cached model outputs;
+it does not require deleting extraction history or forcing model retries.
+For example, Gate article `102264` (ARIA/BANK lending cessation and automatic
+loan repayment, with spot trading unaffected) produces no account delist hit.
+The extraction prompt also explicitly excludes this case.
+
 `listing` comes from public exchangeInfo / instrument catalogs (no API key):
 
 Binance `binance-margin` requires both an active spot status and
@@ -339,9 +399,10 @@ The HTML board at `/delist/` uses this endpoint. Style matches crypto NAV manage
 `latest_announcements` contains the latest LLM analysis attempt for each exchange:
 title, source URL, publication and check timestamps, success/failure state, last
 successful analysis time, and the stored structured `actions`. Selection uses
-analysis time, not publication order. These actions are independent of `/risk`
-filters and retain elapsed deadlines and events beyond its horizon. An empty
-successful extraction means no lifecycle actions were extracted; a failed
+analysis time, not publication order. These actions use the same lifecycle
+qualification as `/risk`, independently of its date/exchange query filters,
+and retain elapsed deadlines and events beyond its horizon. An empty action
+list after successful analysis means no qualifying lifecycle actions; a failed
 attempt is shown separately and any retained actions are labelled with their
 last successful analysis time.
 

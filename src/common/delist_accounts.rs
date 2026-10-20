@@ -197,17 +197,16 @@ pub fn latest_announcement_views(
                 .announcements
                 .iter()
                 .find(|item| item.exchange == exchange && item.id == status.announcement_id);
-            // Keep all actions, including elapsed deadlines and those beyond the risk horizon.
+            // Keep lifecycle actions regardless of deadline, using the same
+            // lending-only exclusion as /risk and account risk matching.
             let mut actions: Vec<RiskEvent> = book
-                .events
-                .iter()
+                .lifecycle_events()
                 .filter(|event| {
                     event.source == "llm_extract"
                         && event.exchange == exchange
                         && event.announcement_id == status.announcement_id
                         && status.last_success_ms.is_some()
                 })
-                .cloned()
                 .collect();
             actions.sort_by(|left, right| {
                 left.utc_ms
@@ -812,7 +811,7 @@ mod tests {
         let input = LlmExtractInput {
             exchange: "bybit".into(),
             id: "zil".into(),
-            title: "ZIL lending and collateral discontinuation".into(),
+            title: "ZIL margin delisting and borrowing deadlines".into(),
             url: "https://announcements.bybit.com/en-US/article/zil/".into(),
             published_ms: 1,
             body: String::new(),
@@ -832,6 +831,7 @@ mod tests {
             &[
                 action("disable_margin", "2099-09-07T08:00:00Z"),
                 action("disable_loan", "2020-09-02T08:00:00Z"),
+                action("delist", "2099-09-08T08:00:00Z"),
             ],
         );
         let mut other_exchange = book.events[0].clone();
@@ -839,7 +839,7 @@ mod tests {
         let mut official = book.events[0].clone();
         official.source = "official".into();
         book.events.extend([other_exchange, official]);
-        // Neither extracted action belongs to the default current-risk window.
+        // None of the extracted actions belongs to the default current-risk window.
         assert_eq!(
             book.query(&crate::common::delist_risk::RiskQuery {
                 days: Some(30),
@@ -862,9 +862,10 @@ mod tests {
         assert_eq!(item.title, input.title);
         assert_eq!(item.url, input.url);
         assert_eq!(item.published_ms, 1);
-        assert_eq!(item.actions.len(), 2);
+        assert_eq!(item.actions.len(), 3);
         assert_eq!(item.actions[0].action, "disable_loan");
         assert_eq!(item.actions[1].action, "disable_margin");
+        assert_eq!(item.actions[2].action, "delist");
 
         statuses.mark_llm(
             "bybit",
@@ -918,6 +919,82 @@ mod tests {
         assert!(!latest["bybit"].ok);
         assert!(latest["bybit"].actions.is_empty());
         assert!(latest["bybit"].last_success_ms.is_none());
+    }
+
+    #[test]
+    fn gate_lending_only_notice_does_not_flag_accounts_or_announce_delisting() {
+        let input = LlmExtractInput {
+            exchange: "gate".into(),
+            id: "https://www.gate.io/article/102264".into(),
+            title: "Gate to Disable Lending Feature for Certain Tokens".into(),
+            url: "https://www.gate.io/article/102264".into(),
+            published_ms: 1,
+            body: "Spot trading is unaffected. Outstanding loans will be repaid.".into(),
+        };
+        let mut book = RiskBook::default();
+        book.ingest_llm(
+            &input,
+            true,
+            &[LlmAction {
+                action: "disable_loan".into(),
+                venue: "gate-margin".into(),
+                exchange: "gate".into(),
+                utc: String::new(),
+                assets: vec!["ARIA".into(), "BANK".into()],
+                symbols: vec![],
+                note: input.body.clone(),
+            }],
+        );
+        let account = AccountSpec {
+            slug: "gate_fr_arb01".into(),
+            alias: "Gate".into(),
+            exchange: "gate".into(),
+            kind: "funding_rate".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        };
+        let universe = BTreeMap::from([(
+            account.slug.clone(),
+            Ok(BTreeSet::from(["ARIAUSDT".into(), "BANKUSDT".into()])),
+        )]);
+        let mut listings = ListingIndex::default();
+        for venue in ["gate-margin", "gate-futures"] {
+            for symbol in ["ARIAUSDT", "BANKUSDT"] {
+                listings.insert_test(venue, symbol);
+            }
+        }
+        let accounts = [account];
+        let risk = book.query(&Default::default());
+        let views = build_account_views(&accounts, &risk, &listings, &universe);
+        assert_eq!(views[0].tone, "ok");
+        assert_eq!(views[0].risk_n, 0);
+        assert!(views[0].hits.is_empty());
+        assert_eq!(views[0].universe_n, 2, "retain the trading universe");
+
+        let mut statuses = crate::common::delist_store::StatusBook::default();
+        statuses.mark_llm(
+            "gate",
+            &input.id,
+            &input.title,
+            true,
+            None,
+            input.fingerprint(),
+        );
+        let latest = latest_announcement_views(&book, statuses.llm_latest_by_exchange());
+        assert!(latest["gate"].ok);
+        assert_eq!(latest["gate"].url, input.url);
+        assert!(latest["gate"].actions.is_empty());
+
+        // A real catalog removal still raises risk without a delist announcement.
+        let mut removed = ListingIndex::default();
+        removed.insert_test("gate-margin", "BANKUSDT");
+        removed.insert_test("gate-futures", "BANKUSDT");
+        removed.insert_test("gate-futures", "ARIAUSDT");
+        let views = build_account_views(&accounts, &risk, &removed, &universe);
+        assert_eq!(views[0].risk_n, 1);
+        assert_eq!(views[0].hits[0].symbol, "ARIAUSDT");
+        assert_eq!(views[0].hits[0].events[0].action, "catalog_removed");
     }
 
     #[test]
