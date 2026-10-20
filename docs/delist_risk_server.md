@@ -99,6 +99,28 @@ guard exposes the existing wildcard-bound FR backend listeners.
 
 ## Current JP deployment
 
+On 2026-10-20 06:40 UTC, published the authenticated gateway from `arbmm`
+commit `1abb12cc` after locally building and verifying the release. Binary
+SHA-256: `cdea480dfda4cdc20378f8eab77026e508c19a31e31fa1b39e12def8b4c2920a`.
+Credentials were provisioned in `config/delist_access.json` with mode 0600;
+only a salted password hash is stored. The backend now listens on loopback,
+the nine FR route groups use Nginx access checks, and the IPv4/IPv6 direct-port
+guard is enabled persistently. No FR process was restarted: all 72 observed
+FR process PIDs remained unchanged. Delist retains CPU mask `0-5,48-95`.
+
+Browser verification covered all nine Viz/Config panels, all 18 websocket
+handshakes, Config API reads, all anonymous entry surfaces, spoofed loopback
+headers, denied cross-origin writes, and logout revocation. A login alone does
+not grant a panel until its delist entry link is used. All 28 backend ports
+reject external access; local position snapshot reads still work. PostgreSQL,
+NAV and both Redis sources remain healthy, with no snapshot/dump errors or
+flatten candidates. Validation passed 1323 Rust tests (3 ignored), 3 route
+renderer tests, formatting and frontend syntax checks. The release manifest
+and browser evidence live under
+`artifacts/delist_risk_server/access_20261020T063845Z/`; remote rollback files
+are under `run/access_20261020T063845Z/before/`. The follow-up frontend patch
+keeps the logout button visible on mobile.
+
 On 2026-10-20 06:20 UTC, republished the lending-only classification fix to
 `/home/ubuntu/delist_risk_server` on `jp-meta-elvpn`. Built locally from the
 synchronized `arbmm` worktree at `bc7223fe` with the current delist changes;
