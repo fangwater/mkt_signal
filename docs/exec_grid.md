@@ -10,19 +10,22 @@ RapidX 线性 Exec 沿用现有现货/合约路由：裸币种如 `BTC` 为现�
 
 ## 参数与执行
 
-现货和合约使用相同的 `single_order_usdt`（单手名义金额）、`orders_per_batch`（拆单数）、
-`maker_timeout_ms`（每轮挂单时长）、`batch_interval_ms`（批次间隔）、目标容差和 `grid` 参数。
+现货和合约共用 `single_order_usdt`（单手名义金额）。`grid.spot` 与 `grid.futures`
+分别维护自己的 `orders_per_batch`（拆单数）和 `maker_timeout_ms`（每轮挂单时长）；
+只有 `grid.spot.max_maker_requotes` 控制现货重挂次数。合约没有次数配置。
+Grid 复用原有拆单、合并和 margin 路径；Vol 网格计算和时效阈值为算法内部规则，
+不提供额外的用户配置项。
 单手量固定，不会因目标较大和 `max_batch` 自动放大。`max_batch`、tick 阶梯和 maker anchor
 不参与 Grid 定价；网格始终以买一/卖一为对应侧基准。
 
 现货 maker 超时先撤单，等全部订单的撤单/成交终态确认后重挂；maker 轮数用尽后，
 当前批次剩余量合并为一笔 taker。Manager 展示的“Maker 挂单次数”包含首次挂单，
-对应已有配置字段 `max_maker_requotes + 1`（例如字段为 2，则挂单最多 3 轮）。
-合约不受该次数限制，按相同挂单时长持续撤挂；不会因为次数转 taker。
+对应 `grid.spot.max_maker_requotes + 1`（例如字段为 2，则挂单最多 3 轮）。
+合约不受该次数限制，按合约独立配置的挂单时长持续撤挂；不会因为次数转 taker。
 现有显式 `signal=±1` 主动 taker 语义保留；Manager 关闭 signal 执行时写入 signal=0。
 
 部分成交扣除、原档位剩余量重挂、低于最小数量/名义的尾单合并、聚合残量及目标切换
-均沿用 BatchExec。网格参数变更先撤销旧单并等待终态，期间继续核算晚到成交和在途预留。
+均沿用 BatchExec。本市场执行参数变更先撤销旧单并等待终态，期间继续核算晚到成交和在途预留。
 现货 margin 的借还款、账户风险检查和订单提交继续使用现有统一账户/RapidX 路径。
 
 ```json
@@ -38,11 +41,8 @@ RapidX 线性 Exec 沿用现有现货/合约路由：裸币种如 `BTC` 为现�
   "max_maker_requotes": 2,
   "target_tolerance_usdt": 10.0,
   "grid": {
-    "open_buy_vol_scale": [0.0, 1.0],
-    "open_sell_vol_scale": [0.0, 1.0],
-    "open_offset_lower": 0.0,
-    "vol_stale_ms": 15000,
-    "quote_stale_ms": 1000
+    "spot": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "max_maker_requotes": 2},
+    "futures": {"orders_per_batch": 5, "maker_timeout_ms": 3000}
   },
   "targets": {"BTC": {"qty": 0.01, "signal": 0}, "BTCUSDT": {"qty": -0.01, "signal": 0}}
 }
@@ -58,8 +58,8 @@ CTA Spread 的 Kafka factor publisher 对配置币对分别维护现货、合约
 24 bar 收益率跨度为 2 分钟，720 个收益率窗口为 1 小时；冷启动需要 744 个收盘价。
 Kafka 回放用于补齐预热，只有关闭的 5s bar 进入窗口。旧 MM/trade-flow vol 不变。
 
-每侧偏移从 `min(max(scale_low * vol, open_offset_lower), scale_high * vol)` 到
-`scale_high * vol` 均匀拆为 `orders_per_batch` 档；单档取内档偏移。
+每侧偏移从 `0` 到 `vol`，按该市场的 `orders_per_batch` 均匀拆档；单档取内档偏移。
+这保持原默认网格计算口径，不开放 Vol 倍数、内档偏移或有效期配置。
 买单价格为 `bid * (1-offset)` 向下对齐 tick；卖单为 `ask * (1+offset)` 向上对齐 tick。
 该偏移函数由 MM 与 Exec 共用。
 
@@ -67,11 +67,12 @@ Exec 仅消费对应市场/币对的 `model_output/cta_spread-<venue>-5s-vol` �
 目前已实现发布的市场是 `binance-futures` 与 `binance-margin`；其他允许的账户市场
 仍需各自的 vol producer，缺失时会等待，不使用 Binance 因子替代。
 未就绪、异常、过期 vol 或过期盘口均阻止新单/重挂，并撤销工作单；确认终态后保留剩余量，
-数据恢复再继续。因数据过期撤单不消耗 maker 重挂次数。
+数据恢复再继续。内部有效期为 Vol 15 秒、盘口 1 秒。因数据过期撤单不消耗 maker 重挂次数。
 
 ## 配置入口
 
 Manager 项目 `/home/fanghaizhou/crypto_cta_manager` 提供 Grid 表单、只读展示、目录保存、
 币对覆盖和 Redis 发布。当前 schema 新增 `cta_order_strategies.grid` JSONB 并允许 `grid` 算法。
-已有数据库需要在未来部署前单独审阅并执行 Manager 的
-`scripts/apply_grid_order_schema.sql`；本次未执行数据库维护、未写入运行配置、未部署或重启。
+Manager 已支持目录归属、分市场参数及显式数据库维护。已有初稿 Grid JSON 的数据库
+使用 `scripts/apply_grid_market_parameters.sql` 将原共用值映射为两套独立参数。
+Exec 代码仅提交推送，尚未部署；Manager 模板保存不等于实盘启用。

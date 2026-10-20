@@ -16,16 +16,19 @@ SPEC.loader.exec_module(MODULE)
 class ExecConfigServerSymbolTests(unittest.TestCase):
     def test_grid_parameters_roundtrip_and_symbol_overrides(self) -> None:
         raw = {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTC": 1.0},
-               "grid": {"open_buy_vol_scale": [0.2, 0.8], "open_offset_lower": 0.001},
-               "symbol_overrides": {"ETH": {"algorithm": "grid", "grid": {"open_sell_vol_scale": [0.1, 0.9]}}}}
+               "grid": {"spot": {"orders_per_batch": 2, "maker_timeout_ms": 2000},
+                        "futures": {"orders_per_batch": 5, "maker_timeout_ms": 9000}},
+               "symbol_overrides": {"ETH": {"algorithm": "grid", "grid": {"spot": {"max_maker_requotes": 4}}}}}
         normalized = MODULE.normalize_exec_config(raw)
         self.assertEqual(normalized["algorithm"], "grid")
-        self.assertEqual(normalized["grid"]["open_buy_vol_scale"], [0.2, 0.8])
-        self.assertEqual(normalized["grid"]["vol_stale_ms"], 15000)
-        self.assertEqual(normalized["symbol_overrides"]["ETH"]["grid"]["open_sell_vol_scale"], [0.1, 0.9])
+        self.assertEqual(normalized["grid"]["spot"]["orders_per_batch"], 2)
+        self.assertEqual(normalized["grid"]["futures"]["maker_timeout_ms"], 9000)
+        self.assertEqual(normalized["symbol_overrides"]["ETH"]["grid"]["spot"]["max_maker_requotes"], 4)
+        self.assertNotIn("max_maker_requotes", normalized["grid"]["futures"])
         self.assertEqual(MODULE.normalize_exec_config(normalized), normalized)
-        for invalid in ({"open_buy_vol_scale": [1, 0]}, {"open_sell_vol_scale": [True, 1]},
-                        {"open_offset_lower": float("nan")}, {"vol_stale_ms": 0}, {"unknown": 1}):
+        for invalid in ({"spot": {"orders_per_batch": 0}}, {"futures": {"maker_timeout_ms": 0}},
+                        {"spot": {"max_maker_requotes": -1}}, {"spot": {"orders_per_batch": True}},
+                        {"futures": {"max_maker_requotes": 2}}, {"open_offset_lower": 0.1}, {"vol_stale_ms": 15000}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 MODULE.normalize_grid(invalid)
 

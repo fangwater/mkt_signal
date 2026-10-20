@@ -4,7 +4,7 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
-use crate::strategy::grid_exec::GridConfig;
+use crate::strategy::grid_exec::{grid_offset, GridConfig, QUOTE_STALE_MS, VOL_STALE_MS};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::mark_price_lookup_symbol;
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
@@ -240,6 +240,25 @@ fn should_use_taker(
 }
 
 impl BatchExecConfig {
+    // Resolve the order's market once at strategy construction/reconfiguration.
+    // Discard the inactive market settings so edits there cannot cancel this market's orders.
+    fn for_market(mut self, cash: bool) -> Self {
+        if self.algorithm == ExecAlgorithm::Grid {
+            if cash {
+                self.orders_per_batch = self.grid.spot.orders_per_batch;
+                self.maker_timeout_ms = self.grid.spot.maker_timeout_ms;
+                self.max_maker_requotes = self.grid.spot.max_maker_requotes;
+                self.grid.futures = Default::default();
+            } else {
+                self.orders_per_batch = self.grid.futures.orders_per_batch;
+                self.maker_timeout_ms = self.grid.futures.maker_timeout_ms;
+                self.max_maker_requotes = 0; // Futures never use the retry limit.
+                self.grid.spot = Default::default();
+            }
+        }
+        self
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         self.pov.validate()?;
         self.grid.validate()?;
@@ -741,8 +760,7 @@ fn maker_limit_price(
     volatility: Option<f64>,
 ) -> Result<(f64, f64), String> {
     if config.algorithm == ExecAlgorithm::Grid {
-        let offset = config.grid.offset(
-            side,
+        let offset = grid_offset(
             level_index,
             config.orders_per_batch,
             volatility.ok_or("grid volatility is unavailable")?,
@@ -1047,7 +1065,7 @@ impl BatchExecStrategy {
             strategy_name: strategy_name.into(),
             symbol: normalize_symbol_for_internal(&symbol.into()),
             exec_venue,
-            config,
+            config: config.for_market(exec_venue.is_spot()),
             pov_state: PovState::default(),
             config_transition_in_progress: false,
             config_transition_pov_started_at_us: None,
@@ -1107,7 +1125,7 @@ impl BatchExecStrategy {
             self.exec_venue,
             &self.symbol,
             now_us,
-            self.config.grid.vol_stale_ms,
+            VOL_STALE_MS,
         )
     }
 
@@ -1115,7 +1133,7 @@ impl BatchExecStrategy {
         self.grid_volatility(now_us).is_some()
             && quote_ts > 0
             && quote_ts <= now_us
-            && now_us - quote_ts <= i64::from(self.config.grid.quote_stale_ms) * 1_000
+            && now_us - quote_ts <= i64::from(QUOTE_STALE_MS) * 1_000
     }
 
     fn pause_batches_for_data(&mut self, expired: bool) {
@@ -1850,6 +1868,7 @@ impl BatchExecStrategy {
 
     pub fn update_config(&mut self, config: BatchExecConfig) -> Result<(), String> {
         config.validate()?;
+        let config = config.for_market(self.exec_venue.is_spot());
         if self.config == config {
             return Ok(());
         }
@@ -3531,6 +3550,81 @@ mod tests {
     }
 
     #[test]
+    fn grid_market_parameters_control_independent_plans_and_maker_timeouts() {
+        let mut cfg = grid_config();
+        cfg.orders_per_batch = 99; // Generic Batch settings must not select Grid sizing.
+        cfg.maker_timeout_ms = 99;
+        cfg.grid.spot.orders_per_batch = 2;
+        cfg.grid.spot.maker_timeout_ms = 2000;
+        cfg.grid.spot.max_maker_requotes = 4;
+        cfg.grid.futures.orders_per_batch = 5;
+        cfg.grid.futures.maker_timeout_ms = 9000;
+        for (cash, venue, count, timeout) in [
+            (true, TradingVenue::BinanceMargin, 2, 2000),
+            (false, TradingVenue::BinanceFutures, 5, 9000),
+        ] {
+            let mut strategy = BatchExecStrategy::new(1, "grid", "BTCUSDT", venue, cfg.clone());
+            assert_eq!(strategy.config.orders_per_batch, count);
+            assert_eq!(strategy.config.maker_timeout_ms, timeout);
+            assert_eq!(strategy.config.single_order_usdt, 100.0);
+            let effective = strategy.effective_config();
+            assert_eq!(
+                effective.batch_capacity_usdt(100.0),
+                f64::from(count) * 100.0
+            );
+            let plans = build_child_order_plans(
+                &effective,
+                Side::Buy,
+                f64::from(count),
+                0,
+                0,
+                100.0,
+                101.0,
+                0.01,
+                0.001,
+                0.001,
+                5.0,
+                grid_context(cash),
+            )
+            .unwrap();
+            assert_eq!(plans.len(), count as usize);
+            assert_eq!(should_use_taker(&effective, 5, 0, cash), cash);
+            let mut changed = cfg.clone();
+            changed.grid.spot.maker_timeout_ms = 4000;
+            changed.grid.futures.maker_timeout_ms = 12000;
+            strategy.update_config(changed).unwrap();
+            assert_eq!(
+                strategy.config.maker_timeout_ms,
+                if cash { 4000 } else { 12000 }
+            );
+        }
+    }
+
+    #[test]
+    fn grid_other_market_edits_preserve_working_orders() {
+        for cash in [true, false] {
+            let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+            strategy.exec_venue = if cash {
+                TradingVenue::BinanceMargin
+            } else {
+                TradingVenue::BinanceFutures
+            };
+            strategy.config = grid_config().for_market(cash);
+            let before = strategy.batches[&1].phase;
+            let mut changed = grid_config();
+            if cash {
+                changed.grid.futures.orders_per_batch = 7;
+            } else {
+                changed.grid.spot.orders_per_batch = 7;
+            }
+            strategy.update_config(changed).unwrap();
+            assert!(!strategy.config_transition_in_progress);
+            assert_eq!(strategy.batches[&1].phase, before);
+            assert_eq!(strategy.pov_reserved_qty(), 2.0);
+        }
+    }
+
+    #[test]
     fn grid_cash_uses_exact_maker_round_budget_and_futures_never_exhaust_it() {
         let mut cfg = grid_config();
         for retries in 0..=cfg.max_maker_requotes {
@@ -3674,7 +3768,7 @@ mod tests {
         strategy.config = grid_config();
         assert!(!strategy.grid_can_submit(1_000_000, 1_000_000));
         let mut changed = strategy.config.clone();
-        changed.grid.open_offset_lower = 0.001;
+        changed.grid.futures.maker_timeout_ms = 4_000;
         strategy.update_config(changed).unwrap();
         assert!(strategy.config_transition_in_progress);
         assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
@@ -3689,13 +3783,14 @@ mod tests {
     #[test]
     fn grid_symbol_overrides_roundtrip_all_parameters() {
         let overrides: BatchExecConfigOverride = serde_json::from_value(serde_json::json!({
-            "algorithm": "grid", "grid": {"open_buy_vol_scale": [0.2, 0.8], "open_offset_lower": 0.001},
+            "algorithm": "grid", "grid": {"spot": {"orders_per_batch": 2, "maker_timeout_ms": 2000}, "futures": {"orders_per_batch": 5, "maker_timeout_ms": 8000}},
             "single_order_usdt": 50.0, "orders_per_batch": 4
         })).unwrap();
         overrides.validate(&config()).unwrap();
         let cfg = overrides.apply_to(&config());
         assert_eq!(cfg.algorithm, ExecAlgorithm::Grid);
-        assert_eq!(cfg.grid.open_buy_vol_scale, [0.2, 0.8]);
+        assert_eq!(cfg.grid.spot.orders_per_batch, 2);
+        assert_eq!(cfg.grid.futures.orders_per_batch, 5);
         assert_eq!(cfg.single_order_usdt, 50.0);
         assert_eq!(cfg.orders_per_batch, 4);
         assert_eq!(

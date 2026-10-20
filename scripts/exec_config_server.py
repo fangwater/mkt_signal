@@ -49,11 +49,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "targets": {},
     "algorithm": "batch",
     "grid": {
-        "open_buy_vol_scale": [0.0, 1.0],
-        "open_sell_vol_scale": [0.0, 1.0],
-        "open_offset_lower": 0.0,
-        "vol_stale_ms": 15000,
-        "quote_stale_ms": 1000,
+        "spot": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "max_maker_requotes": 2},
+        "futures": {"orders_per_batch": 3, "maker_timeout_ms": 1000},
     },
     "pov": {
         "participation_rate": 0.1,
@@ -269,22 +266,17 @@ def normalize_grid(raw: Any) -> Dict[str, Any]:
     unknown = sorted(set(raw) - set(defaults))
     if unknown:
         raise ValueError(f"unknown grid fields: {', '.join(unknown)}")
-    value = {**defaults, **raw}
-    for name in ("open_buy_vol_scale", "open_sell_vol_scale"):
-        scale = value[name]
-        if not isinstance(scale, list) or len(scale) != 2 or any(isinstance(v, bool) for v in scale):
-            raise ValueError(f"grid.{name} must contain two numbers")
-        scale = [finite_float(v, f"grid.{name}") for v in scale]
-        if scale[0] < 0 or scale[1] < scale[0]:
-            raise ValueError(f"grid.{name} must be ordered and non-negative")
-        value[name] = scale
-    if isinstance(value["open_offset_lower"], bool):
-        raise ValueError("grid.open_offset_lower must be a number")
-    value["open_offset_lower"] = finite_float(value["open_offset_lower"], "grid.open_offset_lower")
-    if value["open_offset_lower"] < 0:
-        raise ValueError("grid.open_offset_lower must be non-negative")
-    for name in ("vol_stale_ms", "quote_stale_ms"):
-        value[name] = integer(value[name], f"grid.{name}", positive=True)
+    value = {}
+    for market, settings in defaults.items():
+        selected = raw.get(market, {})
+        if not isinstance(selected, dict):
+            raise ValueError(f"grid.{market} must be an object")
+        unknown = sorted(set(selected) - set(settings))
+        if unknown:
+            raise ValueError(f"unknown grid.{market} fields: {', '.join(unknown)}")
+        value[market] = {name: integer(selected.get(name, default), f"grid.{market}.{name}",
+                                      positive=name != "max_maker_requotes")
+                         for name, default in settings.items()}
     return value
 
 
