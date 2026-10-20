@@ -99,6 +99,14 @@ guard exposes the existing wildcard-bound FR backend listeners.
 
 ## Current JP deployment
 
+On 2026-10-20 06:53 UTC, removed the retired account labelled `bybit cta`
+(`bybit-intra-arb02`, historically registered as `intra_exchange`) from delist
+monitoring by revoking only the NAV `delist` user's grant for that slug. The
+next catalog refresh drops the account without a code exclusion or restart;
+the nine FR accounts retain their grants. Historical strategy data is retained.
+The grant backup and verification live under
+`run/remove_bybit_cta_20261020T065320Z/` in the delist deployment directory.
+
 On 2026-10-20 06:40 UTC, published the authenticated gateway from `arbmm`
 commit `1abb12cc` after locally building and verifying the release. Binary
 SHA-256: `cdea480dfda4cdc20378f8eab77026e508c19a31e31fa1b39e12def8b4c2920a`.
