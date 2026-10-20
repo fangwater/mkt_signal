@@ -8,6 +8,7 @@ pub enum ExecAlgorithm {
     Batch,
     Pov,
     Ctaker,
+    Grid,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

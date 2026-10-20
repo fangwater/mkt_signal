@@ -1,6 +1,6 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-10-19 13:10 UTC
+最后更新：2026-10-20（新增 Spread 5s vol 代码说明，未部署）
 
 2026-10-19 13:10 UTC，Exec06执行器补发完成：Chase新目标仅解除借币不足状态，
 普通拒单退避保持原行为。当前38个已激活永续中36个4倍，BEL/ZIL按上限3倍，
@@ -494,6 +494,41 @@ Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 旧 RX01 的配置页和 Viz 已下线，账户监控、持久化及历史目录保留。
 新 Spread 没有复制旧 lot 仓位，也没有配置 Manager 发布连接或账户绑定。
 未来启用前仍须核对现有挂单、持仓承接、因子绑定及 Manager 份数；当前发布保持关闭。
+
+## Spread 5s vol 因子
+
+`cta_spread_factor_model_1m_pub` 同时维护独立的 `vol` 因子。它复用现有 Kafka
+`binance-futures` / `binance-spot` 消费及历史预热，只计算同一配置
+`universe.symbols` 指定的币对。现货和永续分别保存价格、窗口及就绪状态；
+不依赖成交金额分类阈值、分钟因子的就绪状态或两市场的价差配对。
+
+以成交价形成闭合 5 秒 bar 的最后价格 `C_t`：
+
+```text
+r_t   = C_t / C_(t-24) - 1
+vol_t = sample_std(r_(t-719), ..., r_t)  # ddof=1，不乘 1.3，不年化
+```
+
+24 根对应 2 分钟收益率，720 个收益率构成最近 1 小时窗口。必须具有完整窗口，
+首次就绪需要 744 根收盘价（约 62 分钟），由 Kafka 历史预热填充。
+同一币对已覆盖但无成交的 bar 沿用上一收盘价，尚无有效成交价时不生成 bar。
+按该币对 Kafka `PeriodMessage.ts` 的数据时间封口，不按处理时的墙钟补到现在；
+其他币对或另一市场的消息不会推进它的时间。重复、倒序 period 被忽略，
+period 内成交按时间排序。历史追赶期间只更新状态，不发布 IPC；取得发布权后
+先发布各市场/币对的最新快照，再继续按闭合 bar 发布。
+
+| 市场 | IPC 服务 |
+|---|---|
+| Binance 永续 | `model_output/cta_spread-binance-futures-5s-vol` |
+| Binance 现货 | `model_output/cta_spread-binance-margin-5s-vol` |
+
+沿用 `ModelMsg`：`score` 为原始波动率，`score_ready` 表示完整窗口就绪，
+未就绪时 `score=NaN`。`ts_in_ms=t` 表示闭合区间 `[t-5s,t)` 的右端点；
+`ts_out_ms` 为实际发布时刻。消费者必须检查就绪状态和数据时间的新鲜度。
+该因子不做 zscore 或分位归一化，不加入原有 `universe.factors` 的分钟入场列表。
+`warmup.json` 和运行统计包含独立的 `vol_published` / `vol_publish_failed` 计数。
+旧 MM 的 `factor_pub/<venue>/rl_vol` 继续使用原有 12/30/1.3 口径。
+本次仅完成本地实现，未部署。Exec 已增加同市场 vol 订阅和 Grid 下单接入，详见 [Exec Grid](exec_grid.md)。
 
 ## Spread 规则
 

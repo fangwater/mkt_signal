@@ -30,8 +30,9 @@ ORDER_PARAMETER_FIELDS = (
     "target_tolerance_usdt",
     "algorithm",
     "pov",
+    "grid",
 )
-REQUIRED_CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) - {"algorithm", "pov"} | {"targets"}
+REQUIRED_CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) - {"algorithm", "pov", "grid"} | {"targets"}
 CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets", "symbol_overrides"}
 OPTIONAL_CONFIG_FIELDS = {"updated_at_us"}
 ALLOWED_TARGET_SIGNALS = (-2, -1, 0, 1, 2)
@@ -47,6 +48,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "target_tolerance_usdt": 10.0,
     "targets": {},
     "algorithm": "batch",
+    "grid": {
+        "open_buy_vol_scale": [0.0, 1.0],
+        "open_sell_vol_scale": [0.0, 1.0],
+        "open_offset_lower": 0.0,
+        "vol_stale_ms": 15000,
+        "quote_stale_ms": 1000,
+    },
     "pov": {
         "participation_rate": 0.1,
         "max_batch_usdt": 300.0,
@@ -254,6 +262,32 @@ def normalize_pov(raw: Any) -> Dict[str, Any]:
     return value
 
 
+def normalize_grid(raw: Any) -> Dict[str, Any]:
+    defaults = DEFAULT_CONFIG["grid"]
+    if not isinstance(raw, dict):
+        raise ValueError("grid must be an object")
+    unknown = sorted(set(raw) - set(defaults))
+    if unknown:
+        raise ValueError(f"unknown grid fields: {', '.join(unknown)}")
+    value = {**defaults, **raw}
+    for name in ("open_buy_vol_scale", "open_sell_vol_scale"):
+        scale = value[name]
+        if not isinstance(scale, list) or len(scale) != 2 or any(isinstance(v, bool) for v in scale):
+            raise ValueError(f"grid.{name} must contain two numbers")
+        scale = [finite_float(v, f"grid.{name}") for v in scale]
+        if scale[0] < 0 or scale[1] < scale[0]:
+            raise ValueError(f"grid.{name} must be ordered and non-negative")
+        value[name] = scale
+    if isinstance(value["open_offset_lower"], bool):
+        raise ValueError("grid.open_offset_lower must be a number")
+    value["open_offset_lower"] = finite_float(value["open_offset_lower"], "grid.open_offset_lower")
+    if value["open_offset_lower"] < 0:
+        raise ValueError("grid.open_offset_lower must be non-negative")
+    for name in ("vol_stale_ms", "quote_stale_ms"):
+        value[name] = integer(value[name], f"grid.{name}", positive=True)
+    return value
+
+
 def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config must be an object")
@@ -267,8 +301,8 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         raise ValueError(f"missing fields: {', '.join(missing)}")
 
     algorithm = raw.get("algorithm", "batch")
-    if algorithm not in ("batch", "pov", "ctaker"):
-        raise ValueError("algorithm must be batch, pov or ctaker")
+    if algorithm not in ("batch", "pov", "ctaker", "grid"):
+        raise ValueError("algorithm must be batch, pov, ctaker or grid")
 
     anchor = str(raw["maker_price_anchor"]).strip()
     if anchor not in {"own_best", "opposite_best_plus_one_tick"}:
@@ -283,6 +317,7 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     normalized = {
         "algorithm": algorithm,
         "pov": normalize_pov(raw.get("pov", {})),
+        "grid": normalize_grid(raw.get("grid", {})),
         "single_order_usdt": finite_float(
             raw["single_order_usdt"], "single_order_usdt", positive=True
         ),
@@ -425,7 +460,7 @@ def normalize_order_parameters(
     )
     allowed = set(fields)
     unknown = sorted(set(raw) - allowed)
-    optional = {"algorithm", "pov"} if family == "batch_exec" else set()
+    optional = {"algorithm", "pov", "grid"} if family == "batch_exec" else set()
     missing = sorted(allowed - optional - set(raw))
     if unknown:
         raise ValueError(f"unknown order parameter fields: {', '.join(unknown)}")
@@ -507,6 +542,21 @@ def exec_markets(venue: str) -> List[str]:
     if selected == "ltp":
         return [venue, "okex-margin" if venue == "okex-futures" else "binance-margin"]
     return [venue]
+
+
+def validate_grid_account_config(venue: str, config: Dict[str, Any]) -> None:
+    algorithms = [config.get("algorithm")]
+    algorithms.extend(v.get("algorithm") for v in config.get("symbol_overrides", {}).values())
+    if "grid" not in algorithms:
+        return
+    markets = exec_markets(venue)
+    if len(markets) == 2:
+        return  # RapidX; exec_markets validates the backend/market pair.
+    if venue in ("okex-futures", "bybit-futures", "bitget-futures"):
+        return  # Native unified-account startup gates are enforced by Exec.
+    if venue in ("binance-futures", "binance-coin-futures") and os.environ.get("BINANCE_ACCOUNT_MODE", "").strip().upper() == "UNIFIED":
+        return
+    raise ValueError("grid requires RapidX or a supported native unified account")
 
 
 class ExecConfigStore:
@@ -609,6 +659,7 @@ class ExecConfigStore:
         name = validate_strategy_name(strategy_name)
         family = normalize_execution_family(execution_family)
         normalized = normalize_config(config, family)
+        validate_grid_account_config(self.venue, normalized)
         routed = {symbol: self._symbol_market(symbol) for symbol in (
             normalized["targets"].keys() | normalized.get("symbol_overrides", {}).keys()
         )}
@@ -640,6 +691,7 @@ class ExecConfigStore:
         name = validate_strategy_name(strategy_name)
         family = normalize_execution_family(execution_family)
         parameters = normalize_order_parameters(order_parameters, family)
+        validate_grid_account_config(self.venue, parameters)
         expected = normalize_expected_updated_at_us(expected_updated_at_us)
         scopes = self._scopes(name, family)
         with self._save_lock:
@@ -666,6 +718,7 @@ class ExecConfigStore:
                     pipeline.multi()
                     for config_key, config in active:
                         updated = {**config, **parameters, "updated_at_us": next_version}
+                        validate_grid_account_config(self.venue, updated)
                         updated_configs.append(updated)
                         pipeline.set(config_key, json.dumps(updated, ensure_ascii=False, separators=(",", ":")))
                     pipeline.execute()
@@ -779,8 +832,13 @@ INDEX_HTML = r"""<!doctype html>
           <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" disabled /></div>
           <div class="field"><label>Target Tolerance __NOTIONAL_CURRENCY__</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
-          <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option><option value="ctaker">CTaker</option></select></div>
+          <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option><option value="ctaker">CTaker</option><option value="grid">Grid</option></select></div>
         </div>
+      </section>
+      <section id="grid-section" hidden>
+        <div class="section-head"><h2>Grid</h2><span class="readonly-state">Read only</span></div>
+        <p>Spot maker rounds = Max Maker Requotes + 1, then taker. Futures keep requoting without a count limit. Explicit signal ±1 retains taker execution.</p>
+        <div class="param-grid" id="grid-fields"></div>
       </section>
       <section id="pov-section" hidden>
         <div class="section-head"><h2>POV</h2><span class="readonly-state">Read only</span></div>
@@ -848,6 +906,19 @@ INDEX_HTML = r"""<!doctype html>
             const input = document.createElement("input"); input.disabled = true;
             input.value = (config.pov || DEFAULTS.pov)[name] ?? "";
             field.append(caption, input); el("pov-fields").append(field);
+          });
+          el("grid-section").hidden = config.algorithm !== "grid";
+          el("grid-fields").replaceChildren();
+          const gridLabels = {open_buy_vol_scale: "Buy Vol Scale", open_sell_vol_scale: "Sell Vol Scale", open_offset_lower: "Inner Offset Floor", vol_stale_ms: "Vol Stale ms", quote_stale_ms: "Quote Stale ms"};
+          Object.entries(gridLabels).forEach(([name, label]) => {
+            const field = document.createElement("div"); field.className = "field";
+            const caption = document.createElement("label"); caption.textContent = label;
+            const input = document.createElement("input"); input.disabled = true;
+            input.value = JSON.stringify((config.grid || DEFAULTS.grid)[name]);
+            field.append(caption, input); el("grid-fields").append(field);
+          });
+          ["max_batch", "maker_price_anchor", "tick_spacing"].forEach((name) => {
+            el(name).parentElement.hidden = config.algorithm === "grid";
           });
           renderTargets(config.targets);
           el("redis-key").textContent = state.bootstrap ? `${state.bootstrap.key_prefix}${state.name}` : "-";

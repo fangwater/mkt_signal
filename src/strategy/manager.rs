@@ -1985,6 +1985,7 @@ mod tests {
         let mut manager = StrategyManager::new();
         let batch_exec_config = BatchExecConfig {
             algorithm: crate::strategy::pov::ExecAlgorithm::Batch,
+            grid: crate::strategy::grid_exec::GridConfig::default(),
             pov: crate::strategy::pov::PovConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,

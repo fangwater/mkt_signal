@@ -4,6 +4,7 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
+use crate::strategy::grid_exec::GridConfig;
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::mark_price_lookup_symbol;
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
@@ -49,6 +50,8 @@ pub struct BatchExecConfig {
     pub algorithm: ExecAlgorithm,
     #[serde(default)]
     pub pov: PovConfig,
+    #[serde(default)]
+    pub grid: GridConfig,
     pub single_order_usdt: f64,
     pub orders_per_batch: u32,
     #[serde(default = "default_max_batch")]
@@ -66,6 +69,7 @@ impl Default for BatchExecConfig {
         Self {
             algorithm: ExecAlgorithm::Batch,
             pov: PovConfig::default(),
+            grid: GridConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: default_max_batch(),
@@ -213,7 +217,15 @@ pub fn validate_target_signal(signal: i32) -> Result<(), String> {
     }
 }
 
-fn should_use_taker(config: &BatchExecConfig, maker_requotes: u32, signal: i32) -> bool {
+fn should_use_taker(
+    config: &BatchExecConfig,
+    maker_requotes: u32,
+    signal: i32,
+    cash: bool,
+) -> bool {
+    if config.algorithm == ExecAlgorithm::Grid {
+        return signal.abs() == 1 || (cash && maker_requotes > config.max_maker_requotes);
+    }
     if config.algorithm == ExecAlgorithm::Ctaker {
         return true;
     }
@@ -230,6 +242,7 @@ fn should_use_taker(config: &BatchExecConfig, maker_requotes: u32, signal: i32) 
 impl BatchExecConfig {
     pub fn validate(&self) -> Result<(), String> {
         self.pov.validate()?;
+        self.grid.validate()?;
         if !self.single_order_usdt.is_finite() || self.single_order_usdt <= 0.0 {
             return Err("single_order_usdt must be positive".to_string());
         }
@@ -249,7 +262,7 @@ impl BatchExecConfig {
     }
 
     fn effective_single_order_usdt(&self, delta_usdt: f64) -> f64 {
-        if self.algorithm == ExecAlgorithm::Pov {
+        if matches!(self.algorithm, ExecAlgorithm::Pov | ExecAlgorithm::Grid) {
             return self.single_order_usdt;
         }
         let dynamic_single =
@@ -269,6 +282,8 @@ pub struct BatchExecConfigOverride {
     pub algorithm: Option<ExecAlgorithm>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pov: Option<PovConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub single_order_usdt: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,6 +308,7 @@ impl BatchExecConfigOverride {
     pub fn is_empty(&self) -> bool {
         self.algorithm.is_none()
             && self.pov.is_none()
+            && self.grid.is_none()
             && self.single_order_usdt.is_none()
             && self.orders_per_batch.is_none()
             && self.max_batch.is_none()
@@ -308,6 +324,7 @@ impl BatchExecConfigOverride {
         BatchExecConfig {
             algorithm: self.algorithm.unwrap_or(defaults.algorithm),
             pov: self.pov.clone().unwrap_or_else(|| defaults.pov.clone()),
+            grid: self.grid.clone().unwrap_or_else(|| defaults.grid.clone()),
             single_order_usdt: self.single_order_usdt.unwrap_or(defaults.single_order_usdt),
             orders_per_batch: self.orders_per_batch.unwrap_or(defaults.orders_per_batch),
             max_batch: self.max_batch.unwrap_or(defaults.max_batch),
@@ -574,15 +591,19 @@ struct BatchOrderLimits {
 // Base quantities for inverse execution are valued at the same mark as the
 // position ledger. Contract face value is independent of the maker limit price.
 #[derive(Clone, Copy)]
-struct ChildQtyMultiplier {
+struct ChildPlanContext {
     value: f64,
     notional_price: Option<f64>,
+    volatility: Option<f64>,
+    cash: bool,
 }
-impl From<f64> for ChildQtyMultiplier {
+impl From<f64> for ChildPlanContext {
     fn from(value: f64) -> Self {
         Self {
             value,
             notional_price: None,
+            volatility: None,
+            cash: false,
         }
     }
 }
@@ -717,7 +738,24 @@ fn maker_limit_price(
     bid: f64,
     ask: f64,
     price_tick: f64,
+    volatility: Option<f64>,
 ) -> Result<(f64, f64), String> {
+    if config.algorithm == ExecAlgorithm::Grid {
+        let offset = config.grid.offset(
+            side,
+            level_index,
+            config.orders_per_batch,
+            volatility.ok_or("grid volatility is unavailable")?,
+        )?;
+        let price = match side {
+            Side::Buy => align_price_floor(bid * (1.0 - offset), price_tick),
+            Side::Sell => align_price_ceil(ask * (1.0 + offset), price_tick),
+        };
+        if !price.is_finite() || price <= 0.0 {
+            return Err("invalid grid maker price".into());
+        }
+        return Ok((price, offset));
+    }
     let level_ticks = i64::from(level_index) * i64::from(config.tick_spacing);
     let start_price = match (side, config.maker_price_anchor) {
         (Side::Sell, MakerPriceAnchor::OwnBest) => ask,
@@ -795,7 +833,7 @@ fn build_child_order_plans(
     qty_step: f64,
     min_qty: f64,
     min_notional: f64,
-    qty_multiplier: impl Into<ChildQtyMultiplier>,
+    qty_multiplier: impl Into<ChildPlanContext>,
 ) -> Result<Vec<BatchChildOrderPlan>, String> {
     let conversion = qty_multiplier.into();
     let qty_multiplier = conversion.value;
@@ -810,7 +848,7 @@ fn build_child_order_plans(
     {
         return Err("invalid BBO, price tick, or qty multiplier".to_string());
     }
-    let use_taker = should_use_taker(config, maker_requotes, signal);
+    let use_taker = should_use_taker(config, maker_requotes, signal, conversion.cash);
     let child_count = if use_taker {
         1
     } else {
@@ -822,8 +860,19 @@ fn build_child_order_plans(
         if unplanned_base_qty <= QTY_EPS {
             break;
         }
-        let (limit_price, price_offset) =
-            maker_limit_price(config, side, level as u32, bid, ask, price_tick)?;
+        let (limit_price, price_offset) = if use_taker {
+            (0.0, 0.0)
+        } else {
+            maker_limit_price(
+                config,
+                side,
+                level as u32,
+                bid,
+                ask,
+                price_tick,
+                conversion.volatility,
+            )?
+        };
         let sizing_price = if use_taker {
             match side {
                 Side::Buy => ask,
@@ -895,7 +944,7 @@ fn rebuild_child_order_plans_at_preserved_levels(
     qty_step: f64,
     min_qty: f64,
     min_notional: f64,
-    qty_multiplier: impl Into<ChildQtyMultiplier>,
+    qty_multiplier: impl Into<ChildPlanContext>,
 ) -> Result<Vec<BatchChildOrderPlan>, String> {
     let conversion = qty_multiplier.into();
     let qty_multiplier = conversion.value;
@@ -916,8 +965,15 @@ fn rebuild_child_order_plans_at_preserved_levels(
         if remaining_base_qty <= QTY_EPS {
             continue;
         }
-        let (limit_price, price_offset) =
-            maker_limit_price(config, side, level_index, bid, ask, price_tick)?;
+        let (limit_price, price_offset) = maker_limit_price(
+            config,
+            side,
+            level_index,
+            bid,
+            ask,
+            price_tick,
+            conversion.volatility,
+        )?;
         let raw_venue_qty = remaining_base_qty / qty_multiplier;
         let qty_venue = align_child_qty_floor(raw_venue_qty, qty_step);
         let qty_base = qty_venue * qty_multiplier;
@@ -1043,7 +1099,26 @@ impl BatchExecStrategy {
             && now_us - quote_ts <= i64::from(self.config.pov.quote_stale_ms) * 1_000
     }
 
-    fn pause_pov_batches(&mut self, expired: bool) {
+    fn grid_volatility(&self, now_us: i64) -> Option<f64> {
+        if self.config.algorithm != ExecAlgorithm::Grid {
+            return None;
+        }
+        crate::pre_trade::exec_volatility_channel::latest(
+            self.exec_venue,
+            &self.symbol,
+            now_us,
+            self.config.grid.vol_stale_ms,
+        )
+    }
+
+    fn grid_can_submit(&self, now_us: i64, quote_ts: i64) -> bool {
+        self.grid_volatility(now_us).is_some()
+            && quote_ts > 0
+            && quote_ts <= now_us
+            && now_us - quote_ts <= i64::from(self.config.grid.quote_stale_ms) * 1_000
+    }
+
+    fn pause_batches_for_data(&mut self, expired: bool) {
         let ids: Vec<_> = self.batches.keys().copied().collect();
         for id in ids {
             // An unsent batch has no cancel acknowledgement to make it ready again.
@@ -1159,7 +1234,7 @@ impl BatchExecStrategy {
         {
             config.target_tolerance_usdt = 0.0;
         }
-        if config.algorithm == ExecAlgorithm::Pov {
+        if matches!(config.algorithm, ExecAlgorithm::Pov | ExecAlgorithm::Grid) {
             return config;
         }
         if let Some(single_order_usdt) = self
@@ -1543,34 +1618,38 @@ impl BatchExecStrategy {
                 })
                 .unwrap_or(raw_pending_qty)
         };
-        let (remaining_batches, estimated_completion_ts_ms) =
-            if execution_complete || self.config.algorithm == ExecAlgorithm::Pov {
-                (0, 0)
-            } else {
-                target_qty
-                    .and_then(|target| self.mark_price().map(|price| (target, price)))
-                    .filter(|(_, price)| price.is_finite() && *price > 0.0)
-                    .map(|(target, price)| {
-                        let (active_batches, active_completion_ts_us) =
-                            self.relevant_active_batch_progress(target, position_qty, now_ts);
-                        estimate_batch_progress(
-                            &self.effective_config(),
-                            (target - position_qty) * price,
-                            active_batches,
-                            active_completion_ts_us,
-                            now_ts,
-                            self.next_batch_at_us,
-                            self.current_target()
-                                .is_some_and(BatchExecTarget::uses_taker_only),
-                        )
-                    })
-                    .unwrap_or((0, 0))
-            };
+        let (remaining_batches, estimated_completion_ts_ms) = if execution_complete
+            || matches!(
+                self.config.algorithm,
+                ExecAlgorithm::Pov | ExecAlgorithm::Grid
+            ) {
+            (0, 0)
+        } else {
+            target_qty
+                .and_then(|target| self.mark_price().map(|price| (target, price)))
+                .filter(|(_, price)| price.is_finite() && *price > 0.0)
+                .map(|(target, price)| {
+                    let (active_batches, active_completion_ts_us) =
+                        self.relevant_active_batch_progress(target, position_qty, now_ts);
+                    estimate_batch_progress(
+                        &self.effective_config(),
+                        (target - position_qty) * price,
+                        active_batches,
+                        active_completion_ts_us,
+                        now_ts,
+                        self.next_batch_at_us,
+                        self.current_target()
+                            .is_some_and(BatchExecTarget::uses_taker_only),
+                    )
+                })
+                .unwrap_or((0, 0))
+        };
         BatchExecSnapshot {
             algorithm: match self.config.algorithm {
                 ExecAlgorithm::Batch => "batch",
                 ExecAlgorithm::Pov => "pov",
                 ExecAlgorithm::Ctaker => "ctaker",
+                ExecAlgorithm::Grid => "grid",
             }
             .into(),
             pov: (self.config.algorithm == ExecAlgorithm::Pov).then(|| {
@@ -1776,8 +1855,12 @@ impl BatchExecStrategy {
         }
         let algorithm_changed = self.config.algorithm != config.algorithm;
         let pov_changed = self.config.pov != config.pov;
+        let grid_changed = self.config.algorithm == ExecAlgorithm::Grid && self.config != config;
         self.config = config;
-        if algorithm_changed || (pov_changed && self.config.algorithm == ExecAlgorithm::Pov) {
+        if algorithm_changed
+            || grid_changed
+            || (pov_changed && self.config.algorithm == ExecAlgorithm::Pov)
+        {
             if let Some(target) = self.active_target.as_mut() {
                 target.effective_single_order_usdt = None;
             }
@@ -1967,6 +2050,9 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
+            return;
+        }
         let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
             (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
         });
@@ -2009,30 +2095,32 @@ impl BatchExecStrategy {
                 return;
             }
         };
-        let minimum_order_price = if should_use_taker(&self.config, 0, target_signal) {
-            match side {
-                Side::Buy => quote.ask,
-                Side::Sell => quote.bid,
-            }
-        } else {
-            match maker_limit_price(
-                &self.config,
-                side,
-                0,
-                quote.bid,
-                quote.ask,
-                limits.price_tick,
-            ) {
-                Ok((price, _)) => price,
-                Err(err) => {
-                    warn!(
+        let minimum_order_price =
+            if should_use_taker(&self.config, 0, target_signal, self.exec_venue.is_spot()) {
+                match side {
+                    Side::Buy => quote.ask,
+                    Side::Sell => quote.bid,
+                }
+            } else {
+                match maker_limit_price(
+                    &self.config,
+                    side,
+                    0,
+                    quote.bid,
+                    quote.ask,
+                    limits.price_tick,
+                    self.grid_volatility(now_ts),
+                ) {
+                    Ok((price, _)) => price,
+                    Err(err) => {
+                        warn!(
                         "BatchExecStrategy: strategy_id={} symbol={} invalid first maker price: {}",
                         self.strategy_id, self.symbol, err
                     );
-                    return;
+                        return;
+                    }
                 }
-            }
-        };
+            };
         let minimum_base_qty = match minimum_executable_base_qty(
             self.inverse_reference_price.unwrap_or(minimum_order_price),
             limits,
@@ -2096,7 +2184,10 @@ impl BatchExecStrategy {
         if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
             return;
         }
-        let effective_single_order_usdt = if self.config.algorithm == ExecAlgorithm::Pov {
+        let effective_single_order_usdt = if matches!(
+            self.config.algorithm,
+            ExecAlgorithm::Pov | ExecAlgorithm::Grid
+        ) {
             self.config.single_order_usdt
         } else {
             match self
@@ -2181,7 +2272,12 @@ impl BatchExecStrategy {
                 side,
                 remaining_base_qty: batch_base_qty,
                 maker_requotes: 0,
-                use_taker: should_use_taker(&self.config, 0, target_signal),
+                use_taker: should_use_taker(
+                    &self.config,
+                    0,
+                    target_signal,
+                    self.exec_venue.is_spot(),
+                ),
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
@@ -2260,15 +2356,18 @@ impl BatchExecStrategy {
     ) -> Result<Vec<BatchChildOrderPlan>, String> {
         let limits = self.load_order_limits((bid + ask) * 0.5)?;
 
-        let conversion = ChildQtyMultiplier {
+        let conversion = ChildPlanContext {
             value: limits.qty_multiplier,
             notional_price: self.inverse_reference_price,
+            volatility: self.grid_volatility(get_timestamp_us()),
+            cash: self.exec_venue.is_spot(),
         };
         let effective_config = self.effective_config();
         let use_taker = should_use_taker(
             &effective_config,
             batch.maker_requotes,
             self.active_target_signal(),
+            self.exec_venue.is_spot(),
         );
         let plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
             rebuild_child_order_plans_at_preserved_levels(
@@ -2313,6 +2412,9 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
+        if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
+            return;
+        }
         if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
             return;
         }
@@ -2328,6 +2430,7 @@ impl BatchExecStrategy {
             &self.config,
             batch.maker_requotes,
             self.active_target_signal(),
+            self.exec_venue.is_spot(),
         );
         let plans = match self.build_child_orders(&batch, quote.bid, quote.ask) {
             Ok(value) => value,
@@ -3332,7 +3435,16 @@ impl Strategy for BatchExecStrategy {
                 .unwrap_or(0);
             if !self.pov_can_submit(now_ts, quote_ts) {
                 let expired = self.pov_state.expired(&self.config.pov, now_ts);
-                self.pause_pov_batches(expired);
+                self.pause_batches_for_data(expired);
+            }
+        }
+        if self.config.algorithm == ExecAlgorithm::Grid {
+            let quote_ts = MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .map(|quote| quote.ts)
+                .unwrap_or(0);
+            if !self.grid_can_submit(now_ts, quote_ts) {
+                self.pause_batches_for_data(false);
             }
         }
         self.maybe_start_or_requote_batch(now_ts);
@@ -3378,6 +3490,7 @@ mod tests {
         BatchExecConfig {
             algorithm: ExecAlgorithm::Batch,
             pov: PovConfig::default(),
+            grid: GridConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: 20,
@@ -3401,19 +3514,209 @@ mod tests {
         }
     }
 
+    fn grid_config() -> BatchExecConfig {
+        BatchExecConfig {
+            algorithm: ExecAlgorithm::Grid,
+            ..config()
+        }
+    }
+
+    fn grid_context(cash: bool) -> ChildPlanContext {
+        ChildPlanContext {
+            value: 1.0,
+            notional_price: None,
+            volatility: Some(0.01),
+            cash,
+        }
+    }
+
+    #[test]
+    fn grid_cash_uses_exact_maker_round_budget_and_futures_never_exhaust_it() {
+        let mut cfg = grid_config();
+        for retries in 0..=cfg.max_maker_requotes {
+            assert!(!should_use_taker(&cfg, retries, 0, true));
+        }
+        assert!(should_use_taker(&cfg, cfg.max_maker_requotes + 1, 0, true));
+        assert!(!should_use_taker(&cfg, u32::MAX, 0, false));
+        for cash in [false, true] {
+            for signal in [-1, 1] {
+                assert!(should_use_taker(&cfg, 0, signal, cash));
+            }
+        }
+        cfg.max_maker_requotes = 0; // one initial maker round
+        assert!(!should_use_taker(&cfg, 0, 0, true));
+        assert!(should_use_taker(&cfg, 1, 0, true));
+        assert!(!should_use_taker(&cfg, 1, 0, false));
+    }
+
+    #[test]
+    fn grid_cash_and_futures_share_fixed_hand_pricing_and_taker_merges_remaining_qty() {
+        let cfg = grid_config();
+        assert_eq!(cfg.effective_single_order_usdt(1_000_000.0), 100.0);
+        for side in [Side::Buy, Side::Sell] {
+            for cash in [true, false] {
+                let plans = build_child_order_plans(
+                    &cfg,
+                    side,
+                    3.0,
+                    0,
+                    0,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                assert_eq!(plans.len(), 3);
+                for (index, plan) in plans.iter().enumerate() {
+                    let offset = [0.0, 0.005, 0.01][index];
+                    let expected = match side {
+                        Side::Buy => align_price_floor(100.0 * (1.0 - offset), 0.01),
+                        Side::Sell => align_price_ceil(101.0 * (1.0 + offset), 0.01),
+                    };
+                    assert_eq!(plan.price, expected);
+                    assert_eq!(plan.order_type, OrderType::Limit);
+                    if index < 2 {
+                        assert!(plan.qty_base * plan.price <= 100.0 + 1e-9);
+                    }
+                }
+                let reissued = build_child_order_plans(
+                    &cfg,
+                    side,
+                    2.123,
+                    100,
+                    0,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                assert_eq!(
+                    reissued[0].order_type,
+                    if cash {
+                        OrderType::Market
+                    } else {
+                        OrderType::Limit
+                    }
+                );
+                if cash {
+                    assert_eq!(reissued.len(), 1);
+                    assert!((reissued[0].qty_base - 2.123).abs() < 1e-9);
+                }
+            }
+        }
+        assert!(build_child_order_plans(
+            &cfg,
+            Side::Buy,
+            3.0,
+            0,
+            0,
+            100.0,
+            101.0,
+            0.01,
+            0.001,
+            0.001,
+            5.0,
+            1.0
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn grid_requotes_preserve_filled_levels_and_merge_only_invalid_tail() {
+        let cfg = grid_config();
+        let remaining = BTreeMap::from([(0, 0.5), (2, 0.01)]);
+        let plans = rebuild_child_order_plans_at_preserved_levels(
+            &cfg,
+            Side::Buy,
+            &remaining,
+            100.0,
+            101.0,
+            0.01,
+            0.001,
+            0.001,
+            5.0,
+            grid_context(true),
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].level_index, 0);
+        assert!((plans[0].qty_base - 0.51).abs() < 1e-9);
+        let remaining = BTreeMap::from([(2, 0.5)]);
+        let plans = rebuild_child_order_plans_at_preserved_levels(
+            &cfg,
+            Side::Buy,
+            &remaining,
+            100.0,
+            101.0,
+            0.01,
+            0.001,
+            0.001,
+            5.0,
+            grid_context(false),
+        )
+        .unwrap();
+        assert_eq!(plans[0].level_index, 2);
+        assert_eq!(plans[0].price, 99.0);
+        assert_eq!(plans[0].qty_base, 0.5);
+    }
+
+    #[test]
+    fn grid_config_changes_wait_for_old_fills_before_releasing_reservations() {
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.config = grid_config();
+        assert!(!strategy.grid_can_submit(1_000_000, 1_000_000));
+        let mut changed = strategy.config.clone();
+        changed.grid.open_offset_lower = 0.001;
+        strategy.update_config(changed).unwrap();
+        assert!(strategy.config_transition_in_progress);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert_eq!(strategy.pov_reserved_qty(), 2.0);
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(11, 0.5)));
+        assert_eq!(strategy.virtual_position_qty, Some(0.5));
+        strategy.finish_config_transition_if_settled(2_000_000);
+        assert!(!strategy.config_transition_in_progress);
+        assert!(strategy.batches.is_empty());
+    }
+
+    #[test]
+    fn grid_symbol_overrides_roundtrip_all_parameters() {
+        let overrides: BatchExecConfigOverride = serde_json::from_value(serde_json::json!({
+            "algorithm": "grid", "grid": {"open_buy_vol_scale": [0.2, 0.8], "open_offset_lower": 0.001},
+            "single_order_usdt": 50.0, "orders_per_batch": 4
+        })).unwrap();
+        overrides.validate(&config()).unwrap();
+        let cfg = overrides.apply_to(&config());
+        assert_eq!(cfg.algorithm, ExecAlgorithm::Grid);
+        assert_eq!(cfg.grid.open_buy_vol_scale, [0.2, 0.8]);
+        assert_eq!(cfg.single_order_usdt, 50.0);
+        assert_eq!(cfg.orders_per_batch, 4);
+        assert_eq!(
+            serde_json::from_value::<BatchExecConfig>(serde_json::to_value(&cfg).unwrap()).unwrap(),
+            cfg
+        );
+    }
+
     #[test]
     fn pov_liquidity_policy_and_sizing_override_batch_urgency() {
         let mut cfg = config();
         cfg.algorithm = ExecAlgorithm::Pov;
         cfg.pov.liquidity = PovLiquidity::MakerOnly;
-        assert!(!should_use_taker(&cfg, u32::MAX, 1));
+        assert!(!should_use_taker(&cfg, u32::MAX, 1, false));
         assert_eq!(cfg.effective_single_order_usdt(1_000_000.0), 100.0);
         cfg.pov.liquidity = PovLiquidity::TakerOnly;
-        assert!(should_use_taker(&cfg, 0, 0));
+        assert!(should_use_taker(&cfg, 0, 0, false));
         cfg.pov.liquidity = PovLiquidity::MakerThenTaker;
-        assert!(!should_use_taker(&cfg, 0, 0));
-        assert!(should_use_taker(&cfg, cfg.max_maker_requotes + 1, 0));
-        assert!(should_use_taker(&cfg, 0, -1));
+        assert!(!should_use_taker(&cfg, 0, 0, false));
+        assert!(should_use_taker(&cfg, cfg.max_maker_requotes + 1, 0, false));
+        assert!(should_use_taker(&cfg, 0, -1, false));
     }
 
     #[test]
@@ -3543,13 +3846,13 @@ mod tests {
         let mut strategy = strategy_with_orphan_batch(&[]);
         strategy.batches.get_mut(&1).unwrap().phase = BatchPhase::ReadyToSubmit;
         strategy.batches.get_mut(&1).unwrap().remaining_base_qty = 2.0;
-        strategy.pause_pov_batches(false);
+        strategy.pause_batches_for_data(false);
         assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
-        strategy.pause_pov_batches(true);
+        strategy.pause_batches_for_data(true);
         assert!(strategy.batches.is_empty());
 
         let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
-        strategy.pause_pov_batches(true);
+        strategy.pause_batches_for_data(true);
         assert_eq!(strategy.batches.len(), 1);
         assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
         assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(11, 0.0)));
@@ -3659,9 +3962,11 @@ mod tests {
 
     #[test]
     fn inverse_plans_use_mark_for_contract_face_and_close_the_last_contract() {
-        let conversion = ChildQtyMultiplier {
+        let conversion = ChildPlanContext {
             value: 100.0 / 50000.0,
             notional_price: Some(50000.0),
+            volatility: None,
+            cash: false,
         };
         for side in [Side::Buy, Side::Sell] {
             let plans = build_child_order_plans(

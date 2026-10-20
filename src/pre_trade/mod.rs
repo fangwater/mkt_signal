@@ -19,6 +19,7 @@ pub mod event;
 pub mod exec_algorithm_switch;
 pub mod exec_position_ledger;
 pub mod exec_resample_channel;
+pub mod exec_volatility_channel;
 pub mod exec_volume_channel;
 pub mod fr_position_concentration_guard;
 pub mod gate_fr_risk_limit_guard;

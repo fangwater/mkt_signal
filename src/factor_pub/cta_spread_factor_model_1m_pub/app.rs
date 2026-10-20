@@ -28,6 +28,7 @@ use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
 };
 
 use super::cfg::{CtaSpreadFactorPubConfig, KafkaInputConfig, NormalizeConfig};
+use super::volatility::{VolatilityFactors, VolatilityObservation, VolatilityOutputs};
 
 const FACTOR_WINDOW: usize = 2_880;
 const FACTOR_MIN_SAMPLES: usize = 1_440;
@@ -467,6 +468,8 @@ struct Stats {
     evaluation_errors: u64,
     published: u64,
     publish_failed: u64,
+    vol_published: u64,
+    vol_publish_failed: u64,
 }
 
 enum PeriodEvent<'a> {
@@ -503,6 +506,8 @@ pub struct CtaSpreadFactorModel1mPubApp {
     pending_factors: HashMap<(String, i64), Vec<FactorObservation>>,
     pending_spread: HashMap<(String, i64), SpreadObservation>,
     outputs: Vec<FactorOutput>,
+    volatility: VolatilityFactors,
+    volatility_outputs: Option<VolatilityOutputs>,
     publish_enabled: bool,
     last_pending_prune: Instant,
     last_stats_log: Instant,
@@ -551,6 +556,7 @@ impl FactorHistoryWriter {
                 "generation":self.generation,"caught_up":self.caught_up,
                 "first":self.first,"latest":self.latest,"updated_ms":now_millis(),
                 "records":stats.records,"published":stats.published,"publish_failed":stats.publish_failed,
+                "vol_published":stats.vol_published,"vol_publish_failed":stats.vol_publish_failed,
                 "decode_errors":stats.decode_errors,"evaluation_errors":stats.evaluation_errors,
                 "missing_amount_thresholds":self.missing_amount_thresholds,
                 "size_dependent_factors":self.size_dependent_factors,
@@ -688,6 +694,8 @@ impl CtaSpreadFactorModel1mPubApp {
             pending_factors: HashMap::new(),
             pending_spread: HashMap::new(),
             outputs: Vec::new(),
+            volatility: VolatilityFactors::default(),
+            volatility_outputs: None,
             publish_enabled: false,
             last_pending_prune: Instant::now(),
             last_stats_log: Instant::now(),
@@ -715,9 +723,12 @@ impl CtaSpreadFactorModel1mPubApp {
             return Ok(app);
         }
         loop {
-            match create_shared_outputs(&app.venue_slug, &app.universe.factors) {
-                Ok(outputs) => {
+            let outputs = create_shared_outputs(&app.venue_slug, &app.universe.factors)
+                .and_then(|outputs| Ok((outputs, VolatilityOutputs::new()?)));
+            match outputs {
+                Ok((outputs, volatility_outputs)) => {
                     app.outputs = outputs;
+                    app.volatility_outputs = Some(volatility_outputs);
                     break;
                 }
                 Err(err) if wait_for_publishers => {
@@ -735,10 +746,11 @@ impl CtaSpreadFactorModel1mPubApp {
             }
         }
         app.publish_enabled = true;
+        app.publish_volatility(&app.volatility.latest());
         app.history.caught_up = true;
         app.history.write_status(&app.stats)?;
         info!(
-            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440/lag1m nq=120/120/60",
+            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440/lag1m nq=120/120/60 vol=5s/24/720/unscaled/cash+futures",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
@@ -782,6 +794,10 @@ impl CtaSpreadFactorModel1mPubApp {
     }
 
     fn consume_period(&mut self, period: &PeriodMessage, cash: bool) {
+        let volatility = self
+            .volatility
+            .consume_period(period, cash, &self.allowed_symbols);
+        self.publish_volatility(&volatility);
         for info in &period.symbol_infos {
             let symbol = normalize_symbol_for_venue(&info.symbol, self.venue);
             if !self.allowed_symbols.contains(&symbol) {
@@ -848,6 +864,17 @@ impl CtaSpreadFactorModel1mPubApp {
                 bar.start_ms = bar.start_ms.saturating_add(BAR_MS);
                 self.consume_bar(&symbol, bar);
             }
+        }
+    }
+
+    fn publish_volatility(&mut self, observations: &[VolatilityObservation]) {
+        if !self.publish_enabled {
+            return;
+        }
+        if let Some(outputs) = &mut self.volatility_outputs {
+            let (published, failed) = outputs.publish(observations, now_millis());
+            self.stats.vol_published = self.stats.vol_published.saturating_add(published);
+            self.stats.vol_publish_failed = self.stats.vol_publish_failed.saturating_add(failed);
         }
     }
 
@@ -1128,14 +1155,16 @@ impl CtaSpreadFactorModel1mPubApp {
             return;
         }
         info!(
-            "CTA spread factor stats records={} decode_errors={} eval_errors={} published={} publish_failed={} factor_symbols={} spread_symbols={}",
+            "CTA spread factor stats records={} decode_errors={} eval_errors={} published={} publish_failed={} factor_symbols={} spread_symbols={} vol_published={} vol_publish_failed={}",
             self.stats.records,
             self.stats.decode_errors,
             self.stats.evaluation_errors,
             self.stats.published,
             self.stats.publish_failed,
             self.factor_states.len(),
-            self.spread_states.len()
+            self.spread_states.len(),
+            self.stats.vol_published,
+            self.stats.vol_publish_failed,
         );
         self.last_stats_log = Instant::now();
     }
@@ -1192,7 +1221,7 @@ fn valid_bar(bar: &BaselineBar) -> bool {
     .all(|value| value.is_finite() && *value > 0.0)
 }
 
-fn timestamp_as_micros(value: i64) -> i64 {
+pub(super) fn timestamp_as_micros(value: i64) -> i64 {
     if value >= 10_000_000_000_000 {
         value
     } else {

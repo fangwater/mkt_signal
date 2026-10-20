@@ -2131,6 +2131,24 @@ impl BatchExecConfigReloader {
             payload
                 .validate()
                 .with_context(|| format!("invalid BatchExec config key={key}"))?;
+            if payload.config.algorithm == crate::strategy::pov::ExecAlgorithm::Grid
+                || payload
+                    .symbol_overrides
+                    .values()
+                    .any(|value| value.algorithm == Some(crate::strategy::pov::ExecAlgorithm::Grid))
+            {
+                let exchange = runtime_common::exchange::Exchange::from_str(
+                    self.venue.trade_engine_exchange(),
+                )
+                .context("invalid grid exchange")?;
+                crate::strategy::grid_exec::validate_grid_account(
+                    self.venue,
+                    runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?,
+                    self.binance_account_mode,
+                )
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("unsupported grid account key={key}"))?;
+            }
             let mut normalized_targets = payload
                 .normalized_targets()
                 .with_context(|| format!("invalid BatchExec targets key={key}"))?;
