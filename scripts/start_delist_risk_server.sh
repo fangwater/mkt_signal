@@ -32,7 +32,7 @@ if [[ -z "$BIN_PATH" ]]; then
   exit 1
 fi
 
-BIND="${DELIST_BIND:-0.0.0.0:8787}"
+BIND="${DELIST_BIND:-127.0.0.1:8787}"
 PORT="${BIND##*:}"
 APP_NAME="${PM2_NAME:-delist_risk_server}"
 SG_TUNNEL_NAME="${DELIST_SG_REDIS_TUNNEL_NAME:-delist_sg_redis_tunnel}"
@@ -69,6 +69,7 @@ stop_existing_app() {
 
 ARGS=(
   --bind "$BIND"
+  --access-config "${DELIST_ACCESS_CONFIG:-${BASE_DIR}/config/delist_access.json}"
   --book "$BOOK_PATH"
   --days "${DELIST_DAYS:-30}"
   --announcement-interval-secs "${DELIST_ANNOUNCEMENT_INTERVAL_SECS:-86400}"

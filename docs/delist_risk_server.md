@@ -2,7 +2,7 @@
 
 最后更新：2026-10-20 UTC
 
-Public HTTP service for trading-book delist / opening-restriction risk on
+Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
 extracts land in one book. Full dump, grouped by exchange.
 
@@ -37,7 +37,65 @@ Loopback (same host):
 http://127.0.0.1:8787/healthz
 ```
 
-No API token. Do not put secrets in query strings.
+All page and data endpoints require the `delist_session` cookie. Visit
+`/delist/` to log in; credentials never belong in URLs. Manual flatten retains
+its separate operation token in addition to the login session.
+
+## Login and FR panel access
+
+Delist is the entry point for the nine JP FR environments: Binance arb02/03/04,
+Gate arb01/02/03, and Bitget arb01/02/03. After login, use the account row's Viz
+or Config link. `/delist/open?env=<slug>&panel=viz|config` grants that environment
+to the current session and redirects to its existing `/fr/<slug>/` route.
+The launch link must originate from the delist board. A direct panel URL without
+a grant redirects to the board, including when the user has already logged in.
+Refreshes and navigation within an opened environment keep working.
+
+Sessions are random, server-owned tokens with a 12-hour absolute lifetime;
+cookies use HttpOnly, SameSite=Strict, Path=/, and Secure for an HTTPS origin.
+Logout revokes the session and its grants; restarting delist also clears them.
+Password verification uses PBKDF2-HMAC-SHA256 with a random salt and 600,000
+iterations. Login attempts are limited per proxy-observed client IP. Mutating
+requests and websocket handshakes require the configured same-origin header.
+Neither shared passwords nor password hashes are checked into Git.
+
+Bootstrap the private, mode-0600 credential file interactively:
+
+```bash
+python3 scripts/configure_delist_access.py --username <user> \
+  --public-origin http://<jp-host>:4191 --output config/delist_access.json
+```
+
+`start_delist_risk_server.sh` passes `--access-config` (override with
+`DELIST_ACCESS_CONFIG`). Missing or invalid credentials prevent startup.
+The backend defaults to `127.0.0.1:8787`; `public_origin` must match the browser's
+scheme, host and port. Provision the private file before the first authenticated
+release; publishing must preserve it.
+
+Nginx checks the same session and per-environment grant for all seven FR
+locations: static Viz, Config with/without trailing slash, `/ws`, `/fr_ws`,
+`/healthz`, and `/snapshot`. Config subpaths inherit the gate. Internal auth
+request headers are set by Nginx, and its verify route cannot be called publicly.
+Only actual loopback GET requests to the nine `/snapshot` URLs bypass browser
+login, preserving automatic delist position checks; this exception grants no
+configuration write or other panel access.
+
+`scripts/protect_delist_routes.py` renders an in-place site patch and refuses
+partial route inventories. Install `config/nginx_delist_access.conf` and
+`config/nginx_delist_fr_gate.conf` under `/etc/nginx/snippets/` with names
+`delist_access.conf` and `delist_fr_gate.conf`, validate the rendered site with
+`nginx -t`, then atomically install and reload. The general mapping-only Nginx
+setup wrapper refuses to overwrite a site containing these access gates.
+
+`scripts/delist_fr_port_guard.sh` blocks non-loopback IPv4/IPv6 connections to
+the 27 Config/Viz/FR dashboard backend ports and delist's 8787. The systemd unit
+`scripts/systemd/delist-fr-port-guard.service` reapplies the dedicated INPUT chain
+after reboot. Install the script at `/usr/local/sbin/` and the unit at
+`/etc/systemd/system/`, then enable/start the unit. This avoids restarting any
+trading or dashboard processes. To roll back the port rules explicitly, use
+the script's `--remove`; stopping the unit alone deliberately leaves rules in
+place. Retain access gates and port rules together: removing only the port
+guard exposes the existing wildcard-bound FR backend listeners.
 
 ## Current JP deployment
 

@@ -76,6 +76,9 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, Semaphore};
 use tokio::time;
 use tokio_tungstenite::tungstenite::Message;
 
+#[path = "delist_risk_server/access.rs"]
+mod access;
+
 use mkt_signal::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
 };
@@ -89,8 +92,12 @@ const UNIMMR_EMPTY_REPEAT_SECS: u64 = 3_600;
 #[command(name = "delist_risk_server")]
 #[command(about = "HTTP query for exchange delist / margin / futures risk")]
 struct Args {
-    #[arg(long, default_value = "0.0.0.0:8787")]
+    #[arg(long, default_value = "127.0.0.1:8787")]
     bind: String,
+
+    /// Required login credentials (salted password hash), origin and FR allowlist.
+    #[arg(long, default_value = "config/delist_access.json")]
+    access_config: PathBuf,
 
     #[arg(long, default_value = "data/delist_risk.json")]
     book: PathBuf,
@@ -260,6 +267,7 @@ struct RiskParams {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    let access = access::Access::load(&args.access_config)?;
     let mut book = RiskBook::load(&args.book).unwrap_or_else(|err| {
         warn!("load risk book failed, start empty: {err:#}");
         RiskBook::default()
@@ -443,6 +451,8 @@ async fn main() -> Result<()> {
         .route("/flatten", post(manual_flatten))
         .with_state(state);
 
+    let app = access::protect(app, access);
+
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
     info!(
         "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s nav_strategies={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U",
@@ -559,6 +569,12 @@ async fn query_accounts(
         )
     );
     let mut accounts = build_account_views(&account_specs, &risk, &listings, &universes);
+    for account in &mut accounts {
+        if account.kind == "funding_rate" && account.host == "jp" {
+            account.viz_url = Some(format!("/delist/open?env={}&panel=viz", account.slug));
+            account.config_url = Some(format!("/delist/open?env={}&panel=config", account.slug));
+        }
+    }
     decorate_unimmr_lists(&mut accounts, &unimmr_lists);
     let mut redis = std::collections::BTreeMap::new();
     redis.insert(

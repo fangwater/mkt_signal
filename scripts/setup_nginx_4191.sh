@@ -19,6 +19,13 @@ KEEP_OLD_PORTS="${KEEP_OLD_PORTS:-0}"
 SITE_NAME="${SITE_NAME:-crypto_proxy_${PORT}}"
 CONF_PATH="${CONF_PATH:-/etc/nginx/sites-available/${SITE_NAME}.conf}"
 
+# A mapping-only rewrite would remove the per-location FR access gates.
+# Preserve the live site and use the scoped renderer for authenticated FR routes.
+if [[ -f "$CONF_PATH" ]] && grep -q 'delist_access.conf' "$CONF_PATH"; then
+    echo '[ERROR] authenticated FR routes are installed; preserve this site and use protect_delist_routes.py for scoped changes' >&2
+    exit 1
+fi
+
 need_sudo() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "sudo"

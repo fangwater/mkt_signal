@@ -1,0 +1,12 @@
+[Unit]
+Description=Restrict FR web backends to the authenticated Nginx gateway
+After=network-pre.target
+Before=nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/delist_fr_port_guard.sh --execute
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

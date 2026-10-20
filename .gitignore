@@ -136,6 +136,8 @@ local_binance_ed25519_test/
 
 # Private JP recovery bundles (contain credentials and live strategy settings).
 /backups/jp_recovery/
+/config/delist_access.json
+/artifacts/delist_risk_server/
 
 # Reproducible deployment payloads and temporary source snapshots.
 /artifacts/**/*.tar

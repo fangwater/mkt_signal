@@ -187,6 +187,7 @@
         <div class="brand"><span class="brand__name">Risk Monitor</span><span class="brand__context">Delist coverage</span></div>
         <div class="system-state" id="system-state"><span class="state-dot"></span><span>正在读取</span></div>
         <button class="refresh" id="refresh" type="button">刷新</button>
+        <button class="refresh" id="logout" type="button">退出</button>
       </div>
     </header>
     <main class="page">
@@ -221,6 +222,7 @@
         return fetch(base + path.replace(/^\//, ''), { cache: 'no-store', ...options }).then(async (response) => {
           const data = await response.json().catch(() => ({}));
           if (!response.ok) {
+            if (response.status === 401 && path !== 'flatten') location.replace('/delist/login');
             const error = new Error(data.error || `${path} ${response.status}`);
             error.status = response.status;
             throw error;
@@ -381,10 +383,10 @@
         const unimmrCell = unimmrN != null ? `<div class="account-venues">UniMMR <span class="${unimmrN ? '' : 'account-value--risk'}">${unimmrN}</span> 候选</div>` : '';
         const unimmrChip = account.unimmr_empty ? ' <span class="chip chip--risk">UniMMR为空</span>' : '';
         const vizLink = account.viz_url
-          ? `<a class="config-link viz-link" href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener noreferrer" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的 Viz 看板">进入看板 <span aria-hidden="true">↗</span></a>`
+          ? `<a class="config-link viz-link" href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的 Viz 看板">进入看板 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无看板</span>';
         const configLink = account.config_url
-          ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener noreferrer" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
+          ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无配置入口</span>';
         const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td><span class="account-nav">${vizLink}${configLink}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
@@ -468,6 +470,11 @@
         }
       }
       document.getElementById('refresh').addEventListener('click', load);
+      document.getElementById('logout').addEventListener('click', async () => {
+        await api('logout', { method: 'POST' });
+        window.sessionStorage.removeItem('delistFlattenToken');
+        location.replace('/delist/login');
+      });
       load();
       window.setInterval(load, 60_000);
     </script>
