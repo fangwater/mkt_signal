@@ -224,7 +224,11 @@ fn should_use_taker(
     cash: bool,
 ) -> bool {
     if config.algorithm == ExecAlgorithm::Grid {
-        return signal.abs() == 1 || (cash && maker_requotes > config.max_maker_requotes);
+        return signal.abs() == 1
+            || config
+                .grid
+                .max_maker_requotes(cash)
+                .is_some_and(|limit| maker_requotes > limit);
     }
     if config.algorithm == ExecAlgorithm::Ctaker {
         return true;
@@ -247,14 +251,14 @@ impl BatchExecConfig {
             if cash {
                 self.orders_per_batch = self.grid.spot.orders_per_batch;
                 self.maker_timeout_ms = self.grid.spot.maker_timeout_ms;
-                self.max_maker_requotes = self.grid.spot.max_maker_requotes;
                 self.grid.futures = Default::default();
             } else {
                 self.orders_per_batch = self.grid.futures.orders_per_batch;
                 self.maker_timeout_ms = self.grid.futures.maker_timeout_ms;
-                self.max_maker_requotes = 0; // Futures never use the retry limit.
                 self.grid.spot = Default::default();
             }
+            // Grid uses only its selected market's optional limit, never the Batch field.
+            self.max_maker_requotes = 0;
         }
         self
     }
@@ -758,12 +762,14 @@ fn maker_limit_price(
     ask: f64,
     price_tick: f64,
     volatility: Option<f64>,
+    cash: bool,
 ) -> Result<(f64, f64), String> {
     if config.algorithm == ExecAlgorithm::Grid {
         let offset = grid_offset(
             level_index,
             config.orders_per_batch,
             volatility.ok_or("grid volatility is unavailable")?,
+            config.grid.vol_multiplier(cash),
         )?;
         let price = match side {
             Side::Buy => align_price_floor(bid * (1.0 - offset), price_tick),
@@ -889,6 +895,7 @@ fn build_child_order_plans(
                 ask,
                 price_tick,
                 conversion.volatility,
+                conversion.cash,
             )?
         };
         let sizing_price = if use_taker {
@@ -991,6 +998,7 @@ fn rebuild_child_order_plans_at_preserved_levels(
             ask,
             price_tick,
             conversion.volatility,
+            conversion.cash,
         )?;
         let raw_venue_qty = remaining_base_qty / qty_multiplier;
         let qty_venue = align_child_qty_floor(raw_venue_qty, qty_step);
@@ -2129,6 +2137,7 @@ impl BatchExecStrategy {
                     quote.ask,
                     limits.price_tick,
                     self.grid_volatility(now_ts),
+                    self.exec_venue.is_spot(),
                 ) {
                     Ok((price, _)) => price,
                     Err(err) => {
@@ -3556,7 +3565,7 @@ mod tests {
         cfg.maker_timeout_ms = 99;
         cfg.grid.spot.orders_per_batch = 2;
         cfg.grid.spot.maker_timeout_ms = 2000;
-        cfg.grid.spot.max_maker_requotes = 4;
+        cfg.grid.spot.max_maker_requotes = Some(4);
         cfg.grid.futures.orders_per_batch = 5;
         cfg.grid.futures.maker_timeout_ms = 9000;
         for (cash, venue, count, timeout) in [
@@ -3614,8 +3623,12 @@ mod tests {
             let mut changed = grid_config();
             if cash {
                 changed.grid.futures.orders_per_batch = 7;
+                changed.grid.futures.vol_multiplier = 2.0;
+                changed.grid.futures.max_maker_requotes = Some(0);
             } else {
                 changed.grid.spot.orders_per_batch = 7;
+                changed.grid.spot.vol_multiplier = 0.5;
+                changed.grid.spot.max_maker_requotes = None;
             }
             strategy.update_config(changed).unwrap();
             assert!(!strategy.config_transition_in_progress);
@@ -3625,22 +3638,118 @@ mod tests {
     }
 
     #[test]
-    fn grid_cash_uses_exact_maker_round_budget_and_futures_never_exhaust_it() {
+    fn grid_both_markets_support_finite_or_unlimited_maker_rounds() {
         let mut cfg = grid_config();
-        for retries in 0..=cfg.max_maker_requotes {
-            assert!(!should_use_taker(&cfg, retries, 0, true));
-        }
-        assert!(should_use_taker(&cfg, cfg.max_maker_requotes + 1, 0, true));
+        assert!(!should_use_taker(&cfg, 2, 0, true));
+        assert!(should_use_taker(&cfg, 3, 0, true));
         assert!(!should_use_taker(&cfg, u32::MAX, 0, false));
-        for cash in [false, true] {
-            for signal in [-1, 1] {
-                assert!(should_use_taker(&cfg, 0, signal, cash));
+        for limit in [Some(0), Some(2), Some(4), None] {
+            cfg.grid.spot.max_maker_requotes = limit;
+            cfg.grid.futures.max_maker_requotes = limit;
+            // Batch's unrelated limit must never override Grid's selected market.
+            cfg.max_maker_requotes = 0;
+            for cash in [true, false] {
+                let effective = cfg.clone().for_market(cash);
+                if let Some(limit) = limit {
+                    for completed in 0..=limit {
+                        assert!(!should_use_taker(&effective, completed, 0, cash));
+                    }
+                    assert!(should_use_taker(&effective, limit + 1, 0, cash));
+                } else {
+                    assert!(!should_use_taker(&effective, u32::MAX, 0, cash));
+                }
+                for signal in [-1, 1] {
+                    assert!(should_use_taker(&effective, 0, signal, cash));
+                }
             }
         }
-        cfg.max_maker_requotes = 0; // one initial maker round
-        assert!(!should_use_taker(&cfg, 0, 0, true));
-        assert!(should_use_taker(&cfg, 1, 0, true));
-        assert!(!should_use_taker(&cfg, 1, 0, false));
+    }
+
+    #[test]
+    fn grid_finite_fallback_waits_for_terminals_and_only_takes_unfilled_quantity() {
+        for cash in [true, false] {
+            let mut strategy =
+                strategy_with_orphan_batch(&[(101, 0, 1.0, 0.25), (102, 1, 1.0, 0.0)]);
+            let mut cfg = grid_config();
+            cfg.grid.spot.max_maker_requotes = Some(0);
+            cfg.grid.futures.max_maker_requotes = Some(0);
+            strategy.config = cfg.for_market(cash);
+            assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.6)));
+            assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForRequote);
+            assert_eq!(strategy.batches[&1].maker_requotes, 0);
+            assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(102, 0.2)));
+            let batch = &strategy.batches[&1];
+            assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+            assert_eq!(batch.maker_requotes, 1);
+            assert!((batch.remaining_base_qty - 1.2).abs() < QTY_EPS);
+            let plans = build_child_order_plans(
+                &strategy.config,
+                Side::Buy,
+                batch.remaining_base_qty,
+                batch.maker_requotes,
+                0,
+                100.0,
+                101.0,
+                0.01,
+                0.001,
+                0.001,
+                5.0,
+                grid_context(cash),
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].order_type, OrderType::Market);
+            assert!((plans[0].qty_base - 1.2).abs() < QTY_EPS);
+        }
+    }
+
+    #[test]
+    fn grid_vol_multiplier_is_market_scoped_for_initial_and_preserved_levels() {
+        let mut cfg = grid_config();
+        cfg.grid.spot.vol_multiplier = 0.5;
+        cfg.grid.futures.vol_multiplier = 2.0;
+        for (cash, outer) in [(true, 0.005), (false, 0.02)] {
+            let effective = cfg.clone().for_market(cash);
+            for side in [Side::Buy, Side::Sell] {
+                let plans = build_child_order_plans(
+                    &effective,
+                    side,
+                    3.0,
+                    0,
+                    0,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                let remaining = BTreeMap::from([(2, 0.5)]);
+                let reissued = rebuild_child_order_plans_at_preserved_levels(
+                    &effective,
+                    side,
+                    &remaining,
+                    100.0,
+                    101.0,
+                    0.01,
+                    0.001,
+                    0.001,
+                    5.0,
+                    grid_context(cash),
+                )
+                .unwrap();
+                let expected = match side {
+                    Side::Buy => align_price_floor(100.0 * (1.0 - outer), 0.01),
+                    Side::Sell => align_price_ceil(101.0 * (1.0 + outer), 0.01),
+                };
+                assert_eq!(plans[2].price, expected);
+                assert_eq!(reissued[0].price, expected);
+                assert!((plans[1].price_offset - outer / 2.0).abs() < 1e-12);
+                assert_eq!(plans[0].price_offset, 0.0);
+            }
+        }
     }
 
     #[test]

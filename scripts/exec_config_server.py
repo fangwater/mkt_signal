@@ -49,8 +49,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "targets": {},
     "algorithm": "batch",
     "grid": {
-        "spot": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "max_maker_requotes": 2},
-        "futures": {"orders_per_batch": 3, "maker_timeout_ms": 1000},
+        "spot": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "vol_multiplier": 1.0, "max_maker_requotes": 2},
+        "futures": {"orders_per_batch": 3, "maker_timeout_ms": 1000, "vol_multiplier": 1.0, "max_maker_requotes": None},
     },
     "pov": {
         "participation_rate": 0.1,
@@ -274,9 +274,19 @@ def normalize_grid(raw: Any) -> Dict[str, Any]:
         unknown = sorted(set(selected) - set(settings))
         if unknown:
             raise ValueError(f"unknown grid.{market} fields: {', '.join(unknown)}")
-        value[market] = {name: integer(selected.get(name, default), f"grid.{market}.{name}",
-                                      positive=name != "max_maker_requotes")
-                         for name, default in settings.items()}
+        normalized = {**settings, **selected}
+        for name in ("orders_per_batch", "maker_timeout_ms"):
+            normalized[name] = integer(normalized[name], f"grid.{market}.{name}", positive=True)
+        multiplier = normalized["vol_multiplier"]
+        if isinstance(multiplier, bool):
+            raise ValueError(f"grid.{market}.vol_multiplier must be a number")
+        normalized["vol_multiplier"] = finite_float(multiplier, f"grid.{market}.vol_multiplier", positive=True)
+        if normalized["max_maker_requotes"] is not None:
+            limit = integer(normalized["max_maker_requotes"], f"grid.{market}.max_maker_requotes")
+            if limit == 4_294_967_295:
+                raise ValueError(f"grid.{market}.max_maker_requotes must be less than uint32 max; use null for unlimited")
+            normalized["max_maker_requotes"] = limit
+        value[market] = normalized
     return value
 
 
@@ -829,7 +839,7 @@ INDEX_HTML = r"""<!doctype html>
       </section>
       <section id="grid-section" hidden>
         <div class="section-head"><h2>Grid</h2><span class="readonly-state">Read only</span></div>
-        <p>Spot maker rounds = Max Maker Requotes + 1, then taker. Futures keep requoting without a count limit. Explicit signal ±1 retains taker execution.</p>
+        <p>Spot and futures independently configure Vol multipliers and Maker rounds. Finite rounds include the initial order and then fall back to Taker; Unlimited keeps requoting. Explicit signal ±1 retains taker execution.</p>
         <div class="param-grid" id="grid-fields"></div>
       </section>
       <section id="pov-section" hidden>
@@ -901,15 +911,20 @@ INDEX_HTML = r"""<!doctype html>
           });
           el("grid-section").hidden = config.algorithm !== "grid";
           el("grid-fields").replaceChildren();
-          const gridLabels = {open_buy_vol_scale: "Buy Vol Scale", open_sell_vol_scale: "Sell Vol Scale", open_offset_lower: "Inner Offset Floor", vol_stale_ms: "Vol Stale ms", quote_stale_ms: "Quote Stale ms"};
-          Object.entries(gridLabels).forEach(([name, label]) => {
-            const field = document.createElement("div"); field.className = "field";
-            const caption = document.createElement("label"); caption.textContent = label;
-            const input = document.createElement("input"); input.disabled = true;
-            input.value = JSON.stringify((config.grid || DEFAULTS.grid)[name]);
-            field.append(caption, input); el("grid-fields").append(field);
+          const gridLabels = {vol_multiplier: "Vol Multiplier", orders_per_batch: "Orders per Batch", maker_timeout_ms: "Maker Timeout ms", max_maker_requotes: "Maker Rounds"};
+          ["spot", "futures"].forEach((market) => {
+            const settings = (config.grid || DEFAULTS.grid)[market];
+            Object.entries(gridLabels).forEach(([name, label]) => {
+              const field = document.createElement("div"); field.className = "field";
+              const caption = document.createElement("label"); caption.textContent = `${market === "spot" ? "Spot" : "Futures"} ${label}`;
+              const input = document.createElement("input"); input.disabled = true;
+              input.value = name === "max_maker_requotes"
+                ? (settings[name] === null ? "Unlimited" : `${settings[name] + 1} then Taker`)
+                : settings[name];
+              field.append(caption, input); el("grid-fields").append(field);
+            });
           });
-          ["max_batch", "maker_price_anchor", "tick_spacing"].forEach((name) => {
+          ["max_batch", "maker_price_anchor", "tick_spacing", "orders_per_batch", "maker_timeout_ms", "max_maker_requotes"].forEach((name) => {
             el(name).parentElement.hidden = config.algorithm === "grid";
           });
           renderTargets(config.targets);

@@ -16,21 +16,40 @@ SPEC.loader.exec_module(MODULE)
 class ExecConfigServerSymbolTests(unittest.TestCase):
     def test_grid_parameters_roundtrip_and_symbol_overrides(self) -> None:
         raw = {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTC": 1.0},
-               "grid": {"spot": {"orders_per_batch": 2, "maker_timeout_ms": 2000},
-                        "futures": {"orders_per_batch": 5, "maker_timeout_ms": 9000}},
+               "grid": {"spot": {"orders_per_batch": 2, "maker_timeout_ms": 2000, "vol_multiplier": 0.5, "max_maker_requotes": None},
+                        "futures": {"orders_per_batch": 5, "maker_timeout_ms": 9000, "vol_multiplier": 2, "max_maker_requotes": 4}},
                "symbol_overrides": {"ETH": {"algorithm": "grid", "grid": {"spot": {"max_maker_requotes": 4}}}}}
         normalized = MODULE.normalize_exec_config(raw)
         self.assertEqual(normalized["algorithm"], "grid")
         self.assertEqual(normalized["grid"]["spot"]["orders_per_batch"], 2)
         self.assertEqual(normalized["grid"]["futures"]["maker_timeout_ms"], 9000)
         self.assertEqual(normalized["symbol_overrides"]["ETH"]["grid"]["spot"]["max_maker_requotes"], 4)
-        self.assertNotIn("max_maker_requotes", normalized["grid"]["futures"])
+        self.assertEqual(normalized["grid"]["futures"]["max_maker_requotes"], 4)
+        self.assertIsNone(normalized["grid"]["spot"]["max_maker_requotes"])
+        self.assertEqual(normalized["grid"]["spot"]["vol_multiplier"], 0.5)
+        self.assertEqual(normalized["grid"]["futures"]["vol_multiplier"], 2)
         self.assertEqual(MODULE.normalize_exec_config(normalized), normalized)
         for invalid in ({"spot": {"orders_per_batch": 0}}, {"futures": {"maker_timeout_ms": 0}},
                         {"spot": {"max_maker_requotes": -1}}, {"spot": {"orders_per_batch": True}},
-                        {"futures": {"max_maker_requotes": 2}}, {"open_offset_lower": 0.1}, {"vol_stale_ms": 15000}):
+                        {"futures": {"max_maker_requotes": -1}}, {"open_offset_lower": 0.1}, {"vol_stale_ms": 15000}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 MODULE.normalize_grid(invalid)
+
+    def test_grid_market_defaults_limits_and_multiplier_validation(self) -> None:
+        defaults = MODULE.normalize_grid({"spot": {}, "futures": {}})
+        self.assertEqual(defaults["spot"]["max_maker_requotes"], 2)
+        self.assertIsNone(defaults["futures"]["max_maker_requotes"])
+        self.assertEqual(set(defaults["spot"]), set(defaults["futures"]))
+        for market in ("spot", "futures"):
+            self.assertEqual(defaults[market]["vol_multiplier"], 1)
+            for limit in (None, 0, 2, 4_294_967_294):
+                self.assertEqual(MODULE.normalize_grid({market: {"max_maker_requotes": limit}})[market]["max_maker_requotes"], limit)
+            for limit in (-1, 1.5, True, 4_294_967_295):
+                with self.subTest(market=market, limit=limit), self.assertRaises(ValueError):
+                    MODULE.normalize_grid({market: {"max_maker_requotes": limit}})
+            for multiplier in (0, -1, True, None, float("nan"), float("inf")):
+                with self.subTest(market=market, multiplier=multiplier), self.assertRaises(ValueError):
+                    MODULE.normalize_grid({market: {"vol_multiplier": multiplier}})
 
     def test_grid_account_gate_covers_base_and_symbol_selected_algorithms(self) -> None:
         for config in ({"algorithm": "grid"}, {"algorithm": "batch", "symbol_overrides": {"BTCUSDT": {"algorithm": "grid"}}}):
