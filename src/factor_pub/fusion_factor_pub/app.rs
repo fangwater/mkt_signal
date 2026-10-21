@@ -540,6 +540,16 @@ impl BaselineReplayState {
     /// the live fusion publisher. Call exactly once after every pushed row,
     /// including warm-up rows, so stateful factors advance identically.
     pub fn factor_values(&mut self, plan: &SymbolFactorPlan) -> Vec<f64> {
+        self.factor_values_with_tp_vpi_006_min_periods(plan, 360)
+    }
+
+    /// Override only TP_VPI_006's inner 360-bar sum warm-up. Its outer
+    /// 14-bar mean and all other factor formulas retain their normal rules.
+    pub fn factor_values_with_tp_vpi_006_min_periods(
+        &mut self,
+        plan: &SymbolFactorPlan,
+        min_periods: usize,
+    ) -> Vec<f64> {
         let needs_factor_118 = plan
             .ordered_factors
             .iter()
@@ -555,6 +565,13 @@ impl BaselineReplayState {
         plan.ordered_factors
             .iter()
             .map(|binding| {
+                if binding.factor_id == Some(FusionFactorId::TpVpi006) {
+                    return super::opv_factors::compute_tp_vpi_006_with_min_periods(
+                        &series,
+                        min_periods,
+                    )
+                    .unwrap_or(f64::NAN);
+                }
                 match FusionFactorPubApp::compute_supported_factor(
                     binding,
                     factor_118_result,

@@ -1,6 +1,15 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-21 07:27 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-21 09:21 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-21 09:11 UTC，新增 `binance-cta-perp-rx04` 5min 观察环境，15币、
+35因子、48组合，`enabled=false`，未绑定Manager/Exec。Kafka和公开K线沿用
+默认出口 `172.31.35.228`，未分配额外EIP/ENI地址或交易source IP。
+页面仅监听loopback10198/19188，经已有4191网关提供仓位表、`signals/`和`config/`：
+`/cta/binance-cta-perp-rx04/`。新增持久化snippet
+`/etc/nginx/snippets/cta_perp_rx04.conf`，由 `sites-available/crypto_proxy_4191.conf`
+include；`nginx -t`通过后reload。既有RX02/RX03配置哈希及62个进程身份保持。
+证据：`artifacts/cta_perp_rx04_deployment/`；网关修改前后副本保留在新环境 `run/`。
 
 2026-10-21 07:20 UTC，全symbol Vol 发布及三个Exec订阅容量升级完成，release
 `20261021T064822ZGridAllSymbols`（Exec `d3b724af` / Manager前端 `82f58cb`）。
@@ -323,6 +332,7 @@ binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账�
 binance-cta-spread-rx01      172.31.35.228                  配置服务、因子及signal运行，Kafka已追实时，发布关闭，Exec06停机；Kafka 默认出口
 binance-cta-special-rx02     172.31.35.228                  信号/config/dashboard；执行迁入 trade05
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
+binance-cta-perp-rx04        默认出口 / 172.31.35.228       独立5min观察信号，loopback10198/19188，未绑定Manager/Exec
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230

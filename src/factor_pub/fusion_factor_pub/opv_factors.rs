@@ -1366,6 +1366,13 @@ fn compute_tp_vpi_005(series: &SymbolSeries<'_>) -> Option<f64> {
 }
 
 fn compute_tp_vpi_006(series: &SymbolSeries<'_>) -> Option<f64> {
+    compute_tp_vpi_006_with_min_periods(series, 360)
+}
+
+pub(super) fn compute_tp_vpi_006_with_min_periods(
+    series: &SymbolSeries<'_>,
+    min_periods: usize,
+) -> Option<f64> {
     let n = series.close.len().min(series.volume.len());
     let mut obv = Vec::with_capacity(n);
     for i in 0..n {
@@ -1384,7 +1391,7 @@ fn compute_tp_vpi_006(series: &SymbolSeries<'_>) -> Option<f64> {
         };
         obv.push(delta);
     }
-    let obv_roll = rolling_sum_series(&obv, 360, 360).ok()?;
+    let obv_roll = rolling_sum_series(&obv, 360, min_periods).ok()?;
     rolling_mean_opt_exact(&obv_roll, 14)
 }
 

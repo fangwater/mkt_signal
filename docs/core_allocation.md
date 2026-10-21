@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-21 07:27 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-21 09:21 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-21 09:11 UTC，新增 `binance-cta-perp-rx04` 的 5min 观察环境。
+Binance 永续共15币、35因子、48个有符号组合，单份200 USDT，`enabled=false`；
+独立 namespace/model scope `binance_cta_perp_rx04`，未绑定 Manager/Exec。
+本地 `arbmm` release `4f782415` 构建上传并逐文件 SHA-256 校验后原子安装，
+仓位表前端追加 `1d0ce049`。通过环境本地脚本启动4个进程：publisher PID618685
+全部线程CPU28；signal PID620641、config PID620503、dashboard PID620577
+使用housekeeping（有效CPU0–5）。loopback页面端口10198/19188，4191网关路径
+`/cta/binance-cta-perp-rx04/`。62个既有进程及RX02/RX03的6份配置哈希保持。
+Kafka请求回放5天，实际保留数据从2026-10-19 08:30 UTC开始；长窗口因子需继续
+积累有效样本，未缩短公式/z/分位窗口。部署和浏览器验收证据：
+`artifacts/cta_perp_rx04_deployment/`。
 
 2026-10-21 07:20 UTC，全symbol Vol 与 Grid 布局上线，release
 `20261021T064822ZGridAllSymbols`（Exec `d3b724af` / 前端 `82f58cb`）。新publisher
@@ -507,7 +519,8 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 22 | pre_trade(okex_mm_alpha) | |
 | 23 | trade_engine(okex_mm_alpha) | 单线程 |
 | 24-27 | (空) | 原 binance_mm_alpha 已下线退役 |
-| 28-35 | (空) | 原 binance-intra-arb02 已下线删除；`binance-cta-special-rx03` 独立 BBO(`spread_pbs_cta_rx03`)已于共享服务 max_nodes=64 重建后回收，core 28 释放 |
+| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | 2026-10-21 09:11 UTC；PID618685全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；5min观察信号 |
+| 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |

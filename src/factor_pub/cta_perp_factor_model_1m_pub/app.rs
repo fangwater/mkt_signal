@@ -225,6 +225,7 @@ impl NormalizeState {
 
 struct SymbolFactorState {
     min_samples: usize,
+    tp_vpi_006_min_periods: usize,
     evaluator: BaselineReplayState,
     windows: Vec<ExactRollingWindow>,
     normalize: Vec<NormalizeState>,
@@ -235,6 +236,10 @@ impl SymbolFactorState {
     fn new(normalize: &NormalizeConfig, factor_count: usize, interval: BarInterval) -> Self {
         Self {
             min_samples: interval.factor_min_samples(),
+            tp_vpi_006_min_periods: match interval {
+                BarInterval::OneMinute => 360,
+                BarInterval::FiveMinutes => 280,
+            },
             evaluator: BaselineReplayState::default(),
             windows: (0..factor_count)
                 .map(|_| ExactRollingWindow::new(interval.factor_quantile_window()))
@@ -257,7 +262,9 @@ impl SymbolFactorState {
         }
         self.evaluator.push(msg.clone())?;
         self.last_ts = Some(msg.ts);
-        let raw_values = self.evaluator.factor_values(plan);
+        let raw_values = self
+            .evaluator
+            .factor_values_with_tp_vpi_006_min_periods(plan, self.tp_vpi_006_min_periods);
         if !record {
             return Ok(None);
         }
@@ -1157,6 +1164,82 @@ mod tests {
             min_periods,
             clip_zscore: 3.0,
         }
+    }
+
+    #[test]
+    fn five_minute_tp_vpi_006_uses_280_inner_samples_and_keeps_outer_mean() {
+        use mkt_parsers::msg::trade_flow_feature_msg::{
+            TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
+        };
+        let plan = SymbolFactorPlan::from_factor_names("test", vec!["TP_VPI_006".into()]).unwrap();
+        let mut raw = BaselineReplayState::default();
+        let mut five_minute =
+            SymbolFactorState::new(&normalize_config(288, 200), 1, BarInterval::FiveMinutes);
+        let one_minute =
+            SymbolFactorState::new(&normalize_config(1440, 1000), 1, BarInterval::OneMinute);
+        assert_eq!(one_minute.tp_vpi_006_min_periods, 360);
+        let mut first_z = None;
+        let mut first_ready = None;
+        for bar in 0..900 {
+            let close = (1000 + (bar * 17) % 71) as f64;
+            let volume = (1 + (bar * 13) % 23) as f64;
+            let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
+            for (name, value) in [
+                ("open", close),
+                ("high", close + 1.0),
+                ("low", close - 1.0),
+                ("close", close),
+                ("volume", volume),
+                ("vwap", close),
+                ("buy_vwap", close),
+                ("sell_vwap", close),
+            ] {
+                values[TRADE_FLOW_FEATURE_FIELD_NAMES
+                    .iter()
+                    .position(|f| *f == name)
+                    .unwrap()] = value;
+            }
+            let msg = TradeFlowFeatureMsg::from_indexed_values(
+                "SKLUSDT".into(),
+                TradingVenue::BinanceFutures.to_u8(),
+                1_800_000_000_000 + bar * 300_000,
+                &values,
+            )
+            .unwrap();
+            raw.push(msg.clone()).unwrap();
+            let actual = raw.factor_values_with_tp_vpi_006_min_periods(&plan, 280)[0];
+            let original = raw.factor_values(&plan)[0];
+            let count = bar + 1;
+            assert_eq!(actual.is_finite(), count >= 293);
+            assert_eq!(original.is_finite(), count >= 373);
+            if original.is_finite() {
+                assert!((actual - original).abs() < 1e-10);
+            }
+            // Oracle: pandas rolling(360, min_periods=280).sum().rolling(14).mean().
+            let expected = match count {
+                293 => Some(1916.642857142857),
+                300 => Some(1958.857142857143),
+                359 => Some(2351.285714285714),
+                360 => Some(2360.0714285714284),
+                372 => Some(2398.714285714286),
+                373 => Some(2396.9285714285716),
+                600 => Some(2290.6428571428573),
+                779 => Some(2322.285714285714),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                assert!((actual - expected).abs() < 1e-9);
+            }
+            let observation = five_minute.evaluate(msg, &plan, true).unwrap().unwrap()[0];
+            if observation.score.is_finite() {
+                first_z.get_or_insert(count);
+            }
+            if observation.ready {
+                first_ready.get_or_insert(count);
+            }
+        }
+        assert_eq!(first_z, Some(492));
+        assert_eq!(first_ready, Some(779));
     }
 
     #[test]
