@@ -101,8 +101,8 @@ RX01 共享因子 publisher，以及 Manager API/前端；没有切换现有策�
 05:53 UTC 完成原配置三天 lookback 的 Kafka 回放，恢复 Spread 和 Vol 输出。
 本次同时升级原始 Vol producer 导致共享 Spread 输出中断约20分钟；倍数与轮数参数
 自身不需要这轮预热。现货与合约 Vol 均实测48/48币就绪并持续收取新消息，
-三个执行器均已订阅两路流；解码、计算和发布错误均为0。Vol覆盖仍限于发布器配置的
-48币；其他独立永续目标使用Grid前仍须有对应就绪Vol。
+三个执行器均已订阅两路流；解码、计算和发布错误均为0。当时Vol覆盖限于发布器配置的
+48币；下述全symbol发布已经解除该名单限制。
 最终进程、配置、绑定及快照复核通过，验收结果保存在同release的
 `DEPLOYMENT-VERIFICATION.json`。验收后清理部署暂存、探针和本次备份。
 部署清单保存在 Manager `web-releases/20261021T053158ZGridControls/RELEASE-MANIFEST.json`。
@@ -123,3 +123,29 @@ RX01 共享因子 publisher，以及 Manager API/前端；没有切换现有策�
 
 现场只读Kafka抽样为524个合约、362个现货symbol。上线前验证覆盖自动发现新币种、
 独立市场时钟、1536币突发及迟加入订阅者完整接收、后台历史保护和进程交接脚本。
+
+## 2026-10-21 全 symbol 上线验收
+
+07:20 UTC 完成交接，release `20261021T064822ZGridAllSymbols`，Exec `d3b724af`、
+Manager 前端 `82f58cb`。06:54 UTC 启动后台回放，原实例持续提供 Spread/Vol 并写入
+既有历史；新实例追至实时后接管，最终仅保留 `cta_spread_factor_binance_futures`。
+publisher PID330224，全部线程恢复 CPU17、nice0；Exec05/06/07 PID分别为
+384442/384533/384621，仍为CPU0–5。先停止三个旧订阅者，再释放原发布者，完成两路
+Vol的4096容量交接。整个交接序列51秒，包含首个执行器的supervisor退出等待；停止原
+publisher返回后4秒内确认接管。每2秒的连续采样中，warmup状态最大年龄1920ms，
+Vol计数推进最大观测间隔8002ms，无读取错误。
+
+当前行情流合约524/524、现货362/362币均有15秒内的就绪Vol。探针另收到历史
+EPICUSDT现货值，因已过期不计入当前覆盖。RX02的51个合约目标、RX01的54个合约和
+55个现货目标、RX03的14个合约目标全部通过逐币检查，三个Exec均订阅两路流。
+解码、计算、发布错误均为0。现有70个策略配置仍为CTaker，未切换算法或更改绑定。
+
+Manager仅原子替换前端，PID166260/CPU24及全部Config/Viz/trade_engine保持运行。
+156个受保护进程、53份配置哈希、12个模板、87个实账户绑定、77个虚拟账户绑定及
+四张仓位快照表核对不变。唯一配置改动是在factor环境env.sh中保存
+`CTA_SPREAD_FACTOR_PROCESS_NAME=cta_spread_factor_binance_futures`，全部IP字段保持。
+Grid布局通过1440/1024/768/390/320宽度检查，有限/无限轮切换无横向溢出或区块跳动。
+
+验证包括1341个库测试（3忽略）、3个probe测试、4个脚本测试、release构建和前端构建。
+临时会话、部署暂存、备份、探针、截图和浏览器profile已清理。Manager同release下
+保存 `RELEASE-MANIFEST.json`、`DEPLOYMENT-VERIFICATION.json`、`UI-VERIFICATION.json`。

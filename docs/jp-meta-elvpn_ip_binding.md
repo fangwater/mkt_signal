@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-21 05:55 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-21 07:27 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-21 07:20 UTC，全symbol Vol 发布及三个Exec订阅容量升级完成，release
+`20261021T064822ZGridAllSymbols`（Exec `d3b724af` / Manager前端 `82f58cb`）。
+交易IP、trade_engine.toml、ENI/EIP、路由和监听端口全部保持；53份配置哈希不变。
+factor env.sh仅新增 `CTA_SPREAD_FACTOR_PROCESS_NAME=cta_spread_factor_binance_futures`，
+用于后台回放后的单实例交接，不涉及网络或账户参数。156个受保护进程身份、87个实账户
+及77个虚拟账户绑定保持，Manager/Config/Viz/trade_engine未重启。详见 `docs/exec_grid.md`。
 
 2026-10-21 05:33 UTC，Grid 执行框架发布到 Exec05/06/07、RX01 共享因子 publisher
 和 Manager，release `20261021T053158ZGridControls`，Exec `bf9d0ad8` / Manager `d5c3cc1`。
