@@ -406,6 +406,40 @@ impl BaselineBar {
     }
 }
 
+/// CTA 5m aggregation reuses the exact volume/notional/depth merge contract.
+/// Only completed minute bars enter; the first partial 5m bucket is discarded.
+pub struct FiveMinuteBaseline {
+    state: BarState,
+    first_complete_start: Option<i64>,
+}
+
+impl Default for FiveMinuteBaseline {
+    fn default() -> Self {
+        Self {
+            state: BarState::new(300_000),
+            first_complete_start: None,
+        }
+    }
+}
+
+impl FiveMinuteBaseline {
+    pub fn push(&mut self, minute: &BaselineBar) -> Vec<BaselineBar> {
+        let first = *self.first_complete_start.get_or_insert_with(|| {
+            let start = align(minute.start_ms, 300_000);
+            if start == minute.start_ms {
+                start
+            } else {
+                start + 300_000
+            }
+        });
+        consume_sub_bar(&mut self.state, minute, 60_000)
+            .into_iter()
+            .flatten()
+            .filter(|bar| bar.start_ms >= first)
+            .collect()
+    }
+}
+
 struct BarState {
     bar_ms: i64,
     current: Option<BaselineBar>,
@@ -786,6 +820,42 @@ mod tests {
     use crate::common::amount_threshold::AmountThreshold;
     use mkt_parsers::msg::mkt_msg::Level;
     use mkt_parsers::msg::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
+
+    #[test]
+    fn five_minute_bars_merge_notional_and_final_depth_without_future_data() {
+        let mut resampler = super::FiveMinuteBaseline::default();
+        for minute in 0..5 {
+            let mut bar = super::BaselineBar::new(minute * 60_000);
+            bar.update_trade(true, 100.0 + minute as f64, 1.0, None);
+            bar.update_trade(false, 110.0 + minute as f64, 2.0, None);
+            bar.depth20.bids[0] = (99.0 + minute as f64, 3.0);
+            let rows = resampler.push(&bar);
+            if minute < 4 {
+                assert!(rows.is_empty());
+                continue;
+            }
+            assert_eq!(rows.len(), 1);
+            let closed = &rows[0];
+            assert_eq!(closed.start_ms, 0);
+            assert_eq!(closed.open, 100.0);
+            assert_eq!(closed.close, 114.0);
+            assert_eq!(closed.low, 100.0);
+            assert_eq!(closed.high, 114.0);
+            assert_eq!(closed.count, 10);
+            assert_eq!(closed.volume, 15.0);
+            assert_eq!(closed.amount, 1630.0);
+            assert_eq!(closed.vwap, 1630.0 / 15.0);
+            assert_eq!(closed.buy_vwap, 102.0);
+            assert_eq!(closed.sell_vwap, 112.0);
+            assert_eq!(closed.depth20.bids[0], (103.0, 3.0));
+        }
+        let mut partial = super::FiveMinuteBaseline::default();
+        for minute in 2..5 {
+            assert!(partial
+                .push(&super::BaselineBar::new(minute * 60_000))
+                .is_empty());
+        }
+    }
 
     #[test]
     fn resamples_only_finalized_five_second_bars() {

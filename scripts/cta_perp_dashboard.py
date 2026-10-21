@@ -251,17 +251,20 @@ def main() -> None:
     parser.add_argument("--symbols-config", type=Path, default=Path("config/cta_perp_symbol_factors.json"))
     parser.add_argument("--kline-poll-seconds", type=float, default=20)
     parser.add_argument("--no-collector", action="store_true", help="serve previously saved history without contacting the exchange")
-    parser.add_argument('--factor-history', type=Path, default=Path('data/cta_perp/factor_history'))
+    parser.add_argument('--factor-history', type=Path, default=None)
     parser.add_argument('--replay-settings', type=Path, default=Path('config/cta_perp_replay.json'))
     args = parser.parse_args()
     if args.kline_poll_seconds < 10:
         parser.error("--kline-poll-seconds must be at least 10")
-    history = SignalHistoryStore(args.history_db)
+    interval = json.loads(args.config.read_text()).get("bar_interval", "1m")
+    if args.factor_history is None:
+        args.factor_history = Path('data/cta_perp_5m/factor_history' if interval == '5m' else 'data/cta_perp/factor_history')
+    history = SignalHistoryStore(args.history_db, interval)
     replay = PositionReplay(history,args.config,args.status,args.replay_settings)
     targets = lambda: configured_targets(args.status, args.symbols_config)
     collector = None
     if not args.no_collector:
-        collector = SignalPanelCollector(history, BinanceMinuteClient(), targets, args.signal_journal, args.kline_poll_seconds,args.factor_history,replay)
+        collector = SignalPanelCollector(history, BinanceMinuteClient(interval=interval), targets, args.signal_journal, args.kline_poll_seconds,args.factor_history,replay)
         collector.start()
     server = ThreadingHTTPServer(
         (args.bind, args.port),

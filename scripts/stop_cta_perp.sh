@@ -23,8 +23,12 @@ if [[ "$EXECUTE" -ne 1 ]]; then
 fi
 
 cd "$BASE_DIR"
-"${BASE_DIR}/scripts/stop_cta_perp_signal.sh"
-"${BASE_DIR}/scripts/stop_cta_perp_factor_model_1m_pub.sh"
+bar_interval="$(python3 -c 'import json; print(json.load(open("config/cta_perp.json")).get("bar_interval", "1m"))')"
+[[ "$bar_interval" == 1m || "$bar_interval" == 5m ]] || { echo "[ERROR] invalid bar_interval" >&2; exit 1; }
+signal_suffix=""
+[[ "$bar_interval" == 5m ]] && signal_suffix="_5m"
+"${BASE_DIR}/scripts/stop_cta_perp${signal_suffix}_signal.sh"
+"${BASE_DIR}/scripts/stop_cta_perp_factor_model_${bar_interval}_pub.sh"
 "${BASE_DIR}/scripts/stop_cta_perp_dashboard.sh"
 "${BASE_DIR}/scripts/stop_cta_perp_config_server.sh"
 echo "[INFO] CTA perp stack stopped"

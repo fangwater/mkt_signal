@@ -1,3 +1,4 @@
+use super::interval::BarInterval;
 use crate::cta_perp::config::{EntryConfig, PositionAlgorithm};
 use crate::factor_pub::fusion_factor_pub::app::BaselineReplayState;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
@@ -13,6 +14,7 @@ use tokio::task::JoinHandle;
 use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
 
 pub type SymbolFactorTable = BTreeMap<String, SymbolFactors>;
+pub const MAX_FACTOR_SERVICES: usize = 64;
 pub const WEIGHTED_RULE_NAME: &str = "weighted";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,8 +113,8 @@ pub fn parse_factor_table(raw: &str) -> Result<SymbolFactorTable> {
         );
     }
     ensure!(
-        table_services(&canonical).len() <= 32,
-        "CTA factor table requires more than 32 model services"
+        table_services(&canonical).len() <= MAX_FACTOR_SERVICES,
+        "CTA factor table requires more than 64 model services"
     );
     Ok(canonical)
 }
@@ -130,6 +132,13 @@ impl SymbolFactors {
 }
 
 pub fn table_services(table: &SymbolFactorTable) -> Vec<String> {
+    table_services_for_interval(table, BarInterval::OneMinute)
+}
+
+pub fn table_services_for_interval(
+    table: &SymbolFactorTable,
+    interval: BarInterval,
+) -> Vec<String> {
     let mut services: Vec<String> = table
         .values()
         .flat_map(|row| {
@@ -137,7 +146,13 @@ pub fn table_services(table: &SymbolFactorTable) -> Vec<String> {
                 .iter()
                 .zip(&row.weights)
                 .filter(|(_, weight)| **weight != 0.0)
-                .map(|(factor, _)| model_service(factor))
+                .map(|(factor, _)| {
+                    super::model_service::model_service_path_for_interval(
+                        "binance-futures",
+                        factor,
+                        interval,
+                    )
+                })
         })
         .collect();
     services.sort();

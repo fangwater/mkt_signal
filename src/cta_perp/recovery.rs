@@ -110,6 +110,16 @@ impl PositionRecovery {
             "configuration changed during position recovery; restart recovery with the final configuration");
         let status: Value =
             serde_json::from_slice(&fs::read(self.request.history_path.join("recovery.json"))?)?;
+        let interval: super::interval::BarInterval = serde_json::from_value(
+            status
+                .get("bar_interval")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!("1m")),
+        )?;
+        ensure!(
+            interval == config.bar_interval,
+            "factor recovery bar_interval mismatch"
+        );
         ensure!(
             status["generation"].as_str() == Some(&self.request.generation),
             "factor publisher restarted during position recovery"
@@ -162,7 +172,7 @@ impl PositionRecovery {
             let head = status["latest"][symbol].as_i64().unwrap_or(0);
             if head <= 0
                 || head > now_ms
-                || now_ms - head > 120_000
+                || now_ms - head > config.bar_interval.max_model_age_ms() as i64
                 || self.latest.get(symbol).copied().unwrap_or(0) < head
             {
                 return Ok(false);
@@ -192,6 +202,16 @@ impl PositionRecovery {
     }
 
     fn consume(&mut self, record: &Value, config: &CtaPerpConfig) -> Result<()> {
+        let interval: super::interval::BarInterval = serde_json::from_value(
+            record
+                .get("bar_interval")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!("1m")),
+        )?;
+        ensure!(
+            interval == config.bar_interval,
+            "factor history bar_interval mismatch"
+        );
         let symbol = record["symbol"].as_str().context("replay symbol missing")?;
         let Some(row) = self.table.get(symbol) else {
             return Ok(());
@@ -222,8 +242,8 @@ impl PositionRecovery {
                     filter_short_value: nq["short_value"].as_f64(),
                     filter_long_quantile: nq["long_quantile"].as_f64(),
                     filter_short_quantile: nq["short_quantile"].as_f64(),
-                    filter_long_threshold: None,
-                    filter_short_threshold: None,
+                    filter_long_threshold: nq["long_threshold"].as_f64(),
+                    filter_short_threshold: nq["short_threshold"].as_f64(),
                     filter_ready: nq["ready"] == true,
                     score_ts_ms: ts,
                     note: String::new(),
@@ -263,7 +283,7 @@ impl PositionRecovery {
             };
             let execution_ts = nq["execution_ts_ms"].as_i64().unwrap_or(0);
             ensure!(
-                (ts..=ts + 120_000).contains(&execution_ts),
+                (ts..=ts + config.bar_interval.max_model_age_ms() as i64).contains(&execution_ts),
                 "missing historical execution BBO symbol={symbol} ts={ts}"
             );
             let bid = nq["execution_bid"].as_f64().context("missing replay bid")?;
@@ -290,6 +310,22 @@ impl PositionRecovery {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn five_minute_recovery_preserves_nq_thresholds_and_rejects_other_frequencies() {
+        let mut c = config();
+        c.bar_interval = super::super::interval::BarInterval::FiveMinutes;
+        c.entry.nq_change_enabled = true;
+        let mut recovery = recovery(Path::new("unused"), &c);
+        let mut row = record("new", 300_000, 0.99, 101.0);
+        assert!(recovery.consume(&row, &c).is_err());
+        row["bar_interval"] = json!("5m");
+        row["nq"]["long_value"] = json!(0.0);
+        row["nq"]["long_threshold"] = json!(0.0);
+        row["nq"]["long_quantile"] = json!(0.1);
+        recovery.consume(&row, &c).unwrap();
+        assert_eq!(recovery.positions[SYMBOL_MEAN_STRATEGY]["ETHUSDT"].flag, 1);
+    }
     fn config() -> CtaPerpConfig {
         let mut c = CtaPerpConfig::load("config/cta_perp.json").unwrap();
         c.position_algorithm = PositionAlgorithm::V1;

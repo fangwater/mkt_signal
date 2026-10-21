@@ -1,3 +1,4 @@
+use crate::cta_perp::interval::BarInterval;
 use crate::factor_pub::cta_factor_universe::CtaFactorUniverse;
 use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
 use anyhow::{bail, Context, Result};
@@ -8,10 +9,55 @@ use std::fs;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CtaPerpFactorPubConfig {
+    #[serde(default)]
+    pub bar_interval: BarInterval,
     pub universe: CtaFactorUniverse,
     pub tlen_server: TlenServerConfig,
     pub normalize: NormalizeConfig,
     pub kafka: KafkaInputConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cta_perp::factors::{parse_factor_table, table_services_for_interval};
+
+    #[test]
+    fn rx04_universe_accepts_all_requested_bindings_and_requires_5m_warmup() {
+        let mut config: CtaPerpFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_perp_rx04/cta_perp_factor_model_5m_pub.toml"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.bar_interval, BarInterval::FiveMinutes);
+        assert_eq!(config.universe.factors.len(), 35);
+        let table = parse_factor_table(include_str!(
+            "../../../config/cta_perp_rx04/cta_perp_symbol_factors.json"
+        ))
+        .unwrap();
+        assert_eq!(table.len(), 15);
+        assert_eq!(
+            table.values().map(|row| row.factors.len()).sum::<usize>(),
+            48
+        );
+        assert_eq!(
+            table_services_for_interval(&table, BarInterval::FiveMinutes).len(),
+            35
+        );
+        for (symbol, row) in table {
+            assert!(config.universe.symbols.contains(&symbol));
+            for factor in row.factors {
+                assert!(config.universe.factors.contains(&factor));
+            }
+            assert!(row.weights.iter().all(|w| w.abs() == 1.0));
+        }
+        assert_eq!(config.normalize.window_bars, 288);
+        assert_eq!(config.normalize.min_periods, 200);
+        assert_eq!(config.bar_interval.factor_quantile_window(), 576);
+        assert_eq!(config.bar_interval.factor_min_samples(), 288);
+        config.kafka.lookback_secs = 172799; // Less than the two-day percentile window.
+        assert!(config.validate().is_err());
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,8 +109,15 @@ impl CtaPerpFactorPubConfig {
         if !(self.normalize.clip_zscore.is_finite() && self.normalize.clip_zscore > 0.0) {
             bail!("normalize.clip_zscore must be a finite positive number");
         }
-        if self.kafka.lookback_secs < 2 * 24 * 60 * 60 {
-            bail!("kafka.lookback_secs must cover at least 2880 one-minute slots");
+        if self.kafka.lookback_secs
+            < self.bar_interval.factor_quantile_window() as u64
+                * (self.bar_interval.millis() as u64 / 1000)
+        {
+            bail!(
+                "kafka.lookback_secs must cover at least {} {} slots",
+                self.bar_interval.factor_quantile_window(),
+                self.bar_interval.as_str()
+            );
         }
         if self.kafka.catchup_timeout_secs == 0 || self.kafka.topic.trim().is_empty() {
             bail!("kafka catchup_timeout_secs and topic must be set");

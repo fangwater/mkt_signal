@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persist Binance futures 1m candles and immutable CTA signal snapshots."""
+"""Persist Binance futures configured-interval candles and immutable CTA signal snapshots."""
 from __future__ import annotations
 
 import argparse
@@ -36,12 +36,12 @@ def symbol_name(value: Any) -> str:
     return value
 
 
-def normalize_kline(row: Any, current_ms: int) -> dict[str, Any]:
+def normalize_kline(row: Any, current_ms: int, bar_ms: int = MINUTE_MS) -> dict[str, Any]:
     if not isinstance(row, list) or len(row) < 11:
         raise ValueError("invalid Binance kline row")
     open_time, close_time = int(row[0]), int(row[6])
-    if open_time <= 0 or open_time % MINUTE_MS or close_time != open_time + MINUTE_MS - 1:
-        raise ValueError("invalid 1m kline timestamps")
+    if open_time <= 0 or open_time % bar_ms or close_time != open_time + bar_ms - 1:
+        raise ValueError("invalid kline timestamps for configured interval")
     values = [float(row[i]) for i in (1, 2, 3, 4, 5, 7, 9, 10)]
     if not all(math.isfinite(v) for v in values):
         raise ValueError("non-finite kline values")
@@ -56,7 +56,9 @@ def normalize_kline(row: Any, current_ms: int) -> dict[str, Any]:
 
 
 class SignalHistoryStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, interval: str = "1m"):
+        self.interval = interval
+        self.bar_ms = {"1m": MINUTE_MS, "5m": 5 * MINUTE_MS}[interval]
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
@@ -123,11 +125,11 @@ class SignalHistoryStore:
                 "SELECT open_time_ms FROM klines WHERE symbol=? AND open_time_ms BETWEEN ? AND ?",
                 (symbol, start_ms, last_open_ms))}
         # Always refresh the two latest buckets so a forming candle becomes final.
-        missing = [ts for ts in range(start_ms, last_open_ms + 1, MINUTE_MS)
-                   if ts not in present or ts >= last_open_ms - MINUTE_MS]
+        missing = [ts for ts in range(start_ms, last_open_ms + 1, self.bar_ms)
+                   if ts not in present or ts >= last_open_ms - self.bar_ms]
         ranges: list[tuple[int, int]] = []
         for ts in missing:
-            if ranges and ranges[-1][1] + MINUTE_MS == ts:
+            if ranges and ranges[-1][1] + self.bar_ms == ts:
                 ranges[-1] = (ranges[-1][0], ts)
             else:
                 ranges.append((ts, ts))
@@ -258,7 +260,7 @@ class SignalHistoryStore:
         if not 1 <= hours <= 24:
             raise ValueError("hours must be in 1..24")
         current_ms = now_ms() if current_ms is None else current_ms
-        last_open = current_ms // MINUTE_MS * MINUTE_MS
+        last_open = current_ms // self.bar_ms * self.bar_ms
         start = last_open - hours * 60 * MINUTE_MS
         with self.lock:
             klines = [dict(row) for row in self.db.execute(
@@ -269,10 +271,10 @@ class SignalHistoryStore:
                 (symbol, start, current_ms * 1000))]
             feed = self.db.execute("SELECT * FROM feeds WHERE symbol=?", (symbol,)).fetchone()
         present = {row["open_time_ms"] for row in klines}
-        gaps = [ts for ts in range(start, last_open, MINUTE_MS) if ts not in present]
-        return {"symbol":symbol, "venue":"binance-futures", "interval":"1m",
+        gaps = [ts for ts in range(start, last_open, self.bar_ms) if ts not in present]
+        return {"symbol":symbol, "venue":"binance-futures", "interval":self.interval,
                 "server_ts_ms":current_ms, "start_ms":start, "end_ms":current_ms,
-                "klines":klines, "signals":signals, "expected_closed_bars":hours * 60,
+                "klines":klines, "signals":signals, "expected_closed_bars":hours * 60 * MINUTE_MS // self.bar_ms,
                 "closed_bars":sum(row["open_time_ms"] < last_open for row in klines),
                 "missing_minutes":gaps, "feed":dict(feed) if feed else None,
                 "revision":hashlib.sha256(json.dumps([start,
@@ -282,7 +284,7 @@ class SignalHistoryStore:
 
     def overview(self, targets: list[str], current_ms: int | None = None) -> dict:
         current_ms = now_ms() if current_ms is None else current_ms
-        start = current_ms // MINUTE_MS * MINUTE_MS - DAY_MS
+        start = current_ms // self.bar_ms * self.bar_ms - DAY_MS
         with self.lock:
             candles = {row["symbol"]: dict(row) for row in self.db.execute("""
                 SELECT symbol,count(*) bars,max(open_time_ms) latest_bar_ms FROM klines WHERE open_time_ms>=? GROUP BY symbol""", (start,))}
@@ -291,13 +293,16 @@ class SignalHistoryStore:
                 FROM signals WHERE model_ts_ms>=? GROUP BY symbol""", (start,))}
             feeds = {row["symbol"]: dict(row) for row in self.db.execute("SELECT * FROM feeds")}
         names = sorted(set(targets) | set(candles) | set(signals))
-        return {"server_ts_ms":current_ms, "venue":"binance-futures", "interval":"1m", "symbols":[
+        return {"server_ts_ms":current_ms, "venue":"binance-futures", "interval":self.interval, "symbols":[
             {"symbol":name, "active":name in targets, **candles.get(name, {}), **signals.get(name, {}),
              "feed":feeds.get(name)} for name in names]}
 
 
 class BinanceMinuteClient:
-    def __init__(self, base_url: str | None = None, opener: Callable = urllib.request.urlopen):
+    def __init__(self, base_url: str | None = None, opener: Callable = urllib.request.urlopen, interval: str = "1m"):
+        if interval not in ("1m", "5m"):
+            raise ValueError("interval must be 1m or 5m")
+        self.interval = interval
         self.base_url = (base_url or os.getenv("BINANCE_FUTURES_PUBLIC_API_BASE", "https://fapi.binance.com")).rstrip("/")
         parsed = urllib.parse.urlparse(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -311,7 +316,7 @@ class BinanceMinuteClient:
         with self.lock:
             if time.monotonic() < self.retry_after:
                 raise RuntimeError("Binance public API is in rate-limit backoff")
-        query = urllib.parse.urlencode({"symbol":symbol, "interval":"1m", "startTime":start_ms, "endTime":end_ms, "limit":limit})
+        query = urllib.parse.urlencode({"symbol":symbol, "interval":self.interval, "startTime":start_ms, "endTime":end_ms, "limit":limit})
         request = urllib.request.Request(self.base_url + "/fapi/v1/klines?" + query,
                                         headers={"User-Agent":"mkt-signal-cta-panel"})
         try:
@@ -333,23 +338,23 @@ class BinanceMinuteClient:
 
 
 def collect_symbol(store: SignalHistoryStore, client: BinanceMinuteClient, symbol: str, current_ms: int, stop: threading.Event | None = None) -> None:
-    last_open = current_ms // MINUTE_MS * MINUTE_MS
+    last_open = current_ms // store.bar_ms * store.bar_ms
     try:
         for beginning, last in store.missing_ranges(symbol, last_open - DAY_MS, last_open):
             cursor = beginning
             while cursor <= last:
                 if stop is not None and stop.is_set():
                     return
-                end = min(last + MINUTE_MS - 1, current_ms)
+                end = min(last + store.bar_ms - 1, current_ms)
                 raw = client.fetch(symbol, cursor, end)
-                rows = [normalize_kline(row, current_ms) for row in raw]
+                rows = [normalize_kline(row, current_ms, store.bar_ms) for row in raw]
                 if not rows or any(row["open_time_ms"] < cursor or row["open_time_ms"] > last for row in rows):
                     raise ValueError("empty or out-of-range Binance kline page")
                 times = [row["open_time_ms"] for row in rows]
                 if times != sorted(set(times)):
                     raise ValueError("unordered or duplicate Binance kline page")
                 store.save_klines(symbol, rows, current_ms)
-                cursor = times[-1] + MINUTE_MS
+                cursor = times[-1] + store.bar_ms
         store.feed_result(symbol, None, current_ms)
     except Exception as exc:
         store.feed_result(symbol, str(exc), current_ms)
@@ -368,7 +373,7 @@ class SignalPanelCollector:
         self.factor_history, self.replay = factor_history, replay
 
     def start(self) -> None:
-        for name, function in [("cta-journal-import", self.import_loop), ("cta-1m-collector", self.kline_loop)]:
+        for name, function in [("cta-journal-import", self.import_loop), ("cta-kline-collector", self.kline_loop)]:
             worker = threading.Thread(target=function, name=name, daemon=True)
             worker.start()
             self.workers.append(worker)
@@ -435,11 +440,12 @@ def main() -> None:
     parser.add_argument("--status", type=Path, default=Path("run/cta_perp_status.json"))
     parser.add_argument("--symbols-config", type=Path, default=Path("config/cta_perp_symbol_factors.json"))
     parser.add_argument("--once", action="store_true", help="collect one 24h snapshot and exit")
+    parser.add_argument("--interval", choices=["1m", "5m"], default="1m")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    store = SignalHistoryStore(args.db)
+    store = SignalHistoryStore(args.db, args.interval)
     targets = lambda: configured_targets(args.status, args.symbols_config)
-    client = BinanceMinuteClient()
+    client = BinanceMinuteClient(interval=args.interval)
     if args.once:
         store.import_journal(args.journal)
         for symbol in targets():

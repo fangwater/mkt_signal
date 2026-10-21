@@ -1,3 +1,4 @@
+use super::interval::BarInterval;
 use super::recovery::{PositionRecovery, Positions, StrategyPosition, REQUEST_PATH};
 use crate::cta_perp::config::{
     CtaPerpConfig, PositionAlgorithm, CTA_PERP_MAX_QUOTE_AGE_MS, CTA_PERP_SIGNAL_POLL_INTERVAL_MS,
@@ -77,14 +78,26 @@ pub struct CtaPerpSignalApp {
 }
 impl CtaPerpSignalApp {
     pub async fn new(config_path: impl AsRef<Path>) -> Result<Self> {
+        Self::new_for_interval(config_path, BarInterval::OneMinute).await
+    }
+
+    pub async fn new_for_interval(
+        config_path: impl AsRef<Path>,
+        interval: BarInterval,
+    ) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
         let config = CtaPerpConfig::load(&config_path)?;
+        ensure!(
+            config.bar_interval == interval,
+            "signal bin/config bar_interval mismatch"
+        );
         let factor_key = runtime_factor_config_key()?;
         let env = factor_key
             .strip_suffix(":cta_symbol_factors")
             .context("invalid CTA factor key")?
             .to_string();
-        let factors = WeightedFactorChannel::new(factor_key, "cta_perp_model_input", false).await?;
+        let factors =
+            WeightedFactorChannel::new(factor_key, "cta_perp_model_input", false, interval).await?;
         MktChannel::init_bbo_singleton_readonly(config.venue(), config.venue())
             .context("initialize CTA sizing BBO")?;
         let publisher = PositionPublisher::from_env()?;
@@ -199,7 +212,7 @@ impl CtaPerpSignalApp {
             for (symbol, target) in targets {
                 if let Some(row) = context["observations"].get(symbol) {
                     self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
-                        "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
+                        "published", "manager_target", json!({"bar_interval":self.config.bar_interval,"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
                             "signal":row["signal"],"position_algorithm":row["position_algorithm"],
                             "entry":row["entry"],"execution":row["execution"],"max_pos_u":row["max_pos_u"]}),
@@ -313,6 +326,10 @@ impl CtaPerpSignalApp {
         }
         match CtaPerpConfig::load(&self.config_path) {
             Ok(next) => {
+                if next.bar_interval != self.config.bar_interval {
+                    self.configuration_error = Some("bar_interval cannot change in a running signal; use a separate environment".into());
+                    return;
+                }
                 if let Err(error) =
                     validate_position_scope(&self.positions, next.position_algorithm)
                 {
@@ -399,7 +416,7 @@ impl CtaPerpSignalApp {
             position.flag = flag;
         }
         let signal = bar.as_ref().map(|bar| signal_snapshot(bar, position.flag));
-        let snapshot = json!({"enabled":self.config.enabled,"source":if effective.position_algorithm == PositionAlgorithm::V1 { "symbol_mean_strategy" } else { "independent_factor_strategy" },"strategy_name":factor,
+        let snapshot = json!({"bar_interval":self.config.bar_interval,"bar_start_ms":model_ts_ms - self.config.bar_interval.millis(),"enabled":self.config.enabled,"source":if effective.position_algorithm == PositionAlgorithm::V1 { "symbol_mean_strategy" } else { "independent_factor_strategy" },"strategy_name":factor,
             "position_algorithm":effective.position_algorithm,
             "entry":effective.entry,"execution":effective.execution,"max_pos_u":self.config.max_pos_u,"signal":signal,
             "position_flag":position.flag,"position_qty":position.qty});
@@ -462,7 +479,7 @@ impl CtaPerpSignalApp {
                 };
             }
         }
-        let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_PERP_VENUE_NAME,
+        let status = json!({"bar_interval":self.config.bar_interval,"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_PERP_VENUE_NAME,
             "position_algorithm":self.config.position_algorithm,"symbol_overrides":self.config.symbol_overrides,
             "recovering":self.recovery.is_some(),"recovery_records":self.recovery.as_ref().map(|r|r.records),"recovery_error":self.recovery_error,
             "configuration_error":self.configuration_error,"publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
@@ -492,6 +509,7 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
 fn signal_snapshot(bar: &WeightedBar, flag: i8) -> Value {
     json!({"model_ts_ms":bar.model_ts_ms,"score":bar.value,"quantile":bar.quantile,"decision_value":bar.decision_value,"score_ready":true,"execution_coefficient":1.0,
         "factor_votes":bar.votes,"position_flag":flag,"decision":if flag > 0 { "long" } else if flag < 0 { "short" } else { "flat" },
+        "nq_long_threshold":bar.nq.filter_long_threshold,"nq_short_threshold":bar.nq.filter_short_threshold,
         "nq_long_value":bar.nq.filter_long_value,"nq_short_value":bar.nq.filter_short_value,
         "nq_long_quantile":bar.nq.filter_long_quantile,"nq_short_quantile":bar.nq.filter_short_quantile,"filter_ready":bar.nq.filter_ready})
 }

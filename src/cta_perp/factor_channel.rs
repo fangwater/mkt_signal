@@ -1,10 +1,9 @@
-use super::config::{
-    CtaPerpConfig, EntryConfig, PositionAlgorithm, CTA_PERP_MAX_MODEL_AGE_MS, SYMBOL_MEAN_STRATEGY,
-};
+use super::config::{CtaPerpConfig, EntryConfig, PositionAlgorithm, SYMBOL_MEAN_STRATEGY};
 use super::factors::{
-    aggregate_bar, mean_bar, model_bar_is_fresh, model_service, table_services,
-    FactorConfigWatcher, SymbolFactorTable, SymbolFactors, WeightedBar,
+    aggregate_bar, mean_bar, model_bar_is_fresh, table_services_for_interval, FactorConfigWatcher,
+    SymbolFactorTable, SymbolFactors, WeightedBar,
 };
+use super::{interval::BarInterval, model_service::model_service_path_for_interval};
 use anyhow::Result;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -15,6 +14,7 @@ use std::time::{Duration, Instant};
 use trade_signal::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 
 pub struct WeightedFactorChannel {
+    interval: BarInterval,
     watcher: FactorConfigWatcher,
     table: SymbolFactorTable,
     retain_retired: bool,
@@ -38,15 +38,21 @@ pub struct PositionObservation {
 }
 
 impl WeightedFactorChannel {
-    pub async fn new(key: String, node_name: &str, retain_retired: bool) -> Result<Self> {
+    pub async fn new(
+        key: String,
+        node_name: &str,
+        retain_retired: bool,
+        interval: BarInterval,
+    ) -> Result<Self> {
         let watcher = FactorConfigWatcher::new(key).await?;
         let table = watcher.current().as_ref().clone();
         let node = NodeBuilder::new()
             .name(&NodeName::new(node_name)?)
             .create::<ipc::Service>()?;
         let mut hub = ModelOutputHub::new_with_max_subscribers(TradingVenue::BinanceFutures, 32);
-        hub.update_services(&node, table_services(&table));
+        hub.update_services(&node, table_services_for_interval(&table, interval));
         Ok(Self {
+            interval,
             watcher,
             table,
             retain_retired,
@@ -68,16 +74,20 @@ impl WeightedFactorChannel {
     pub fn poll_positions(&mut self, config: &CtaPerpConfig) -> (bool, Vec<PositionObservation>) {
         let changed = if let Some(next) = self.watcher.take_change() {
             self.table = next.as_ref().clone();
-            self.hub
-                .update_services(&self.node, table_services(&self.table));
+            self.hub.update_services(
+                &self.node,
+                table_services_for_interval(&self.table, self.interval),
+            );
             self.last_subscribe = Instant::now();
             true
         } else {
             false
         };
         if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
-            self.hub
-                .update_services(&self.node, table_services(&self.table));
+            self.hub.update_services(
+                &self.node,
+                table_services_for_interval(&self.table, self.interval),
+            );
             self.last_subscribe = Instant::now();
         }
         let touched: HashSet<String> = self
@@ -98,7 +108,11 @@ impl WeightedFactorChannel {
                     .iter()
                     .map(|factor| {
                         self.hub.cached_score(
-                            &model_service(factor),
+                            &model_service_path_for_interval(
+                                "binance-futures",
+                                factor,
+                                self.interval,
+                            ),
                             &symbol,
                             TradingVenue::BinanceFutures,
                         )
@@ -111,6 +125,7 @@ impl WeightedFactorChannel {
                     &effective.entry,
                     &mut self.last_ts,
                     get_timestamp_us(),
+                    self.interval.max_model_age_ms(),
                 ) {
                     updates.push(observation);
                 }
@@ -123,7 +138,7 @@ impl WeightedFactorChannel {
                 .filter(|(_, w)| **w != 0.0)
             {
                 let input = self.hub.cached_score(
-                    &model_service(factor),
+                    &model_service_path_for_interval("binance-futures", factor, self.interval),
                     &symbol,
                     TradingVenue::BinanceFutures,
                 );
@@ -131,7 +146,7 @@ impl WeightedFactorChannel {
                 let ts = input.score_ts_ms;
                 if ts <= 0
                     || self.last_ts.get(&key).is_some_and(|old| ts <= *old)
-                    || !model_bar_is_fresh(ts, get_timestamp_us(), CTA_PERP_MAX_MODEL_AGE_MS)
+                    || !model_bar_is_fresh(ts, get_timestamp_us(), self.interval.max_model_age_ms())
                 {
                     continue;
                 }
@@ -163,16 +178,20 @@ impl WeightedFactorChannel {
             } else {
                 self.table = next.as_ref().clone();
             }
-            self.hub
-                .update_services(&self.node, table_services(&self.table));
+            self.hub.update_services(
+                &self.node,
+                table_services_for_interval(&self.table, self.interval),
+            );
             self.last_subscribe = Instant::now();
             true
         } else {
             false
         };
         if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
-            self.hub
-                .update_services(&self.node, table_services(&self.table));
+            self.hub.update_services(
+                &self.node,
+                table_services_for_interval(&self.table, self.interval),
+            );
             self.last_subscribe = Instant::now();
         }
         let touched: HashSet<String> = self
@@ -191,7 +210,7 @@ impl WeightedFactorChannel {
                 .iter()
                 .map(|factor| {
                     self.hub.cached_score(
-                        &model_service(factor),
+                        &model_service_path_for_interval("binance-futures", factor, self.interval),
                         &symbol,
                         TradingVenue::BinanceFutures,
                     )
@@ -204,6 +223,7 @@ impl WeightedFactorChannel {
                 entry,
                 &mut self.last_ts,
                 get_timestamp_us(),
+                self.interval.max_model_age_ms(),
             ) {
                 updates.push(observation);
             }
@@ -219,6 +239,7 @@ fn next_mean_observation(
     entry: &EntryConfig,
     last_ts: &mut HashMap<String, i64>,
     now_us: i64,
+    max_age_ms: u64,
 ) -> Option<PositionObservation> {
     let mut timestamps = inputs
         .iter()
@@ -230,7 +251,7 @@ fn next_mean_observation(
     if model_ts_ms <= 0
         || timestamps.any(|ts| ts != model_ts_ms)
         || last_ts.get(&key).is_some_and(|ts| model_ts_ms <= *ts)
-        || !model_bar_is_fresh(model_ts_ms, now_us, CTA_PERP_MAX_MODEL_AGE_MS)
+        || !model_bar_is_fresh(model_ts_ms, now_us, max_age_ms)
     {
         return None;
     }
@@ -252,6 +273,7 @@ fn next_observation(
     entry: &EntryConfig,
     last_ts: &mut HashMap<String, i64>,
     now_us: i64,
+    max_age_ms: u64,
 ) -> Option<FactorObservation> {
     let mut timestamps = inputs
         .iter()
@@ -262,7 +284,7 @@ fn next_observation(
     if model_ts_ms <= 0
         || timestamps.any(|ts| ts != model_ts_ms)
         || last_ts.get(&symbol).is_some_and(|ts| model_ts_ms <= *ts)
-        || !model_bar_is_fresh(model_ts_ms, now_us, CTA_PERP_MAX_MODEL_AGE_MS)
+        || !model_bar_is_fresh(model_ts_ms, now_us, max_age_ms)
     {
         return None;
     }
@@ -277,6 +299,7 @@ fn next_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cta_perp::config::CTA_PERP_MAX_MODEL_AGE_MS;
     fn input(ts: i64) -> ModelOutputScoreLookupResult {
         ModelOutputScoreLookupResult {
             service_name: String::new(),
@@ -315,7 +338,8 @@ mod tests {
             &[input(120_000), input(60_000)],
             &entry,
             &mut last,
-            121_000_000
+            121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .is_none());
         assert!(last.is_empty());
@@ -326,6 +350,7 @@ mod tests {
             &entry,
             &mut last,
             121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .unwrap();
         assert_eq!(bar.factor, SYMBOL_MEAN_STRATEGY);
@@ -336,7 +361,8 @@ mod tests {
             &[input(120_000), input(120_000)],
             &entry,
             &mut last,
-            121_000_000
+            121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .is_none());
         let mut unready = input(180_000);
@@ -347,7 +373,8 @@ mod tests {
             &[input(180_000), unready],
             &entry,
             &mut last,
-            181_000_000
+            181_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .unwrap()
         .bar
@@ -368,7 +395,8 @@ mod tests {
             &[input(120_000), input(60_000)],
             &entry,
             &mut last,
-            121_000_000
+            121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .is_none());
         assert!(last.is_empty());
@@ -380,7 +408,8 @@ mod tests {
                 &inputs,
                 &entry,
                 &mut last,
-                121_000_000
+                121_000_000,
+                CTA_PERP_MAX_MODEL_AGE_MS,
             )
             .unwrap()
             .bar
@@ -394,7 +423,8 @@ mod tests {
             &inputs,
             &entry,
             &mut last,
-            121_000_000
+            121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .is_none());
         // A hot weight/sign edit does not replay an already consumed model bar.
@@ -408,7 +438,8 @@ mod tests {
             &inputs,
             &entry,
             &mut last,
-            121_000_000
+            121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .is_none());
     }
@@ -432,6 +463,7 @@ mod tests {
                 &entry,
                 &mut last,
                 121_000_000,
+                CTA_PERP_MAX_MODEL_AGE_MS,
             )
             .is_none());
             assert!(last.is_empty());
@@ -442,6 +474,7 @@ mod tests {
                 &entry,
                 &mut last,
                 121_000_000,
+                CTA_PERP_MAX_MODEL_AGE_MS,
             )
             .expect("all nonzero signed weights have a complete bar");
             let bar = observation.bar.expect("signed combination ready");
@@ -476,6 +509,7 @@ mod tests {
             &EntryConfig::default(),
             &mut HashMap::new(),
             121_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .unwrap();
         assert_eq!(result.model_ts_ms, 120_000);
@@ -486,7 +520,8 @@ mod tests {
             &[input(120_000)],
             &EntryConfig::default(),
             &mut HashMap::new(),
-            241_000_000
+            241_000_000,
+            CTA_PERP_MAX_MODEL_AGE_MS,
         )
         .is_none());
     }

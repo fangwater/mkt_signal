@@ -287,3 +287,21 @@ assert.equal(
 console.log(
   "Single-factor B/S pairs, fixed positions, unclosed trades, causal markers, isolation and NQ gates passed",
 );
+
+// 5m bars retain start labels; observations become usable at the right edge.
+const five = record(5, 1);
+five.snapshot.bar_interval = "5m";
+five.snapshot.signal.nq_long_quantile = 0.1;
+five.snapshot.signal.nq_long_value = 0.02;
+five.snapshot.signal.nq_long_threshold = 0.02;
+assert.equal(panel.nqGate(five).mode, "passed");
+assert.equal(panel.modelBucket(five), start);
+assert.equal(panel.executionBucket(five), start + 300000);
+const fiveSeries = panel.buildSeries({
+  symbol: "FILUSDT", interval: "5m", start_ms: start, end_ms: start + 600000,
+  klines: [0, 1, 2].map(i => ({open_time_ms: start + i * 300000, open: 100, high: 101, low: 99, close: 100})),
+  signals: [five],
+}, "A");
+assert.deepEqual(fiveSeries.times, [start, start + 300000, start + 600000]);
+assert.equal(fiveSeries.nqLong[0], 0.02);
+assert.equal(fiveSeries.nqLongThreshold[0], 0.02);

@@ -1,0 +1,34 @@
+bar_interval = "5m"
+
+[universe]
+symbols = ["BANDUSDT", "BELUSDT", "DASHUSDT", "DOGEUSDT", "DOTUSDT", "ETCUSDT", "IOTAUSDT", "NEARUSDT", "RUNEUSDT", "SKLUSDT", "SOLUSDT", "VETUSDT", "XLMUSDT", "YFIUSDT", "ZENUSDT"]
+factors = ["TD_MT_032", "TD_MT_040", "TD_MT_042", "TD_PR_010", "TD_TI_008", "TD_TI_027", "TD_TI_033", "TP_VPI_001", "TP_VPI_006", "TP_VPI_009", "TP_VPI_018", "TP_VPI_019", "avg_price", "baseline_001", "baseline_013", "baseline_022", "baseline_040", "baseline_051", "baseline_104", "baseline_111", "baseline_118", "baseline_119", "baseline_120", "baseline_132", "baseline_138", "baseline_141", "baseline_195", "baseline_200", "factor_032", "factor_049", "factor_051", "factor_094", "factor_128", "factor_171", "sell_avg_price"]
+
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
+
+# Normalization and factor percentile windows are measured in 5m bars.
+[normalize]
+window_bars = 288
+min_periods = 200
+clip_zscore = 3.0
+
+[kafka]
+lookback_secs = 432000
+catchup_timeout_secs = 3600
+topic = "binance-futures"
+topics = ["binance-futures"]
+brokers = "156.231.137.189:1501"
+group_id = "cta_perp_rx04_factor_model_5m"
+client_id = "cta_perp_rx04_factor_model_5m"
+offset_reset = "earliest"
+payload_compression = "zlib"
+poll_timeout_ms = 1000
+enable_auto_commit = false
+enable_partition_eof = false
+security_protocol = "none"
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]

@@ -1,6 +1,7 @@
 pub mod config;
 pub mod factor_channel;
 pub mod factors;
+pub mod interval;
 pub mod journal;
 pub mod model_service;
 pub mod positions;

@@ -1,3 +1,5 @@
+use super::nq_5m::FiveMinuteNq;
+use crate::cta_perp::interval::BarInterval;
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
 use mkt_parsers::msg::mkt_msg::{Level, ModelMsg, MODEL_STATUS_OK};
@@ -24,15 +26,12 @@ use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
-    BaselineBar, LocalBaselineAggregator,
+    BaselineBar, FiveMinuteBaseline, LocalBaselineAggregator,
 };
 
 use super::cfg::{CtaPerpFactorPubConfig, KafkaInputConfig, NormalizeConfig};
 
-const FACTOR_WINDOW: usize = 2_880;
-const FACTOR_MIN_SAMPLES: usize = 1_440;
 use crate::factor_pub::cta_nq::{observe_nq, NqObservation, NQ_LOOKBACK_BARS, NQ_QUANTILE_WINDOW};
-const BAR_MS: i64 = 60_000;
 const PENDING_JOIN_RETENTION_MS: i64 = 6 * 60 * 60 * 1_000;
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
@@ -60,6 +59,38 @@ fn requires_amount_thresholds(factors: &[String]) -> bool {
                 | "factor_170"
                 | "factor_036"
                 | "baseline_185"
+                | "baseline_001"
+                | "baseline_013"
+                | "baseline_022"
+                | "baseline_040"
+                | "baseline_051"
+                | "baseline_104"
+                | "baseline_111"
+                | "baseline_118"
+                | "baseline_119"
+                | "baseline_120"
+                | "baseline_132"
+                | "baseline_138"
+                | "baseline_195"
+                | "factor_032"
+                | "factor_049"
+                | "factor_094"
+                | "factor_128"
+                | "factor_171"
+                | "TD_MT_032"
+                | "TD_MT_040"
+                | "TD_MT_042"
+                | "TD_PR_010"
+                | "TD_TI_008"
+                | "TD_TI_027"
+                | "TD_TI_033"
+                | "TP_VPI_001"
+                | "TP_VPI_006"
+                | "TP_VPI_009"
+                | "TP_VPI_018"
+                | "TP_VPI_019"
+                | "avg_price"
+                | "sell_avg_price"
         )
     })
 }
@@ -193,6 +224,7 @@ impl NormalizeState {
 }
 
 struct SymbolFactorState {
+    min_samples: usize,
     evaluator: BaselineReplayState,
     windows: Vec<ExactRollingWindow>,
     normalize: Vec<NormalizeState>,
@@ -200,11 +232,12 @@ struct SymbolFactorState {
 }
 
 impl SymbolFactorState {
-    fn new(normalize: &NormalizeConfig, factor_count: usize) -> Self {
+    fn new(normalize: &NormalizeConfig, factor_count: usize, interval: BarInterval) -> Self {
         Self {
+            min_samples: interval.factor_min_samples(),
             evaluator: BaselineReplayState::default(),
             windows: (0..factor_count)
-                .map(|_| ExactRollingWindow::new(FACTOR_WINDOW))
+                .map(|_| ExactRollingWindow::new(interval.factor_quantile_window()))
                 .collect(),
             normalize: (0..factor_count)
                 .map(|_| NormalizeState::new(normalize))
@@ -240,7 +273,7 @@ impl SymbolFactorState {
                     FactorObservation {
                         score,
                         quantile,
-                        ready: observed && window.len() >= FACTOR_MIN_SAMPLES && quantile.is_some(),
+                        ready: observed && window.len() >= self.min_samples && quantile.is_some(),
                     }
                 })
                 .collect(),
@@ -249,6 +282,9 @@ impl SymbolFactorState {
 }
 
 struct NqState {
+    interval: BarInterval,
+    five_minute: FiveMinuteNq,
+    last_valid_book_ms: Option<i64>,
     orderbook: OrderBook,
     next_update_id: i64,
     current_start_ms: Option<i64>,
@@ -260,7 +296,16 @@ struct NqState {
 
 impl Default for NqState {
     fn default() -> Self {
+        Self::new(BarInterval::OneMinute)
+    }
+}
+
+impl NqState {
+    fn new(interval: BarInterval) -> Self {
         Self {
+            interval,
+            five_minute: FiveMinuteNq::default(),
+            last_valid_book_ms: None,
             orderbook: OrderBook::new(),
             next_update_id: 1,
             current_start_ms: None,
@@ -275,15 +320,16 @@ impl Default for NqState {
 impl NqState {
     fn on_book(&mut self, book: &IncrementOrderBookInfo) -> Vec<(i64, NqObservation)> {
         let timestamp_ms = normalize_timestamp_ms(book.timestamp);
-        let target_start = timestamp_ms.div_euclid(BAR_MS).saturating_mul(BAR_MS);
+        let bar_ms = self.interval.millis();
+        let target_start = timestamp_ms.div_euclid(bar_ms).saturating_mul(bar_ms);
         let mut closed = Vec::new();
         match self.current_start_ms {
             None => self.current_start_ms = Some(target_start),
             Some(current) if target_start < current => return closed,
             Some(mut current) => {
                 while current < target_start {
-                    closed.push((current.saturating_add(BAR_MS), self.close_bar()));
-                    current = current.saturating_add(BAR_MS);
+                    closed.push((current.saturating_add(bar_ms), self.close_bar()));
+                    current = current.saturating_add(bar_ms);
                     self.current_start_ms = Some(current);
                     self.current_close = f64::NAN;
                 }
@@ -304,6 +350,7 @@ impl NqState {
         ) {
             if bid.is_finite() && ask.is_finite() && bid > 0.0 && ask >= bid {
                 self.current_close = 0.5 * (bid + ask);
+                self.last_valid_book_ms = Some(timestamp_ms);
                 for (_, observation) in &mut closed {
                     observation.execution_ts_ms = timestamp_ms;
                     observation.execution_bid = Some(bid);
@@ -315,6 +362,18 @@ impl NqState {
     }
 
     fn close_bar(&mut self) -> NqObservation {
+        if self.interval == BarInterval::FiveMinutes {
+            let end = self.current_start_ms.unwrap_or(0) + self.interval.millis();
+            let mid = if self
+                .last_valid_book_ms
+                .is_some_and(|ts| ts >= end - 60_000 && ts < end)
+            {
+                self.current_close
+            } else {
+                f64::NAN
+            };
+            return self.five_minute.observe(mid);
+        }
         observe_nq(
             self.current_close,
             &mut self.closes,
@@ -347,7 +406,9 @@ impl PeriodEvent<'_> {
     }
 }
 
-pub struct CtaPerpFactorModel1mPubApp {
+pub struct CtaPerpFactorModelPubApp {
+    interval: BarInterval,
+    five_minute_bars: HashMap<String, FiveMinuteBaseline>,
     venue: TradingVenue,
     venue_slug: String,
     tlen_server: TlenServerConfig,
@@ -379,6 +440,7 @@ pub struct CtaPerpFactorModel1mPubApp {
 /// The same causal factor/NQ observations are saved during warm-up and live
 /// operation. Reweighting history never requires an execution publisher.
 struct FactorHistoryWriter {
+    interval: BarInterval,
     root: PathBuf,
     current: Option<(String, BufWriter<File>)>,
     generation: String,
@@ -388,9 +450,10 @@ struct FactorHistoryWriter {
 }
 
 impl FactorHistoryWriter {
-    fn new(root: &Path) -> Result<Self> {
+    fn new(root: &Path, interval: BarInterval) -> Result<Self> {
         fs::create_dir_all(root).context("create CTA factor history directory")?;
         let writer = Self {
+            interval,
             root: root.to_path_buf(),
             current: None,
             generation: uuid::Uuid::new_v4().to_string(),
@@ -408,6 +471,7 @@ impl FactorHistoryWriter {
         fs::write(
             &tmp,
             serde_json::to_vec(&serde_json::json!({
+                "bar_interval": self.interval,
                 "generation": self.generation, "caught_up": self.caught_up,
                 "latest": self.latest, "updated_ms": now_millis(),
             }))?,
@@ -452,6 +516,7 @@ impl FactorHistoryWriter {
             &mut *writer,
             &serde_json::json!({
                 "generation": self.generation,
+                "bar_interval": self.interval, "bar_start_ms": ts - self.interval.millis(),
                 "symbol":symbol, "model_ts_ms":ts, "inputs":inputs, "nq":nq,
             }),
         )?;
@@ -462,22 +527,27 @@ impl FactorHistoryWriter {
     }
 }
 
-impl CtaPerpFactorModel1mPubApp {
+impl CtaPerpFactorModelPubApp {
     pub async fn new(
         path: &str,
         venue: TradingVenue,
         wait_for_publishers: bool,
         history_path: &Path,
         replay_only: bool,
+        interval: BarInterval,
     ) -> Result<Self> {
         anyhow::ensure!(
             venue == TradingVenue::BinanceFutures,
             "CTA perp factor publisher only supports binance-futures"
         );
         let config = CtaPerpFactorPubConfig::load(path)?;
+        anyhow::ensure!(
+            config.bar_interval == interval,
+            "publisher bin/config bar_interval mismatch"
+        );
         let venue_slug = venue.data_pub_slug().to_string();
         let plan = SymbolFactorPlan::from_factor_names(
-            "cta_perp_factor_model_1m",
+            &format!("cta_perp_factor_model_{}", interval.as_str()),
             config.universe.factors.clone(),
         )?;
         BaselineReplayState::validate_factor_plan(&plan)
@@ -530,6 +600,8 @@ impl CtaPerpFactorModel1mPubApp {
         let consumer = RawKafkaConsumer::new(&kafka_config)
             .context("create CTA perp factor Kafka consumer")?;
         let mut app = Self {
+            interval,
+            five_minute_bars: HashMap::new(),
             venue,
             venue_slug,
             tlen_server: config.tlen_server.clone(),
@@ -556,7 +628,7 @@ impl CtaPerpFactorModel1mPubApp {
             last_pending_prune: Instant::now(),
             last_stats_log: Instant::now(),
             stats: Stats::default(),
-            history: FactorHistoryWriter::new(history_path)?,
+            history: FactorHistoryWriter::new(history_path, interval)?,
         };
         app.catch_up(&config.kafka)?;
         if replay_only {
@@ -568,7 +640,7 @@ impl CtaPerpFactorModel1mPubApp {
             return Ok(app);
         }
         loop {
-            match create_shared_outputs(&app.venue_slug, &app.universe.factors) {
+            match create_shared_outputs(&app.venue_slug, &app.universe.factors, interval) {
                 Ok(outputs) => {
                     app.outputs = outputs;
                     break;
@@ -591,13 +663,16 @@ impl CtaPerpFactorModel1mPubApp {
         app.history.caught_up = true;
         app.history.write_status()?;
         info!(
-            "CTA perp shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 nq=120/120/60",
+            "CTA perp shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile={}/{} interval={}",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
             app.normalize.window_bars,
             app.normalize.min_periods,
             app.normalize.clip_zscore,
+            interval.factor_quantile_window(),
+            interval.factor_min_samples(),
+            interval.as_str(),
         );
         Ok(app)
     }
@@ -689,13 +764,21 @@ impl CtaPerpFactorModel1mPubApp {
                         }
                     }
                 }
+                // This consumer only uses 1m/5m output; do not retain unused 10s bars.
+                aggregator.drain_ten_second_bars();
                 aggregator.drain_sixty_second_bars()
+            };
+            let bars = if self.interval == BarInterval::FiveMinutes {
+                let resampler = self.five_minute_bars.entry(symbol.clone()).or_default();
+                bars.iter().flat_map(|bar| resampler.push(bar)).collect()
+            } else {
+                bars
             };
             for mut bar in bars {
                 if !valid_bar(&bar) {
                     continue;
                 }
-                bar.start_ms = bar.start_ms.saturating_add(BAR_MS);
+                bar.start_ms = bar.start_ms.saturating_add(self.interval.millis());
                 self.consume_bar(&symbol, bar);
             }
         }
@@ -705,7 +788,10 @@ impl CtaPerpFactorModel1mPubApp {
         let mut books: Vec<&IncrementOrderBookInfo> = books.iter().collect();
         books.sort_by_key(|book| normalize_timestamp_ms(book.timestamp));
         let mut completed = Vec::new();
-        let state = self.nq_states.entry(symbol.to_string()).or_default();
+        let state = self
+            .nq_states
+            .entry(symbol.to_string())
+            .or_insert_with(|| NqState::new(self.interval));
         for book in books {
             completed.extend(state.on_book(book));
         }
@@ -740,7 +826,11 @@ impl CtaPerpFactorModel1mPubApp {
             .factor_states
             .entry(symbol.to_string())
             .or_insert_with(|| {
-                SymbolFactorState::new(&self.normalize, self.plan.factor_names().len())
+                SymbolFactorState::new(
+                    &self.normalize,
+                    self.plan.factor_names().len(),
+                    self.interval,
+                )
             })
             .evaluate(msg, &self.plan, ts >= self.history_start_ms)
         {
@@ -802,9 +892,9 @@ impl CtaPerpFactorModel1mPubApp {
                 None,
                 None,
                 nq.long_value,
-                None,
+                nq.long_threshold,
                 nq.short_value,
-                None,
+                nq.short_threshold,
                 nq.ready,
             )
             .with_filter_quantiles(nq.long_quantile, nq.short_quantile);
@@ -940,13 +1030,24 @@ impl CtaPerpFactorModel1mPubApp {
     }
 }
 
-fn create_shared_outputs(venue_slug: &str, factors: &[String]) -> Result<Vec<FactorOutput>> {
+fn create_shared_outputs(
+    venue_slug: &str,
+    factors: &[String],
+    interval: BarInterval,
+) -> Result<Vec<FactorOutput>> {
     let mut outputs = Vec::with_capacity(factors.len());
     for (factor_index, name) in factors.iter().enumerate() {
-        let service = output_service_path(venue_slug, name);
-        let node_name = format!("cta_perp_factor_{}_{}", venue_slug, name)
-            .replace('-', "_")
-            .to_ascii_lowercase();
+        let service = crate::cta_perp::model_service::model_service_path_for_interval(
+            venue_slug, name, interval,
+        );
+        let node_name = format!(
+            "cta_perp_factor_{}_{}_{}",
+            venue_slug,
+            interval.as_str(),
+            name
+        )
+        .replace('-', "_")
+        .to_ascii_lowercase();
         outputs.push(FactorOutput {
             name: name.clone(),
             factor_index,
@@ -1003,6 +1104,53 @@ fn now_millis() -> i64 {
 mod tests {
     use super::*;
 
+    fn nq_book(ts: i64, bid: f64, ask: f64) -> IncrementOrderBookInfo {
+        use period_pbs::pb::PriceLevel;
+        IncrementOrderBookInfo {
+            timestamp: ts,
+            is_snapshot: false,
+            bids: vec![PriceLevel {
+                price: bid,
+                amount: 1.0,
+            }],
+            asks: vec![PriceLevel {
+                price: ask,
+                amount: 1.0,
+            }],
+        }
+    }
+
+    #[test]
+    fn five_minute_nq_uses_own_last_minute_book_only_after_close() {
+        let start = 1_800_000_000_000_i64; // UTC 5m boundary
+        let mut state = NqState::new(BarInterval::FiveMinutes);
+        let mut other_symbol = NqState::new(BarInterval::FiveMinutes);
+        assert!(state.on_book(&nq_book(start, 99.0, 101.0)).is_empty());
+        assert!(other_symbol
+            .on_book(&nq_book(start + 299_999, 9.0, 11.0))
+            .is_empty());
+        assert!(state
+            .on_book(&nq_book(start + 299_999, 109.0, 111.0))
+            .is_empty());
+        // The 5m close uses the old 110 mid, not the new 210 execution quote.
+        let rows = state.on_book(&nq_book(start + 300_000, 209.0, 211.0));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, start + 300_000);
+        assert_eq!(rows[0].1.long_value, Some(0.0));
+        assert_eq!(rows[0].1.execution_ask, Some(211.0));
+        assert!(state
+            .on_book(&nq_book(start + 599_999, 219.0, 221.0))
+            .is_empty());
+        let next = state.on_book(&nq_book(start + 600_000, 219.0, 221.0));
+        assert_eq!(next[0].1.long_value, Some(1.0)); // (220 - 110) / 110
+                                                     // No book in the last minute of the third bucket: no valid NQ sample.
+        let gap = state.on_book(&nq_book(start + 900_000, 219.0, 221.0));
+        assert_eq!(gap[0].1.long_value, None);
+        assert!(!gap[0].1.ready);
+        let other = other_symbol.on_book(&nq_book(start + 300_000, 9.0, 11.0));
+        assert_eq!(other[0].1.long_value, Some(0.0));
+    }
+
     fn normalize_config(window_bars: usize, min_periods: usize) -> NormalizeConfig {
         NormalizeConfig {
             window_bars,
@@ -1012,11 +1160,75 @@ mod tests {
     }
 
     #[test]
+    fn five_minute_factor_readiness_and_signed_ranks_use_two_day_window() {
+        use mkt_parsers::msg::trade_flow_feature_msg::{
+            TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
+        };
+        let plan = SymbolFactorPlan::from_factor_names("test", vec!["factor_001".into()]).unwrap();
+        let mut state =
+            SymbolFactorState::new(&normalize_config(288, 200), 1, BarInterval::FiveMinutes);
+        let mut scores = VecDeque::new();
+        let mut saw_ready = false;
+        for bar in 0..1000 {
+            let mid = 100.0 + ((bar * 17) % 31) as f64;
+            let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
+            for name in [
+                "open",
+                "high",
+                "low",
+                "close",
+                "vwap",
+                "buy_vwap",
+                "sell_vwap",
+            ] {
+                values[TRADE_FLOW_FEATURE_FIELD_NAMES
+                    .iter()
+                    .position(|field| *field == name)
+                    .unwrap()] = mid;
+            }
+            for side in [-1.0, 1.0] {
+                for level in 0..20 {
+                    values.extend([mid + side * (level as f64 + 1.0), 10.0 + (bar % 7) as f64]);
+                }
+            }
+            let msg = TradeFlowFeatureMsg::from_indexed_values(
+                "BELUSDT".into(),
+                TradingVenue::BinanceFutures.to_u8(),
+                1_800_000_000_000 + bar * 300_000,
+                &values,
+            )
+            .unwrap();
+            let observed = state.evaluate(msg, &plan, true).unwrap().unwrap()[0];
+            scores.push_back(observed.score);
+            if scores.len() > 576 {
+                scores.pop_front();
+            }
+            let valid: Vec<_> = scores
+                .iter()
+                .copied()
+                .filter(|value| value.is_finite())
+                .collect();
+            assert_eq!(
+                observed.ready,
+                observed.score.is_finite() && valid.len() >= 288
+            );
+            if let Some(q) = observed.quantile {
+                let negative_rank = (valid.iter().filter(|x| **x > observed.score).count() as f64
+                    + 0.5 * valid.iter().filter(|x| **x == observed.score).count() as f64)
+                    / valid.len() as f64;
+                assert!((1.0 - q - negative_rank).abs() < 1e-12);
+            }
+            saw_ready |= observed.ready;
+        }
+        assert!(saw_ready);
+    }
+
+    #[test]
     fn reviewed_ohlcv_depth_factors_ignore_trade_size_buckets() {
         use mkt_parsers::msg::trade_flow_feature_msg::{
             TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
         };
-        let names: Vec<String> = [
+        let mut names: Vec<String> = [
             "baseline_200",
             "baseline_164",
             "TD_MT_019",
@@ -1038,13 +1250,21 @@ mod tests {
         .into_iter()
         .map(str::to_string)
         .collect();
+        let rx04: super::CtaPerpFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_perp_rx04/cta_perp_factor_model_5m_pub.toml"
+        ))
+        .unwrap();
+        names.extend(rx04.universe.factors);
+        names.sort();
+        names.dedup();
         assert!(!requires_amount_thresholds(&names));
         assert!(requires_amount_thresholds(&["net_buy_medium".into()]));
         assert!(requires_amount_thresholds(&["unknown".into()]));
         let plan = SymbolFactorPlan::from_factor_names("test", names.clone()).unwrap();
         let mut plain = BaselineReplayState::default();
         let mut classified = BaselineReplayState::default();
-        for bar in 0..500 {
+        let mut observed_finite = HashSet::new();
+        for bar in 0..900 {
             let mid = 100.0 + bar as f64 * 0.01 + (bar as f64 * 0.1).sin();
             let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
             for (name, value) in [
@@ -1102,10 +1322,15 @@ mod tests {
                     .zip(plain.factor_values(&plan))
                     .zip(classified.factor_values(&plan))
                 {
-                    assert!(a.is_finite() && (a - b).abs() < 1e-10, "{name}: {a} != {b}");
+                    assert_eq!(a.is_finite(), b.is_finite(), "{name}: {a} != {b}");
+                    if a.is_finite() {
+                        assert!((a - b).abs() < 1e-10, "{name}: {a} != {b}");
+                        observed_finite.insert(name.clone());
+                    }
                 }
             }
         }
+        assert_eq!(observed_finite.len(), names.len());
     }
 
     #[test]
@@ -1209,7 +1434,7 @@ mod tests {
     #[test]
     fn history_export_keeps_missing_values_and_execution_context() {
         let root = std::env::temp_dir().join(format!("cta-history-{}", uuid::Uuid::new_v4()));
-        let mut writer = FactorHistoryWriter::new(&root).unwrap();
+        let mut writer = FactorHistoryWriter::new(&root, BarInterval::OneMinute).unwrap();
         let mut state = NqState::default();
         state.current_close = 100.0;
         let mut nq = state.close_bar();

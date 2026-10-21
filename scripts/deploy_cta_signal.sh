@@ -2,21 +2,30 @@
 # Install a signal-only suite. Never starts processes or creates an Exec companion.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FAMILY="" ENV_NAME="" ARTIFACT_DIR="" SKIP_BUILD=0 EXECUTE=0
+FAMILY="" ENV_NAME="" ARTIFACT_DIR="" SKIP_BUILD=0 EXECUTE=0 BAR_INTERVAL=1m
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --family) FAMILY="$2"; shift 2 ;;
+    --bar-interval) BAR_INTERVAL="$2"; shift 2 ;;
     --env-name) ENV_NAME="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
-    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
+    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
   esac
 done
 [[ "$FAMILY" == perp || "$FAMILY" == spread ]] || { echo '[ERROR] invalid CTA family' >&2; exit 1; }
 [[ "$ENV_NAME" =~ ^binance-cta-${FAMILY}-[a-z0-9][a-z0-9_-]*$ ]] || { echo '[ERROR] invalid environment name' >&2; exit 1; }
+[[ "$BAR_INTERVAL" == 1m || ( "$BAR_INTERVAL" == 5m && "$FAMILY" == perp ) ]] || { echo '[ERROR] 5m is supported only for CTA perp' >&2; exit 1; }
+SIGNAL_BIN="cta_${FAMILY}_signal"
+CONFIG_ROOT="$ROOT_DIR/config"
+if [[ "$BAR_INTERVAL" == 5m ]]; then
+  SIGNAL_BIN="cta_perp_5m_signal"
+  CONFIG_ROOT="$ROOT_DIR/config/cta_perp_rx04"
+fi
+PUB_BIN="cta_${FAMILY}_factor_model_${BAR_INTERVAL}_pub"
 TARGET_DIR="${HOME}/${ENV_NAME}"
-echo "[PLAN] env=$TARGET_DIR exchange=binance symbol_scope=config/cta_${FAMILY}_symbol_factors.json mutation=install-signal-files-only"
+echo "[PLAN] env=$TARGET_DIR exchange=binance symbol_scope=config/cta_${FAMILY}_symbol_factors.json interval=$BAR_INTERVAL mutation=install-signal-files-only"
 [[ "$EXECUTE" == 1 ]] || { echo '[DRY-RUN] pass --execute to install; processes remain stopped'; exit 0; }
 cd "$ROOT_DIR"
 [[ "$(git branch --show-current)" == arbmm && -z "$(git status --porcelain)" ]] || { echo '[ERROR] require a clean arbmm worktree' >&2; exit 1; }
@@ -24,7 +33,7 @@ git fetch origin arbmm
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/arbmm)" ]] || { echo '[ERROR] synchronize origin/arbmm first' >&2; exit 1; }
 if [[ "$SKIP_BUILD" != 1 ]]; then
   [[ "$ROOT_DIR" == /home/fanghaizhou/mkt_signal ]] || { echo '[ERROR] build only in the maintained local worktree' >&2; exit 1; }
-  cargo build --release --bin "cta_${FAMILY}_signal" --bin "cta_${FAMILY}_factor_model_1m_pub"
+  cargo build --release --bin "$SIGNAL_BIN" --bin "$PUB_BIN"
 fi
 if [[ "$SKIP_BUILD" == 1 ]]; then
   [[ -n "$ARTIFACT_DIR" ]] || { echo '[ERROR] --skip-build requires --artifact-dir containing uploaded local release artifacts' >&2; exit 1; }
@@ -33,14 +42,19 @@ else
   RELEASE_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release"
 fi
 [[ -d "$RELEASE_DIR" ]] || { echo '[ERROR] missing release directory' >&2; exit 1; }
-for name in "cta_${FAMILY}_signal" "cta_${FAMILY}_factor_model_1m_pub"; do
+for name in "$SIGNAL_BIN" "$PUB_BIN"; do
   [[ -x "$RELEASE_DIR/$name" ]] || { echo "[ERROR] missing artifact $name" >&2; exit 1; }
 done
 if [[ -f "$TARGET_DIR/config/cta_${FAMILY}.json" ]]; then
   python3 "scripts/cta_${FAMILY}_config_server.py" --config "$TARGET_DIR/config/cta_${FAMILY}.json" --check
+  python3 - "$TARGET_DIR/config/cta_${FAMILY}.json" "$BAR_INTERVAL" <<'PY_CHECK'
+import json, sys
+if json.load(open(sys.argv[1])).get('bar_interval', '1m') != sys.argv[2]:
+    raise SystemExit('[ERROR] existing environment has a different bar interval; use a separate environment')
+PY_CHECK
 fi
 mkdir -p "$TARGET_DIR" "$TARGET_DIR/scripts" "$TARGET_DIR/config" "$TARGET_DIR/run" "$TARGET_DIR/web"
-for name in "cta_${FAMILY}_signal" "cta_${FAMILY}_factor_model_1m_pub"; do
+for name in "$SIGNAL_BIN" "$PUB_BIN"; do
   artifact_tmp="$(mktemp "$TARGET_DIR/.${name}.XXXXXX")"
   install -m 755 "$RELEASE_DIR/$name" "$artifact_tmp"
   if [[ "$(sha256sum "$RELEASE_DIR/$name" | cut -d' ' -f1)" != "$(sha256sum "$artifact_tmp" | cut -d' ' -f1)" ]]; then
@@ -53,9 +67,9 @@ done
 for file in scripts/start_"cta_${FAMILY}"*.sh scripts/stop_"cta_${FAMILY}"*.sh scripts/"cta_${FAMILY}"*.py scripts/process_match_lib.sh scripts/factor_validation_allowlist.txt; do
   install -m 755 "$file" "$TARGET_DIR/scripts/$(basename "$file")"
 done
-for suffix in .json _symbol_factors.json _factor_model_1m_pub.toml; do
+for suffix in .json _symbol_factors.json "_factor_model_${BAR_INTERVAL}_pub.toml"; do
   file="config/cta_${FAMILY}${suffix}"
-  [[ -f "$TARGET_DIR/$file" ]] || install -m 644 "$file" "$TARGET_DIR/$file"
+  [[ -f "$TARGET_DIR/$file" ]] || install -m 644 "$CONFIG_ROOT/$(basename "$file")" "$TARGET_DIR/$file"
 done
 if [[ "$FAMILY" == perp && ! -f "$TARGET_DIR/config/cta_perp_replay.json" ]]; then
   install -m 644 config/cta_perp_replay.json "$TARGET_DIR/config/cta_perp_replay.json"
@@ -80,5 +94,11 @@ export IPC_NAMESPACE='$ENV_NAME'
 export CTA_POSITION_STRATEGY_PREFIX='${ENV_NAME//-/_}_'
 export CTA_VIRTUAL_ACCOUNT_NAME='cta_${FAMILY}'
 ENV
+  if [[ "$BAR_INTERVAL" == 5m ]]; then
+    cat >> "$TARGET_DIR/env.sh" <<ENV
+export CTA_PERP_MODEL_SCOPE='${ENV_NAME//-/_}'
+export CTA_PERP_FACTOR_PROCESS_NAME='cta_perp_factor_5m_${ENV_NAME//-/_}'
+ENV
+  fi
 fi
 echo "[INFO] installed CTA $FAMILY files; existing env/config/state retained; no process started"

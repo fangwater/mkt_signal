@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use mkt_signal::factor_pub::cta_perp_factor_model_1m_pub::app::CtaPerpFactorModel1mPubApp;
+use mkt_signal::factor_pub::cta_perp_factor_model_1m_pub::app::CtaPerpFactorModelPubApp;
 use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use std::path::PathBuf;
@@ -29,12 +29,13 @@ async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "CTA_PERP_FACTOR_MODEL_1M_CORE")?;
-    let mut app = CtaPerpFactorModel1mPubApp::new(
+    let mut app = CtaPerpFactorModelPubApp::new(
         &args.config,
         args.venue,
         args.wait_for_publishers,
         &args.history_path,
         args.replay_only,
+        mkt_signal::cta_perp::interval::BarInterval::OneMinute,
     )
     .await?;
     if args.replay_only {

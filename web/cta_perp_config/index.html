@@ -504,6 +504,7 @@
         byId("override-rows").replaceChildren();
         for (const [symbol, values] of Object.entries(config.symbol_overrides || {}))
           addOverride(symbol, values);
+        loadedInterval = config.bar_interval || "1m";
         const entry = config.entry || {};
         for (const key of [
           "factor_long_quantile",
@@ -523,6 +524,7 @@
         ])
           byId(key).value = execution[key] ?? "";
       }
+      let loadedInterval = "1m";
       function collect() {
         const entry = {
           nq_change_enabled: byId("nq_change_enabled").value === "true",
@@ -547,6 +549,7 @@
         if (!amountText || !Number.isFinite(amount) || amount <= 0)
           throw new Error("单份 USDT 必须是大于 0 的有限数字");
         return {
+          bar_interval: loadedInterval,
           enabled: byId("enabled").value === "true",
           max_pos_u: amount,
           position_algorithm: byId("position_algorithm").value,

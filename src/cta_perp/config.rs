@@ -1,3 +1,4 @@
+use super::interval::BarInterval;
 use anyhow::{bail, Context, Result};
 use order_common::TradingVenue;
 use serde::{Deserialize, Serialize};
@@ -90,6 +91,8 @@ pub struct SymbolThresholdOverrides {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CtaPerpConfig {
+    #[serde(default)]
+    pub bar_interval: BarInterval,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// One entry's USDT amount: per factor in v0, per symbol mean in v1.
@@ -160,6 +163,7 @@ impl CtaPerpConfig {
     /// Resolve only the four position thresholds; all other controls are global.
     pub fn for_symbol(&self, symbol: &str) -> Self {
         let mut effective = Self {
+            bar_interval: self.bar_interval,
             enabled: self.enabled,
             max_pos_u: self.max_pos_u,
             position_algorithm: self.position_algorithm,
@@ -185,6 +189,11 @@ impl CtaPerpConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.bar_interval == BarInterval::FiveMinutes
+            && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
+        {
+            bail!("5m NQ uses fixed 0.50 linear quantile thresholds");
+        }
         self.validate_controls()?;
         if self.symbol_overrides.len() > 256 {
             bail!("symbol_overrides supports at most 256 symbols");

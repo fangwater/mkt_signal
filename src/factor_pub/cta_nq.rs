@@ -12,6 +12,8 @@ pub(crate) struct NqObservation {
     pub long_quantile: Option<f64>,
     pub short_value: Option<f64>,
     pub short_quantile: Option<f64>,
+    pub long_threshold: Option<f64>,
+    pub short_threshold: Option<f64>,
     pub ready: bool,
     pub execution_ts_ms: i64,
     pub execution_bid: Option<f64>,
@@ -50,6 +52,8 @@ pub(crate) fn observe_nq(
         long_quantile,
         short_value,
         short_quantile,
+        long_threshold: None,
+        short_threshold: None,
         ready: long_value.is_some()
             && short_value.is_some()
             && long_window.len() >= NQ_MIN_PERIODS

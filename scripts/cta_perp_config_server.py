@@ -28,7 +28,7 @@ HEDGE_VENUE = "binance-futures"
 
 MAX_BODY_BYTES = 64 * 1024
 
-TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution", "position_algorithm", "symbol_overrides"}
+TOP_FIELDS = {"bar_interval", "enabled", "max_pos_u", "entry", "execution", "position_algorithm", "symbol_overrides"}
 ENTRY_FIELDS = {
     "factor_long_quantile", "factor_short_quantile", "nq_change_enabled",
     "nq_long_quantile", "nq_short_quantile",
@@ -106,6 +106,9 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     _reject_unknown(root, TOP_FIELDS, "config")
     if "execution" not in root:
         raise ValueError("config.execution is required")
+    interval = root.get("bar_interval", "1m")
+    if interval not in ("1m", "5m"):
+        raise ValueError("bar_interval must be 1m or 5m")
     algorithm = root.get("position_algorithm", "v0")
     if algorithm not in ("v0", "v1"):
         raise ValueError("position_algorithm must be v0 or v1")
@@ -123,6 +126,9 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     if not (0.0 <= nq_long <= 1.0 and 0.0 <= nq_short <= 1.0):
         raise ValueError("entry NQ quantiles must be in [0, 1]")
 
+    if interval == "5m" and (nq_long != 0.5 or nq_short != 0.5):
+        raise ValueError("5m NQ uses fixed 0.50 linear quantile thresholds")
+
     execution = _object(root["execution"], "execution")
     _reject_unknown(execution, EXECUTION_FIELDS, "execution")
     exit_long = _number(
@@ -134,6 +140,7 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         "execution.factor_exit_quantile_short",
     )
     result = {
+        "bar_interval": interval,
         "enabled": _bool(root.get("enabled", False), "enabled"),
         "max_pos_u": amount,
         "position_algorithm": algorithm,
@@ -200,6 +207,8 @@ class ConfigStore:
             current, current_revision = self._load_unlocked()
             if not expected_revision or expected_revision != current_revision:
                 raise ConfigConflict("configuration changed; reload before saving")
+            if current["bar_interval"] != config["bar_interval"]:
+                raise ValueError("bar_interval is fixed for this environment")
             if current["position_algorithm"] != config["position_algorithm"]:
                 positions_path = self.path.parent.parent / "run/cta_perp_position_flags.json"
                 if positions_path.exists():
@@ -280,7 +289,7 @@ def make_handler(
                     if redis_client is None or not env_name:
                         self._json(503, {"error": "Redis factor configuration is unavailable"})
                         return
-                    self._json(200, {**read_factor_table(redis_client, env_name), "available": available_universe(store.path.parent / "cta_perp_factor_model_1m_pub.toml")})
+                    self._json(200, {**read_factor_table(redis_client, env_name), "available": available_universe(store.path.parent / f"cta_perp_factor_model_{store.load()[0]['bar_interval']}_pub.toml")})
                     return
                 if path in {"/", "/index.html"}:
                     self._send(200, index_path.read_bytes(), "text/html; charset=utf-8")
@@ -300,7 +309,7 @@ def make_handler(
                         raise ValueError("invalid request body size")
                     request = _object(json.loads(self.rfile.read(length), object_pairs_hook=reject_duplicate_keys), "request")
                     _reject_unknown(request, {"symbol_factors", "expected_revision"}, "request")
-                    universe = available_universe(store.path.parent / "cta_perp_factor_model_1m_pub.toml")
+                    universe = available_universe(store.path.parent / f"cta_perp_factor_model_{store.load()[0]['bar_interval']}_pub.toml")
                     saved = save_factor_table(
                         redis_client, env_name,
                         request.get("symbol_factors"), request.get("expected_revision", ""),

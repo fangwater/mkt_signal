@@ -1,0 +1,80 @@
+{
+  "BANDUSDT": {
+    "baseline_040": -1,
+    "baseline_119": -1
+  },
+  "BELUSDT": {
+    "TD_TI_033": -1,
+    "factor_094": -1,
+    "factor_128": -1,
+    "sell_avg_price": -1
+  },
+  "DASHUSDT": {
+    "TD_MT_032": 1,
+    "baseline_118": 1
+  },
+  "DOGEUSDT": {
+    "TD_PR_010": 1,
+    "TD_TI_008": 1,
+    "TP_VPI_018": 1,
+    "TP_VPI_019": 1,
+    "baseline_132": 1,
+    "factor_049": 1
+  },
+  "DOTUSDT": {
+    "TD_MT_032": 1,
+    "baseline_111": 1,
+    "baseline_132": 1
+  },
+  "ETCUSDT": {
+    "TD_MT_042": -1,
+    "TP_VPI_018": 1,
+    "baseline_013": -1,
+    "baseline_104": 1,
+    "baseline_141": 1
+  },
+  "IOTAUSDT": {
+    "baseline_013": -1,
+    "baseline_022": -1,
+    "baseline_132": 1,
+    "baseline_195": -1
+  },
+  "NEARUSDT": {
+    "baseline_013": -1,
+    "baseline_051": -1,
+    "factor_051": -1
+  },
+  "RUNEUSDT": {
+    "baseline_001": 1,
+    "baseline_138": 1
+  },
+  "SKLUSDT": {
+    "TD_TI_033": -1,
+    "TP_VPI_006": -1,
+    "baseline_040": -1,
+    "baseline_120": -1
+  },
+  "SOLUSDT": {
+    "baseline_104": 1,
+    "factor_032": -1
+  },
+  "VETUSDT": {
+    "TD_MT_040": 1,
+    "TD_TI_027": -1,
+    "TP_VPI_001": -1,
+    "baseline_104": 1,
+    "baseline_200": -1
+  },
+  "XLMUSDT": {
+    "TP_VPI_009": -1,
+    "factor_171": -1
+  },
+  "YFIUSDT": {
+    "avg_price": 1,
+    "baseline_200": -1
+  },
+  "ZENUSDT": {
+    "baseline_104": 1,
+    "baseline_141": 1
+  }
+}

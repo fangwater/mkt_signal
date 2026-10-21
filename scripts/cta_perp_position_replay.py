@@ -37,12 +37,18 @@ def combined_snapshot(factors, observations, config):
     decision_value=math.fsum(v['decision_value'] for v in votes)/len(votes)
     side=1 if decision_value-entry['factor_long_quantile']>EPS else -1 if entry['factor_short_quantile']-decision_value>EPS else 0
     nq=observations['nq'];allowed=side!=0
-    if entry['nq_change_enabled']:
+    if entry['nq_change_enabled'] and config.get('bar_interval', '1m') == '5m':
+        branch = 'long' if side > 0 else 'short'
+        value, threshold = nq.get(branch + '_value'), nq.get(branch + '_threshold')
+        allowed = allowed and nq.get('ready') is True and all(
+            isinstance(v, (float, int)) and not isinstance(v, bool) and math.isfinite(v) for v in (value, threshold))
+        if allowed: allowed = value >= threshold if side > 0 else value <= threshold
+    elif entry['nq_change_enabled']:
         nq_q=nq.get('long_quantile') if side>0 else nq.get('short_quantile')
         allowed=allowed and nq.get('ready') is True and isinstance(nq_q,(int,float)) and math.isfinite(nq_q) and 0<=nq_q<=1
         if allowed:allowed=nq_q>=entry['nq_long_quantile'] if side>0 else nq_q<=entry['nq_short_quantile']
     return dict(model_ts_ms=observations['model_ts_ms'],score=side,quantile=corrected,decision_value=decision_value,score_ready=True,execution_coefficient=1.0,
-        factor_votes=votes,nq_long_value=nq.get('long_value'),nq_short_value=nq.get('short_value'),nq_long_quantile=nq.get('long_quantile'),
+        factor_votes=votes,nq_long_threshold=nq.get('long_threshold'),nq_short_threshold=nq.get('short_threshold'),nq_long_value=nq.get('long_value'),nq_short_value=nq.get('short_value'),nq_long_quantile=nq.get('long_quantile'),
         nq_short_quantile=nq.get('short_quantile'),filter_ready=nq.get('ready'),decision='long' if allowed and side>0 else 'short' if allowed else 'flat')
 
 
@@ -59,11 +65,13 @@ def simulate(rows,table,config,settings):
     realized=fees_paid=0.0;invalid_prices=0;last_bar_ms=None;seen=set()
     ordered=sorted(rows,key=lambda r:(r['nq'].get('execution_ts_ms',0),r['symbol'],r['model_ts_ms']))
     for observation in ordered:
+        if observation.get('bar_interval', '1m') != config['bar_interval']:
+            raise ValueError('factor history bar_interval mismatch')
         symbol,bar=observation['symbol'],observation['model_ts_ms']
         if symbol not in table or bar<start:continue
         effective=effective_config(config,symbol)
         nq=observation['nq'];ts=nq.get('execution_ts_ms',0);bid=nq.get('execution_bid');ask=nq.get('execution_ask')
-        if not isinstance(bid,(float,int)) or not isinstance(ask,(float,int)) or not math.isfinite(bid) or not math.isfinite(ask) or bid<=0 or ask<bid or not bar<=ts<=bar+120000:
+        if not isinstance(bid,(float,int)) or not isinstance(ask,(float,int)) or not math.isfinite(bid) or not math.isfinite(ask) or bid<=0 or ask<bid or not bar<=ts<=bar+(600000 if config['bar_interval']=='5m' else 120000):
             invalid_prices+=1;continue
         marks[symbol]=(bid+ask)/2;last_bar_ms=max(last_bar_ms or bar,bar)
         for factor,bindings in sorted(scopes[symbol].items()):
@@ -75,7 +83,7 @@ def simulate(rows,table,config,settings):
             position=positions.get(key);actions=[];execution=effective['execution'];q=signal['decision_value']
             record=dict(event_id=f'replay:{revision}:{factor}:{symbol}:{bar}',signal_id=f'replay:{revision}:{factor}:{symbol}:{bar}',
                 strategy_name=factor,symbol=symbol,model_ts_ms=bar,event_ts_us=ts*1000,state='observed',reason='hold',
-                snapshot=dict(enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],entry=effective['entry'],execution=execution,
+                snapshot=dict(bar_interval=config['bar_interval'],bar_start_ms=bar-(300000 if config['bar_interval']=='5m' else 60000),enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],entry=effective['entry'],execution=execution,
                               max_pos_u=amount,symbol_factors=bindings,signal=signal),publication=dict(levels=[],error=None),simulation=dict(actions=actions))
             exit_ready=position and (execution['factor_exit_quantile_long']-q>EPS if position['side']>0 else q-execution['factor_exit_quantile_short']>EPS)
             if exit_ready:
@@ -106,7 +114,7 @@ def simulate(rows,table,config,settings):
             breakeven=sum(abs(t['pnl'])<=1e-12 for t in closed),win_rate=wins/len(closed) if closed else None,
             realized_pnl=math.fsum(t['pnl'] for t in closed),unrealized_pnl=upnl,position_flag=p['side'] if p else 0,
             position_qty=p['side']*p['qty'] if p else 0,position_notional=p['qty']*marks[symbol] if p else 0,
-            warmup_minutes=warmup.get(key,0),first_observation_ms=earliest.get(key),
+            warmup_minutes=warmup.get(key,0)*(5 if config['bar_interval']=='5m' else 1),first_observation_ms=earliest.get(key),
             entry_actions=sum(a['kind']=='open' for r in records if r['strategy_name']==factor and r['symbol']==symbol for a in r['simulation']['actions']))
     def combine(items):
         count=sum(s['closed_trades'] for s in items);wins=sum(s['wins'] for s in items)

@@ -31,7 +31,7 @@ def normalize_table(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or len(raw) > 256:
         raise ValueError("symbol_factors must be an object with at most 256 symbols")
     allowlist = Path(__file__).with_name("factor_validation_allowlist.txt").read_text(encoding="utf-8")
-    allowed = set(re.findall(r"(?:factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium"}
+    allowed = set(re.findall(r"(?:factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium", "avg_price", "sell_avg_price"}
     table, services = {}, set()
     for raw_symbol, row in raw.items():
         if not isinstance(raw_symbol, str):
@@ -64,8 +64,8 @@ def normalize_table(raw: Any) -> dict[str, Any]:
         if not any(w != 0 for w in normalized.values()):
             raise ValueError(f"{symbol}: absolute weights must have a positive total")
         table[symbol] = dict(sorted(normalized.items()))
-    if len(services) > 32:
-        raise ValueError("factor table requires more than 32 model services")
+    if len(services) > 64:
+        raise ValueError("factor table requires more than 64 model services")
     return dict(sorted(table.items()))
 
 
@@ -73,6 +73,16 @@ def available_universe(path: Path = Path("config/cta_perp_factor_model_1m_pub.to
     import tomllib
     config = tomllib.loads(path.read_text())
     return {"factors": config["universe"]["factors"], "symbols": config["universe"]["symbols"]}
+
+
+def publisher_config_for(table_path: Path) -> Path:
+    strategy_path = table_path.with_name("cta_perp.json")
+    if not strategy_path.exists():
+        strategy_path = Path("config/cta_perp.json")
+    interval = json.loads(strategy_path.read_text()).get("bar_interval", "1m") if strategy_path.exists() else "1m"
+    if interval not in ("1m", "5m"):
+        raise ValueError(f"unsupported bar_interval: {interval}")
+    return strategy_path.with_name(f"cta_perp_factor_model_{interval}_pub.toml")
 
 
 def validate_available(table: dict, universe: dict) -> None:
@@ -130,8 +140,10 @@ def main() -> None:
         parser.error("--check cannot be combined with --config or --execute")
     factor_key(args.env_name)
     table = normalize_table(json.loads(args.config.read_text(), object_pairs_hook=reject_duplicate_keys)) if args.config else None
+    universe = None
     if table is not None:
-        validate_available(table, available_universe())
+        universe = available_universe(publisher_config_for(args.config))
+        validate_available(table, universe)
     if table is not None and not args.execute:
         print(json.dumps({"key": factor_key(args.env_name), "execute": False, "symbol_factors": table}, indent=2))
         return
@@ -149,7 +161,7 @@ def main() -> None:
     current = read_factor_table(client, args.env_name)
     if args.check and not current["exists"]:
         raise SystemExit(f"missing CTA factor configuration {current['key']}")
-    result = save_factor_table(client, args.env_name, table, current["revision"]) if table is not None else current
+    result = save_factor_table(client, args.env_name, table, current["revision"], universe) if table is not None else current
     print(json.dumps(result, indent=2))
 
 
