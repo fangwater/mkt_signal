@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-19 13:10 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-21 05:55 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-21 05:33 UTC，Grid 执行框架发布到 Exec05/06/07、RX01 共享因子 publisher
+和 Manager，release `20261021T053158ZGridControls`，Exec `bf9d0ad8` / Manager `d5c3cc1`。
+仅更换执行器、Config、因子 publisher、Manager API/前端；所有 env.sh、trade_engine.toml、
+source IP、ENI/EIP、路由、监听端口和CPU绑定保持原样，54份配置哈希核对一致。
+87个实账户与77个虚拟账户绑定不变，当前策略未切换Grid。详见 `docs/exec_grid.md`。
 
 2026-10-19 13:10 UTC，只补发Exec06执行器以保留普通拒单退避，已恢复RX01原推送配置。
 账户查询与交易仍显式绑定 `172.31.35.228`，其余网络及监听配置保持。

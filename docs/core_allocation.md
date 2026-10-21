@@ -1,7 +1,16 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-19 13:10 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-21 05:55 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-21 05:33 UTC，发布 Grid 分市场倍数及可选 Maker 轮数，Exec 源 `bf9d0ad8`、
+Manager 源 `d5c3cc1`，release `20261021T053158ZGridControls`。仅通过环境本地脚本
+更新 Exec05/06/07 执行器与 Config，以及 RX01 共享因子 publisher；Manager 通过原
+systemd unit 重启。Exec PID 为163684/165922/166169（CPU0–5），publisher PID166240
+（CPU17），Manager PID166260（CPU24）。另152个常驻进程和54份配置哈希保留，
+87个实账户、77个虚拟账户绑定和四张仓位快照表不变；当前算法未切换到Grid。
+05:53 UTC 完成原配置Kafka回放，恢复Spread/Vol输出；两市场各48/48币就绪，
+三个Exec均已订阅两路Vol。最终验收见 `docs/exec_grid.md`。
 
 2026-10-19 13:10 UTC，收窄Chase新目标的退避重置条件，仅解除借币不足状态；
 保留其他拒单的原退避。经本机release重建与SHA-256核验，只补发Exec06执行器，
@@ -481,7 +490,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-19 Kafka已追实时，PID2798755；48币/794组合，10:17 UTC清仓及新快照后恢复signal发布和Exec06交易 |
+| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-21 Grid Vol 发布器，PID166240；05:53 UTC 预热完成，两市场各48币就绪 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-13 原地迁入，5 线程；CTA_PERP_FACTOR_MODEL_1M_CORE=18 |
 | 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 2026-10-14 独立RX03实盘信号publisher，PID2038356/5线程；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |

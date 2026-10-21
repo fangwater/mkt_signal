@@ -1,4 +1,4 @@
-# Exec Grid（本地实现，未部署）
+# Exec Grid
 
 最后更新：2026-10-21 UTC
 
@@ -82,4 +82,22 @@ Manager 已支持目录归属、分市场参数及显式数据库维护。已有
 使用 `scripts/apply_grid_market_parameters.sql` 将原共用值映射为两套独立参数；
 已有分市场 JSON 也通过该显式维护补齐倍数 1 和合约无限轮，保留原参数与已有设置。
 Manager、Exec 与 Exec Config 需要同时替换为当前单一格式，旧 Exec 不接受新增字段。
-本次为本地框架修改，尚未部署；不改变 RX01 绑定或发布实盘目标。
+2026-10-21 已作为 `20261021T053158ZGridControls` 发布到 jp-meta，Exec 源提交
+`bf9d0ad8`，Manager 源提交 `d5c3cc1`。替换 trade05/06/07 的执行器与 Config、
+RX01 共享因子 publisher，以及 Manager API/前端；没有切换现有策略算法或绑定。
+全部 87 个实账户绑定、77 个虚拟账户绑定及四张仓位快照表保持不变。
+现有 `lgq_grid` 模板仍未绑定，操作者保存的现货一轮参数保留；新模板默认现货三轮。
+
+执行器 PID 分别为 163684、165922、166169，CPU mask 均为 0–5；共享因子 PID166240
+仍使用 CPU17，Manager PID166260 仍使用 CPU24。另152个常驻进程身份和54份配置哈希
+核对一致。通过 Nginx 验证七套 Exec Viz/snapshot/Config 均返回200，临时未绑定模板的
+两组倍数与有限/无限轮数保存回读成功，随后删除测试模板和会话。
+
+05:53 UTC 完成原配置三天 lookback 的 Kafka 回放，恢复 Spread 和 Vol 输出。
+本次同时升级原始 Vol producer 导致共享 Spread 输出中断约20分钟；倍数与轮数参数
+自身不需要这轮预热。现货与合约 Vol 均实测48/48币就绪并持续收取新消息，
+三个执行器均已订阅两路流；解码、计算和发布错误均为0。Vol覆盖仍限于发布器配置的
+48币；其他独立永续目标使用Grid前仍须有对应就绪Vol。
+最终进程、配置、绑定及快照复核通过，验收结果保存在同release的
+`DEPLOYMENT-VERIFICATION.json`。验收后清理部署暂存、探针和本次备份。
+部署清单保存在 Manager `web-releases/20261021T053158ZGridControls/RELEASE-MANIFEST.json`。
