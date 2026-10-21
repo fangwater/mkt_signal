@@ -14,7 +14,8 @@ struct Args {
     config: String,
     #[arg(long)]
     core: Option<usize>,
-    /// Finish Kafka warm-up, then wait until the shared services are released.
+    /// Replay beside the current publisher without writing history/status;
+    /// take over live output/history after the shared services are released.
     #[arg(long)]
     wait_for_publishers: bool,
     #[arg(long, default_value = "data/cta_spread/factor_history")]

@@ -57,10 +57,15 @@ Grid 的拆单数与挂单时长仅从对应市场的嵌套字段读取，顶层
 
 ## Vol 与价格
 
-CTA Spread 的 Kafka factor publisher 对配置币对分别维护现货、合约 5s close，
+CTA Spread 的 Kafka factor publisher 对两路行情中的全部 symbol 分别维护现货、合约 5s close，
+不再用 Spread 的 `universe.symbols` 过滤执行 Vol，也不维护额外的执行币种白名单。
+新出现的 symbol 自动建立窗口；现货与合约、USDT 与 USDC 合约分别保留自己的行情。
 计算 `r[t] = close[t] / close[t-24] - 1`，对最近 720 个收益率计算样本标准差，不乘 1.3。
 24 bar 收益率跨度为 2 分钟，720 个收益率窗口为 1 小时；冷启动需要 744 个收盘价。
 Kafka 回放用于补齐预热，只有关闭的 5s bar 进入窗口。旧 MM/trade-flow vol 不变。
+两路 Vol 的发布历史和订阅队列均为4096条，以容纳同一根bar的全市场突发消息；
+发布器与Exec必须协调替换这一组队列容量，沿用原来的服务名和 ModelMsg 格式。
+普通模型因子的队列容量保持原值。
 
 每侧偏移从 `0` 到 `vol * vol_multiplier`，按该市场的 `orders_per_batch` 均匀拆档；
 单档偏移为 0。默认倍数 1 保持原定价；例如现货 0.5、合约 2，则各自外档为 0.5 倍、
@@ -101,3 +106,20 @@ RX01 共享因子 publisher，以及 Manager API/前端；没有切换现有策�
 最终进程、配置、绑定及快照复核通过，验收结果保存在同release的
 `DEPLOYMENT-VERIFICATION.json`。验收后清理部署暂存、探针和本次备份。
 部署清单保存在 Manager `web-releases/20261021T053158ZGridControls/RELEASE-MANIFEST.json`。
+
+## 全 symbol 与后台交接
+
+`--wait-for-publishers` 用于同一信号逻辑的运行实例交接：新实例先回放并追平，
+此时不写现有 factor history 或 warmup 状态；取得共享输出的发布权后才接管后续写入。
+既有历史保留，运行中的发布器可持续提供 Spread/Vol。日志同时报告已发现的symbol数、
+15秒内就绪数和最新Spread时间，确认追至实时后才释放原发布者。
+
+环境本地启动/停止脚本支持 `CTA_SPREAD_FACTOR_PROCESS_NAME` 保存当前发布器名称。
+后台预热可用 `PMDAEMON_NAME` 指定新实例名，并开启 `CTA_SPREAD_FACTOR_WAIT_FOR_PUBLISHERS=1`。交接停止旧实例时显式设置
+`PMDAEMON_NAME` 和 `CTA_SPREAD_FACTOR_KEEP_PID`，避免兜底PID扫描停止已经预热的新实例。
+普通停止仍会停止该环境内全部遗留发布器；交接后需保存当前进程名并恢复正式CPU绑定。
+后台实例的持久启动参数仍使用正式CPU，预热时可临时调整运行中线程的CPU亲和性。
+仅计算范围变化的本次更新沿用已有Spread历史；这个模式不会重算替换既有历史档案。
+
+现场只读Kafka抽样为524个合约、362个现货symbol。上线前验证覆盖自动发现新币种、
+独立市场时钟、1536币突发及迟加入订阅者完整接收、后台历史保护和进程交接脚本。

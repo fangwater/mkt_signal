@@ -12,7 +12,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::factor_pub::cta_spread_factor_model_1m_pub::volatility::output_service_path;
+use crate::factor_pub::cta_spread_factor_model_1m_pub::volatility::{
+    output_service_path, VOLATILITY_BUFFER_SIZE,
+};
 
 #[derive(Default)]
 struct VolatilityCache {
@@ -78,7 +80,10 @@ fn subscribe(
         .service_builder(&ServiceName::new(&output_service_path(venue))?)
         .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
         .open()?;
-    Ok(service.subscriber_builder().buffer_size(256).create()?)
+    Ok(service
+        .subscriber_builder()
+        .buffer_size(VOLATILITY_BUFFER_SIZE)
+        .create()?)
 }
 
 pub fn start(venues: &[TradingVenue]) {
@@ -102,7 +107,7 @@ pub fn start(venues: &[TradingVenue]) {
                 log::info!("Exec grid subscribed to {}", output_service_path(venue));
                 loop {
                     let mut failed = false;
-                    for _ in 0..256 {
+                    for _ in 0..VOLATILITY_BUFFER_SIZE {
                         match subscriber.receive() {
                             Ok(Some(sample)) => {
                                 if let Ok(msg) = ModelMsg::from_bytes(sample.payload()) {

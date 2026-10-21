@@ -1,4 +1,4 @@
-//! Raw execution volatility owned by CTA Spread's Kafka factor publisher.
+//! Raw execution volatility for every symbol carried by each Kafka market.
 //! Each market/symbol has its own 5s closes and 720-slot sample-std window.
 
 use anyhow::Result;
@@ -7,7 +7,7 @@ use order_common::TradingVenue;
 use period_pbs::pb::{PeriodMessage, TradeInfo};
 use period_pbs::period::normalize_timestamp_ms;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::app::timestamp_as_micros;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
@@ -16,6 +16,9 @@ use crate::factor_pub::trade_flow_feature_pub::vol_state::VolState;
 pub const BAR_MS: i64 = 5_000;
 pub const RETURN_BARS: usize = 24;
 pub const WINDOW_RETURNS: usize = 720;
+// One completed bar can publish more than 500 symbols in a burst. Keep the
+// subscriber queue and late-subscriber history large enough for complete rounds.
+pub const VOLATILITY_BUFFER_SIZE: usize = 4096;
 
 pub fn output_service_path(venue: TradingVenue) -> String {
     format!("model_output/cta_spread-{}-5s-vol", venue.data_pub_slug())
@@ -70,22 +73,26 @@ pub(super) struct VolatilityFactors {
 }
 
 impl VolatilityFactors {
+    pub fn symbol_counts(&self) -> [usize; 2] {
+        self.markets.each_ref().map(HashMap::len)
+    }
+
     pub fn consume_period(
         &mut self,
         period: &PeriodMessage,
         cash: bool,
-        allowed_symbols: &HashSet<String>,
     ) -> Vec<VolatilityObservation> {
         let end_ms = normalize_timestamp_ms(period.ts);
         if end_ms <= 0 {
             return Vec::new();
         }
-        // Merge repeated symbol entries before sorting, so the last trade in
-        // event time determines the close even when the payload is unordered.
+        // Discover symbols directly from market data, independently of the
+        // Spread signal universe. Merge repeated entries before sorting so the
+        // event-time last trade determines the close for unordered payloads.
         let mut symbols: HashMap<String, Vec<&TradeInfo>> = HashMap::new();
         for info in &period.symbol_infos {
             let symbol = normalize_symbol_for_venue(&info.symbol, TradingVenue::BinanceFutures);
-            if allowed_symbols.contains(&symbol) {
+            if !symbol.is_empty() {
                 symbols.entry(symbol).or_default().extend(&info.trades);
             }
         }
@@ -136,6 +143,20 @@ impl VolatilityFactors {
             .flat_map(|market| market.values().filter_map(|state| state.latest.clone()))
             .collect()
     }
+
+    pub fn ready_counts(&self, now_ms: i64, max_age_ms: i64) -> [usize; 2] {
+        self.markets.each_ref().map(|market| {
+            market
+                .values()
+                .filter(|state| {
+                    state.latest.as_ref().is_some_and(|observation| {
+                        observation.value.is_some()
+                            && (0..=max_age_ms).contains(&(now_ms - observation.ts_ms))
+                    })
+                })
+                .count()
+        })
+    }
 }
 
 pub(super) struct VolatilityOutputs {
@@ -145,13 +166,17 @@ pub(super) struct VolatilityOutputs {
 
 impl VolatilityOutputs {
     pub fn new() -> Result<Self> {
-        let futures = ModelPublisher::new(
+        let futures = ModelPublisher::with_capacity(
             "cta_spread_binance_futures_vol",
             &output_service_path(TradingVenue::BinanceFutures),
+            VOLATILITY_BUFFER_SIZE,
+            VOLATILITY_BUFFER_SIZE,
         )?;
-        let cash = ModelPublisher::new(
+        let cash = ModelPublisher::with_capacity(
             "cta_spread_binance_cash_vol",
             &output_service_path(TradingVenue::BinanceMargin),
+            VOLATILITY_BUFFER_SIZE,
+            VOLATILITY_BUFFER_SIZE,
         )?;
         Ok(Self {
             publishers: [futures, cash],
@@ -188,10 +213,6 @@ mod tests {
     use period_pbs::period::INIT_TP_MS;
     use std::collections::VecDeque;
 
-    fn allowed() -> HashSet<String> {
-        HashSet::from(["ETHUSDT".to_string(), "SOLUSDT".to_string()])
-    }
-
     fn trade(ts_ms: i64, price: f64) -> TradeInfo {
         TradeInfo {
             timestamp: ts_ms * 1_000,
@@ -220,7 +241,6 @@ mod tests {
     #[test]
     fn full_window_matches_unscaled_24_bar_returns_and_evicts_old_returns() {
         let mut factors = VolatilityFactors::default();
-        let allowed = allowed();
         let mut closes = VecDeque::new();
         for i in 0..1_600 {
             let start = INIT_TP_MS + i as i64 * BAR_MS;
@@ -229,7 +249,6 @@ mod tests {
             let observations = factors.consume_period(
                 &period(start + BAR_MS, "ETHUSDT", vec![trade(start + 1, close)]),
                 false,
-                &allowed,
             );
             assert_eq!(observations.len(), 1);
             let observation = &observations[0];
@@ -248,16 +267,45 @@ mod tests {
     }
 
     #[test]
+    fn discovers_all_market_symbols_and_new_listings_without_a_strategy_universe() {
+        let mut factors = VolatilityFactors::default();
+        let mut message = period(
+            INIT_TP_MS + BAR_MS,
+            "BTCUSDT",
+            vec![trade(INIT_TP_MS + 1, 100.0)],
+        );
+        for i in 0..600 {
+            message.symbol_infos.push(SymbolInfo {
+                symbol: format!("COIN{i}USDT"),
+                trades: vec![trade(INIT_TP_MS + 1, 10.0 + i as f64)],
+                ..Default::default()
+            });
+        }
+        let observations = factors.consume_period(&message, false);
+        assert_eq!(observations.len(), 601);
+        assert_eq!(factors.symbol_counts(), [601, 0]);
+        assert!(observations.iter().all(|v| v.value.is_none()));
+        let listing = period(
+            INIT_TP_MS + 2 * BAR_MS,
+            "NEWUSDC",
+            vec![trade(INIT_TP_MS + BAR_MS + 1, 20.0)],
+        );
+        let observations = factors.consume_period(&listing, false);
+        assert_eq!(observations[0].symbol, "NEWUSDC");
+        assert_eq!(factors.symbol_counts(), [602, 0]);
+        factors.consume_period(&listing, true);
+        assert_eq!(factors.symbol_counts(), [602, 1]);
+    }
+
+    #[test]
     fn cash_futures_and_symbols_have_independent_prices_clocks_and_readiness() {
         let mut factors = VolatilityFactors::default();
-        let allowed = allowed();
         for i in 0..744 {
             let start = INIT_TP_MS + i * BAR_MS;
             for (cash, close) in [(false, price(i as usize)), (true, 200.0)] {
                 factors.consume_period(
                     &period(start + BAR_MS, "ETHUSDT", vec![trade(start + 1, close)]),
                     cash,
-                    &allowed,
                 );
             }
         }
@@ -266,18 +314,28 @@ mod tests {
         assert_eq!(last.iter().find(|v| v.cash).unwrap().value, Some(0.0));
         assert!(last.iter().find(|v| !v.cash).unwrap().value.unwrap() > 0.0);
         let start = INIT_TP_MS + 744 * BAR_MS;
+        assert_eq!(factors.ready_counts(start, 15_000), [1, 1]);
+        assert_eq!(factors.ready_counts(start + 15_001, 15_000), [0, 0]);
+        assert_eq!(factors.ready_counts(start - 1, 15_000), [0, 0]);
         let mut message = period(start + BAR_MS, "SOLUSDT", vec![trade(start + 1, 50.0)]);
         message.symbol_infos.push(SymbolInfo {
             symbol: "BTCUSDT".into(),
             trades: vec![trade(start + 1, 30_000.0)],
             ..Default::default()
         });
-        let observed = factors.consume_period(&message, false, &allowed);
-        assert_eq!(observed.len(), 1);
-        assert_eq!(observed[0].symbol, "SOLUSDT");
-        assert!(observed[0].value.is_none());
+        let observed = factors.consume_period(&message, false);
+        assert_eq!(observed.len(), 2);
+        assert!(observed
+            .iter()
+            .all(|observation| observation.value.is_none()));
+        assert!(observed
+            .iter()
+            .any(|observation| observation.symbol == "BTCUSDT"));
+        assert!(observed
+            .iter()
+            .any(|observation| observation.symbol == "SOLUSDT"));
         // A different symbol/market cannot refresh ETH's timestamp.
-        assert_eq!(factors.latest().len(), 3);
+        assert_eq!(factors.latest().len(), 4);
         for eth in factors.latest().iter().filter(|v| v.symbol == "ETHUSDT") {
             assert_eq!(eth.ts_ms, start);
         }
@@ -286,17 +344,16 @@ mod tests {
     #[test]
     fn duplicate_and_reordered_periods_cannot_rewrite_closes() {
         let mut factors = VolatilityFactors::default();
-        let allowed = allowed();
         let mut closes = VecDeque::new();
         for i in 0..760 {
             let start = INIT_TP_MS + i * BAR_MS;
             let close = price(i as usize);
             closes.push_back(close);
             let message = period(start + BAR_MS, "ETHUSDT", vec![trade(start + 1, close)]);
-            let observed = factors.consume_period(&message, false, &allowed);
-            assert!(factors.consume_period(&message, false, &allowed).is_empty());
+            let observed = factors.consume_period(&message, false);
+            assert!(factors.consume_period(&message, false).is_empty());
             let old = period(start, "ETHUSDT", vec![trade(start - 1, 9_999.0)]);
-            assert!(factors.consume_period(&old, false, &allowed).is_empty());
+            assert!(factors.consume_period(&old, false).is_empty());
             let expected = compute_rl_return_volatility(&closes, 24, 720).unwrap();
             if let Some(expected) = expected {
                 assert!((observed[0].value.unwrap() - expected).abs() < 1e-12);
@@ -307,9 +364,8 @@ mod tests {
     #[test]
     fn microsecond_trades_after_a_period_boundary_are_not_dropped_as_duplicates() {
         let mut factors = VolatilityFactors::default();
-        let allowed = allowed();
         let mut closes = VecDeque::new();
-        factors.consume_period(&period(INIT_TP_MS, "ETHUSDT", vec![]), false, &allowed);
+        factors.consume_period(&period(INIT_TP_MS, "ETHUSDT", vec![]), false);
         for i in 0..744 {
             let start = INIT_TP_MS + i * BAR_MS;
             let close = price(i as usize);
@@ -329,7 +385,6 @@ mod tests {
                     ],
                 ),
                 false,
-                &allowed,
             );
             assert_eq!(observed.len(), 1);
             if i == 743 {
@@ -344,7 +399,6 @@ mod tests {
     #[test]
     fn unordered_trades_and_repeated_symbol_entries_use_the_event_time_close() {
         let mut factors = VolatilityFactors::default();
-        let allowed = allowed();
         let mut closes = VecDeque::new();
         for i in 0..744 {
             let start = INIT_TP_MS + i * BAR_MS;
@@ -360,7 +414,7 @@ mod tests {
                 trades: vec![trade(start + 2_000, 101.0)],
                 ..Default::default()
             });
-            let observed = factors.consume_period(&message, false, &allowed);
+            let observed = factors.consume_period(&message, false);
             assert_eq!(observed.len(), 1);
             if i == 743 {
                 let expected = compute_rl_return_volatility(&closes, 24, 720)
@@ -374,7 +428,6 @@ mod tests {
     #[test]
     fn kafka_event_time_seals_five_second_bars_and_carries_empty_covered_bars() {
         let mut factors = VolatilityFactors::default();
-        let allowed = allowed();
         assert!(factors
             .consume_period(
                 &period(
@@ -383,7 +436,6 @@ mod tests {
                     vec![trade(INIT_TP_MS + 1, 100.0)]
                 ),
                 false,
-                &allowed,
             )
             .is_empty());
         let observed = factors.consume_period(
@@ -393,27 +445,20 @@ mod tests {
                 vec![trade(INIT_TP_MS + 5_000, 110.0)],
             ),
             false,
-            &allowed,
         );
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].ts_ms, INIT_TP_MS + 5_000);
         // Advancing a covered, empty symbol seals two more bars; no wall-clock
         // tick is involved, so replay and live consumption follow one path.
-        let observed = factors.consume_period(
-            &period(INIT_TP_MS + 15_000, "ETHUSDT", vec![]),
-            false,
-            &allowed,
-        );
+        let observed =
+            factors.consume_period(&period(INIT_TP_MS + 15_000, "ETHUSDT", vec![]), false);
         assert_eq!(
             observed.iter().map(|v| v.ts_ms).collect::<Vec<_>>(),
             vec![INIT_TP_MS + 10_000, INIT_TP_MS + 15_000]
         );
         assert!(observed.iter().all(|v| v.value.is_none()));
-        let no_price = factors.consume_period(
-            &period(INIT_TP_MS + 15_000, "SOLUSDT", vec![]),
-            false,
-            &allowed,
-        );
+        let no_price =
+            factors.consume_period(&period(INIT_TP_MS + 15_000, "SOLUSDT", vec![]), false);
         assert!(no_price.is_empty());
     }
 
@@ -432,9 +477,7 @@ mod tests {
                 trade(INIT_TP_MS + BAR_MS + 1, 100.0),
             ],
         );
-        assert!(factors
-            .consume_period(&message, false, &allowed())
-            .is_empty());
+        assert!(factors.consume_period(&message, false).is_empty());
         assert!(factors.latest().is_empty());
     }
 

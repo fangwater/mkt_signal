@@ -519,6 +519,7 @@ pub struct CtaSpreadFactorModel1mPubApp {
 /// operation. Reweighting history never requires an execution publisher.
 struct FactorHistoryWriter {
     root: PathBuf,
+    active: bool,
     current: Option<(String, BufWriter<File>)>,
     generation: String,
     caught_up: bool,
@@ -530,10 +531,11 @@ struct FactorHistoryWriter {
 }
 
 impl FactorHistoryWriter {
-    fn new(root: &Path) -> Result<Self> {
+    fn new(root: &Path, active: bool) -> Result<Self> {
         fs::create_dir_all(root).context("create CTA factor history directory")?;
         let writer = Self {
             root: root.to_path_buf(),
+            active,
             current: None,
             generation: uuid::Uuid::new_v4().to_string(),
             caught_up: false,
@@ -548,6 +550,9 @@ impl FactorHistoryWriter {
     }
 
     fn write_status(&self, stats: &Stats) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
         let path = self.root.join("warmup.json");
         let temp = path.with_extension("json.tmp");
         fs::write(
@@ -573,6 +578,13 @@ impl FactorHistoryWriter {
         factors: &[FactorObservation],
         spread: &SpreadObservation,
     ) -> Result<()> {
+        self.first.entry(symbol.to_string()).or_insert(ts);
+        self.latest.insert(symbol.to_string(), ts);
+        // A replacement may replay alongside the current publisher. Only the
+        // owner of the shared outputs may append history or replace its status.
+        if !self.active {
+            return Ok(());
+        }
         let date = chrono::DateTime::from_timestamp_millis(ts)
             .context("invalid CTA factor history timestamp")?
             .format("%Y%m%d")
@@ -607,8 +619,6 @@ impl FactorHistoryWriter {
         )?;
         writer.write_all(b"\n")?;
         writer.flush().context("flush CTA factor history")?;
-        self.first.entry(symbol.to_string()).or_insert(ts);
-        self.latest.insert(symbol.to_string(), ts);
         Ok(())
     }
 }
@@ -700,7 +710,7 @@ impl CtaSpreadFactorModel1mPubApp {
             last_pending_prune: Instant::now(),
             last_stats_log: Instant::now(),
             stats: Stats::default(),
-            history: FactorHistoryWriter::new(history_path)?,
+            history: FactorHistoryWriter::new(history_path, !wait_for_publishers)?,
         };
         app.history.missing_amount_thresholds = missing;
         app.history.size_dependent_factors = app
@@ -721,6 +731,14 @@ impl CtaSpreadFactorModel1mPubApp {
             app.history.write_status(&app.stats)?;
             info!("CTA history replay complete; no IPC publishers created");
             return Ok(app);
+        }
+        if wait_for_publishers {
+            info!(
+                "CTA spread standby replay complete records={} latest_ms={} vol_symbols={:?}; existing history preserved until publisher takeover",
+                app.stats.records,
+                app.history.latest.values().copied().max().unwrap_or(0),
+                app.volatility.symbol_counts(),
+            );
         }
         loop {
             let outputs = create_shared_outputs(&app.venue_slug, &app.universe.factors)
@@ -746,17 +764,19 @@ impl CtaSpreadFactorModel1mPubApp {
             }
         }
         app.publish_enabled = true;
+        app.history.active = true;
         app.publish_volatility(&app.volatility.latest());
         app.history.caught_up = true;
         app.history.write_status(&app.stats)?;
         info!(
-            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440/lag1m nq=120/120/60 vol=5s/24/720/unscaled/cash+futures",
+            "CTA spread shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile=2880/1440 spread=2880/1440/lag1m nq=120/120/60 vol=5s/24/720/unscaled/cash+futures vol_symbols={:?}",
             app.venue_slug,
             app.allowed_symbols.len(),
             app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
             app.normalize.window_bars,
             app.normalize.min_periods,
             app.normalize.clip_zscore,
+            app.volatility.symbol_counts(),
         );
         Ok(app)
     }
@@ -791,12 +811,11 @@ impl CtaSpreadFactorModel1mPubApp {
         };
         self.consume_period(&period, topic == self.cash_topic);
         self.maybe_prune_pending_joins();
+        self.maybe_log_stats();
     }
 
     fn consume_period(&mut self, period: &PeriodMessage, cash: bool) {
-        let volatility = self
-            .volatility
-            .consume_period(period, cash, &self.allowed_symbols);
+        let volatility = self.volatility.consume_period(period, cash);
         self.publish_volatility(&volatility);
         for info in &period.symbol_infos {
             let symbol = normalize_symbol_for_venue(&info.symbol, self.venue);
@@ -1154,8 +1173,9 @@ impl CtaSpreadFactorModel1mPubApp {
         if self.last_stats_log.elapsed() < Duration::from_secs(STATS_LOG_INTERVAL_SECS) {
             return;
         }
+        let ready = self.volatility.ready_counts(now_millis(), 15_000);
         info!(
-            "CTA spread factor stats records={} decode_errors={} eval_errors={} published={} publish_failed={} factor_symbols={} spread_symbols={} vol_published={} vol_publish_failed={}",
+            "CTA spread factor stats records={} decode_errors={} eval_errors={} published={} publish_failed={} factor_symbols={} spread_symbols={} vol_published={} vol_publish_failed={} latest_ms={} vol_futures_ready={}/{} vol_cash_ready={}/{}",
             self.stats.records,
             self.stats.decode_errors,
             self.stats.evaluation_errors,
@@ -1165,6 +1185,11 @@ impl CtaSpreadFactorModel1mPubApp {
             self.spread_states.len(),
             self.stats.vol_published,
             self.stats.vol_publish_failed,
+            self.history.latest.values().copied().max().unwrap_or(0),
+            ready[0],
+            self.volatility.symbol_counts()[0],
+            ready[1],
+            self.volatility.symbol_counts()[1],
         );
         self.last_stats_log = Instant::now();
     }
@@ -1440,7 +1465,7 @@ mod tests {
     #[test]
     fn warmup_status_tracks_only_the_current_publisher_run() {
         let root = std::env::temp_dir().join(format!("spread-warmup-{}", uuid::Uuid::new_v4()));
-        let mut writer = FactorHistoryWriter::new(&root).unwrap();
+        let mut writer = FactorHistoryWriter::new(&root, true).unwrap();
         let status = || -> serde_json::Value {
             serde_json::from_slice(&fs::read(root.join("warmup.json")).unwrap()).unwrap()
         };
@@ -1480,11 +1505,53 @@ mod tests {
                 .unwrap();
         assert_eq!(row["generation"], generation);
         drop(writer);
-        let restarted = FactorHistoryWriter::new(&root).unwrap();
+        let restarted = FactorHistoryWriter::new(&root, true).unwrap();
         assert_ne!(status()["generation"], generation);
         assert_eq!(status()["caught_up"], false);
         assert_eq!(status()["latest"], serde_json::json!({}));
         drop(restarted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn standby_preserves_live_history_and_status_until_takeover() {
+        let root = std::env::temp_dir().join(format!("spread-standby-{}", uuid::Uuid::new_v4()));
+        let mut live = FactorHistoryWriter::new(&root, true).unwrap();
+        let ts = 1_791_590_400_000;
+        let spread = SpreadObservation::default();
+        live.record("ETHUSDT", ts, &[], &[], &spread).unwrap();
+        live.caught_up = true;
+        live.write_status(&Stats::default()).unwrap();
+        let path = root.join("20261010.jsonl");
+        let history_before = fs::read(&path).unwrap();
+        let status_before = fs::read(root.join("warmup.json")).unwrap();
+
+        let mut standby = FactorHistoryWriter::new(&root, false).unwrap();
+        standby
+            .record("ETHUSDT", ts - BAR_MS, &[], &[], &spread)
+            .unwrap();
+        standby.record("ETHUSDT", ts, &[], &[], &spread).unwrap();
+        standby.write_status(&Stats::default()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), history_before);
+        assert_eq!(fs::read(root.join("warmup.json")).unwrap(), status_before);
+        assert!(!root.join("20261009.jsonl").exists());
+
+        drop(live);
+        standby.active = true;
+        standby.caught_up = true;
+        standby
+            .record("ETHUSDT", ts + BAR_MS, &[], &[], &spread)
+            .unwrap();
+        standby.write_status(&Stats::default()).unwrap();
+        let history_after = fs::read(&path).unwrap();
+        assert!(history_after.starts_with(&history_before));
+        assert_eq!(String::from_utf8(history_after).unwrap().lines().count(), 2);
+        let status: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("warmup.json")).unwrap()).unwrap();
+        assert_eq!(status["generation"], standby.generation);
+        assert_eq!(status["caught_up"], true);
+        assert_eq!(status["latest"]["ETHUSDT"], ts + BAR_MS);
+        drop(standby);
         fs::remove_dir_all(root).unwrap();
     }
 }

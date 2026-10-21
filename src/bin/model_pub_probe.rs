@@ -47,6 +47,10 @@ struct Args {
     /// Poll interval in milliseconds.
     #[arg(long, default_value_t = DEFAULT_POLL_MS)]
     poll_ms: u64,
+
+    /// Subscriber queue size; use the stream's full-market capacity for Vol.
+    #[arg(long, default_value_t = MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE)]
+    buffer_size: usize,
 }
 
 struct SymbolState {
@@ -124,13 +128,13 @@ async fn main() -> Result<()> {
         .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
         .max_publishers(MODEL_OUTPUT_MAX_PUBLISHERS)
         .max_subscribers(MODEL_OUTPUT_MAX_SUBSCRIBERS)
-        .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE)
+        .subscriber_max_buffer_size(args.buffer_size.max(1))
         .history_size(MODEL_OUTPUT_HISTORY_SIZE)
         .open()
         .with_context(|| format!("open model output service failed: {service_name}"))?;
     let subscriber = service
         .subscriber_builder()
-        .buffer_size(MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE)
+        .buffer_size(args.buffer_size.max(1))
         .create()
         .context("create model output subscriber failed")?;
 
@@ -285,6 +289,7 @@ fn build_symbol_table(
         "quantile",
         "feature_dim",
         "age_ms",
+        "event_age_ms",
     ];
     let mut symbols = states.keys().cloned().collect::<HashSet<_>>();
     symbols.extend(expected_symbols.iter().cloned());
@@ -308,11 +313,13 @@ fn build_symbol_table(
                     .unwrap_or_else(|| "NA".to_string()),
                 state.latest.feature_dim.to_string(),
                 state.last_received_at.elapsed().as_millis().to_string(),
+                (chrono::Utc::now().timestamp_millis() - state.latest.ts_in_ms).to_string(),
             ],
             None => vec![
                 symbol.clone(),
                 "NOT_SEEN".to_string(),
                 "NOT_SEEN".to_string(),
+                "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),

@@ -21,7 +21,7 @@ CONFIG_PATH="${BASE_DIR}/config/cta_spread_factor_model_1m_pub.toml"
 [[ -f "$CONFIG_PATH" ]] || { echo "[ERROR] missing config: $CONFIG_PATH" >&2; exit 1; }
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 command -v "$PMDAEMON_BIN" >/dev/null 2>&1 || { echo "[ERROR] pmdaemon not found: $PMDAEMON_BIN" >&2; exit 1; }
-PROC_NAME="${PMDAEMON_NAME:-cta_spread_factor_shared_binance_futures}"
+PROC_NAME="${PMDAEMON_NAME:-${CTA_SPREAD_FACTOR_PROCESS_NAME:-cta_spread_factor_shared_binance_futures}}"
 core_args=""
 if [[ -n "${CTA_SPREAD_FACTOR_MODEL_1M_CORE:-}" ]]; then
   [[ "$CTA_SPREAD_FACTOR_MODEL_1M_CORE" =~ ^[0-9]+$ ]] || { echo "[ERROR] CTA_SPREAD_FACTOR_MODEL_1M_CORE must be an integer" >&2; exit 1; }
