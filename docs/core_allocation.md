@@ -1,7 +1,15 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-21 09:21 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-21 09:53 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-21 09:51 UTC，仅更新RX04的5min publisher，代码 `5a0c8f32`：
+TP_VPI_006的内层360根滚动和改为至少280个有效值，外层14根均值不变；
+z仍288/200、分位仍576/288。Pandas数值对照及1351项Rust测试通过。
+本地release上传并核验SHA-256后原子替换，环境本地脚本重启publisher：
+PID618685→705737，全部线程仍CPU28。正在重新回放Kafka预热；已有signal、
+config、dashboard未重启，页面可访问，仍为enabled=false。62个受保护进程和
+RX02/RX03配置哈希保持。回滚二进制保存在RX04的 `run/tp280_before/`。
 
 2026-10-21 09:11 UTC，新增 `binance-cta-perp-rx04` 的 5min 观察环境。
 Binance 永续共15币、35因子、48个有符号组合，单份200 USDT，`enabled=false`；
@@ -519,7 +527,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 22 | pre_trade(okex_mm_alpha) | |
 | 23 | trade_engine(okex_mm_alpha) | 单线程 |
 | 24-27 | (空) | 原 binance_mm_alpha 已下线退役 |
-| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | 2026-10-21 09:11 UTC；PID618685全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；5min观察信号 |
+| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | 2026-10-21 09:51 UTC更新；PID705737全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；5min观察信号 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |

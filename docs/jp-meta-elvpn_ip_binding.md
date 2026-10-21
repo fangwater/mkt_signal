@@ -1,6 +1,10 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-21 09:21 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-21 09:53 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-21 09:51 UTC，仅替换并重启RX04的5min因子publisher以调整
+TP_VPI_006内层min_periods=280。仍使用默认出口；env.sh、loopback10198/19188、
+4191网关、ENI/EIP和交易source IP均保持，未绑定Manager/Exec，观察模式不变。
 
 2026-10-21 09:11 UTC，新增 `binance-cta-perp-rx04` 5min 观察环境，15币、
 35因子、48组合，`enabled=false`，未绑定Manager/Exec。Kafka和公开K线沿用
