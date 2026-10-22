@@ -828,7 +828,7 @@ fn process_funding_msg(
         prefix,
         &symbol,
         entry,
-        FundingRateMsg::get_timestamp(msg),
+        FundingRateMsg::get_timestamp(msg) / 1000,
         series_map,
         series_capacity,
         config,
@@ -850,7 +850,7 @@ fn process_premium_price_msg(
     series_capacity: &Arc<AtomicUsize>,
     config: &Arc<RwLock<RollingConfig>>,
 ) {
-    let (raw_symbol, value, ts_ms) = match field {
+    let (raw_symbol, value, ts_us) = match field {
         PremiumPriceField::MarkPrice => (
             MarkPriceMsg::get_symbol(msg).to_uppercase(),
             MarkPriceMsg::get_mark_price(msg),
@@ -887,7 +887,8 @@ fn process_premium_price_msg(
         prefix,
         &symbol,
         entry,
-        ts_ms,
+        // Market IPC timestamps are microseconds; rolling buckets use milliseconds.
+        ts_us / 1000,
         series_map,
         series_capacity,
         config,
@@ -1729,6 +1730,102 @@ mod tests {
         compute_spread_fr, get_or_insert_series, symbol_refresh_source, SymbolRefreshSource,
     };
     use mkt_signal::rolling_metrics::service::new_series_map;
+
+    #[test]
+    fn derivative_microseconds_produce_one_sample_per_second() {
+        use super::*;
+
+        let base_us = 1_700_000_000_000_000;
+        for factor in [FACTOR_HEDGE_PREMIUM_RATE, FACTOR_SPREAD_FR] {
+            let mut cfg = RollingConfig::default();
+            cfg.factors.clear();
+            cfg.factors.insert(
+                factor.to_string(),
+                FactorConfig {
+                    resample_interval_ms: 1000,
+                    rolling_window: 14400,
+                    min_periods: 1,
+                    quantiles: vec![0.5],
+                },
+            );
+            let config = Arc::new(RwLock::new(cfg));
+            let capacity = Arc::new(AtomicUsize::new(14400));
+            let series = Arc::new(new_series_map());
+            let mut quotes = HashMap::new();
+            if factor == FACTOR_HEDGE_PREMIUM_RATE {
+                let index = IndexPriceMsg::create("BTCUSDT".into(), 100.0, base_us);
+                process_premium_price_msg(
+                    &index.to_bytes(),
+                    "pair",
+                    false,
+                    PremiumPriceField::IndexPrice,
+                    &mut quotes,
+                    &series,
+                    &capacity,
+                    &config,
+                );
+                for second in 0..2 {
+                    let mark = MarkPriceMsg::create(
+                        "BTCUSDT".into(),
+                        101.0 + second as f64,
+                        base_us + second * 1_000_000,
+                    );
+                    process_premium_price_msg(
+                        &mark.to_bytes(),
+                        "pair",
+                        false,
+                        PremiumPriceField::MarkPrice,
+                        &mut quotes,
+                        &series,
+                        &capacity,
+                        &config,
+                    );
+                }
+            } else {
+                for (is_open, rate, second) in
+                    [(true, 0.001, 0), (false, 0.002, 0), (false, 0.003, 1)]
+                {
+                    let funding = FundingRateMsg::create(
+                        "BTCUSDT".into(),
+                        rate,
+                        base_us + 3_600_000_000,
+                        base_us + second * 1_000_000,
+                    );
+                    process_funding_msg(
+                        &funding.to_bytes(),
+                        "pair",
+                        "bybit-futures",
+                        is_open,
+                        &mut quotes,
+                        &series,
+                        &capacity,
+                        &config,
+                    );
+                }
+            }
+            assert_eq!(quotes.len(), 1);
+            let ring = series.iter().next().unwrap().ring(factor).unwrap();
+            let state = quotes
+                .values_mut()
+                .next()
+                .unwrap()
+                .factor_states
+                .get_mut(factor)
+                .unwrap();
+            state.flush_due(1000, base_us / 1000 + 2000, &ring);
+            assert_eq!(
+                ring.len(),
+                2,
+                "{factor} must not fill a four-hour window in two seconds"
+            );
+            let expected = if factor == FACTOR_HEDGE_PREMIUM_RATE {
+                0.02
+            } else {
+                0.002
+            };
+            assert!((ring.last().unwrap() - expected).abs() < 1e-6);
+        }
+    }
 
     #[test]
     fn same_side_spreads_use_open_side_denominators() {

@@ -23,6 +23,14 @@ Kafka请求回放5天，实际保留数据从2026-10-19 08:30 UTC开始；长窗
 积累有效样本，未缩短公式/z/分位窗口。部署和浏览器验收证据：
 `artifacts/cta_perp_rx04_deployment/`。
 
+2026-10-21 08:14–08:15 UTC，修复 RX01 大仓位状态消息超出 64 KiB 而停更的问题。
+仅配套替换 `binance_exec_trade06` 的 executor/Viz：PID384533→502412、
+3552394→502880，均仍 CPU0–5。状态通道现为1 MiB，保留2条历史、8条订阅缓存；
+连续快照恢复约1,500行、延迟低于1秒。另134个受保护进程和118份配置哈希保留，
+Manager仍CPU24、共享Vol publisher仍CPU17。模板已拆分为RX01使用
+`lgq_grid_spread`、RX02/RX03使用`lgq_grid_prep`，份数和跟随倍率不变。
+测试、构建与验收见 `docs/exec_grid.md`。
+
 2026-10-21 07:20 UTC，全symbol Vol 与 Grid 布局上线，release
 `20261021T064822ZGridAllSymbols`（Exec `d3b724af` / 前端 `82f58cb`）。新publisher
 后台回放时原实例持续服务；交接后仅保留 `cta_spread_factor_binance_futures`，
@@ -701,15 +709,64 @@ NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp
 | 9 | spread_pbs bybit-both(bookticker 角色) | BBO 专核 |
 | 10 | NIC IRQ: enp39s0 下单网卡 | 禁止再绑用户进程 |
 | 11 | NIC IRQ: enp40s0 行情网卡 | 禁止再绑用户进程 |
-| 12 | account_monitor_bybit(bybit-intra-arb01) | 2026-10-16 已停止，保留配置 |
-| 13 | trade_signal(bybit-intra-arb01) | 2026-10-16 已停止，保留配置；start-intra 默认不拉起 |
-| 14 | pre_trade(bybit-intra-arb01) | 2026-10-16 已停止，保留配置 |
-| 15 | trade_engine(bybit-intra-arb01) | 2026-10-16 已停止，保留配置；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
+| 12 | account_monitor_bybit(bybit-intra-arb01) | 2026-10-21 恢复，PID 388050 |
+| 13 | trade_signal(bybit-intra-arb01) | 2026-10-21 显式启动，PID 395919；start-intra 默认不拉起 |
+| 14 | pre_trade(bybit-intra-arb01) | 2026-10-21 恢复，PID 388213 |
+| 15 | trade_engine(bybit-intra-arb01) | 2026-10-21 恢复，PID 387890；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
 
 未绑核、跑在 housekeeping 0-7 的热路径进程(截至本次盘点):
 mm_bybit_alpha 全套(trade_engine/trade_signal/pre_trade/account_monitor/persist_manager)、
 depth_pub、若干 persist_manager。bybit-intra-arb02 原有全套进程使用 0-7，2026-10-16 已全部停止。
 这些与 housekeeping/系统中断同核竞争;隔离段 IRQ 已迁到 10/11。
+
+2026-10-21 01:04–01:15 UTC，按操作者要求先中性对齐，再恢复 `bybit-intra-arb01`
+全套 7 类进程。仅调整 USDT 永续，9 笔人工对冲单全部成交，总成交额约 83.94 USDT；
+启动前单币最大绝对净敞口 4.37 USDT，绝对敞口合计 28.62 USDT，其余受最小下单量限制。
+沿用 10-16 发布的二进制，release guard 通过；env.sh、trade_engine.toml、manifest、
+Viz 和 Config 配置的 5 项哈希保持一致。运行后原平仓逻辑继续执行；UniMMR 约 4.46，
+低于原开仓触发线 4.5，恢复线 4.6，未调低风控。Config/Viz/persist 使用 CPU 0–7，
+端口为 19191/10174，intra arb02 保持停止。
+运行日志确认 ArbOpen 被 UniMMR reduce-only lock 拦截；同时本地 UniMMR 通知服务
+连接报 `Connection refused`，通知通道尚未恢复。
+
+恢复时发现旧共享行情及 MM alpha 的 `/tmp/iceoryx2` 服务/节点文件已被删除，
+旧进程持有已删除 inode，新进程无法发现服务。通过环境本地脚本重启 Bybit shared
+spread（market PID 393335 / CPU 8；bookticker PID 393356 / CPU 9）、bridge、depth、
+两路 trade_flow_feature、rolling 和 MM alpha；所有重启组件的 deleted IPC fd 归零。
+MM alpha 全套回到 CPU 0–7，UTC `18:00–02:00` 禁开仓配置保留；停止时确认永续挂单为零。
+独立 Exec publisher PID 3818626 / CPU 6 保持运行，其服务名带 `bybit_exec_trade01_`。
+共享 spread 启动脚本已按 `MARKET_DATA_IPC_NAMESPACE` 区分进程，避免将该独立发布器
+误判为共享服务冲突；只补丁修改环境副本并备份原脚本，没有覆盖其其他配置。
+主机原有 `/tmp` 30 天清理规则，新增 `/etc/tmpfiles.d/mkt-signal-iceoryx2.conf`
+排除 `/tmp/iceoryx2` 的按时间清理；未确认此前具体删除动作，也未全局清理 IPC。
+交易/账户连接仍使用 `172.31.7.124`，共享行情使用 `172.31.10.217`，ENI/路由保持。
+SG 证据及备份：`~/backups/bybit_intra_arb01_restore_20261021/`。
+
+01:27 UTC 单独发布修正后的 `rolling_metrics`，当前 PID 401778 / CPU 0–7。
+实测 derivatives IPC 使用微秒时间戳，原 rolling 将其作为毫秒重采样，导致 premium
+样本数迅速虚增至 14400；此前该读数不代表四小时历史已经积累。现于聚合边界将
+premium/funding 时间转换为毫秒，不变更 IPC 微秒格式和 Redis 参数。
+本机 `arbmm` release 构建、8 项测试及格式检查通过，上传后 SHA-256 核验并原子安装；
+新二进制 SHA-256 为 `bf8958e68b46f8ec92a18f8baa08bbe1e0fc3c3559d6b1dd6f3e29c82d030aa1`。
+旧二进制及两份 rolling 输出 hash 已备份。窗口从零积累，BTC/ETH/SOL/TRX 三档 premium
+分位值均恢复，每 30 秒增加约 30 个样本；完整四小时窗口仍需积累。
+验证回执见远端 `rolling_after_timestamp_fix.json` / `rolling_deploy.json`，
+本地只读证据保存在 Git 忽略目录 `data/ops/bybit_intra_arb01_restore_20261021/`。
+
+2026-10-21 00:51 UTC 按操作者要求，退役 SG 的 Bybit/Binance 跨所 rolling
+`rm_bb_fu_bn_fu`（原 PID 1224991，CPU 0–7）。通过环境本地
+`scripts/rolling_metrics/stop_rolling_metrics.sh` 删除 supervisor 记录并清理残留进程，
+将 `~/rolling_metrics/bybit-futures-binance-futures` 移入
+`~/backups/retire_bybit_binance_rolling_20261021T005151Z/runtime`。
+同目录保留原日志、supervisor 配置及 Redis 备份；删除其专属参数、跨所输出和经写入时间核对
+属于该进程的 Binance 单市场输出，避免遗留阈值继续被消费。
+SG rolling 仅保留 `rm_bb_mg_bb_fu`（PID 1225163，CPU 0–7）；其 Bybit 单市场输出不删除，
+由现货/永续 rolling 继续刷新，消除跨所进程交替覆盖 premium 分位阈值的问题。
+00:52:30–00:53:30 UTC 四次抽样确认 BTC/ETH/SOL premium 各 3 档分位阈值持续存在，
+样本数均为 14400，输出时间推进；已删除的 3 个 Redis key 未重建。
+验证明细保存在上述备份目录的 `validation.json`。
+`bybit_mm_alpha` 全套进程保持在线，原 UTC `18:00–02:00` 禁开仓配置保持启用。
+本次未变更专用 CPU、源 IP、ENI 或路由。
 
 2026-10-16 07:43 UTC 按操作者要求，`bybit-intra-arb01`、`bybit-intra-arb02`
 已停止全部 7 类环境进程（包括 trade_signal、Config、Viz、persist_manager），

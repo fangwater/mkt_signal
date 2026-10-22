@@ -266,13 +266,30 @@ KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
+market_data_namespace_for_pid() {
+  local pid="$1" entry=""
+  [[ -r "/proc/$pid/environ" ]] || return 1
+  while IFS= read -r -d '' entry; do
+    case "$entry" in
+      MARKET_DATA_IPC_NAMESPACE=*) printf '%s' "${entry#*=}"; return 0 ;;
+    esac
+  done < "/proc/$pid/environ"
+}
+
 find_running_pids_for_venue() {
   local target_venue="${1,,}"
   local venue_arg="--venue ${target_venue}"
   local selected_role="${2:-}"
   local pids=()
+  local process_namespace=""
   while IFS= read -r pid; do
     if [[ -n "$pid" && "$pid" != "$$" && "$pid" != "$PPID" ]]; then
+      # A dedicated Exec publisher owns different IPC services on the same venue.
+      # An unreadable environment remains a conflict rather than being ignored.
+      if process_namespace="$(market_data_namespace_for_pid "$pid")" &&
+         [[ "$process_namespace" != "${MARKET_DATA_IPC_NAMESPACE:-}" ]]; then
+        continue
+      fi
       pids+=("$pid")
     fi
   done < <(

@@ -5,7 +5,8 @@ use crate::strategy::batch_exec_strategy::BatchExecSnapshot;
 use crate::strategy::chase_exec::ChaseExecSnapshot;
 use anyhow::Result;
 use ipc_common::iceoryx_publisher::{
-    ExecStateResamplePublisher, GenericPublisher, ResamplePublisher,
+    ExecStateResamplePublisher, GenericPublisher, ResamplePublisher, EXEC_STATE_RESAMPLE_BUFFER,
+    EXEC_STATE_RESAMPLE_HISTORY,
 };
 use log::{info, warn};
 use runtime_common::time_util::get_timestamp_us;
@@ -65,11 +66,16 @@ impl ExecResampleChannel {
 
     fn new() -> Self {
         Self {
-            state_pub: ExecStateResamplePublisher::new_with_prefix("viz_pubs", EXEC_STATE_CHANNEL)
-                .map_err(|err| {
-                    warn!("ExecResampleChannel init failed channel={EXEC_STATE_CHANNEL}: {err:#}")
-                })
-                .ok(),
+            state_pub: ExecStateResamplePublisher::new_with_prefix_and_queue_limits(
+                "viz_pubs",
+                EXEC_STATE_CHANNEL,
+                EXEC_STATE_RESAMPLE_HISTORY,
+                EXEC_STATE_RESAMPLE_BUFFER,
+            )
+            .map_err(|err| {
+                warn!("ExecResampleChannel init failed channel={EXEC_STATE_CHANNEL}: {err:#}")
+            })
+            .ok(),
             risk_pub: ResamplePublisher::new_with_prefix("viz_pubs", EXEC_RISK_CHANNEL)
                 .map_err(|err| {
                     warn!("ExecResampleChannel init failed channel={EXEC_RISK_CHANNEL}: {err:#}")
@@ -401,5 +407,64 @@ mod tests {
         assert!(is_idle_chase_exec(&chase));
         chase.has_execution_in_flight = true;
         assert!(!is_idle_chase_exec(&chase));
+    }
+
+    #[test]
+    fn large_cash_and_perpetual_state_survives_ipc_round_trip() {
+        use ipc_common::iceoryx_publisher::EXEC_STATE_RESAMPLE_PAYLOAD;
+        use viz_common::resample::{ExecStrategyStateResampleEntry, ExecStrategyStateRow};
+
+        // RX01 runs dozens of strategies in both markets. Exercise their full
+        // symbol universe, including live orders and fractional residuals.
+        let mut rows = Vec::new();
+        for strategy in 0..60 {
+            for symbol in 0..55 {
+                for suffix in ["", "USDT"] {
+                    rows.push(ExecStrategyStateRow {
+                        algorithm: "grid".into(),
+                        pov: None,
+                        strategy_name: format!("binance_cta_spread_rx01_factor_{strategy:03}"),
+                        source_updated_at_ms: 1_792_569_435_000,
+                        symbol: format!("TOKEN{symbol:03}{suffix}"),
+                        position_allocated: true,
+                        account_position_qty: 2.0,
+                        target_qty: 1.0,
+                        current_qty: 0.25,
+                        effective_position_qty: 0.25,
+                        delta_qty: 0.75,
+                        live_order_qty: 0.125,
+                        pending_qty: 0.625,
+                        account_position_usdt: 200.0,
+                        target_usdt: 100.0,
+                        current_usdt: 25.0,
+                        delta_usdt: 75.0,
+                        live_order_usdt: 12.5,
+                        pending_usdt: 62.5,
+                        active_batches: 1,
+                        remaining_batches: 3,
+                        estimated_completion_ts_ms: 1_792_569_555_000,
+                        execution_complete: false,
+                        completion_reason: String::new(),
+                        mid_price: 100.0,
+                    });
+                }
+            }
+        }
+        let expected = serde_json::to_value(&rows).unwrap();
+        let entry = ExecStrategyStateResampleEntry::from_rows(123, true, rows).unwrap();
+        let encoded = entry.to_bytes().unwrap();
+        assert!(encoded.len() + 4 > 64 * 1024);
+        assert!(
+            encoded.len() + 4 <= EXEC_STATE_RESAMPLE_PAYLOAD,
+            "full snapshot has {} bytes",
+            encoded.len() + 4,
+        );
+        let decoded = ExecStrategyStateResampleEntry::from_bytes(&encoded).unwrap();
+        assert!(decoded.position_ready);
+        assert_eq!(decoded.ts_ms, 123);
+        assert_eq!(
+            serde_json::to_value(decoded.expanded_rows().unwrap()).unwrap(),
+            expected,
+        );
     }
 }

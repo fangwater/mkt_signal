@@ -13,7 +13,11 @@ use signal_common::trade_signal::{SignalType, TradeSignal, TRADE_SIGNAL_HEADER_L
 pub const SIGNAL_PAYLOAD: usize = 4_096;
 pub const TRADE_SIGNAL_PAYLOAD: usize = 1_024;
 pub const RESAMPLE_PAYLOAD: usize = 32 * 1024;
-pub const EXEC_STATE_RESAMPLE_PAYLOAD: usize = 64 * 1024;
+// Full multi-strategy cash/perpetual snapshots can exceed 64 KiB. This channel
+// carries replaceable state, so retain only a small queue of complete snapshots.
+pub const EXEC_STATE_RESAMPLE_PAYLOAD: usize = 1024 * 1024;
+pub const EXEC_STATE_RESAMPLE_HISTORY: usize = 2;
+pub const EXEC_STATE_RESAMPLE_BUFFER: usize = 8;
 pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const BINANCE_UM_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const QUERY_REQ_PAYLOAD: usize = 256;
@@ -179,6 +183,31 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
         channel_name: &str,
         service_mode: PublisherServiceMode,
     ) -> Result<Self> {
+        Self::new_with_prefix_mode_and_queue(prefix, channel_name, service_mode, 128, 256)
+    }
+
+    pub fn new_with_prefix_and_queue_limits(
+        prefix: &str,
+        channel_name: &str,
+        history_size: usize,
+        subscriber_max_buffer_size: usize,
+    ) -> Result<Self> {
+        Self::new_with_prefix_mode_and_queue(
+            prefix,
+            channel_name,
+            PublisherServiceMode::OpenOrCreate,
+            history_size,
+            subscriber_max_buffer_size,
+        )
+    }
+
+    fn new_with_prefix_mode_and_queue(
+        prefix: &str,
+        channel_name: &str,
+        service_mode: PublisherServiceMode,
+        history_size: usize,
+        subscriber_max_buffer_size: usize,
+    ) -> Result<Self> {
         let full_service = build_service_name(&format!("{}/{}", prefix, channel_name));
         let suppress_trade_signal_publish =
             prefix == "signal_pubs" && channel_name == "trade_signal";
@@ -207,8 +236,8 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
                 .publish_subscribe::<[u8; PAYLOAD]>()
                 .max_publishers(1)
                 .max_subscribers(32)
-                .history_size(128)
-                .subscriber_max_buffer_size(256)
+                .history_size(history_size)
+                .subscriber_max_buffer_size(subscriber_max_buffer_size)
         };
 
         let service = match service_mode {

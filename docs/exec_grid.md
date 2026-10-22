@@ -2,6 +2,28 @@
 
 最后更新：2026-10-21 UTC
 
+2026-10-21 08:14–08:15 UTC 修复 jp-meta RX01 仓位状态停更：现有
+`exec_pre_trade_state` 通道容量从 64 KiB 扩为 1 MiB，历史保留 2 条，订阅缓存
+上限 8 条，沿用同一紧凑编码及 HTTP/WebSocket 格式。RX01 约 140 KB 的完整状态
+此前被拒绝发布；Exec06/Viz 配套替换后连续三次得到 1,506–1,509 行新鲜快照，
+覆盖 59 个策略（含系统残差）、现货与合约，延迟 330–513 ms。四条现货策略仍报告
+借币不足（RLC、IOST、两条 KNC），属于独立执行约束。
+
+发布基于同步的 `arbmm` `115213a6` 加本次通道补丁，本机构建后逐文件 SHA-256
+核验并原子安装。Exec06/Viz PID 为 502412/502880，均保持 CPU0–5；另 134 个
+受保护进程身份和 118 份配置哈希不变。交易引擎、账户监控、信号发布器和 Manager
+保持运行。通过 1,342 个 Exec 库测试（3 忽略）、2 个 codec 测试、6 个 Viz 测试、
+fmt/check/release；新增 6,600 行混合市场全字段往返回归。状态超限报错消失，
+HTTP/WS 验证通过。现场清单及验收在 Manager 的
+`backups/grid_split_20261021/`，本地在 Manager 的同名 artifacts 目录。
+
+同次操作将原 `lgq_grid` 拆成 `lgq_grid_spread`（RX01）及 `lgq_grid_prep`
+（RX02/RX03，按用户指定拼写），所有模板仍归 `lgq`。spread 保留原参数；prep
+合约复制现货参数：5 档、120 秒、1 轮 Maker 后转 Taker，现货参数不变。共用
+单手量 100 USDT、Vol 倍数 1、signal 开关保持。74 条绑定的份数和跟随倍率不变，
+148 个市场配置回读通过；旧模板在解除全部引用后删除。此后本文较早的“未绑定”
+和“CTaker”陈述仅描述各次历史部署时点。
+
 `algorithm = "grid"` 使用现有 BatchExec 生命周期，复用 MM 的 vol 网格偏移公式。
 仅允许 RapidX Binance/OKX 或已支持的原生统一账户（Binance PM、OKX、Bybit UTA、Bitget UTA）。
 Binance 普通账户及其他 backend/market 组合拒绝加载。Manager 发布、Exec Config 写入和

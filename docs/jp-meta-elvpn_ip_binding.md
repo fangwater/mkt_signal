@@ -15,6 +15,11 @@ TP_VPI_006内层min_periods=280。仍使用默认出口；env.sh、loopback10198
 include；`nginx -t`通过后reload。既有RX02/RX03配置哈希及62个进程身份保持。
 证据：`artifacts/cta_perp_rx04_deployment/`；网关修改前后副本保留在新环境 `run/`。
 
+2026-10-21 08:14–08:15 UTC，仅替换 RX01 Exec06 执行器和 Viz 以恢复大仓位
+快照推送。全部交易IP、env.sh、trade_engine.toml、ENI/EIP、路由和监听端口保持，
+118份配置哈希核对一致；交易引擎、账户监控和信号发布器均未重启。
+Manager 模板拆分仅改变算法绑定及prep合约参数，不涉及网络绑定。见 `docs/exec_grid.md`。
+
 2026-10-21 07:20 UTC，全symbol Vol 发布及三个Exec订阅容量升级完成，release
 `20261021T064822ZGridAllSymbols`（Exec `d3b724af` / Manager前端 `82f58cb`）。
 交易IP、trade_engine.toml、ENI/EIP、路由和监听端口全部保持；53份配置哈希不变。
@@ -406,6 +411,15 @@ JP `~/retired_data/` 中仅保存以下 RocksDB 数据归档及各自 `.sha256` 
 2026-10-11 NAV 行情监控迁入独立 `fr_monitor`（只读 IPC/Viz/RocksDB，回环 18180），停用 `public-infra-monitor` 与常驻 BPF。未分配交易 source IP，未修改 ENI、EIP、trade_engine local_ips 或路由；NAV 中 RX02/RX03 退役数据由 `binance_exec_trade05`（别名 `lgq_cta`、既有 RapidX `.228`）替代。原交易目录及 RocksDB 保留。
 
 ## SG Bybit Exec 预部署
+
+2026-10-21 01:04–01:15 UTC，`bybit-intra-arb01` 中性对齐后恢复全部进程，
+`local_ips=["172.31.7.124", "172.31.7.124"]` 及 env.sh 哈希保持。
+恢复共享 IPC 时同步重启共享 Bybit 行情链路和 `bybit_mm_alpha`；两账户的交易/监控
+外连源 IP 均实测为 `172.31.7.124`，共享 spread 的 12 条行情连接均为
+`172.31.10.217`。独立 Exec publisher PID 3818626 / CPU 6 未重启，其 14 条行情
+连接同样使用 `172.31.10.217`。未分配新 IP，未改动 ENI/EIP、路由或监听端口。
+intra arb02 仍停止；CPU 和恢复记录见 `core_allocation.md`，证据见 SG
+`~/backups/bybit_intra_arb01_restore_20261021/socket_sources.json`。
 
 2026-10-19 08:21–08:28 UTC，原 intra arb02 的预备Exec 02迁至
 `/home/ubuntu/bybit_exec_trade01`（`bybit-01`），LGQ configure、follow virtual01。

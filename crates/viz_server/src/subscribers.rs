@@ -12,7 +12,8 @@ use tokio::time::Instant;
 use crate::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::server::WsHub;
 use ipc_common::iceoryx_publisher::{
-    EXEC_STATE_RESAMPLE_PAYLOAD, RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD,
+    EXEC_STATE_RESAMPLE_BUFFER, EXEC_STATE_RESAMPLE_HISTORY, EXEC_STATE_RESAMPLE_PAYLOAD,
+    RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD,
 };
 use runtime_common::time_util::get_timestamp_us;
 use viz_common::resample::{
@@ -152,6 +153,7 @@ fn spawn_exec_state_listener(
     >(
         &format!("viz_exec_state_{}", sanitize_node_component(&namespace)),
         &service_name,
+        (EXEC_STATE_RESAMPLE_HISTORY, EXEC_STATE_RESAMPLE_BUFFER),
         move |entry: ExecStrategyStateResampleEntry, hub: WsHub| {
             let rows = match entry.expanded_rows() {
                 Ok(rows) => rows,
@@ -352,6 +354,7 @@ where
     spawn_resample_channel_with_payload::<T, F, RESAMPLE_PAYLOAD>(
         node_suffix,
         service_name,
+        (128, 256),
         on_entry,
         hub,
     )
@@ -360,6 +363,7 @@ where
 fn spawn_resample_channel_with_payload<T, F, const PAYLOAD: usize>(
     node_suffix: &str,
     service_name: &str,
+    queue_limits: (usize, usize),
     on_entry: F,
     hub: WsHub,
 ) -> Result<()>
@@ -394,8 +398,8 @@ where
                 .publish_subscribe::<[u8; PAYLOAD]>()
                 .max_publishers(1)
                 .max_subscribers(32)
-                .history_size(128)
-                .subscriber_max_buffer_size(256)
+                .history_size(queue_limits.0)
+                .subscriber_max_buffer_size(queue_limits.1)
                 .open_or_create()?;
             let subscriber: Subscriber<ipc::Service, [u8; PAYLOAD], ()> =
                 service.subscriber_builder().create()?;
