@@ -1,0 +1,238 @@
+{
+  "baseline_047": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "1INCHUSDT"
+      ]
+    }
+  ],
+  "baseline_200": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "1INCHUSDT",
+        "ALGOUSDT",
+        "ATOMUSDT",
+        "AXSUSDT",
+        "BELUSDT",
+        "COMPUSDT",
+        "DASHUSDT",
+        "DOGEUSDT",
+        "EGLDUSDT",
+        "ETCUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "KNCUSDT",
+        "NEARUSDT",
+        "QTUMUSDT",
+        "RLCUSDT",
+        "RSRUSDT",
+        "SKLUSDT",
+        "SUSHIUSDT",
+        "XTZUSDT",
+        "ZECUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    }
+  ],
+  "baseline_140": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "ALGOUSDT"
+      ]
+    }
+  ],
+  "factor_051": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ALGOUSDT",
+        "NEARUSDT"
+      ]
+    }
+  ],
+  "baseline_141": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "ATOMUSDT",
+        "AXSUSDT",
+        "DASHUSDT",
+        "ETCUSDT",
+        "IOTAUSDT",
+        "KNCUSDT",
+        "NEARUSDT",
+        "RSRUSDT",
+        "ZENUSDT"
+      ]
+    }
+  ],
+  "TD_PR_013": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "BELUSDT",
+        "ZECUSDT"
+      ]
+    }
+  ],
+  "sell_avg_price": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "BELUSDT"
+      ]
+    }
+  ],
+  "TD_TI_033": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "COMPUSDT"
+      ]
+    }
+  ],
+  "baseline_028": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "DASHUSDT",
+        "EGLDUSDT",
+        "NEARUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SUSHIUSDT",
+        "ZECUSDT"
+      ]
+    }
+  ],
+  "TD_TI_008": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "DOGEUSDT"
+      ]
+    },
+    {
+      "sign": "-1",
+      "symbols": [
+        "KAVAUSDT"
+      ]
+    }
+  ],
+  "TD_TI_013": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "DOGEUSDT"
+      ]
+    }
+  ],
+  "baseline_195": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "DOGEUSDT",
+        "RSRUSDT",
+        "ZECUSDT"
+      ]
+    }
+  ],
+  "baseline_005": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "IOTAUSDT",
+        "NEARUSDT",
+        "RLCUSDT",
+        "SKLUSDT",
+        "ZENUSDT"
+      ]
+    }
+  ],
+  "TD_TI_018": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "NEARUSDT"
+      ]
+    }
+  ],
+  "factor_114": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "RLCUSDT"
+      ]
+    }
+  ],
+  "TD_TI_027": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "RSRUSDT",
+        "ZECUSDT"
+      ]
+    }
+  ],
+  "baseline_091": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "SKLUSDT",
+        "XTZUSDT"
+      ]
+    }
+  ],
+  "baseline_160": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "XTZUSDT"
+      ]
+    }
+  ],
+  "baseline_020": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ZECUSDT"
+      ]
+    }
+  ],
+  "baseline_169": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ZECUSDT"
+      ]
+    }
+  ],
+  "TP_VPI_006": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ZENUSDT"
+      ]
+    }
+  ],
+  "buy_avg_price": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ZRXUSDT"
+      ]
+    }
+  ],
+  "factor_128": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ZRXUSDT"
+      ]
+    }
+  ]
+}

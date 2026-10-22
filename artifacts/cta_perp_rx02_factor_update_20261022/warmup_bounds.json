@@ -1,0 +1,203 @@
+{
+  "method": "Actual 1-minute SymbolFactorState exercised with 3070 synthetic complete bars; vary all large/medium/small fields independently and require identical scores, quantiles and readiness. These are ideal sample lower bounds, not a completed Kafka replay.",
+  "factors": [
+    {
+      "factor": "TD_PR_013",
+      "first_raw_bar": 20,
+      "first_ready_bar": 2458,
+      "first_z_bar": 1019,
+      "size_independent": true,
+      "minimum_history_hours": 40.96666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_008",
+      "first_raw_bar": 120,
+      "first_ready_bar": 2558,
+      "first_z_bar": 1119,
+      "size_independent": true,
+      "minimum_history_hours": 42.63333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_013",
+      "first_raw_bar": 30,
+      "first_ready_bar": 2468,
+      "first_z_bar": 1029,
+      "size_independent": true,
+      "minimum_history_hours": 41.13333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_018",
+      "first_raw_bar": 25,
+      "first_ready_bar": 2463,
+      "first_z_bar": 1024,
+      "size_independent": true,
+      "minimum_history_hours": 41.05,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_027",
+      "first_raw_bar": 14,
+      "first_ready_bar": 2452,
+      "first_z_bar": 1013,
+      "size_independent": true,
+      "minimum_history_hours": 40.86666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_033",
+      "first_raw_bar": 300,
+      "first_ready_bar": 2738,
+      "first_z_bar": 1299,
+      "size_independent": true,
+      "minimum_history_hours": 45.63333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TP_VPI_006",
+      "first_raw_bar": 373,
+      "first_ready_bar": 2811,
+      "first_z_bar": 1372,
+      "size_independent": true,
+      "minimum_history_hours": 46.85,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_005",
+      "first_raw_bar": 61,
+      "first_ready_bar": 2499,
+      "first_z_bar": 1060,
+      "size_independent": true,
+      "minimum_history_hours": 41.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_020",
+      "first_raw_bar": 16,
+      "first_ready_bar": 2454,
+      "first_z_bar": 1015,
+      "size_independent": true,
+      "minimum_history_hours": 40.9,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_028",
+      "first_raw_bar": 31,
+      "first_ready_bar": 2469,
+      "first_z_bar": 1030,
+      "size_independent": true,
+      "minimum_history_hours": 41.15,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_091",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_z_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_140",
+      "first_raw_bar": 60,
+      "first_ready_bar": 2498,
+      "first_z_bar": 1059,
+      "size_independent": true,
+      "minimum_history_hours": 41.63333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_141",
+      "first_raw_bar": 60,
+      "first_ready_bar": 2498,
+      "first_z_bar": 1059,
+      "size_independent": true,
+      "minimum_history_hours": 41.63333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_160",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_z_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_169",
+      "first_raw_bar": 14,
+      "first_ready_bar": 2452,
+      "first_z_bar": 1013,
+      "size_independent": true,
+      "minimum_history_hours": 40.86666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_195",
+      "first_raw_bar": 26,
+      "first_ready_bar": 2464,
+      "first_z_bar": 1025,
+      "size_independent": true,
+      "minimum_history_hours": 41.06666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_200",
+      "first_raw_bar": 30,
+      "first_ready_bar": 2468,
+      "first_z_bar": 1029,
+      "size_independent": true,
+      "minimum_history_hours": 41.13333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "buy_avg_price",
+      "first_raw_bar": 500,
+      "first_ready_bar": 2938,
+      "first_z_bar": 1499,
+      "size_independent": true,
+      "minimum_history_hours": 48.96666666666667,
+      "additional_minutes_after_48h": 58
+    },
+    {
+      "factor": "factor_051",
+      "first_raw_bar": 300,
+      "first_ready_bar": 2738,
+      "first_z_bar": 1299,
+      "size_independent": true,
+      "minimum_history_hours": 45.63333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "factor_114",
+      "first_raw_bar": 631,
+      "first_ready_bar": 3069,
+      "first_z_bar": 1630,
+      "size_independent": true,
+      "minimum_history_hours": 51.15,
+      "additional_minutes_after_48h": 189
+    },
+    {
+      "factor": "factor_128",
+      "first_raw_bar": 79,
+      "first_ready_bar": 2517,
+      "first_z_bar": 1078,
+      "size_independent": true,
+      "minimum_history_hours": 41.95,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "sell_avg_price",
+      "first_raw_bar": 360,
+      "first_ready_bar": 2798,
+      "first_z_bar": 1359,
+      "size_independent": true,
+      "minimum_history_hours": 46.63333333333333,
+      "additional_minutes_after_48h": 0
+    }
+  ]
+}

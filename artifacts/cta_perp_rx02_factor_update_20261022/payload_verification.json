@@ -1,0 +1,8 @@
+{
+  "matched": true,
+  "sha256": {
+    "scripts/cta_perp_factor_config.py": "b6a1a2a3660241c7373fb94b8055969b0432402adeab2322958c24ba00e531dd",
+    "scripts/factor_validation_allowlist.txt": "59d19566e4f2c81f611df634a97cd70c95ca4a48a0a65a1dd1b521860aa367f2",
+    "scripts/start_cta_perp_factor_model_1m_pub.sh": "55dcb5fa012631dd30d4749019703bb0ccda91119562a0ea2ebdafb54bb42cbe"
+  }
+}

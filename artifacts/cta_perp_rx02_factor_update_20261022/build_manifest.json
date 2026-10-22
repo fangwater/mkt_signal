@@ -1,0 +1,23 @@
+{
+  "base_commit": "d57c5db86159142435c50b68ece85a10bc758494",
+  "branch": "arbmm",
+  "binary_deployed_to_live_env": false,
+  "isolated_audit_root": "/home/ubuntu/cta-audits/rx02-factor-replay-20261022T0540Z",
+  "sha256": {
+    "target/release/cta_perp_factor_model_1m_pub": "c39227bc922c5f25bd329cca9429f14b02ef40e04bd6edd9398776c52a5dae00",
+    "config/cta_perp_rx02/cta_perp_factor_model_1m_pub.toml": "0ef7ed6033cb6ca536ac7fedf5213f70026200745e237cce940d6650739df47d",
+    "config/cta_perp_rx02/cta_perp_symbol_factors.json": "f6ab06fb173cfe85e794dc9dae3a9a6a3d9ed682e018f35f8746b7afade23379",
+    "scripts/cta_perp_factor_config.py": "b6a1a2a3660241c7373fb94b8055969b0432402adeab2322958c24ba00e531dd",
+    "scripts/start_cta_perp_factor_model_1m_pub.sh": "55dcb5fa012631dd30d4749019703bb0ccda91119562a0ea2ebdafb54bb42cbe",
+    "src/factor_pub/cta_perp_factor_model_1m_pub/app.rs": "0cd06f2aef25a2b26221ba4fc610410fd3995768eefb0a4367e41197289a652b",
+    "scripts/tests/test_cta_perp_servers.py": "7bd9964deeb3a0536c74463c29ca78e09144d8b2f37c57fd3b26a96db0d33c42",
+    "scripts/factor_validation_allowlist.txt": "59d19566e4f2c81f611df634a97cd70c95ca4a48a0a65a1dd1b521860aa367f2",
+    "artifacts/cta_perp_rx02_factor_update_20261022/run_replay.py": "87ca426e0e4b4af1335dbc2d7ddbe662999b89fea1a4b800bdea1fd0b3dc4ac4",
+    "artifacts/cta_perp_rx02_factor_update_20261022/analyze_history.py": "5bae48cc3618c8ee86518513ac6ff3c0df09cf6ffa6de85154b84e2c0ec3f7b4"
+  },
+  "unrelated_build_dependency_patch": {
+    "path": "crates/ipc_common/src/iceoryx_publisher.rs",
+    "sha256": "f46e7a93ca7f2d219c14e540d08684159d630adc3550ebf63f957e7478576cea",
+    "scope": "Concurrent GenericPublisher exec_state_resample changes; CTA ModelPublisher uses a separate implementation. No Exec binary is deployed."
+  }
+}

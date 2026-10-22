@@ -36,10 +36,15 @@ case "${CTA_PERP_FACTOR_WAIT_FOR_PUBLISHERS:-0}" in
     exit 1
     ;;
 esac
+history_args=""
+if [[ -n "${CTA_PERP_FACTOR_HISTORY_PATH:-}" ]]; then
+  # Separate history while a replacement publisher catches up beside the live one.
+  history_args="$(python3 -c 'import json,sys; print("," + json.dumps("--history-path") + "," + json.dumps(sys.argv[1]))' "$CTA_PERP_FACTOR_HISTORY_PATH")"
+fi
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
-printf '{"apps":[{"name":"%s","script":"%s","args":["--venue","binance-futures","--config","config/cta_perp_factor_model_1m_pub.toml"%s%s],"cwd":"%s","env":{"RUST_LOG":"%s"}}]}\n' \
-  "$PROC_NAME" "$BIN_PATH" "$core_args" "$wait_args" "$BASE_DIR" "${RUST_LOG:-info}" >"$cfg_file"
+printf '{"apps":[{"name":"%s","script":"%s","args":["--venue","binance-futures","--config","config/cta_perp_factor_model_1m_pub.toml"%s%s%s],"cwd":"%s","env":{"RUST_LOG":"%s"}}]}\n' \
+  "$PROC_NAME" "$BIN_PATH" "$core_args" "$wait_args" "$history_args" "$BASE_DIR" "${RUST_LOG:-info}" >"$cfg_file"
 if [[ -n "$wait_args" ]]; then
   "$PMDAEMON_BIN" delete "$PROC_NAME" >/dev/null 2>&1 || true
 else

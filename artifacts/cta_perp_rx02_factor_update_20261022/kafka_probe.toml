@@ -1,0 +1,10 @@
+topics = ["binance-futures"]
+brokers = "156.231.137.189:1501"
+group_id = "rx02-preflight-20261022-earliest"
+client_id = "rx02-preflight-20261022-earliest"
+offset_reset = "earliest"
+payload_compression = "zlib"
+enable_auto_commit = false
+max_messages = 1
+security_protocol = "none"
+broker_addr_rewrites = [{ from_host = "10.140.140.55", to_host = "156.231.137.189" }]

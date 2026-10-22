@@ -91,6 +91,16 @@ fn requires_amount_thresholds(factors: &[String]) -> bool {
                 | "TP_VPI_019"
                 | "avg_price"
                 | "sell_avg_price"
+                | "buy_avg_price"
+                | "baseline_020"
+                | "baseline_091"
+                | "baseline_140"
+                | "baseline_160"
+                | "baseline_169"
+                | "factor_114"
+                | "TD_PR_013"
+                | "TD_TI_013"
+                | "TD_TI_018"
         )
     })
 }
@@ -1338,10 +1348,16 @@ mod tests {
         ))
         .unwrap();
         names.extend(rx04.universe.factors);
+        let rx02: super::CtaPerpFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_perp_rx02/cta_perp_factor_model_1m_pub.toml"
+        ))
+        .unwrap();
+        names.extend(rx02.universe.factors);
         names.sort();
         names.dedup();
         assert!(!requires_amount_thresholds(&names));
         assert!(requires_amount_thresholds(&["net_buy_medium".into()]));
+        assert!(requires_amount_thresholds(&["baseline_047".into()]));
         assert!(requires_amount_thresholds(&["unknown".into()]));
         let plan = SymbolFactorPlan::from_factor_names("test", names.clone()).unwrap();
         let mut plain = BaselineReplayState::default();

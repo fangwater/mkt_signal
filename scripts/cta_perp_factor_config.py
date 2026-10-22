@@ -31,7 +31,7 @@ def normalize_table(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or len(raw) > 256:
         raise ValueError("symbol_factors must be an object with at most 256 symbols")
     allowlist = Path(__file__).with_name("factor_validation_allowlist.txt").read_text(encoding="utf-8")
-    allowed = set(re.findall(r"(?:factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium", "avg_price", "sell_avg_price"}
+    allowed = set(re.findall(r"(?:factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium", "avg_price", "buy_avg_price", "sell_avg_price"}
     table, services = {}, set()
     for raw_symbol, row in raw.items():
         if not isinstance(raw_symbol, str):

@@ -1,0 +1,8 @@
+[
+  {
+    "symbol": "1INCHUSDT",
+    "factor": "baseline_047",
+    "weight": -1.0,
+    "reason": "requires small-trade classification thresholds"
+  }
+]

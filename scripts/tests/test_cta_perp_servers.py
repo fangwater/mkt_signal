@@ -285,6 +285,25 @@ class CtaPerpServerTests(unittest.TestCase):
         _, empty = request_json(f'{base}/api/symbol-factors', method='POST', body={'symbol_factors':{}, 'expected_revision':saved['revision']})
         self.assertEqual(empty['symbol_factors'], {})
 
+    def test_rx02_price_factors_roundtrip_through_configuration_api(self):
+        profile = ROOT / 'config/cta_perp_rx02'
+        (self.directory / 'cta_perp_factor_model_1m_pub.toml').write_text(
+            (profile / 'cta_perp_factor_model_1m_pub.toml').read_text())
+        table = json.loads((profile / 'cta_perp_symbol_factors.json').read_text())
+        redis = FakeFactorRedis()
+        base = self.serve(CONFIG_SERVER.make_handler(
+            CONFIG_SERVER.ConfigStore(self.config_path), self.index_path, redis, 'binance-cta-perp-rx02'))
+        _, previous = request_json(base + '/api/symbol-factors')
+        _, saved = request_json(base + '/api/symbol-factors', method='POST', body={
+            'symbol_factors': table, 'expected_revision': previous['revision']})
+        self.assertEqual(saved['symbol_factors'], table)
+        self.assertEqual(sum(len(row) for row in table.values()), 69)
+        self.assertEqual(table['BELUSDT']['sell_avg_price'], -1)
+        self.assertEqual(table['ZRXUSDT']['buy_avg_price'], -1)
+        self.assertTrue(all('baseline_047' not in row for row in table.values()))
+        _, reread = request_json(base + '/api/symbol-factors')
+        self.assertEqual(reread['symbol_factors'], table)
+
     def test_global_amount_validates_and_rejects_factor_overrides(self):
         original = json.loads(self.config_path.read_text())
         self.assertEqual(CONFIG_SERVER.normalize_config(original)["max_pos_u"], 200)
