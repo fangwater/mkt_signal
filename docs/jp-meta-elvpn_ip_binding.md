@@ -1,6 +1,24 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-21 09:53 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-22 09:39 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-22，RX02 的 Perp、旧 Special 和 `binance_exec_trade05` 全部停止并归档，
+不向新账户迁移策略。Manager 禁用 trade05 并解除跟随，原配置/历史保留；
+完整归档在 JP `~/retired_data/rx02_20261022T091913Z/`，原目录保留归档标记。
+旧账户只读核验普通/条件挂单均0，24个非零永续持仓保留，未平仓。
+`.228` 是共享出口，未释放；没有改动 ENI/EIP、路由或 IRQ。
+
+新增原生 Binance PM USD-M Exec `binance_exec_trade08`，显示名 `lgq_ltp_81857`。
+`trade_engine.toml local_ips=["172.31.35.228", "172.31.35.228"]`，
+account_monitor 已建立的认证连接实测均使用 ens41 / `.228`（公网 `13.115.227.29`）。
+与当前 `binance_fr_arb02` 为不同账户；凭据仅保存在新环境权限0600的 `env.sh`。
+本机 `arbmm` 提交 `d3aedea0` release 构建，scp 上传并校验 SHA-256 后原子安装；
+只运行账户监控、持久化、Viz 和 Config，没有策略绑定/跟随，交易进程全部停止。
+Viz/Config 仅监听 `127.0.0.1:10048/18168`，已有4191鉴权网关新增 `/exec_trade08/`，
+配置持久化于 `/etc/nginx/snippets/crypto_cta_manager.conf`，`nginx -t` 通过后 reload；
+`lgq` 已获配置权限，页面、快照和配置入口通过鉴权访问均HTTP200。
+Manager 为 trade08 生成独立 Binance futures 规则缓存，未添加 COIN-M 或 RapidX cash。
+其余账户 source IP 与监听保持；证据：`data/ops/exec_trade08_rx02_retire_20261022/`。
 
 2026-10-21 09:51 UTC，仅替换并重启RX04的5min因子publisher以调整
 TP_VPI_006内层min_periods=280。仍使用默认出口；env.sh、loopback10198/19188、
@@ -274,7 +292,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；`binance-cta-special-rx02` 信号发布到 Exec `trade05`（RX02 RapidX）；RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]` |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01 Spread 接 Exec `trade06`，RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]`；新 `trade08` 原生PM监控。RX02 / `trade05` 已停机归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
@@ -339,7 +357,8 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
 binance-cta-spread-rx01      172.31.35.228                  配置服务、因子及signal运行，Kafka已追实时，发布关闭，Exec06停机；Kafka 默认出口
-binance-cta-special-rx02     172.31.35.228                  信号/config/dashboard；执行迁入 trade05
+binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
+binance-cta-perp-rx02        默认出口 / 172.31.35.228       已停止并归档，不迁移策略
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       独立5min观察信号，loopback10198/19188，未绑定Manager/Exec
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
@@ -360,16 +379,17 @@ binance_exec_trade01         0.0.0.0, 0.0.0.0
 binance_exec_trade02         172.31.35.228, 172.31.35.234
 binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
-binance_exec_trade05         172.31.35.228                  RX02 RapidX，follow lgq_cta，ctaker
+binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，在线，follow virtual03/cta_spread_rx01，ctaker；默认4倍（BEL/ZIL上限3倍）
 binance_exec_trade07         172.31.35.228                  RX03 RapidX，永续在线，follow virtual04/cta_perp_rx03，ctaker
+binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生PM USD-M，仅监控/持久化/页面，无策略绑定，交易停止
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。
 
 ## 已退役 intra RocksDB 归档
 
-JP `~/retired_data/` 中仅保存以下 RocksDB 数据归档及各自 `.sha256` 文件，
+以下两份 intra RocksDB 数据归档及各自 `.sha256` 文件位于 JP `~/retired_data/`，
 权限为 `600`；归档不含 `env.sh`、配置、凭据或程序。两份归档均已核对完整文件清单、
 文件大小与逐文件 SHA-256，回收两个部署目录约释放 4.28 GB。
 

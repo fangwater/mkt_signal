@@ -1,7 +1,27 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-21 09:53 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-22 09:39 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-22，按用户要求停止并归档 RX02，不迁移策略：
+`binance-cta-perp-rx02`、`binance-cta-special-rx02`、`binance_exec_trade05`
+均无运行进程；通过环境本地脚本停机，释放原 RX02 factor 的 CPU18。
+Manager 禁用 trade05，解除其虚拟账户跟随，保留旧绑定及订单历史。
+完整运行目录归档至 JP `~/retired_data/rx02_20261022T091913Z/rx02_runtime.tar.zst`，
+SHA-256 和 tar 内容比对通过；原目录保留并添加 `ARCHIVED.json`。
+归档含私密运行配置，权限0600，只留在远端。停机后只读查询：普通/条件挂单均0，
+仍有24个非零永续持仓；未平仓、未转移仓位。
+
+新增 `binance_exec_trade08` / `lgq_ltp_81857`，Binance 原生 USD-M、Portfolio Margin。
+从本机 `/home/fanghaizhou/mkt_signal` 已同步的 `arbmm` 提交 `d3aedea0` 构建 release，
+经 scp、逐文件 SHA-256 校验后原子安装，JP 未运行 Cargo。
+仅通过环境本地脚本启动 persist_manager PID3919545、account_monitor PID3919714、
+Viz PID3919789、Config PID3919881；有效 CPU 均0–5（mask含已下线48–95）。
+trade_engine、exec-pre-trade、trade_signal 均停止，Manager 中策略绑定/跟随均0；
+账户查询正常，新账户 USD-M 持仓和挂单均0。Manager 仍固定 CPU24，RX01/RX03
+受保护进程保持。Viz/Config 为 loopback10048/18168，网关 `/exec_trade08/`，
+`lgq` 已获配置权限。库测试1351项、rolling_metrics 8项、Viz 6项通过，库测试3项忽略。
+本机构建/发布/验收证据：`data/ops/exec_trade08_rx02_retire_20261022/`。
 
 2026-10-21 09:51 UTC，仅更新RX04的5min publisher，代码 `5a0c8f32`：
 TP_VPI_006的内层360根滚动和改为至少280个有效值，外层14根均值不变；
@@ -528,13 +548,14 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-21 全symbol Vol，PID330224；07:20 UTC交接，合约524/现货362币实时就绪 |
-| 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-13 原地迁入，5 线程；CTA_PERP_FACTOR_MODEL_1M_CORE=18 |
+| 18 | 未分配 | 2026-10-22 RX02 factor 停止并归档，原 CPU18 已释放 |
 | 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 2026-10-14 独立RX03实盘信号publisher，PID2038356/5线程；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
 | 21 | trade_signal(okex_mm_alpha) | |
 | 22 | pre_trade(okex_mm_alpha) | |
 | 23 | trade_engine(okex_mm_alpha) | 单线程 |
-| 24-27 | (空) | 原 binance_mm_alpha 已下线退役 |
+| 24 | crypto_cta_manager / cta_web | Manager 网页服务，2026-10-22 实测仍固定 CPU24 |
+| 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
 | 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | 2026-10-21 09:51 UTC更新；PID705737全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；5min观察信号 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
@@ -560,6 +581,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 binance_fr_arb01/02/03/04、gate_fr_arb01/02/03、bitget_fr_arb01/02、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
+`binance_exec_trade08` 仅监控、持久化、Viz/Config，均有效 CPU0–5；交易进程停止。
 `okex_mm_alpha` 的 persist_manager 与其它 persist 一起堆叠在 15。
 `binance-cta-rx01` 的 persist_manager 同样堆叠在 15。
 `bitget_fr_arb03` 已启动；其 persist_manager 绑核 15，其余进程未绑核。
