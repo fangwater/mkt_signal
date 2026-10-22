@@ -1,7 +1,15 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-22 09:39 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-22 09:51 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-22 09:49 UTC，按用户要求通过 Binance PAPI 将 trade08 的全部 USD-M
+合约改为单向持仓，POST 成功并回读 `dualSidePosition=false`。交易进程仍停止，
+4个观察进程及 CPU 绑定保持。账户仍为 PM/UNIFIED；公开 API 文档未找到 PM
+退出至经典模式的接口，普通合约权限 `enableFutures=false`。经典模式切换及后续
+划转等待账户后台处理；未提交任何资金划转。09:51 UTC 核验 USDT 为 PM 可用20000、
+Spot/UM/CM 钱包均0，无锁定或借款。回执：
+`data/ops/exec_trade08_rx02_retire_20261022/one_way_change.json`、`classic_pending.json`。
 
 2026-10-22，按用户要求停止并归档 RX02，不迁移策略：
 `binance-cta-perp-rx02`、`binance-cta-special-rx02`、`binance_exec_trade05`

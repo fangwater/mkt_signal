@@ -1,6 +1,11 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-22 09:39 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-22 09:51 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-22 09:49 UTC，trade08 经原 ens41 / `.228` 绑定调用 PAPI，成功将 USD-M
+持仓模式改为单向并回读确认；无 source IP、进程或监听变更。账户仍为 PM/UNIFIED，
+尚未切换经典账户，未提交划转；20000 USDT 保留在 PM，Spot 和 UM 钱包余额均0。
+经典模式需先在账户后台完成切换，并核验原生 Key 的普通合约权限后才能继续部署对齐。
 
 2026-10-22，RX02 的 Perp、旧 Special 和 `binance_exec_trade05` 全部停止并归档，
 不向新账户迁移策略。Manager 禁用 trade05 并解除跟随，原配置/历史保留；
