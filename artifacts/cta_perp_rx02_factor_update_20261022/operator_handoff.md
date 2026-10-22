@@ -7,6 +7,22 @@
 本交接不使用 2026-10-13 的旧 special→perp 激活脚本；那个脚本处理不同的旧环境、
 不同的 Manager 绑定，并要求所有因子 ready，不适用这次更新。
 
+已补充 `operator_switch.py`，默认仅做只读预检；只有操作员传入 `--execute`
+才执行下述切换。该脚本使用已核验的隔离审计包，不需要在生产机编译。助手只运行
+只读预检，不执行实盘切换。操作员在自己的终端保持 SSH 连接直至脚本退出：
+
+```bash
+ssh jp-meta-elvpn 'python3 /home/ubuntu/cta-audits/rx02-factor-replay-20261022T0540Z/operator_switch.py --execute'
+```
+
+脚本先检查线上文件仍与回放前一致、Redis/信号/文件的清单相同，并保留现场
+交易参数和金额。备份后停 RX02 signal、factor publisher 和配置服务，保留原仓位
+flags 和信号 journal；新 publisher 的新 generation 追到 Kafka 实时后启动配置服务
+和 signal。就绪门槛不包含全因子 ready。最终检查两个 Manager 成功接收目标，
+但不把目标投递成功当作成交证明，成交仍按下文第 7 步只读核对。
+任何阶段失败都不自动恢复旧策略，错误后需检查当前状态；已生成备份保留在
+RX02 的 `run/rx02_factor_before_<UTC>/`。不得未经检查再次运行切换脚本。
+
 已校验的待安装文件在同主机
 `/home/ubuntu/cta-audits/rx02-factor-replay-20261022T0540Z/`：根目录为二进制和
 两个配置文件，`payload/scripts/` 为三个脚本/allowlist 文件。SHA-256 见

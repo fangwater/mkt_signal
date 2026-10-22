@@ -1,0 +1,19 @@
+{
+  "check_output": {
+    "read_only_preflight": "passed",
+    "current": {
+      "symbols": 47,
+      "factors": 17,
+      "pairs": 192
+    },
+    "candidate": {
+      "symbols": 23,
+      "factors": 22,
+      "pairs": 69
+    },
+    "wait_for_all_factors": false
+  },
+  "operator_script_sha256": "cdb6928963564cce07306f2ea9aefb2e37388975251dd34949c8c0df54e4e012",
+  "execute_called": false,
+  "tests": "syntax and six generation/freshness gate cases passed"
+}
