@@ -1,0 +1,203 @@
+{
+  "positions": {
+    "FIL": {
+      "qty": "-0.1",
+      "mark": "0.9715",
+      "notional": "-0.09715",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "1INCH": {
+      "qty": "544",
+      "mark": "0.09138",
+      "notional": "49.71072",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "DOGE": {
+      "qty": "630",
+      "mark": "0.07932",
+      "notional": "49.97160",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "XRP": {
+      "qty": "-0.1",
+      "mark": "1.32221895",
+      "notional": "-0.132221895",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "SNX": {
+      "qty": "230.2",
+      "mark": "0.2156",
+      "notional": "49.63112",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "DASH": {
+      "qty": "1.007",
+      "mark": "49.73",
+      "notional": "50.07811",
+      "live": true,
+      "lotSize": "0.001",
+      "minSize": "0.001"
+    },
+    "IOST": {
+      "qty": "55934",
+      "mark": "0.0008879",
+      "notional": "49.6637986",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "KSM": {
+      "qty": "12.6",
+      "mark": "3.998",
+      "notional": "50.3748",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "ZEN": {
+      "qty": "7.8",
+      "mark": "6.02011667",
+      "notional": "46.956910026",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "ETC": {
+      "qty": "6.41",
+      "mark": "7.76340966",
+      "notional": "49.7634559206",
+      "live": true,
+      "lotSize": "0.01",
+      "minSize": "0.01"
+    },
+    "SUSHI": {
+      "qty": "231",
+      "mark": "0.21533781",
+      "notional": "49.74303411",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "SKL": {
+      "qty": "11731",
+      "mark": "0.004116",
+      "notional": "48.284796",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "NEO": {
+      "qty": "22.62",
+      "mark": "2.2",
+      "notional": "49.764",
+      "live": true,
+      "lotSize": "0.01",
+      "minSize": "0.01"
+    },
+    "THETA": {
+      "qty": "-255.7",
+      "mark": "0.19534",
+      "notional": "-49.948438",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "BNB": {
+      "qty": "-0.01",
+      "mark": "731.85892329",
+      "notional": "-7.3185892329",
+      "live": true,
+      "lotSize": "0.01",
+      "minSize": "0.01"
+    },
+    "ENJ": {
+      "qty": "-1845",
+      "mark": "0.02697",
+      "notional": "-49.75965",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "EGLD": {
+      "qty": "13.5",
+      "mark": "3.60951716",
+      "notional": "48.728481660",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "LTC": {
+      "qty": "0.812",
+      "mark": "59.01",
+      "notional": "47.91612",
+      "live": true,
+      "lotSize": "0.001",
+      "minSize": "0.001"
+    },
+    "NEAR": {
+      "qty": "8",
+      "mark": "4.978",
+      "notional": "39.824",
+      "live": true,
+      "lotSize": "1",
+      "minSize": "1"
+    },
+    "ZEC": {
+      "qty": "0.039",
+      "mark": "1242.68",
+      "notional": "48.46452",
+      "live": true,
+      "lotSize": "0.001",
+      "minSize": "0.001"
+    },
+    "BAND": {
+      "qty": "237.3",
+      "mark": "0.2095",
+      "notional": "49.71435",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    },
+    "LINK": {
+      "qty": "-0.01",
+      "mark": "12.003",
+      "notional": "-0.12003",
+      "live": true,
+      "lotSize": "0.01",
+      "minSize": "0.01"
+    },
+    "ETH": {
+      "qty": "0.02",
+      "mark": "2397.93625581",
+      "notional": "47.9587251162",
+      "live": true,
+      "lotSize": "0.001",
+      "minSize": "0.001"
+    },
+    "IOTA": {
+      "qty": "1110.3",
+      "mark": "0.04481267",
+      "notional": "49.755507501",
+      "live": true,
+      "lotSize": "0.1",
+      "minSize": "0.1"
+    }
+  },
+  "cash": {
+    "USDT": "9067.755233877560643756"
+  },
+  "orders": 0,
+  "algo_orders": 0,
+  "gross_position_usdt": "983.6801280617",
+  "local_ip": "172.31.35.228"
+}

@@ -1,6 +1,55 @@
 # RX02 切换到 CTA Perp
 
-最后更新：2026-10-13
+最后更新：2026-10-22 15:06 UTC
+
+15:00 UTC，新账户 `lgq_ltp_81857` / `binance_exec_trade08` 已开始实盘执行 RX02。
+JP virtual02 由 Exec08 以倍率1跟随，唯一绑定 `lgq_cta_symbol_mean`，使用现场
+`lgq_grid_prep`：合约3档、10秒一轮、无限Maker重挂、单手100 USDT、Vol倍数1、
+目标容差10 USDT；RX02仍为23币、单币50 USDT。旧trade05继续停用且无进程。
+按用户明确授权，14:55:55 UTC单次POST开启 Binance USD-M Multi-Assets Mode，
+回执code200，回读true；单向持仓`dualSidePosition=false`/`BOTH`保持。STANDARD运行模式不改为PM。
+多资产模式下账户汇总为交易所折算USD，不能用该汇总值检查USDT币余额是否等于20000。
+15:06验收：5个非零目标全部在原容差内完成，8笔实际成交均Maker，挂单0；
+Manager待投递0，JP/SG推送无错误，RLC仍在预热且目标clear。
+Exec08的engine/executor PID342673/343474、Config PID315020，均CPU0–5；
+Manager PID315038固定CPU24，RX02 signal PID351338更新页面跟随账户关联。
+publisher PID160373仍CPU18。交易source IP `.228`、监听10048/18168及4191网关保持。
+配置入口 `http://13.115.227.29:4191/exec_trade08/config/`（Manager登录后可用）。
+Grid兼容改动经过1354项Exec库测试、398项Manager库测试及42项Python测试，
+本地release构建、SHA-256核验并原子安装。证据在
+`artifacts/rx02_exec08_grid_20261022/`，远端回执/私有备份在Exec08的
+`run/grid_20261022/`；以下各时点描述为历史状态。
+
+2026-10-22 13:57–13:59 UTC，按用户明确要求以 taker 清理旧 RX02：
+JP `binance_exec_trade05` 的24个非零永续仓位通过 RapidX MARKET / reduceOnly
+全部成交归零（含FIL/XRP/LINK小额尾仓）；普通挂单、条件单及未决平仓单均0。
+旧交易进程和Manager source继续停止/禁用，未启动旧策略。SG只读Exec快照确认
+旧仓位归零，现有非零仓位均属于新版 `lgq_cta_symbol_mean`，未手动干预新版持仓。
+同次将新账户 `lgq_ltp_81857` / trade08 的20000 USDT从全仓杠杆钱包直接划至
+USD-M合约钱包（`MARGIN_UMFUTURE`）。单次POST回执tranId `423596580418`，
+划转历史CONFIRMED；13:59复核合约wallet/equity/available均20000 USDT，
+Margin及Spot均0、借款/锁定均0。trade08仍仅观察进程，无策略绑定、未启动交易。
+无CPU、local_ips、ENI/EIP、路由或监听变更。清仓和划转证据分别在
+`artifacts/rx02_old_positions_cleanup_20261022/`、`artifacts/lgq_ltp_wallet_transfer_20261022/`。
+
+
+2026-10-22 13:43:58 UTC，RX02 已切换新版仓位推送，JP、SG 双 Manager 均接收：
+23币、22因子、69组合，`lgq_cta_symbol_mean`，保留 v1 算法、单币50 USDT和现场
+entry/exit/NQ参数。当前68/69组合、22/23币就绪；RLC/factor_114仍需积累样本，
+RLC目标为clear，未降低窗口或跳过未就绪因子。13:41快照还缺至少122个有效分钟；
+实际时间受后续数据连续性影响。
+JP virtual02 无执行跟随；SG virtual01 仍由 bybit_exec_trade01 以倍率1跟随。
+两边9个旧虚拟策略绑定移除，旧策略及移出币种目标clear。SG账户保留9条份额0的
+历史记录，唯一有效绑定为symbol_mean，待投递0。JP已停用trade05残留的10条
+账户绑定已备份后移除，修复其导致的发布502；该source继续禁用，旧真实仓位未操作。
+旧Perp运行状态归档在 `~/binance-cta-perp-rx02/run/push_switch_20261022/before/`；
+旧Special、Exec05继续停机，09:19完整归档保留。trade08无策略绑定，未启动交易。
+publisher PID160373固定CPU18，signal PID177222、Config PID168550、Dashboard
+PID168607使用housekeeping CPU；保留loopback19186/10196、已有4191入口和默认出口。
+本地arbmm release上传、SHA-256核验后原子安装；双Manager目标逐项匹配，发布无错误。
+证据：`artifacts/cta_perp_rx02_push_switch_20261022/verification.json`、`sg_verification.json`。
+
+## 2026-10-13 首次迁移（历史记录）
 
 目标主机 `jp-meta-elvpn`；旧目录 `~/binance-cta-special-rx02`，新目录
 `~/binance-cta-perp-rx02`。二进制来自本地 `arbmm` 提交 `976d557e`。
@@ -21,7 +70,7 @@ TD_TI_002、baseline_004、factor_051、factor_170 为0份。唯一跟随账户�
 `artifacts/cta_rx02_virtual_validation/after_retirement.json`。检查时所有目标为零，
 该核验确认组合配置与投递成功，不声称已验证新策略非零目标成交。
 
-**当前状态：已正式启用。** 操作者在 08:45 UTC 先退休31个旧组合，08:57 UTC
+**当次状态：已正式启用。** 操作者在 08:45 UTC 先退休31个旧组合，08:57 UTC
 完成正式切换；`run/cutover_completed.json` 已写入，不要重复运行切换命令。
 09:03 UTC 只读核验：enabled=true、24/24实时就绪、发布无错误，旧仓位信号已停，
 共享因子发布器保留。Exec 已安装全部五个新因子（含保留的factor_036）和四个

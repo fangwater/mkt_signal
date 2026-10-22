@@ -1,0 +1,29 @@
+{
+  "at": "2026-10-22T14:47:38.930466+00:00",
+  "sha256": {
+    "exec-pre-trade": "127455efb4df5c969f8da507b94da3fd65ec7470c922d37d96b35cc5e142e471",
+    "exec_config_server.py": "91de363464120f9cfa1755622e8d7c4d169e71aaa02eeb462c84f9c655273195",
+    "cta_web": "7e20dcf6fd29b3fd90d8b4c7dae174e2d2d1a93d8e823075228b7f5cc2c63511"
+  },
+  "exec_processes": [
+    {
+      "pid": 157817,
+      "comm": "account_monitor"
+    },
+    {
+      "pid": 315020,
+      "comm": "python3"
+    },
+    {
+      "pid": 3919545,
+      "comm": "persist_manager"
+    },
+    {
+      "pid": 3919789,
+      "comm": "viz_server"
+    }
+  ],
+  "manager_pid": 315038,
+  "trading_started": false,
+  "note": "Gateway verified after historical NAV startup completed"
+}

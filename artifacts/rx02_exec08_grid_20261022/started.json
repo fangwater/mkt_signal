@@ -1,0 +1,33 @@
+{
+  "at": "2026-10-22T15:00:01.153583+00:00",
+  "engine_pid": 342673,
+  "executor_pid": 343474,
+  "processes": [
+    {
+      "pid": 157817,
+      "comm": "account_monitor"
+    },
+    {
+      "pid": 315020,
+      "comm": "python3"
+    },
+    {
+      "pid": 342673,
+      "comm": "trade_engine"
+    },
+    {
+      "pid": 343474,
+      "comm": "exec-pre-trade"
+    },
+    {
+      "pid": 3919545,
+      "comm": "persist_manager"
+    },
+    {
+      "pid": 3919789,
+      "comm": "viz_server"
+    }
+  ],
+  "source_ip": "172.31.35.228",
+  "trading_started": true
+}

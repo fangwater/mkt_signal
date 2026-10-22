@@ -1,0 +1,170 @@
+{
+  "at": "2026-10-22T14:57:09.771607+00:00",
+  "account": {
+    "source_id": "binance_exec_trade08",
+    "estimated_fee_rate": 0.000146,
+    "maker_fee_rate": -5e-05,
+    "taker_fee_rate": 0.000146,
+    "theoretical_twap_fee_rate": 4.8e-05,
+    "quote_fee_rates": {},
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade08",
+        "binding_name": "lgq_cta_symbol_mean",
+        "position_strategy_name": "lgq_cta_symbol_mean",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0,
+        "updated_at_us": 1792680501152370
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "follows": [
+        {
+          "virtual_id": "virtual02",
+          "multiplier": 1.0
+        }
+      ]
+    },
+    "pending_publishes": []
+  },
+  "risk": {
+    "max_pending_limit_orders": "10",
+    "exec_max_pending_limit_buy_orders": "10",
+    "exec_max_pending_limit_sell_orders": "10",
+    "exec_order_rate_limit_per_min": "400",
+    "exec_order_rate_limit_10s": "300"
+  },
+  "runtime": {
+    "algorithm": "grid",
+    "pov": {
+      "participation_rate": 0.1,
+      "max_batch_usdt": 300.0,
+      "max_carry_usdt": 600.0,
+      "volume_stale_ms": 5000,
+      "quote_stale_ms": 1000,
+      "duration_ms": 3600000,
+      "liquidity": "maker_then_taker",
+      "limit_price": null
+    },
+    "grid": {
+      "spot": {
+        "orders_per_batch": 5,
+        "maker_timeout_ms": 120000,
+        "vol_multiplier": 1.0,
+        "max_maker_requotes": 0
+      },
+      "futures": {
+        "orders_per_batch": 3,
+        "maker_timeout_ms": 10000,
+        "vol_multiplier": 1.0,
+        "max_maker_requotes": null
+      }
+    },
+    "single_order_usdt": 100.0,
+    "orders_per_batch": 3,
+    "max_batch": 20,
+    "maker_price_anchor": "own_best",
+    "tick_spacing": 1,
+    "batch_interval_ms": 500,
+    "maker_timeout_ms": 1000,
+    "max_maker_requotes": 2,
+    "target_tolerance_usdt": 10.0,
+    "targets": {
+      "1INCHUSDT": {
+        "qty": 545.9111256687411,
+        "signal": 0
+      },
+      "ALGOUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ATOMUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "AXSUSDT": {
+        "qty": 49.51475539710834,
+        "signal": 0
+      },
+      "BELUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "COMPUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "DASHUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "DOGEUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "EGLDUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ETCUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "IOTAUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "KAVAUSDT": {
+        "qty": -709.7232079488999,
+        "signal": 0
+      },
+      "KNCUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "NEARUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "QTUMUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "RLCUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "RSRUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "SKLUSDT": {
+        "qty": 12224.938875305625,
+        "signal": 0
+      },
+      "SUSHIUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "XTZUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ZECUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ZENUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ZRXUSDT": {
+        "qty": -463.8218923933209,
+        "signal": 0
+      }
+    },
+    "updated_at_us": 1792680961656577
+  },
+  "trading_started": false
+}

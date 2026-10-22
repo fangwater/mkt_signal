@@ -1,0 +1,17 @@
+{
+  "at": "2026-10-22T14:41:57.612835+00:00",
+  "mkt_signal_base": "4cf16d174ea9057d0e7f5943f5050c150c493224",
+  "manager_base": "f432c1f689a61c55c03cafd90d289240e59f0e9b",
+  "sha256": {
+    "exec-pre-trade": "127455efb4df5c969f8da507b94da3fd65ec7470c922d37d96b35cc5e142e471",
+    "exec_config_server.py": "91de363464120f9cfa1755622e8d7c4d169e71aaa02eeb462c84f9c655273195",
+    "cta_web": "7e20dcf6fd29b3fd90d8b4c7dae174e2d2d1a93d8e823075228b7f5cc2c63511"
+  },
+  "validation": {
+    "exec_lib": 1354,
+    "exec_ignored": 3,
+    "manager_lib": 398,
+    "manager_ignored": 5,
+    "config_python": 42
+  }
+}

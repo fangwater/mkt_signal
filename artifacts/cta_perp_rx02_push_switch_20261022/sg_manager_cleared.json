@@ -1,0 +1,23 @@
+{
+  "time_ms": 1792676616767,
+  "cleared_strategies": [
+    "lgq_cta_TD_TI_002",
+    "lgq_cta_TD_TI_024",
+    "lgq_cta_baseline_004",
+    "lgq_cta_baseline_141",
+    "lgq_cta_baseline_164",
+    "lgq_cta_baseline_200",
+    "lgq_cta_factor_036",
+    "lgq_cta_factor_051",
+    "lgq_cta_factor_170",
+    "lgq_cta_symbol_mean"
+  ],
+  "legacy_bindings_removed": true,
+  "followers": [
+    {
+      "source_id": "bybit_exec_trade01",
+      "multiplier": 1.0,
+      "pending_publishes": []
+    }
+  ]
+}

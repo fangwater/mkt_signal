@@ -1,0 +1,343 @@
+{
+  "time_ms": 1792677370520,
+  "execute": true,
+  "local_ip": "172.31.35.228",
+  "positions": [
+    {
+      "coin": "KSM",
+      "qty": "12.6",
+      "notional": "50.716994958",
+      "request": {
+        "sym": "BINANCE_PERP_KSM_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "12.6",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close317e0656d6e441c38b4ec1"
+      }
+    },
+    {
+      "coin": "DASH",
+      "qty": "1.007",
+      "notional": "50.6128168293",
+      "request": {
+        "sym": "BINANCE_PERP_DASH_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "1.007",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close123fd9d68c594393afed97"
+      }
+    },
+    {
+      "coin": "THETA",
+      "qty": "-255.7",
+      "notional": "-50.272430356",
+      "request": {
+        "sym": "BINANCE_PERP_THETA_USDT",
+        "side": "BUY",
+        "orderType": "MARKET",
+        "orderQty": "255.7",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close64eb20bb9699426998cc20"
+      }
+    },
+    {
+      "coin": "DOGE",
+      "qty": "630",
+      "notional": "50.24357730",
+      "request": {
+        "sym": "BINANCE_PERP_DOGE_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "630",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close0aa8b9035b9d4b52a5eaf0"
+      }
+    },
+    {
+      "coin": "IOST",
+      "qty": "55934",
+      "notional": "50.13979694",
+      "request": {
+        "sym": "BINANCE_PERP_IOST_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "55934",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close70ff339c825a45bfa4cbb7"
+      }
+    },
+    {
+      "coin": "NEO",
+      "qty": "22.62",
+      "notional": "50.1038184504",
+      "request": {
+        "sym": "BINANCE_PERP_NEO_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "22.62",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closeb42a5be9ff694670a36556"
+      }
+    },
+    {
+      "coin": "ENJ",
+      "qty": "-1845",
+      "notional": "-50.09916690",
+      "request": {
+        "sym": "BINANCE_PERP_ENJ_USDT",
+        "side": "BUY",
+        "orderType": "MARKET",
+        "orderQty": "1845",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closeeb9627b336a24d089a32ea"
+      }
+    },
+    {
+      "coin": "IOTA",
+      "qty": "1110.3",
+      "notional": "50.063427",
+      "request": {
+        "sym": "BINANCE_PERP_IOTA_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "1110.3",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closef1647e8ee6f242d1b9721d"
+      }
+    },
+    {
+      "coin": "SUSHI",
+      "qty": "231",
+      "notional": "50.0577",
+      "request": {
+        "sym": "BINANCE_PERP_SUSHI_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "231",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closed0997967cfd3473fb087c8"
+      }
+    },
+    {
+      "coin": "ETC",
+      "qty": "6.41",
+      "notional": "50.0488526453",
+      "request": {
+        "sym": "BINANCE_PERP_ETC_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "6.41",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closefd358b7c9868442785d8e9"
+      }
+    },
+    {
+      "coin": "BAND",
+      "qty": "237.3",
+      "notional": "50.02234167",
+      "request": {
+        "sym": "BINANCE_PERP_BAND_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "237.3",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close0c041707643c4079bb974d"
+      }
+    },
+    {
+      "coin": "1INCH",
+      "qty": "544",
+      "notional": "49.98498848",
+      "request": {
+        "sym": "BINANCE_PERP_1INCH_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "544",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close62a127940f294c39a6f644"
+      }
+    },
+    {
+      "coin": "SNX",
+      "qty": "230.2",
+      "notional": "49.882079436",
+      "request": {
+        "sym": "BINANCE_PERP_SNX_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "230.2",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close49a53687e91a46f68fd51a"
+      }
+    },
+    {
+      "coin": "ZEC",
+      "qty": "0.039",
+      "notional": "49.09376240457",
+      "request": {
+        "sym": "BINANCE_PERP_ZEC_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "0.039",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close13eb3a586cb04f41bc751f"
+      }
+    },
+    {
+      "coin": "EGLD",
+      "qty": "13.5",
+      "notional": "49.003599645",
+      "request": {
+        "sym": "BINANCE_PERP_EGLD_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "13.5",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closeabd4daa86dad43018d4202"
+      }
+    },
+    {
+      "coin": "SKL",
+      "qty": "11731",
+      "notional": "48.66382461",
+      "request": {
+        "sym": "BINANCE_PERP_SKL_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "11731",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closed9bfa32b4fad41d0af2367"
+      }
+    },
+    {
+      "coin": "ETH",
+      "qty": "0.02",
+      "notional": "48.2402054264",
+      "request": {
+        "sym": "BINANCE_PERP_ETH_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "0.02",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close616d6ec2ff124c27bb5907"
+      }
+    },
+    {
+      "coin": "LTC",
+      "qty": "0.812",
+      "notional": "48.2187969788",
+      "request": {
+        "sym": "BINANCE_PERP_LTC_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "0.812",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close49f92087722e43fcb8cb0f"
+      }
+    },
+    {
+      "coin": "ZEN",
+      "qty": "7.8",
+      "notional": "47.352930612",
+      "request": {
+        "sym": "BINANCE_PERP_ZEN_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "7.8",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close17d4a4be4e234c85b98006"
+      }
+    },
+    {
+      "coin": "NEAR",
+      "qty": "8",
+      "notional": "40.32461264",
+      "request": {
+        "sym": "BINANCE_PERP_NEAR_USDT",
+        "side": "SELL",
+        "orderType": "MARKET",
+        "orderQty": "8",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closeda783ac2eee543e69626a8"
+      }
+    },
+    {
+      "coin": "BNB",
+      "qty": "-0.01",
+      "notional": "-7.3431329775",
+      "request": {
+        "sym": "BINANCE_PERP_BNB_USDT",
+        "side": "BUY",
+        "orderType": "MARKET",
+        "orderQty": "0.01",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02close77f73149f27548b89016d9"
+      }
+    },
+    {
+      "coin": "XRP",
+      "qty": "-0.1",
+      "notional": "-0.132852852",
+      "request": {
+        "sym": "BINANCE_PERP_XRP_USDT",
+        "side": "BUY",
+        "orderType": "MARKET",
+        "orderQty": "0.1",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closeea1a4ed51b874507b952f8"
+      }
+    },
+    {
+      "coin": "LINK",
+      "qty": "-0.01",
+      "notional": "-0.1208596692",
+      "request": {
+        "sym": "BINANCE_PERP_LINK_USDT",
+        "side": "BUY",
+        "orderType": "MARKET",
+        "orderQty": "0.01",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closec1c2ca8260414dcab6a9a4"
+      }
+    },
+    {
+      "coin": "FIL",
+      "qty": "-0.1",
+      "notional": "-0.097837221",
+      "request": {
+        "sym": "BINANCE_PERP_FIL_USDT",
+        "side": "BUY",
+        "orderType": "MARKET",
+        "orderQty": "0.1",
+        "reduceOnly": "TRUE",
+        "positionSide": "NONE",
+        "clientOrderId": "rx02closeae4c4c507c7545efab83f2"
+      }
+    }
+  ]
+}

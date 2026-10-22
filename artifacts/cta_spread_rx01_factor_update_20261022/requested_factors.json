@@ -1,0 +1,276 @@
+{
+  "TD_MT_019": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "SKL",
+        "ZRX",
+        "SNX",
+        "TRB",
+        "BEL",
+        "KSM",
+        "QTUM",
+        "ZEN",
+        "ALGO",
+        "KNC",
+        "DASH"
+      ]
+    }
+  ],
+  "TD_MT_021": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "IOTA",
+        "SKL",
+        "TRB",
+        "KSM",
+        "ZEN",
+        "ALGO"
+      ]
+    }
+  ],
+  "TD_PR_008": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "SKL",
+        "ZRX",
+        "SNX",
+        "KSM",
+        "QTUM",
+        "ALGO",
+        "RSR"
+      ]
+    }
+  ],
+  "TD_PT_003": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ICX",
+        "SKL",
+        "ZRX",
+        "KSM",
+        "KNC"
+      ]
+    }
+  ],
+  "TD_TI_027": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "SNX",
+        "TRB",
+        "ZEN",
+        "RSR",
+        "DASH"
+      ]
+    }
+  ],
+  "TD_TI_038": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ICX",
+        "ZRX",
+        "SNX",
+        "TRB",
+        "BEL",
+        "QTUM",
+        "RSR",
+        "STORJ"
+      ]
+    }
+  ],
+  "baseline_005": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "IOTA",
+        "TRB",
+        "ZEN",
+        "ALGO",
+        "IOST"
+      ]
+    }
+  ],
+  "baseline_028": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "ICX",
+        "SKL",
+        "TRB",
+        "KSM",
+        "ZEN",
+        "DASH"
+      ]
+    }
+  ],
+  "baseline_105": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "SKL",
+        "ZRX",
+        "SNX",
+        "TRB",
+        "BEL",
+        "QTUM",
+        "ZEN",
+        "IOST",
+        "KNC",
+        "RSR",
+        "DASH",
+        "STORJ"
+      ]
+    }
+  ],
+  "baseline_140": [
+    {
+      "sign": "+1",
+      "symbols": [
+        "ONT",
+        "KAVA",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "QTUM",
+        "ALGO",
+        "IOST",
+        "KNC"
+      ]
+    }
+  ],
+  "baseline_169": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "SKL",
+        "ZRX",
+        "TRB",
+        "BEL",
+        "KSM",
+        "ALGO",
+        "DASH"
+      ]
+    }
+  ],
+  "factor_trades_008": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ICX",
+        "SKL",
+        "ZRX",
+        "SNX",
+        "BEL",
+        "IOST",
+        "KNC",
+        "STORJ"
+      ]
+    }
+  ],
+  "factor_trades_045": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "ENJ",
+        "ICX",
+        "IOTA",
+        "SKL",
+        "ZRX",
+        "SNX",
+        "BEL",
+        "QTUM",
+        "ZEN",
+        "IOST",
+        "KNC",
+        "RSR",
+        "STORJ"
+      ]
+    }
+  ],
+  "factor_trades_049": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "KAVA"
+      ]
+    }
+  ],
+  "factor_trades_050": [
+    {
+      "sign": "-1",
+      "symbols": [
+        "ONT",
+        "AXS",
+        "KAVA",
+        "ENJ",
+        "IOTA",
+        "SKL",
+        "ZRX",
+        "SNX",
+        "BEL",
+        "KSM",
+        "QTUM",
+        "IOST",
+        "RSR",
+        "STORJ"
+      ]
+    }
+  ]
+}

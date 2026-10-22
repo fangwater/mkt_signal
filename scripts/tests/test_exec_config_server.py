@@ -112,6 +112,33 @@ class ClearTargetTests(unittest.TestCase):
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_standard_usdm_grid_save_preserves_market_isolation(self):
+        with mock.patch.dict(MODULE.os.environ, {
+            "TRADE_ENGINE_EXEC_BACKEND": "native",
+            "TRADE_ENGINE_EXEC_BACKEND_MAP": "",
+            "BINANCE_ACCOUNT_MODE": "STANDARD",
+        }):
+            store = fake_store()
+            for config in (
+                {**MODULE.DEFAULT_CONFIG, "algorithm": "grid"},
+                {**MODULE.DEFAULT_CONFIG, "symbol_overrides": {"BTCUSDT": {"algorithm": "grid"}}},
+            ):
+                saved = store.save("rx02", {**config, "targets": {"BTCUSDT": 0.01}})
+                self.assertEqual(store.load("rx02"), saved)
+                for symbol in ("BTC", "BTCUSD"):
+                    before = dict(store.client.values)
+                    with self.assertRaises(ValueError):
+                        store.save("rx02", {**config, "targets": {symbol: 0.01}})
+                    self.assertEqual(store.client.values, before)
+            for mode in ("", "invalid"):
+                with mock.patch.dict(MODULE.os.environ, {"BINANCE_ACCOUNT_MODE": mode}):
+                    with self.assertRaisesRegex(ValueError, "grid requires"):
+                        store.save("rx02", {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTCUSDT": 0.01}})
+            coin_store = fake_store("binance-coin-futures")
+            with self.assertRaisesRegex(ValueError, "grid requires"):
+                coin_store.save("rx02", {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTCUSD": 1}})
+            self.assertEqual(coin_store.client.values, {})
+
     def test_native_uta_market_and_strategy_isolation(self):
         for venue in ("bybit-futures", "bitget-futures"):
             with self.subTest(venue=venue), mock.patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND":"native", "TRADE_ENGINE_EXEC_BACKEND_MAP":""}):

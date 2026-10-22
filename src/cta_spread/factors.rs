@@ -603,10 +603,9 @@ mod tests {
 
     #[test]
     fn opposite_sleeves_share_calculation_without_overwriting_positions() {
-        let table = parse_factor_table(include_str!("../../config/cta_spread_symbol_factors.json"))
-            .unwrap();
-        assert_eq!(table.len(), 48);
-        assert_eq!(table.values().map(|r| r.factors.len()).sum::<usize>(), 794);
+        let table =
+            parse_factor_table(r#"{"AXSUSDT":{"factor_169_positive":1,"factor_169_negative":-1}}"#)
+                .unwrap();
         let row = &table["AXSUSDT"];
         for (name, sign) in [("factor_169_positive", 1.0), ("factor_169_negative", -1.0)] {
             assert_eq!(
@@ -618,7 +617,7 @@ mod tests {
             model_service("factor_169_positive"),
             model_service("factor_169_negative")
         );
-        assert_eq!(table_services(&table).len(), 57); // 56 calculations and NQ
+        assert_eq!(table_services(&table).len(), 2); // One shared calculation and NQ.
         assert!(parse_factor_table(r#"{"AXSUSDT":{"factor_169_positive":-1}}"#).is_err());
     }
 

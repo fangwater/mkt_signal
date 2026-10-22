@@ -1,0 +1,541 @@
+{
+  "at": "2026-10-22T15:06:19.885350+00:00",
+  "mode": {
+    "multiAssetsMargin": true,
+    "dualSidePosition": false,
+    "canTrade": true
+  },
+  "manager": {
+    "source_id": "binance_exec_trade08",
+    "estimated_fee_rate": 0.000146,
+    "maker_fee_rate": -5e-05,
+    "taker_fee_rate": 0.000146,
+    "theoretical_twap_fee_rate": 4.8e-05,
+    "quote_fee_rates": {},
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade08",
+        "binding_name": "lgq_cta_symbol_mean",
+        "position_strategy_name": "lgq_cta_symbol_mean",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0,
+        "updated_at_us": 1792680501152370
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "follows": [
+        {
+          "virtual_id": "virtual02",
+          "multiplier": 1.0
+        }
+      ]
+    },
+    "pending_publishes": []
+  },
+  "runtime": {
+    "algorithm": "grid",
+    "pov": {
+      "participation_rate": 0.1,
+      "max_batch_usdt": 300.0,
+      "max_carry_usdt": 600.0,
+      "volume_stale_ms": 5000,
+      "quote_stale_ms": 1000,
+      "duration_ms": 3600000,
+      "liquidity": "maker_then_taker",
+      "limit_price": null
+    },
+    "grid": {
+      "spot": {
+        "orders_per_batch": 5,
+        "maker_timeout_ms": 120000,
+        "vol_multiplier": 1.0,
+        "max_maker_requotes": 0
+      },
+      "futures": {
+        "orders_per_batch": 3,
+        "maker_timeout_ms": 10000,
+        "vol_multiplier": 1.0,
+        "max_maker_requotes": null
+      }
+    },
+    "single_order_usdt": 100.0,
+    "orders_per_batch": 3,
+    "max_batch": 20,
+    "maker_price_anchor": "own_best",
+    "tick_spacing": 1,
+    "batch_interval_ms": 500,
+    "maker_timeout_ms": 1000,
+    "max_maker_requotes": 2,
+    "target_tolerance_usdt": 10.0,
+    "targets": {
+      "1INCHUSDT": {
+        "qty": 545.9111256687411,
+        "signal": 0
+      },
+      "ALGOUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ATOMUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "AXSUSDT": {
+        "qty": 49.51475539710834,
+        "signal": 0
+      },
+      "BELUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "COMPUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "DASHUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "DOGEUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "EGLDUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ETCUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "IOTAUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "KAVAUSDT": {
+        "qty": -709.7232079488999,
+        "signal": 0
+      },
+      "KNCUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "NEARUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "QTUMUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "RLCUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "RSRUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "SKLUSDT": {
+        "qty": 12224.938875305625,
+        "signal": 0
+      },
+      "SUSHIUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "XTZUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ZECUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ZENUSDT": {
+        "qty": "clear",
+        "signal": 0
+      },
+      "ZRXUSDT": {
+        "qty": -463.8218923933209,
+        "signal": 0
+      }
+    },
+    "updated_at_us": 1792681450041348
+  },
+  "state": {
+    "position_ready": true,
+    "rows": [
+      {
+        "account_position_qty": 545.0,
+        "account_position_usdt": 49.755775,
+        "active_batches": 0,
+        "algorithm": "grid",
+        "completion_reason": "target_tolerance",
+        "current_qty": 545.0,
+        "current_usdt": 49.755775,
+        "delta_qty": 0.9111256687410788,
+        "delta_usdt": 0.08318121792771678,
+        "effective_position_qty": 545.0,
+        "estimated_completion_ts_ms": 0,
+        "execution_complete": true,
+        "live_order_qty": -0.0,
+        "live_order_usdt": -0.0,
+        "pending_qty": 0.0,
+        "pending_usdt": 0.0,
+        "position_allocated": true,
+        "pov": null,
+        "remaining_batches": 0,
+        "source_updated_at_ms": 1792681450041,
+        "strategy_name": "lgq_cta_symbol_mean",
+        "symbol": "1INCHUSDT",
+        "target_qty": 545.9111256687411,
+        "target_usdt": 49.83895621792771
+      },
+      {
+        "account_position_qty": 49.0,
+        "account_position_usdt": 49.25725000000001,
+        "active_batches": 0,
+        "algorithm": "grid",
+        "completion_reason": "target_tolerance",
+        "current_qty": 49.0,
+        "current_usdt": 49.25725000000001,
+        "delta_qty": 0.5147553971083383,
+        "delta_usdt": 0.5174578629431572,
+        "effective_position_qty": 49.0,
+        "estimated_completion_ts_ms": 0,
+        "execution_complete": true,
+        "live_order_qty": -0.0,
+        "live_order_usdt": -0.0,
+        "pending_qty": 0.0,
+        "pending_usdt": 0.0,
+        "position_allocated": true,
+        "pov": null,
+        "remaining_batches": 0,
+        "source_updated_at_ms": 1792681450041,
+        "strategy_name": "lgq_cta_symbol_mean",
+        "symbol": "AXSUSDT",
+        "target_qty": 49.51475539710834,
+        "target_usdt": 49.77470786294317
+      },
+      {
+        "account_position_qty": -709.7,
+        "account_position_usdt": -49.8457795,
+        "active_batches": 0,
+        "algorithm": "grid",
+        "completion_reason": "target_tolerance",
+        "current_qty": -709.7,
+        "current_usdt": -49.8457795,
+        "delta_qty": -0.023207948899880648,
+        "delta_usdt": -0.001630010290983117,
+        "effective_position_qty": -709.7,
+        "estimated_completion_ts_ms": 0,
+        "execution_complete": true,
+        "live_order_qty": -0.0,
+        "live_order_usdt": -0.0,
+        "pending_qty": 0.0,
+        "pending_usdt": 0.0,
+        "position_allocated": true,
+        "pov": null,
+        "remaining_batches": 0,
+        "source_updated_at_ms": 1792681450041,
+        "strategy_name": "lgq_cta_symbol_mean",
+        "symbol": "KAVAUSDT",
+        "target_qty": -709.7232079488999,
+        "target_usdt": -49.84740951029098
+      },
+      {
+        "account_position_qty": 12224.0,
+        "account_position_usdt": 49.84336,
+        "active_batches": 0,
+        "algorithm": "grid",
+        "completion_reason": "target_tolerance",
+        "current_qty": 12224.0,
+        "current_usdt": 49.84336,
+        "delta_qty": 0.938875305624606,
+        "delta_usdt": 0.0038282640586843305,
+        "effective_position_qty": 12224.0,
+        "estimated_completion_ts_ms": 0,
+        "execution_complete": true,
+        "live_order_qty": -0.0,
+        "live_order_usdt": -0.0,
+        "pending_qty": 0.0,
+        "pending_usdt": 0.0,
+        "position_allocated": true,
+        "pov": null,
+        "remaining_batches": 0,
+        "source_updated_at_ms": 1792681450041,
+        "strategy_name": "lgq_cta_symbol_mean",
+        "symbol": "SKLUSDT",
+        "target_qty": 12224.938875305625,
+        "target_usdt": 49.84718826405868
+      },
+      {
+        "account_position_qty": -463.8,
+        "account_position_usdt": -49.60341,
+        "active_batches": 0,
+        "algorithm": "grid",
+        "completion_reason": "target_tolerance",
+        "current_qty": -463.8,
+        "current_usdt": -49.60341,
+        "delta_qty": -0.021892393320911196,
+        "delta_usdt": -0.0023413914656714523,
+        "effective_position_qty": -463.8,
+        "estimated_completion_ts_ms": 0,
+        "execution_complete": true,
+        "live_order_qty": -0.0,
+        "live_order_usdt": -0.0,
+        "pending_qty": 0.0,
+        "pending_usdt": 0.0,
+        "position_allocated": true,
+        "pov": null,
+        "remaining_batches": 0,
+        "source_updated_at_ms": 1792681450041,
+        "strategy_name": "lgq_cta_symbol_mean",
+        "symbol": "ZRXUSDT",
+        "target_qty": -463.8218923933209,
+        "target_usdt": -49.60575139146567
+      }
+    ],
+    "ts_ms": 1792681577627
+  },
+  "positions": {
+    "SKLUSDT": 12224.0,
+    "KAVAUSDT": -709.7,
+    "AXSUSDT": 49.0,
+    "ZRXUSDT": -463.8,
+    "1INCHUSDT": 545.0
+  },
+  "open_orders": [],
+  "fills": [
+    {
+      "symbol": "1INCHUSDT",
+      "id": 396749410,
+      "orderId": 9921326201,
+      "side": "BUY",
+      "price": "0.0914200",
+      "qty": "143",
+      "quoteQty": "13.0730600",
+      "commission": "-0.00065365",
+      "commissionAsset": "USDT",
+      "time": 1792681223339,
+      "maker": true
+    },
+    {
+      "symbol": "1INCHUSDT",
+      "id": 396749451,
+      "orderId": 9921326587,
+      "side": "BUY",
+      "price": "0.0914500",
+      "qty": "402",
+      "quoteQty": "36.7629000",
+      "commission": "-0.00183814",
+      "commissionAsset": "USDT",
+      "time": 1792681251689,
+      "maker": true
+    },
+    {
+      "symbol": "AXSUSDT",
+      "id": 708085471,
+      "orderId": 15319396118,
+      "side": "BUY",
+      "price": "1.00620",
+      "qty": "49",
+      "quoteQty": "49.30380",
+      "commission": "-0.00246519",
+      "commissionAsset": "USDT",
+      "time": 1792681222109,
+      "maker": true
+    },
+    {
+      "symbol": "KAVAUSDT",
+      "id": 411506322,
+      "orderId": 11724769501,
+      "side": "SELL",
+      "price": "0.070460",
+      "qty": "504.7",
+      "quoteQty": "35.5611620",
+      "commission": "-0.00177805",
+      "commissionAsset": "USDT",
+      "time": 1792681207853,
+      "maker": true
+    },
+    {
+      "symbol": "KAVAUSDT",
+      "id": 411506323,
+      "orderId": 11724769501,
+      "side": "SELL",
+      "price": "0.070460",
+      "qty": "205",
+      "quoteQty": "14.4443000",
+      "commission": "-0.00072221",
+      "commissionAsset": "USDT",
+      "time": 1792681208327,
+      "maker": true
+    },
+    {
+      "symbol": "SKLUSDT",
+      "id": 350565967,
+      "orderId": 6567843816,
+      "side": "BUY",
+      "price": "0.0040880",
+      "qty": "2509",
+      "quoteQty": "10.2567920",
+      "commission": "-0.00051283",
+      "commissionAsset": "USDT",
+      "time": 1792681218177,
+      "maker": true
+    },
+    {
+      "symbol": "SKLUSDT",
+      "id": 350565971,
+      "orderId": 6567843829,
+      "side": "BUY",
+      "price": "0.0040880",
+      "qty": "9715",
+      "quoteQty": "39.7149200",
+      "commission": "-0.00198574",
+      "commissionAsset": "USDT",
+      "time": 1792681221108,
+      "maker": true
+    },
+    {
+      "symbol": "ZRXUSDT",
+      "id": 330814694,
+      "orderId": 10010748444,
+      "side": "SELL",
+      "price": "0.1071",
+      "qty": "463.8",
+      "quoteQty": "49.67298",
+      "commission": "-0.00248364",
+      "commissionAsset": "USDT",
+      "time": 1792681231982,
+      "maker": true
+    }
+  ],
+  "wallet_usdt": "20000.01243945",
+  "available_usd": "19927.40002341",
+  "signal": {
+    "enabled": true,
+    "max_pos_u": 50.0,
+    "follower_source_id": "binance_exec_trade08",
+    "manager_publications": [
+      {
+        "error": null,
+        "last_success_ts_us": 1792681450042350,
+        "manager_url": "http://127.0.0.1:4191/manager/api",
+        "pending_strategies": []
+      },
+      {
+        "error": null,
+        "last_success_ts_us": 1792681450210450,
+        "manager_url": "http://47.131.162.78:4191/manager/api",
+        "pending_strategies": []
+      }
+    ],
+    "updated_ts_us": 1792681577808096
+  },
+  "pending_symbols": [
+    "RLCUSDT"
+  ],
+  "processes": [
+    {
+      "pid": 157817,
+      "comm": "account_monitor",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 315020,
+      "comm": "python3",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 342673,
+      "comm": "trade_engine",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 343474,
+      "comm": "exec-pre-trade",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3919545,
+      "comm": "persist_manager",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "pid": 3919789,
+      "comm": "viz_server",
+      "cpus": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ],
+  "signal_processes": [
+    {
+      "pid": 160373,
+      "comm": "cta_perp_factor"
+    },
+    {
+      "pid": 168550,
+      "comm": "python3"
+    },
+    {
+      "pid": 168607,
+      "comm": "python3"
+    },
+    {
+      "pid": 351338,
+      "comm": "cta_perp_signal"
+    }
+  ],
+  "gateway": {
+    "/exec_trade08/": 200,
+    "/exec_trade08/config/": 200,
+    "/cta/binance-cta-perp-rx02/": 200
+  },
+  "protected_process_changes": {},
+  "source_ip": "172.31.35.228"
+}

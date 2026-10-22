@@ -44,6 +44,8 @@ fn requires_amount_thresholds(factor: &str) -> bool {
         factor,
         "TD_MT_013"
             | "TD_MT_016"
+            | "TD_MT_019"
+            | "TD_MT_021"
             | "TD_MT_022"
             | "TD_PR_008"
             | "TD_PR_011"
@@ -54,6 +56,7 @@ fn requires_amount_thresholds(factor: &str) -> bool {
             | "TD_TI_024"
             | "TD_TI_026"
             | "TD_TI_027"
+            | "TD_TI_038"
             | "TD_VI_010"
             | "TD_VI_020"
             | "TP_VPI_003"
@@ -76,6 +79,7 @@ fn requires_amount_thresholds(factor: &str) -> bool {
             | "baseline_148"
             | "baseline_163"
             | "baseline_164"
+            | "baseline_169"
             | "baseline_195"
             | "baseline_198"
             | "buy_avg_price"
@@ -95,6 +99,8 @@ fn requires_amount_thresholds(factor: &str) -> bool {
             | "factor_trades_025"
             | "factor_trades_034"
             | "factor_trades_035"
+            | "factor_trades_045"
+            | "factor_trades_049"
             | "factor_trades_050"
     )
 }
@@ -1319,7 +1325,7 @@ mod tests {
             .into_iter()
             .filter(|f| !requires_amount_thresholds(f))
             .collect();
-        assert_eq!(names.len(), 54);
+        assert_eq!(names.len(), 15);
         assert!(requires_amount_thresholds("baseline_046"));
         assert!(requires_amount_thresholds("net_buy_small"));
         assert!(requires_amount_thresholds("unreviewed"));
@@ -1348,6 +1354,62 @@ mod tests {
         }
         for (name, seen) in names.iter().zip(seen) {
             assert!(seen, "{name} never exercised after warm-up");
+        }
+    }
+
+    #[test]
+    fn configured_factors_warm_within_two_days_without_size_metadata() {
+        let config =
+            CtaSpreadFactorPubConfig::load("config/cta_spread_factor_model_1m_pub.toml").unwrap();
+        let names = config.universe.factors;
+        let plan = SymbolFactorPlan::from_factor_names("rx01 warmup", names.clone()).unwrap();
+        let mut classified = SymbolFactorState::new(&config.normalize, names.len());
+        let mut missing = SymbolFactorState::new(&config.normalize, names.len());
+        let mut first_raw = vec![None; names.len()];
+        let mut first_score = vec![None; names.len()];
+        let mut first_ready = vec![None; names.len()];
+        for minute in 0..2880 {
+            let a = classified
+                .evaluate(feature(minute, false), &plan, true, true)
+                .unwrap()
+                .unwrap();
+            let b = missing
+                .evaluate(feature(minute, true), &plan, true, false)
+                .unwrap()
+                .unwrap();
+            let raw = classified.evaluator.factor_values(&plan);
+            for (index, (a, b)) in a.iter().zip(&b).enumerate() {
+                assert_eq!(a.ready, b.ready, "{}", names[index]);
+                assert_eq!(a.quantile, b.quantile, "{}", names[index]);
+                assert!(
+                    a.score == b.score || a.score.is_nan() && b.score.is_nan(),
+                    "{}: {} != {}",
+                    names[index],
+                    a.score,
+                    b.score
+                );
+                if raw[index].is_finite() {
+                    first_raw[index].get_or_insert(minute + 1);
+                }
+                if b.score.is_finite() {
+                    first_score[index].get_or_insert(minute + 1);
+                }
+                if b.ready {
+                    first_ready[index].get_or_insert(minute + 1);
+                }
+            }
+        }
+        for (index, name) in names.iter().enumerate() {
+            assert!(
+                first_ready[index].is_some(),
+                "{name} needs more than two days"
+            );
+            println!(
+                "{}",
+                serde_json::json!({"factor":name,"first_raw_bar":first_raw[index],
+                    "first_score_bar":first_score[index],"first_ready_bar":first_ready[index],
+                    "size_independent":true})
+            );
         }
     }
 
@@ -1403,16 +1465,17 @@ mod tests {
         ))
         .unwrap();
         config.universe.validate().unwrap();
-        assert_eq!(config.universe.symbols.len(), 48);
-        assert_eq!(config.universe.factors.len(), 56);
+        assert_eq!(config.universe.symbols.len(), 18);
+        assert_eq!(config.universe.factors.len(), 15);
         assert!(config
             .universe
             .factors
-            .contains(&"factor_trades_034".to_string()));
+            .contains(&"factor_trades_049".to_string()));
         assert!(config
             .universe
             .factors
-            .contains(&"net_buy_small".to_string()));
+            .iter()
+            .all(|name| !requires_amount_thresholds(name)));
     }
 
     #[test]

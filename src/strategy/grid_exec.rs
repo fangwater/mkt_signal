@@ -140,9 +140,15 @@ pub fn validate_grid_account(
                 | TradingVenue::OkexFutures
         ),
         ExecBackend::Native => match venue {
-            TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::BinanceCoinFutures => binance_mode == Some(BinanceAccountMode::Unified),
+            // USD-M uses the existing STANDARD order, cancel and account paths.
+            // Enabling Grid does not expand this Exec into cash or COIN-M.
+            TradingVenue::BinanceFutures => matches!(
+                binance_mode,
+                Some(BinanceAccountMode::Standard | BinanceAccountMode::Unified)
+            ),
+            TradingVenue::BinanceMargin | TradingVenue::BinanceCoinFutures => {
+                binance_mode == Some(BinanceAccountMode::Unified)
+            }
             // Exec startup already verifies these native unified account modes.
             TradingVenue::OkexFutures
             | TradingVenue::BybitFutures
@@ -153,7 +159,10 @@ pub fn validate_grid_account(
     if allowed {
         Ok(())
     } else {
-        Err("grid requires RapidX or a supported native unified account".into())
+        Err(
+            "grid requires RapidX, native Binance USD-M, or a supported native unified account"
+                .into(),
+        )
     }
 }
 
@@ -162,19 +171,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grid_account_gate_rejects_standard_and_unsupported_markets() {
+    fn grid_account_gate_allows_standard_usdm_only() {
         for venue in [
             TradingVenue::BinanceFutures,
             TradingVenue::BinanceCoinFutures,
             TradingVenue::BinanceMargin,
         ] {
             assert!(validate_grid_account(venue, ExecBackend::Native, None).is_err());
-            assert!(validate_grid_account(
-                venue,
-                ExecBackend::Native,
-                Some(BinanceAccountMode::Standard)
-            )
-            .is_err());
+            assert_eq!(
+                validate_grid_account(
+                    venue,
+                    ExecBackend::Native,
+                    Some(BinanceAccountMode::Standard)
+                )
+                .is_ok(),
+                venue == TradingVenue::BinanceFutures
+            );
             assert!(validate_grid_account(
                 venue,
                 ExecBackend::Native,

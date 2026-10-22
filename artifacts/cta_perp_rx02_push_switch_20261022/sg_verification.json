@@ -1,0 +1,131 @@
+{
+  "verified_at": "2026-10-22T13:46:24.164834+00:00",
+  "targets_match_jp": true,
+  "active_symbols": 23,
+  "nonzero_targets": 5,
+  "legacy_targets_clear": true,
+  "legacy_virtual_bindings_removed": true,
+  "zero_legacy_account_bindings": 9,
+  "virtual": {
+    "virtual_id": "virtual01",
+    "name": "lgq_cta",
+    "bindings": [
+      {
+        "binding_name": "lgq_cta_symbol_mean",
+        "position_strategy_name": "lgq_cta_symbol_mean",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 1.0
+      }
+    ],
+    "updated_at_us": 1792676616759777,
+    "followers": [
+      {
+        "source_id": "bybit_exec_trade01",
+        "multiplier": 1.0,
+        "pending_publishes": []
+      }
+    ],
+    "created_by_user_id": 2,
+    "owner_username": "lgq",
+    "managers": [],
+    "can_configure": true,
+    "can_manage_grants": true
+  },
+  "follower": {
+    "source_id": "bybit_exec_trade01",
+    "estimated_fee_rate": 0.0004,
+    "maker_fee_rate": 0.0004,
+    "taker_fee_rate": 0.0004,
+    "theoretical_twap_fee_rate": 0.0004,
+    "quote_fee_rates": {},
+    "bindings": [
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_TD_TI_002",
+        "position_strategy_name": "lgq_cta_TD_TI_002",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_TD_TI_024",
+        "position_strategy_name": "lgq_cta_TD_TI_024",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_baseline_004",
+        "position_strategy_name": "lgq_cta_baseline_004",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_baseline_141",
+        "position_strategy_name": "lgq_cta_baseline_141",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_baseline_164",
+        "position_strategy_name": "lgq_cta_baseline_164",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_baseline_200",
+        "position_strategy_name": "lgq_cta_baseline_200",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_factor_036",
+        "position_strategy_name": "lgq_cta_factor_036",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_factor_051",
+        "position_strategy_name": "lgq_cta_factor_051",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_factor_170",
+        "position_strategy_name": "lgq_cta_factor_170",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792398142246102
+      },
+      {
+        "source_id": "bybit_exec_trade01",
+        "binding_name": "lgq_cta_symbol_mean",
+        "position_strategy_name": "lgq_cta_symbol_mean",
+        "order_strategy_name": "lgq_cta_ctaker",
+        "shares": 1.0,
+        "updated_at_us": 1792398142246102
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "virtual_id": "virtual01",
+      "multiplier": 1.0
+    },
+    "pending_publishes": []
+  },
+  "manager_updated_at_us": 1792676644793740
+}

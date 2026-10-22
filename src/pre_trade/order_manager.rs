@@ -2217,6 +2217,56 @@ mod tests {
     }
 
     #[test]
+    fn standard_usdm_grid_orders_and_cancels_use_native_ws() {
+        use trade_engine::trade_request::{BinanceCancelOrderParams, BinanceNewOrderParams};
+
+        crate::strategy::grid_exec::validate_grid_account(
+            TradingVenue::BinanceFutures,
+            ExecBackend::Native,
+            Some(BinanceAccountMode::Standard),
+        )
+        .unwrap();
+        for kind in [OrderType::Limit, OrderType::Market] {
+            for reduce_only in [false, true] {
+                let order = Order::new(
+                    TradingVenue::BinanceFutures,
+                    408,
+                    kind,
+                    "BTCUSDT".into(),
+                    Side::Sell,
+                    0.001,
+                    if kind.is_limit() { 64_000.0 } else { 0.0 },
+                    reduce_only,
+                    1.0,
+                    Some(BinanceAccountMode::Standard),
+                    kind.is_limit(),
+                );
+                let bytes = order.get_order_request_bytes().unwrap();
+                let request = TradeRequestMsg::parse(&bytes).unwrap();
+                assert_eq!(request.req_type, TradeRequestType::BinanceWsNewUMOrder);
+                let params = BinanceNewOrderParams::from_bytes(&request.params).unwrap();
+                assert_eq!(params.symbol, "BTCUSDT");
+                assert_eq!(params.quantity_qv.decimal_string(), "0.001");
+                assert_eq!(params.order_type, kind);
+                assert_eq!(params.reduce_only, reduce_only);
+                let prepared = order.get_order_request_prepared().unwrap();
+                assert_eq!(prepared.req_type(), TradeRequestType::BinanceWsNewUMOrder);
+                let prepared_params =
+                    BinanceNewOrderParams::from_bytes(prepared.params_slice()).unwrap();
+                assert_eq!(prepared_params.quantity_qv, params.quantity_qv);
+                assert_eq!(prepared_params.price_qv, params.price_qv);
+                assert_eq!(prepared_params.reduce_only, reduce_only);
+                let cancel_bytes = order.get_order_cancel_bytes().unwrap();
+                let cancel = TradeRequestMsg::parse(&cancel_bytes).unwrap();
+                assert_eq!(cancel.req_type, TradeRequestType::BinanceWsCancelUMOrder);
+                let params = BinanceCancelOrderParams::from_bytes(&cancel.params).unwrap();
+                assert_eq!(params.symbol, "BTCUSDT");
+                assert_eq!(params.orig_client_order_id, 408);
+            }
+        }
+    }
+
+    #[test]
     fn binance_coin_order_selects_dapi_or_papi_cm_by_account_mode() {
         for (mode, expected_type) in [
             (

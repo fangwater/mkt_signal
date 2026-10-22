@@ -1,0 +1,11 @@
+{
+  "symbols": [
+    "ICXUSDT",
+    "STORJUSDT"
+  ],
+  "reason": "Absent from current trade06 RapidX Binance cash and futures market-rule snapshots; user confirmed margin not tradable.",
+  "removed_combinations": {
+    "ICXUSDT": 11,
+    "STORJUSDT": 5
+  }
+}

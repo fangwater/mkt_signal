@@ -1,6 +1,44 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-22 09:51 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-22 15:06 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-22 15:00–15:06 UTC，`binance_exec_trade08` 已作为RX02的JP Grid执行账户
+运行，STANDARD USD-M多资产模式、单向持仓，跟随virtual02倍率1。
+交易源IP沿用`172.31.35.228`，`local_ips`仍为两项`.228`；没有ENI/EIP或路由修改。
+现有Viz/Config监听`127.0.0.1:10048/18168`，入口继续为
+`http://13.115.227.29:4191/exec_trade08/`和`/exec_trade08/config/`。
+Manager、Exec08 executor/Config已更新Grid兼容支持，RX02页面关联新账户。
+首批8笔成交均Maker、5仓位完成，旧trade05继续停用。验收见
+`artifacts/rx02_exec08_grid_20261022/verification.json`；以下为各时点历史记录。
+
+2026-10-22 13:57–13:59 UTC，按用户明确要求以 taker 清理旧 RX02：
+JP `binance_exec_trade05` 的24个非零永续仓位通过 RapidX MARKET / reduceOnly
+全部成交归零（含FIL/XRP/LINK小额尾仓）；普通挂单、条件单及未决平仓单均0。
+旧交易进程和Manager source继续停止/禁用，未启动旧策略。SG只读Exec快照确认
+旧仓位归零，现有非零仓位均属于新版 `lgq_cta_symbol_mean`，未手动干预新版持仓。
+同次将新账户 `lgq_ltp_81857` / trade08 的20000 USDT从全仓杠杆钱包直接划至
+USD-M合约钱包（`MARGIN_UMFUTURE`）。单次POST回执tranId `423596580418`，
+划转历史CONFIRMED；13:59复核合约wallet/equity/available均20000 USDT，
+Margin及Spot均0、借款/锁定均0。trade08仍仅观察进程，无策略绑定、未启动交易。
+无CPU、local_ips、ENI/EIP、路由或监听变更。清仓和划转证据分别在
+`artifacts/rx02_old_positions_cleanup_20261022/`、`artifacts/lgq_ltp_wallet_transfer_20261022/`。
+
+
+2026-10-22 13:43:58 UTC，RX02 Perp 新版恢复JP、SG双Manager仓位推送
+（23币/22因子/69组合，68/69就绪，RLC继续预热并保持空目标）。默认出口`.228`、
+loopback19186/10196与已有4191入口保留。两边旧虚拟绑定移除，旧目标清空；JP无
+跟随，SG保留Bybit倍率1。旧Special、Exec05继续停机，trade05残留账户绑定已清理，
+其旧真实仓位未操作。13:23 UTC，`lgq_ltp_81857` / trade08 替换私有 Key，并按新 Key
+实际可访问接口改用 STANDARD 读取；账户监控及 Config 重启，FAPI/Spot 鉴权、
+账户快照与 UM WS 轮询正常。监控连接仍绑定 `.228`，local_ips、ENI、EIP、路由
+及网关监听均保持。trade08 未提交资金划转或交易，仍无 Manager 策略绑定。
+证据：`artifacts/lgq_ltp_key_rotation_20261022/verification.json`。
+
+2026-10-22 10:18 UTC，RX01 因子替换已上线（18币/15因子/153组合；ICX、STORJ排除），
+因子publisher PID3973994仍固定CPU17，signal、Exec06及Manager均正常。现有
+`172.31.35.228` / Kafka默认出口保留，无local_ips、ENI、EIP、路由或监听变更。
+153组合全部就绪、Manager目标核验一致；单组合10 USDT及现场交易阈值保持。
+证据：`artifacts/cta_spread_rx01_factor_update_20261022/verification.json`。
 
 2026-10-22 09:49 UTC，trade08 经原 ens41 / `.228` 绑定调用 PAPI，成功将 USD-M
 持仓模式改为单向并回读确认；无 source IP、进程或监听变更。账户仍为 PM/UNIFIED，
@@ -297,7 +335,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01 Spread 接 Exec `trade06`，RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]`；新 `trade08` 原生PM监控。RX02 / `trade05` 已停机归档 |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01 Spread 接 Exec `trade06`，RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]`；新 `trade08` 原生STANDARD USD-M Grid执行RX02。RX02新版双Manager推送；`trade05` 已停机归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
@@ -361,9 +399,9 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
-binance-cta-spread-rx01      172.31.35.228                  配置服务、因子及signal运行，Kafka已追实时，发布关闭，Exec06停机；Kafka 默认出口
+binance-cta-spread-rx01      172.31.35.228                  配置服务、因子及signal运行，18币/15因子/153组合就绪，发布开启，Exec06在线；Kafka 默认出口
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
-binance-cta-perp-rx02        默认出口 / 172.31.35.228       已停止并归档，不迁移策略
+binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       独立5min观察信号，loopback10198/19188，未绑定Manager/Exec
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
@@ -387,7 +425,7 @@ binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，在线，follow virtual03/cta_spread_rx01，ctaker；默认4倍（BEL/ZIL上限3倍）
 binance_exec_trade07         172.31.35.228                  RX03 RapidX，永续在线，follow virtual04/cta_perp_rx03，ctaker
-binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生PM USD-M，仅监控/持久化/页面，无策略绑定，交易停止
+binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生STANDARD USD-M多资产/单向，在线Grid，follow virtual02/RX02，倍率1
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。

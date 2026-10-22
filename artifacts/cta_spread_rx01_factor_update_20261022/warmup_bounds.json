@@ -1,0 +1,140 @@
+{
+  "method": "Actual 1-minute SymbolFactorState with 2880 synthetic complete bars; missing all size buckets and size metadata produces identical scores, percentiles and readiness. Counts are ideal-history sample bounds, not completed Kafka replay.",
+  "factors": [
+    {
+      "factor": "TD_MT_019",
+      "first_raw_bar": 30,
+      "first_ready_bar": 2468,
+      "first_score_bar": 1029,
+      "size_independent": true,
+      "minimum_history_hours": 41.13333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_MT_021",
+      "first_raw_bar": 20,
+      "first_ready_bar": 2458,
+      "first_score_bar": 1019,
+      "size_independent": true,
+      "minimum_history_hours": 40.96666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_PR_008",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_score_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_PT_003",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_score_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_027",
+      "first_raw_bar": 14,
+      "first_ready_bar": 2452,
+      "first_score_bar": 1013,
+      "size_independent": true,
+      "minimum_history_hours": 40.86666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "TD_TI_038",
+      "first_raw_bar": 15,
+      "first_ready_bar": 2453,
+      "first_score_bar": 1014,
+      "size_independent": true,
+      "minimum_history_hours": 40.88333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_005",
+      "first_raw_bar": 61,
+      "first_ready_bar": 2499,
+      "first_score_bar": 1060,
+      "size_independent": true,
+      "minimum_history_hours": 41.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_028",
+      "first_raw_bar": 31,
+      "first_ready_bar": 2469,
+      "first_score_bar": 1030,
+      "size_independent": true,
+      "minimum_history_hours": 41.15,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_105",
+      "first_raw_bar": 15,
+      "first_ready_bar": 2453,
+      "first_score_bar": 1014,
+      "size_independent": true,
+      "minimum_history_hours": 40.88333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_140",
+      "first_raw_bar": 60,
+      "first_ready_bar": 2498,
+      "first_score_bar": 1059,
+      "size_independent": true,
+      "minimum_history_hours": 41.63333333333333,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "baseline_169",
+      "first_raw_bar": 14,
+      "first_ready_bar": 2452,
+      "first_score_bar": 1013,
+      "size_independent": true,
+      "minimum_history_hours": 40.86666666666667,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "factor_trades_008",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_score_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "factor_trades_045",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_score_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "factor_trades_049",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_score_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    },
+    {
+      "factor": "factor_trades_050",
+      "first_raw_bar": 1,
+      "first_ready_bar": 2439,
+      "first_score_bar": 1000,
+      "size_independent": true,
+      "minimum_history_hours": 40.65,
+      "additional_minutes_after_48h": 0
+    }
+  ]
+}

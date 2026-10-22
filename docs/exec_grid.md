@@ -1,6 +1,6 @@
 # Exec Grid
 
-最后更新：2026-10-21 UTC
+最后更新：2026-10-22 UTC
 
 2026-10-21 08:14–08:15 UTC 修复 jp-meta RX01 仓位状态停更：现有
 `exec_pre_trade_state` 通道容量从 64 KiB 扩为 1 MiB，历史保留 2 条，订阅缓存
@@ -25,9 +25,14 @@ HTTP/WS 验证通过。现场清单及验收在 Manager 的
 和“CTaker”陈述仅描述各次历史部署时点。
 
 `algorithm = "grid"` 使用现有 BatchExec 生命周期，复用 MM 的 vol 网格偏移公式。
-仅允许 RapidX Binance/OKX 或已支持的原生统一账户（Binance PM、OKX、Bybit UTA、Bitget UTA）。
-Binance 普通账户及其他 backend/market 组合拒绝加载。Manager 发布、Exec Config 写入和
-Exec Redis 热加载均校验账户范围。原生统一账户保持该 Exec 配置的合约市场；本次不新增原生现货路由。
+允许 RapidX Binance/OKX、原生 Binance STANDARD USD-M，或已支持的原生统一账户
+（Binance PM、OKX、Bybit UTA、Bitget UTA）。2026-10-22 补齐 STANDARD USD-M 的
+Manager 发布、Exec Config 写入和 Exec Redis 热加载校验，复用现有原生 UM WebSocket
+挂单/撤单、账户快照及持仓路径。STANDARD 现货与 COIN-M 仍未开放 Grid，未配置或
+无效账户模式仍拒绝加载。原生 Exec 保持其配置的单一合约市场，不新增原生现货路由。
+原生STANDARD USD-M仍须通过已有的Multi-Assets Mode发布及启动检查；本次未移除
+该检查。Exec08经用户授权于14:55:55 UTC通过API开启多资产模式，15:00启动RX02
+Grid执行，15:06确认8笔实际成交均Maker、5个非零目标在容差内完成。
 RapidX 线性 Exec 沿用现有现货/合约路由：裸币种如 `BTC` 为现货，`BTCUSDT` 为永续。
 
 ## 参数与执行

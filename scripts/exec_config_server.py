@@ -556,9 +556,12 @@ def validate_grid_account_config(venue: str, config: Dict[str, Any]) -> None:
         return  # RapidX; exec_markets validates the backend/market pair.
     if venue in ("okex-futures", "bybit-futures", "bitget-futures"):
         return  # Native unified-account startup gates are enforced by Exec.
-    if venue in ("binance-futures", "binance-coin-futures") and os.environ.get("BINANCE_ACCOUNT_MODE", "").strip().upper() == "UNIFIED":
+    binance_mode = os.environ.get("BINANCE_ACCOUNT_MODE", "").strip().upper()
+    if venue == "binance-futures" and binance_mode in ("STANDARD", "UNIFIED"):
         return
-    raise ValueError("grid requires RapidX or a supported native unified account")
+    if venue == "binance-coin-futures" and binance_mode == "UNIFIED":
+        return
+    raise ValueError("grid requires RapidX, native Binance USD-M, or a supported native unified account")
 
 
 class ExecConfigStore:

@@ -1,0 +1,32 @@
+{
+  "env": "binance_exec_trade08",
+  "alias": "lgq_ltp_81857",
+  "source_ip": "172.31.35.228",
+  "type": "MARGIN_UMFUTURE",
+  "asset": "USDT",
+  "amount": "20000",
+  "execute": false,
+  "max_transferable": "20000",
+  "before": {
+    "at": "2026-10-22T13:57:44.485724+00:00",
+    "margin_usdt": {
+      "free": "20000",
+      "locked": "0",
+      "borrowed": "0",
+      "interest": "0",
+      "netAsset": "20000"
+    },
+    "spot_usdt": {
+      "asset": "USDT",
+      "free": "0.00000000",
+      "locked": "0.00000000"
+    },
+    "um": {
+      "totalWalletBalance": "0.00000000",
+      "totalUnrealizedProfit": "0.00000000",
+      "totalMarginBalance": "0.00000000",
+      "availableBalance": "0.00000000"
+    },
+    "um_nonzero_positions": 0
+  }
+}

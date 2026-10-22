@@ -1,6 +1,47 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-10-20（新增 Spread 5s vol 代码说明，未部署）
+最后更新：2026-10-22 15:06 UTC（RX02已接入Exec08 Grid实盘执行）
+
+15:00 UTC，JP RX02的virtual02由新账户 `binance_exec_trade08` / `lgq_ltp_81857`
+以倍率1跟随，唯一绑定`lgq_cta_symbol_mean`、执行模板`lgq_grid_prep`。
+23币、单币50 USDT及原信号阈值保持。账户为STANDARD USD-M多资产模式、单向持仓。
+15:06验收5个非零目标在容差内完成，8笔成交全部Maker。JP/SG仓位推送健康，
+RLC仍预热且目标clear。页面`follower_source_id`已更新为Exec08。
+旧trade05继续停用；以下各时点描述为历史状态。详情及证据见
+`docs/cta_perp_rx02_cutover.md`、`artifacts/rx02_exec08_grid_20261022/verification.json`。
+
+2026-10-22 13:43:58 UTC，RX02 已切换新版仓位推送，JP、SG 双 Manager 均接收：
+23币、22因子、69组合，`lgq_cta_symbol_mean`，保留 v1 算法、单币50 USDT和现场
+entry/exit/NQ参数。当前68/69组合、22/23币就绪；RLC/factor_114仍需积累样本，
+RLC目标为clear，未降低窗口或跳过未就绪因子。13:41快照还缺至少122个有效分钟；
+实际时间受后续数据连续性影响。
+JP virtual02 无执行跟随；SG virtual01 仍由 bybit_exec_trade01 以倍率1跟随。
+两边9个旧虚拟策略绑定移除，旧策略及移出币种目标clear。SG账户保留9条份额0的
+历史记录，唯一有效绑定为symbol_mean，待投递0。JP已停用trade05残留的10条
+账户绑定已备份后移除，修复其导致的发布502；该source继续禁用，旧真实仓位未操作。
+旧Perp运行状态归档在 `~/binance-cta-perp-rx02/run/push_switch_20261022/before/`；
+旧Special、Exec05继续停机，09:19完整归档保留。trade08无策略绑定，未启动交易。
+publisher PID160373固定CPU18，signal PID177222、Config PID168550、Dashboard
+PID168607使用housekeeping CPU；保留loopback19186/10196、已有4191入口和默认出口。
+本地arbmm release上传、SHA-256核验后原子安装；双Manager目标逐项匹配，发布无错误。
+证据：`artifacts/cta_perp_rx02_push_switch_20261022/verification.json`、`sg_verification.json`。
+
+
+2026-10-22 10:18 UTC，RX01 已切换用户新因子清单：18币、15因子、153组合；
+ICX、STORJ 因当前账户不可交易排除（原清单20币/169组合，减少16组合）。
+15个因子均不依赖大小单；补齐6个非大小单因子的免阈值名单，缺少成交大小阈值
+不再误阻塞。完整1分钟数据测试需2439–2499根（40小时39分–41小时39分），
+两天足够；现场保持3天回溯配置，Kafka追平后153/153组合因子、spread和NQ均就绪。
+publisher已本地release构建、SHA-256核验、原子安装并通过环境本地脚本交接，
+PID330224 → PID3973994，CPU17，进程名 `cta_spread_factor_rx01_20261022`。
+signal/config/dashboard进程未重启；全市场5秒Vol继续发布，核验合约524/525、
+现货362/363就绪。现场enabled=true、单组合10 USDT、entry/exit阈值均保留。
+Manager新增6个策略绑定，继承现场 `lgq_grid_spread`、shares=1、virtual03→Exec06
+倍率1；现有绑定和对冲库存保留。702个移除组合的内部方向状态已归零；当前所有策略目标
+与Manager核对一致，publication_error为空，待投递0。未改source IP、ENI或路由。
+19项Rust及22项Python定向检查通过。证据：
+`artifacts/cta_spread_rx01_factor_update_20261022/verification.json`；远端备份及回执：
+`~/binance-cta-spread-rx01/run/factor_update_20261022/`。
 
 2026-10-19 13:10 UTC，Exec06执行器补发完成：Chase新目标仅解除借币不足状态，
 普通拒单退避保持原行为。当前38个已激活永续中36个4倍，BEL/ZIL按上限3倍，
@@ -401,7 +442,7 @@ K 线由独立只读后台直连 Binance 公共 Spot Klines 补缺，缺失时�
 
 ## RX02 Perp 新清单与 NQ 短窗口
 
-当前 RX02 已在08:57 UTC正式启用，24组合通过virtual02/lgq_cta发布到
+2026-10-13 的 RX02 曾在08:57 UTC正式启用，24组合通过virtual02/lgq_cta发布到
 trade05，倍率1；09:14 UTC旧special因子发布器已退役。实际组合/投递核验见
 [RX02切换说明](cta_perp_rx02_cutover.md)。下方为预热和切换前的历史记录。
 

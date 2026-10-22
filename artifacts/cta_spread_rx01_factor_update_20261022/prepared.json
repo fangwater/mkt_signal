@@ -1,0 +1,33 @@
+{
+  "symbols": 18,
+  "factors": 15,
+  "combinations": 153,
+  "new_strategies": [
+    "binance_cta_spread_rx01_TD_MT_019",
+    "binance_cta_spread_rx01_TD_MT_021",
+    "binance_cta_spread_rx01_TD_TI_038",
+    "binance_cta_spread_rx01_baseline_169",
+    "binance_cta_spread_rx01_factor_trades_045",
+    "binance_cta_spread_rx01_factor_trades_049"
+  ],
+  "removed_combinations": 702,
+  "removed_directional": 56,
+  "execution_template": "lgq_grid_spread",
+  "config": {
+    "enabled": true,
+    "max_pos_u": 10.0,
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "spread_long_quantile": 0.3,
+      "spread_short_quantile": 0.7,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.3,
+      "factor_exit_quantile_short": 0.7
+    }
+  },
+  "execute": true
+}

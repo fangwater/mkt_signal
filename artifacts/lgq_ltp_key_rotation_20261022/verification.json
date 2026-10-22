@@ -1,0 +1,67 @@
+{
+  "verified_at": "2026-10-22T13:28:46.203211+00:00",
+  "env": "binance_exec_trade08",
+  "alias": "lgq_ltp_81857",
+  "credentials_match_active_monitor": true,
+  "runtime_account_mode": "STANDARD",
+  "api": {
+    "um_account": {
+      "http": 200,
+      "can_trade": true,
+      "nonzero_positions": 0
+    },
+    "um_orders": {
+      "http": 200,
+      "count": 0
+    },
+    "spot_account": {
+      "http": 200
+    }
+  },
+  "gateway": {
+    "/exec_trade08/": {
+      "ok": true,
+      "json_fields": [
+        "status",
+        "bytes"
+      ]
+    },
+    "/exec_trade08/config/": {
+      "ok": true,
+      "json_fields": [
+        "status",
+        "bytes"
+      ]
+    },
+    "/exec_trade08/snapshot": {
+      "ok": true,
+      "json_fields": [
+        "ts_ms",
+        "entries"
+      ]
+    }
+  },
+  "processes": [
+    {
+      "pid": 157817,
+      "comm": "account_monitor"
+    },
+    {
+      "pid": 162464,
+      "comm": "python3"
+    },
+    {
+      "pid": 3919545,
+      "comm": "persist_manager"
+    },
+    {
+      "pid": 3919789,
+      "comm": "viz_server"
+    }
+  ],
+  "trading_processes_running": false,
+  "manager_bindings": 0,
+  "pending_publishes": 0,
+  "monitor_standard_snapshot_completed": true,
+  "monitor_um_poller_connected": true
+}

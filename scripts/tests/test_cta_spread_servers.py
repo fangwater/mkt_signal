@@ -36,22 +36,34 @@ class SpreadConfigTests(unittest.TestCase):
         invalid['entry']['nq_change_enabled'] = True
         with self.assertRaises(ValueError): normalize_config(invalid)
 
-    def test_deployment_preserves_opposite_sleeves_and_full_universe(self):
+    def test_deployment_matches_configured_universe(self):
         from cta_spread_deployment import prepare_deployment
         source = json.loads((ROOT / 'config/cta_spread_deployment.json').read_text())
         prepared = prepare_deployment(source, self.config)
-        self.assertEqual(prepared['summary'], {'symbols':48, 'strategies':57, 'combinations':794})
-        self.assertEqual(len(prepared['universe']['factors']), 56)
+        self.assertEqual(prepared['summary'], {'symbols':18, 'strategies':15, 'combinations':153})
+        self.assertEqual(len(prepared['universe']['factors']), 15)
         row = prepared['symbol_factors']['AXSUSDT']
-        self.assertEqual(row['factor_169_positive'], 1)
-        self.assertEqual(row['factor_169_negative'], -1)
-        self.assertIn('factor_trades_034', row)
+        self.assertEqual(row['TD_PR_008'], 1)
+        self.assertEqual(row['TD_MT_019'], -1)
+        self.assertEqual(prepared['symbol_factors']['KAVAUSDT']['factor_trades_049'], -1)
         self.assertEqual(prepared['symbol_factors'], json.loads((ROOT/'config/cta_spread_symbol_factors.json').read_text()))
         self.assertFalse(prepared['config']['enabled'])
         self.assertEqual(prepared['config']['entry']['nq_long_quantile'], .5)
         source['n_sleeves'] -= 1
         with self.assertRaises(ValueError): prepare_deployment(source, self.config)
         with self.assertRaises(ValueError): normalize_table({'AXSUSDT':{'factor_169_negative':1}})
+
+    def test_deployment_preserves_opposite_sleeves(self):
+        from cta_spread_deployment import prepare_deployment
+        source = json.loads((ROOT / 'config/cta_spread_deployment.json').read_text())
+        source.update(n_factors=2, n_sleeves=2, factors=[
+            {'factor':'factor_169', 'sign':sign, 'n_symbols':1, 'symbols':['AXSUSDT']}
+            for sign in [-1, 1]
+        ])
+        prepared = prepare_deployment(source, self.config)
+        self.assertEqual(prepared['symbol_factors']['AXSUSDT'], {
+            'factor_169_positive':1, 'factor_169_negative':-1})
+        self.assertEqual(prepared['universe']['factors'], ['factor_169'])
 
     def test_config_revision_rejects_lost_updates(self):
         with tempfile.TemporaryDirectory() as root:
@@ -98,6 +110,9 @@ class SignalLifecycleTests(unittest.TestCase):
                 scripts = env/'scripts'; scripts.mkdir(parents=True)
                 wrapper = scripts/f'stop_cta_{family}.sh'
                 wrapper.write_bytes((ROOT/'scripts'/wrapper.name).read_bytes())
+                if family == 'perp':
+                    (env/'config').mkdir()
+                    (env/'config/cta_perp.json').write_text(json.dumps({'bar_interval':'1m'}))
                 calls = env/'calls'
                 for role in ['signal','factor_model_1m_pub','dashboard','config_server']:
                     child=scripts/f'stop_cta_{family}_{role}.sh'
