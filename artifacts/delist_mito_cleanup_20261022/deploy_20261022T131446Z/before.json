@@ -1,0 +1,457 @@
+{
+  "checked_ms": 1792674932007,
+  "old_sha256": "cdea480dfda4cdc20378f8eab77026e508c19a31e31fa1b39e12def8b4c2920a",
+  "files": {
+    "config/delist_risk_server.env": "b8bb3482ad4087aad179799ccc43ba62b729d6383274588b240d6d4a29f82839",
+    "config/delist_access.json": "d6acea98928df04171bd6b2308ad5ee689646824089932467244d3d601062f83",
+    "scripts/start_delist_risk_server.sh": "3346b5be710ec33044c4264547b029a380ada4d4a74d105015943b1e055ec9eb",
+    "scripts/stop_delist_risk_server.sh": "e80e4934c99e72b4528acd4e384f31a68de3931dd6f174791a2645baf83a7892",
+    "web/delist_risk/index.html": "ce80a0b79ae602d26d94f3c738721f17df234bc44d263022317c03318a904b7a"
+  },
+  "processes": [
+    {
+      "pid": 43876,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 43996,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 44293,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 44350,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 44461,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 44581,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 44889,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 44946,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 45056,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 45178,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 45486,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 45543,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 47756,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 47920,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 48089,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 60648,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 60809,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 60856,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61143,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61245,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61465,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61528,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61632,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61710,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61805,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 61932,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 62192,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 62350,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 62407,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 62454,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 62577,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 62705,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 62997,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63195,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63265,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63312,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63432,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63556,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "persist_manager",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63801,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 63990,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64049,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64097,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64192,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64315,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 64572,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64734,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64795,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64843,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 64965,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 65088,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 65382,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 65577,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 65640,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 65688,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 99911,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 116154,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 120900,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 123262,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 129512,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 142609,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 142765,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 144946,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 147066,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149220,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149309,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149403,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149496,
+      "cwd": "/home/ubuntu/gate_fr_arb01",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149584,
+      "cwd": "/home/ubuntu/gate_fr_arb02",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149679,
+      "cwd": "/home/ubuntu/gate_fr_arb03",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149767,
+      "cwd": "/home/ubuntu/bitget_fr_arb01",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149857,
+      "cwd": "/home/ubuntu/bitget_fr_arb02",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 149949,
+      "cwd": "/home/ubuntu/bitget_fr_arb03",
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 1550402,
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "comm": "ssh",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 1550427,
+      "cwd": "/home/ubuntu/delist_risk_server",
+      "comm": "delist_risk_ser",
+      "cpus": "0-5,48-95"
+    }
+  ]
+}

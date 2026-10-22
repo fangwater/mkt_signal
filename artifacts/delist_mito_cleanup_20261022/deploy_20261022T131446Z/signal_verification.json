@@ -1,0 +1,18 @@
+{
+  "binance_fr_arb02": {
+    "last_reloads": [
+      "[2026-10-22T13:20:39Z INFO  trade_signal::symbol_list] 更新平仓列表 key='binance_fr_arb02:fr_dump_symbols:binance-margin_binance-futures': 0 个交易对",
+      "[2026-10-22T13:20:39Z INFO  trade_signal::symbol_list] 更新正套建仓列表 key='binance_fr_arb02:fr_fwd_trade_symbols:binance-margin_binance-futures': 67 个交易对",
+      "[2026-10-22T13:20:39Z INFO  trade_signal::symbol_list] 更新 UniMMR 平仓列表 key='binance_fr_arb02:fr_unimmr_close_symbols:binance-margin_binance-futures': 67 个交易对"
+    ],
+    "last_mito_emission_in_tail": "[2026-10-22T13:17:34Z INFO  trade_signal::arb_decision] ArbDecision(FundingArb): emitted 10/10 ArbClose signal(s) to 'trade_signal' open=MITOUSDT hedge=MITOUSDT side=Sell inner=0.01018000 outer=0.01021237 vol=0.00317996 vol_band_scale=[0.0000,1.0000] plan_vol=0.00317996 price_tick=0.00001000 qty_tick=0.10000000"
+  },
+  "binance_fr_arb03": {
+    "last_reloads": [
+      "[2026-10-22T13:20:42Z INFO  trade_signal::symbol_list] 更新平仓列表 key='binance_fr_arb03:fr_dump_symbols:binance-margin_binance-futures': 0 个交易对",
+      "[2026-10-22T13:20:42Z INFO  trade_signal::symbol_list] 更新正套建仓列表 key='binance_fr_arb03:fr_fwd_trade_symbols:binance-margin_binance-futures': 69 个交易对",
+      "[2026-10-22T13:20:42Z INFO  trade_signal::symbol_list] 更新 UniMMR 平仓列表 key='binance_fr_arb03:fr_unimmr_close_symbols:binance-margin_binance-futures': 70 个交易对"
+    ],
+    "last_mito_emission_in_tail": null
+  }
+}

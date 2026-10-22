@@ -12,6 +12,9 @@ use crate::common::delist_accounts::{
 };
 use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
 
+/// Both venue legs below this notional are dust for symbol removal and flattening.
+pub const POSITION_REMOVAL_THRESHOLD_USDT: f64 = 1.0;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PositionDumpCandidate {
     pub account_slug: String,

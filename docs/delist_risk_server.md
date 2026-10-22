@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-20 UTC
+最后更新：2026-10-22 UTC
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -98,6 +98,36 @@ place. Retain access gates and port rules together: removing only the port
 guard exposes the existing wildcard-bound FR backend listeners.
 
 ## Current JP deployment
+
+On 2026-10-22 13:15 UTC, published the final-window dust fix to
+`/home/ubuntu/delist_risk_server` on `jp-meta-elvpn`. The local release was
+built from synchronized `arbmm` at `4cf16d17` with the three delist source
+changes; 42 delist library tests, 6 service tests, and formatting passed.
+Release SHA-256:
+`5ef488a32e3a2f1a313c8f861779291a4e23c9f0c0592a83cbfa6cde44dbb44b`.
+The uploaded artifact was checksum-verified and atomically installed before
+restarting through the environment-local start script. All 72 observed FR
+process PIDs were unchanged; delist retained CPU mask `0-5,48-95`, its loopback
+listener, credentials, frontend and existing control settings.
+
+MITOUSDT was removed from arb02's dump/UniMMR lists and arb03's forward/UniMMR
+lists at the operator's request. The initial arb02 removal was undone by the
+old final-window scan because it treated 0.57199 MITO (about 0.006 USDT) as a
+remaining position. Both margin and futures legs below 1 USDT now share the
+existing removal dust threshold and do not become flatten candidates or get
+added back to dump by final-window handling. After publication, arb02's
+re-added dump entry was removed again. Direct Binance queries confirmed zero
+MITO/PTB futures positions and open orders in both accounts; the arb02 cash
+dust was retained, with no borrow or locked balance. PTBUSDT was absent from
+both accounts' lists. This cleanup submitted no orders. The previous binary
+and deployment evidence are under `run/dust_fix_20261022T131446Z/`; each
+account's `run/remove_delist_symbols_20261022T131620Z.json` records the latest
+account audit and Config API before/after state. Local evidence is under
+`artifacts/delist_mito_cleanup_20261022/`.
+Three complete scans after the final removal kept both accounts free of
+MITOUSDT/PTBUSDT in all five symbol lists, with zero flatten candidates and
+zero scan mutations. Persisted source statuses were all healthy and there
+were no failed LLM analyses. The account universes are now 67 and 70 symbols.
 
 On 2026-10-20 06:53 UTC, removed the retired account labelled `bybit cta`
 (`bybit-intra-arb02`, historically registered as `intra_exchange`) from delist
@@ -572,14 +602,22 @@ deadline is within the next 24 hours. The decision value is the larger absolute
 USDT notional of the margin and futures legs. The response includes the latest
 audit state for each account/symbol/deadline.
 
+Both legs strictly below 1 USDT are excluded from flatten candidates, using
+the same dust threshold as confirmed symbol removal. Final-window handling
+therefore does not re-add these residuals to dump or report a completed
+automatic flatten as unresolved solely because of dust. A position of exactly
+1 USDT on either leg remains a candidate; offsetting legs are checked
+individually rather than by their net exposure.
+
 The response also includes `position_statuses` for every dated upcoming/due FR
 delist risk found in a fresh account snapshot. `closed=true` requires the symbol
 to be present in that account's `fr_dump_symbols` and requires both
 `abs(open_usdt) < 100` and `abs(hedge_usdt) < 100`. The board keeps the delist
 declaration visible and marks such a row as `声明要下架，但已平仓完毕`.
 
-With `DELIST_AUTO_FLATTEN_POSITION_RISK=1`, positions at or below 1000 USDT are
-first moved to `dump` and removed from both open lists, then the service runs the
+With `DELIST_AUTO_FLATTEN_POSITION_RISK=1`, candidate positions from 1 through
+1000 USDT are first moved to `dump` and removed from both open lists, then the
+service runs the
 fixed account-local exchange script with `--symbols SYMBOL --mode clear
 --execute`. Positions above 1000 USDT are never run automatically: one
 `manual_required` audit is created and the existing local notification service

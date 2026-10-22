@@ -43,7 +43,7 @@ use mkt_signal::common::delist_accounts::{
 };
 use mkt_signal::common::delist_dump::{
     apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
-    snapshot_symbol_is_flat, PositionDumpCandidate,
+    snapshot_symbol_is_flat, PositionDumpCandidate, POSITION_REMOVAL_THRESHOLD_USDT,
 };
 use mkt_signal::common::delist_flatten::{
     audit_dedup_key, flatten_candidates, FlattenCandidate, FlattenExecutor, FlattenRunOutput,
@@ -84,7 +84,6 @@ use mkt_signal::pre_trade::notification_client::{
 };
 
 const POSITION_CLOSED_THRESHOLD_USDT: f64 = 100.0;
-const POSITION_REMOVAL_THRESHOLD_USDT: f64 = 1.0;
 /// Repeat the empty `fr_unimmr_close_symbols` alert while the list stays empty.
 const UNIMMR_EMPTY_REPEAT_SECS: u64 = 3_600;
 

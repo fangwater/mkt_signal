@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time;
 
 use crate::common::delist_accounts::{AccountSpec, RedisSite};
-use crate::common::delist_dump::PositionDumpCandidate;
+use crate::common::delist_dump::{PositionDumpCandidate, POSITION_REMOVAL_THRESHOLD_USDT};
 use crate::common::delist_risk::normalize_symbol;
 
 const OUTPUT_LIMIT: usize = 8_000;
@@ -168,7 +168,7 @@ pub fn flatten_candidates(
             continue;
         }
         let position_usdt = candidate.open_usdt.abs().max(candidate.hedge_usdt.abs());
-        if !position_usdt.is_finite() || position_usdt <= 0.0 {
+        if !position_usdt.is_finite() || position_usdt < POSITION_REMOVAL_THRESHOLD_USDT {
             continue;
         }
         out.push(FlattenCandidate {
@@ -280,6 +280,32 @@ mod tests {
         assert_eq!(candidates[0].disposition, "auto");
         assert_eq!(candidates[1].disposition, "manual");
         assert_eq!(candidates[2].disposition, "auto");
+    }
+
+    #[test]
+    fn excludes_dust_without_hiding_either_material_leg() {
+        let now = DateTime::parse_from_rfc3339("2026-10-22T10:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+        for (open, hedge, expected) in [
+            (0.0, 0.0, false),
+            (0.0057, 0.0, false),
+            (0.0, -0.0057, false),
+            (0.999, -0.999, false),
+            (1.0, 0.0, true),
+            (0.0, -1.0, true),
+            (5.0, -5.0, true),
+        ] {
+            let mut position = positioned(0.0, "2026-10-23T09:00:00Z");
+            position.open_usdt = open;
+            position.hedge_usdt = hedge;
+            let candidates = flatten_candidates(&[position], now, 86_400_000, 1_000.0);
+            assert_eq!(
+                !candidates.is_empty(),
+                expected,
+                "open={open} hedge={hedge}"
+            );
+        }
     }
 
     #[tokio::test]
