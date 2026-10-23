@@ -10,7 +10,6 @@
       - amount_thresholds
       - factor_plan
       - zscore
-      - amount_thresholds_1m
       - factor_plan_1m
       - zscore_1m
   - 配置按 venue 维度存取。
@@ -20,7 +19,6 @@ Redis key 约定：
   - Amount thresholds: <venue>:amount-thresholds
   - Factor plan: <venue>:factor-plan
   - Zscore config: <venue>:zscore
-  - 1min Amount thresholds: <venue>:amount-thresholds-1m
   - 1min Factor plan: <venue>:factor-plan-1m
   - 1min Zscore config: <venue>:zscore-1m
 
@@ -49,7 +47,6 @@ SUPPORTED_CONFIG_TYPES = [
     "amount_thresholds",
     "factor_plan",
     "zscore",
-    "amount_thresholds_1m",
     "factor_plan_1m",
     "zscore_1m",
 ]
@@ -171,12 +168,6 @@ def normalize_config_type(value: object) -> Optional[str]:
     raw = str(value or "").strip().lower().replace("-", "_")
     if raw in ("tlen", "tlen_threshold", "tlen_thresholds"):
         return "tlen"
-    if raw in (
-        "amount_1m",
-        "amount_threshold_1m",
-        "amount_thresholds_1m",
-    ):
-        return "amount_thresholds_1m"
     if raw in ("amount", "amount_threshold", "amount_thresholds"):
         return "amount_thresholds"
     if raw in (
@@ -207,13 +198,6 @@ def config_type_family(config_type: str) -> str:
     return normalized.removesuffix("_1m")
 
 
-def config_type_for_family(config_type: str, family: str) -> str:
-    normalized = normalize_config_type(config_type)
-    if normalized is None:
-        raise ValueError(f"unsupported config_type: {config_type}")
-    return f"{family}_1m" if normalized.endswith("_1m") else family
-
-
 def redis_key(venue: str, config_type: str) -> str:
     venue_norm = normalize_venue(venue)
     if venue_norm is None:
@@ -223,7 +207,6 @@ def redis_key(venue: str, config_type: str) -> str:
         "amount_thresholds": "amount-thresholds",
         "factor_plan": "factor-plan",
         "zscore": "zscore",
-        "amount_thresholds_1m": "amount-thresholds-1m",
         "factor_plan_1m": "factor-plan-1m",
         "zscore_1m": "zscore-1m",
     }
@@ -502,10 +485,7 @@ class TlenConfigStore:
             config_type,
         )
         if config_type_family(config_type) == "factor_plan":
-            amount_config_type = config_type_for_family(
-                config_type,
-                "amount_thresholds",
-            )
+            amount_config_type = "amount_thresholds"
             amount_thresholds = parse_thresholds_map(
                 decode_hash(
                     self._redis.hgetall(redis_key(venue, amount_config_type))
@@ -539,10 +519,7 @@ class TlenConfigStore:
         thresholds: Dict[str, str],
     ) -> Dict[str, object]:
         if config_type_family(config_type) == "factor_plan":
-            amount_config_type = config_type_for_family(
-                config_type,
-                "amount_thresholds",
-            )
+            amount_config_type = "amount_thresholds"
             parsed_factor_plans = parse_thresholds_map(
                 thresholds,
                 venue,
@@ -1143,14 +1120,11 @@ def _run_tests() -> None:
 
     assert normalize_config_type("factor-plan-1m") == "factor_plan_1m"
     assert normalize_config_type("z_score_1m") == "zscore_1m"
-    assert config_type_family("amount_thresholds_1m") == "amount_thresholds"
+    assert normalize_config_type("amount_thresholds_1m") is None
+    assert "amount_thresholds_1m" not in SUPPORTED_CONFIG_TYPES
     assert (
-        config_type_for_family("factor_plan_1m", "amount_thresholds")
-        == "amount_thresholds_1m"
-    )
-    assert (
-        redis_key("binance-futures", "amount_thresholds_1m")
-        == "binance-futures:amount-thresholds-1m"
+        redis_key("binance-futures", "amount_thresholds")
+        == "binance-futures:amount-thresholds"
     )
     assert (
         redis_key("binance-futures", "factor_plan_1m")
@@ -1180,7 +1154,7 @@ def _run_tests() -> None:
     }
     assert "binance-futures:zscore" in store._redis.hashes
     store._redis.hashes[
-        redis_key("binance-futures", "amount_thresholds_1m")
+        redis_key("binance-futures", "amount_thresholds")
     ] = {
         "BTCUSDT": json.dumps(
             _test_amount_threshold(),

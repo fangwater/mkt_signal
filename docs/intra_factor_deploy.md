@@ -55,8 +55,8 @@ rx01 dashboard 使用 `docs/intra_pre_trade_dashboard.html`，在风险和敞口
 - 因子/NQ publisher：`src/factor_pub/intra_factor_model_1m_pub/`，配置
   `config/intra_factor_model_1m_pub.toml`。`[universe].symbols` 明确限定计算币种，
   `factors` 按配置顺序创建独立 service、求值及滚动窗口。启动时校验因子
-  有求值实现、列表无重复、全部配置币种都有在线 `amount_thresholds_1m`、
-  完整 `factor_plan_1m` 与有效的成交分档 `amount_thresholds`；缺项拒绝启动。
+  有求值实现、列表无重复、全部配置币种都有完整 `factor_plan_1m` 与有效的
+  共享成交分档 `amount_thresholds`；缺项拒绝启动。金额阈值不按因子周期复制。
   运行中仍重载 TLen 的在线状态，但不会计算配置列表以外的币种。
   修改计算列表需同步 TLen 并重启 publisher；只修改交易规则不会创建因子输出。
 - 开仓：`crates/trade_signal/src/cta_config.rs`、`arb_decision.rs`；

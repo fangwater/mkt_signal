@@ -1,0 +1,23 @@
+{
+  "checked_at": "2026-10-23T04:20:52.051223+00:00",
+  "applied_at": "2026-10-23T04:18:23.956194+00:00",
+  "redis_exact_match": true,
+  "http_amount_exact_match": true,
+  "other_markets_unchanged": true,
+  "rx_tables_unchanged": true,
+  "changed_original_processes": [],
+  "trade_flow_reload": {
+    "binance-margin": {
+      "pid": 37598,
+      "latest_reload": []
+    },
+    "binance-futures": {
+      "pid": 37684,
+      "latest_reload": [
+        "[2026-10-23T04:19:44Z INFO  mkt_signal::factor_pub::trade_flow_feature_pub::app] trade_flow_feature symbols reloaded: venue=binance-futures online_symbols=43 retired_symbols=95"
+      ]
+    }
+  },
+  "cash_publisher_mode": "vol-only: depth_channel=none; does not load size thresholds",
+  "tests_passed": 6
+}

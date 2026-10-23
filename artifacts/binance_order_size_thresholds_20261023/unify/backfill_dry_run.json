@@ -1,0 +1,51 @@
+{
+  "execute": false,
+  "mode": "backfill",
+  "source_month": "2026-09",
+  "apply_month": "2026-10",
+  "csv_sha256": "9511e93965a98cf8723323cd3949171a9d9cd9fe8834b68eb1aa9e578074f047",
+  "changes": {
+    "binance-futures:amount-thresholds": {
+      "before": 43,
+      "after": 43,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "binance-futures:factor-plan": {
+      "before": 20,
+      "after": 20,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "binance-futures:factor-plan-1m": {
+      "before": 13,
+      "after": 13,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "binance-margin:amount-thresholds": {
+      "before": 43,
+      "after": 43,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "binance-margin:factor-plan": {
+      "before": 0,
+      "after": 0,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "binance-margin:factor-plan-1m": {
+      "before": 0,
+      "after": 0,
+      "added": [],
+      "removed": [],
+      "updated": []
+    }
+  }
+}

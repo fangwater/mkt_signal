@@ -1,6 +1,15 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-10-22 15:06 UTC（RX02已接入Exec08 Grid实盘执行）
+最后更新：2026-10-23 04:33 UTC（Binance大小单阈值跨周期统一；RX因子清单保持）
+
+2026-10-23，JP 共享 `amount_thresholds` 已换为 2026-09 Tardis
+逐笔计算的 P50/P90，供 2026-10 使用：合约和现货各43币。未覆盖的旧值已清理。
+04:32 UTC 已删除重复1min金额表及接口，所有周期共用同一市场的阈值。
+各周期公共因子计划保持独立，1min仍配置13币。
+当前RX01–04所需币种全部覆盖，独立因子表、交易参数及进程保持不变，未恢复
+大小单因子。CTA publisher 的金额缓存仍按启动时加载；恢复大小单因子时须
+使用新表重新回放。来源、备份、缺项清单及补数工具见
+[大小单阈值发布说明](crypto_order_size_thresholds.md)。以下为此前部署记录。
 
 15:00 UTC，JP RX02的virtual02由新账户 `binance_exec_trade08` / `lgq_ltp_81857`
 以倍率1跟随，唯一绑定`lgq_cta_symbol_mean`、执行模板`lgq_grid_prep`。
@@ -520,8 +529,8 @@ Manager 的绑定/虚拟账户配置份数，Exec 执行聚合后的实际目标
 
 `{env}:cta_symbol_factors` 的 Redis 键后缀保持一致，环境名隔离两套绑定。
 两套 publisher 分别以各自 `config/cta_{perp,spread}_factor_model_1m_pub.toml`
-的 universe 决定币种和因子，不读取共享 `factor_plan_1m` 或
-`amount_thresholds_1m` 清单。TLen 的通用 `amount_thresholds` 仅提供回放所需
+的 universe 决定币种和因子，不读取共享 `factor_plan_1m` 清单。
+TLen 的通用 `amount_thresholds` 仅提供回放所需
 的成交大小分类阈值，不扩大或借用另一套策略清单。Spread允许保留缺失阈值的币种，
 仅屏蔽依赖大小分类的因子（当前为 `baseline_046` / `net_buy_small`）；
 缺失的分类字段为NaN，未知因子默认也要求阈值，不伪造可交易值。

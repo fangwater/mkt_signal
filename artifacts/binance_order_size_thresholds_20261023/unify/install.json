@@ -1,0 +1,27 @@
+{
+  "cleanup": {
+    "at": "2026-10-23T04:32:18.173774+00:00",
+    "execute": true,
+    "retire": {
+      "binance-futures:amount-thresholds-1m": 13,
+      "binance-futures:amount-thresholds-1m:meta": 7,
+      "binance-margin:amount-thresholds-1m": 0,
+      "binance-margin:amount-thresholds-1m:meta": 0
+    },
+    "keep": {
+      "binance-futures:amount-thresholds": 43,
+      "binance-futures:amount-thresholds:meta": 7,
+      "binance-futures:factor-plan": 20,
+      "binance-futures:factor-plan-1m": 13,
+      "binance-margin:amount-thresholds": 43,
+      "binance-margin:amount-thresholds:meta": 7,
+      "binance-margin:factor-plan": 0,
+      "binance-margin:factor-plan-1m": 0
+    },
+    "verified": true
+  },
+  "installed_sha256": {
+    "tlen_config_server.py": "7fa05763d078d576ad0aa4e47d6c60ea9ad4850f7609180c9a0b4c45643b3e4d",
+    "publish_binance_order_size_thresholds.py": "3ab923b48df2d6a089eb6cd10955a28c826325b3dd07037487b16a6e43d09a99"
+  }
+}
