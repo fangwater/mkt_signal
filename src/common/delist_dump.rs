@@ -99,7 +99,10 @@ pub async fn position_dump_candidates(
         .iter()
         .filter(|spec| {
             spec.kind == "funding_rate"
-                && matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
+                && matches!(
+                    spec.exchange.as_str(),
+                    "binance" | "bitget" | "gate" | "bybit"
+                )
                 && matches!(spec.site, RedisSite::Jp | RedisSite::Sg)
         })
         .filter_map(|spec| {
@@ -549,6 +552,95 @@ mod tests {
         candidate.hedge_usdt = -100.0;
         assert!(!position_close_statuses(&[candidate.clone()], &dumps, 100.0)[0].closed);
         assert!(!position_close_statuses(&[candidate], &BTreeMap::new(), 100.0)[0].closed);
+    }
+
+    #[tokio::test]
+    async fn bybit_fr_uses_own_snapshot_and_rejects_stale_or_missing_exposure() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let app = Router::new().route("/fr/bybit_fr_arb01/snapshot", get(move || async move {
+            Json(serde_json::json!({"entries": [{"channel": "pre_trade_exposure",
+                "entry": {"ts_ms": now_ms, "rows": [{"asset": "HFT", "open_usdt": 75.0, "hedge_usdt": -80.0}]}}]}))
+        })).route("/fr/bybit_fr_stale/snapshot", get(move || async move {
+            Json(serde_json::json!({"entries": [{"channel": "pre_trade_exposure",
+                "entry": {"ts_ms": now_ms - 300_000, "rows": []}}]}))
+        })).route("/fr/bybit_fr_pending/snapshot", get(|| async {
+            Json(serde_json::json!({"entries": []}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let event = RiskEventView {
+            exchange: "bybit".into(),
+            venue: "bybit-margin".into(),
+            action: "delist".into(),
+            utc: "2026-10-28T08:00:00Z".into(),
+            status: "upcoming".into(),
+            assets: vec!["HFT".into()],
+            symbols: vec!["HFTUSDT".into()],
+            note: String::new(),
+            source: "test".into(),
+            title: "test".into(),
+            url: String::new(),
+            announcement_id: "test".into(),
+            listing: "listed".into(),
+        };
+        let risk = RiskQueryResponse {
+            ok: true,
+            as_of_ms: now_ms,
+            abnormal: true,
+            count: 1,
+            exchanges: BTreeMap::from([(
+                "bybit".into(),
+                ExchangeRisk {
+                    exchange: "bybit".into(),
+                    abnormal: true,
+                    count: 1,
+                    items: vec![event],
+                },
+            )]),
+        };
+        let accounts =
+            ["bybit_fr_arb01", "bybit_fr_stale", "bybit_fr_pending"].map(|slug| AccountSpec {
+                slug: slug.into(),
+                alias: slug.into(),
+                exchange: "bybit".into(),
+                kind: "funding_rate".into(),
+                host: "sg".into(),
+                site: RedisSite::Sg,
+                config_url: String::new(),
+            });
+        let (candidates, errors) =
+            position_dump_candidates(&Client::new(), &base, &accounts, &risk, 50.0, 120_000).await;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].account_slug, "bybit_fr_arb01");
+        assert_eq!(candidates[0].redis_site, "sg");
+        assert_eq!(candidates[0].impacted_position_usdt, 75.0);
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().any(|e| e.contains("stale position snapshot")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("pre_trade_exposure missing")));
+        assert!(!snapshot_symbol_is_flat(
+            &Client::new(),
+            &base,
+            "bybit_fr_arb01",
+            "HFTUSDT",
+            120_000,
+            1.0
+        )
+        .await
+        .unwrap());
+        assert!(snapshot_symbol_is_flat(
+            &Client::new(),
+            &base,
+            "bybit_fr_pending",
+            "HFTUSDT",
+            120_000,
+            1.0
+        )
+        .await
+        .is_err());
+        server.abort();
     }
 
     #[tokio::test]

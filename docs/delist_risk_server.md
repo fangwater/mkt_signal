@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-22 UTC
+最后更新：2026-10-23 UTC
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -43,8 +43,9 @@ its separate operation token in addition to the login session.
 
 ## Login and FR panel access
 
-Delist is the entry point for the nine JP FR environments: Binance arb02/03/04,
-Gate arb01/02/03, and Bitget arb01/02/03. After login, use the account row's Viz
+Delist is the entry point for the nine active JP FR environments: Binance arb02/03/04,
+Gate arb01/02/03, and Bitget arb01/02/03. The same authenticated gateway is prepared
+for SG `bybit_fr_arb01`; its NAV record remains disabled until trading cutover. After login, use the account row's Viz
 or Config link. `/delist/open?env=<slug>&panel=viz|config` grants that environment
 to the current session and redirects to its existing `/fr/<slug>/` route.
 The launch link must originate from the delist board. A direct panel URL without
@@ -76,7 +77,7 @@ Nginx checks the same session and per-environment grant for all seven FR
 locations: static Viz, Config with/without trailing slash, `/ws`, `/fr_ws`,
 `/healthz`, and `/snapshot`. Config subpaths inherit the gate. Internal auth
 request headers are set by Nginx, and its verify route cannot be called publicly.
-Only actual loopback GET requests to the nine `/snapshot` URLs bypass browser
+Only actual loopback GET requests to the allowlisted FR `/snapshot` URLs bypass browser
 login, preserving automatic delist position checks; this exception grants no
 configuration write or other panel access.
 
@@ -98,6 +99,63 @@ place. Retain access gates and port rules together: removing only the port
 guard exposes the existing wildcard-bound FR backend listeners.
 
 ## Current JP deployment
+
+On 2026-10-23, published Bybit FR position handling and prepared
+`/home/ubuntu/bybit_fr_arb01` on SG without switching the active intra strategy.
+The local synchronized `arbmm` release includes the current delist changes;
+1357 library tests (3 ignored), 6 service tests and 3 route tests passed.
+Release SHA-256: `271b7d24a49fd160659b271a371cc113b521f95c793352e50143c08b6c4ace9a`.
+The exact artifact was uploaded, checksum-verified and atomically installed.
+Only delist and its environment-managed SSH tunnel restarted; all 72 existing
+JP FR process PIDs and all seven SG intra01 process PIDs were retained.
+Delist and its tunnel use CPU mask `0-5` on the current JP host.
+
+Bybit funding-rate accounts now participate in position-to-dump transitions,
+confirmed removal after both catalogs delist the symbol and both legs fall
+below 1 USDT, and the existing final-24-hour flatten policy. Existing Bybit
+intra/MM accounts retain observation-only delist behavior. SG flatten runs
+`python3 <env>/scripts/flatten_bybit_pm.py --symbols SYMBOL --mode clear --execute`
+via configured SSH; account/venue/slug validation fixes the destination script,
+and a remote `timeout` bounds execution even if the SSH client disconnects.
+Credentials are read by the SG script from its own env.sh; they are never sent
+in command arguments or copied to JP. A real JP-to-SG BTCUSDT **dry-run**
+verified Bybit authentication and source IP `172.31.7.124`; no order or repayment
+was submitted. Missing/stale FR exposure snapshots prevent automatic handling.
+
+SG has all eight FR components deployed. Config (20041), Viz (20141), and
+FR dashboard (20151) run on `0-7`, bind only loopback, and pass HTTP checks.
+Account monitor, pre_trade, trade_engine, trade_signal and persist_manager
+remain stopped. FR dashboard successfully fetched Bybit lending rates through
+the order NIC. A signal dry-run entered `FundingArb` but could not initialize
+without pre_trade's query IPC; it was stopped. Full trading startup remains a
+cutover check, not a completed smoke test. The original intra strategy is live.
+
+The new namespace is `bybit_fr_arb01`; symbol/risk/funding keys and RocksDB are
+separate from intra. All five new FR lists are empty. The prepared risk config
+retains intra's 8000 USDT per-symbol cap and 1.5 leverage limit; common execution
+settings are copied into the separate Bybit FR parameter hash with MT mode.
+FR funding defaults plus compatible intra 4h overrides are staged; unqualified
+intra close-threshold keys are excluded. `run/prepared_config.json` records the
+old lists as a reference. Re-read live positions and lists at cutover.
+
+NAV has a disabled `bybit_fr_arb01` funding-rate record and a `delist` grant,
+with its own storage schema. Keeping `enabled=false` excludes the staged account
+from NAV polling, totals and delist's active account catalog. At cutover, finalize
+the new symbol/UniMMR lists, establish fresh FR exposure, set the new accounting
+start time and switch NAV enablement/grants consistently with retiring intra;
+do not count the same exchange wallet under both active records.
+
+The JP access allowlist includes the new env. SG's new FR routes allow only
+loopback, and JP's corresponding routes use existing session/grant gates and
+proxy through `127.0.0.1:14191` on the managed SG SSH tunnel. Public anonymous
+JP requests redirect to delist login, public SG requests are denied, and the JP
+loopback snapshot returns the new environment's empty snapshot without falling
+back to intra exposure. Rollback assets are in JP
+`run/bybit_fr_prepare_20261023/before/`; SG preparation and Nginx backup are in
+`~/bybit_fr_prepare_20261023/`. Local evidence is under
+`data/ops/bybit_fr_prepare_20261023/`. Both hosts also retain the scoped route
+snippet at `/etc/nginx/snippets/bybit_fr_arb01.conf`, referenced by an `external:`
+row in `~/nginx_locations.txt`, so a future mapping render retains the restrictions.
 
 On 2026-10-22 13:15 UTC, published the final-window dust fix to
 `/home/ubuntu/delist_risk_server` on `jp-meta-elvpn`. The local release was
@@ -528,7 +586,8 @@ Each exchange displays this announcement above its always-visible account table.
 The board shows human-readable action/market labels, assets/pairs, UTC deadlines,
 analysis and publication times, and a link to the original article. Every account
 has side-by-side **进入看板** (Viz) and **进入配置** links in the **导航** column.
-Configuration uses the authoritative NAV `config_url`, including SG URLs and
+FR links use the central delist session/grant gateway, including SG FR.
+Other strategies use the authoritative NAV `config_url`, including SG URLs and
 the Exec Manager account page. JP Binance Exec Viz uses the existing
 `/exec_tradeNN/` Manager gateway and requires a Manager session. Account
 rows remain expanded through refreshes and strategy filters. Rendering reuses
@@ -561,7 +620,8 @@ only when every venue used by that account is `delisted` in one complete,
 successful Binance/Bitget/Gate/Bybit catalog refresh and a fresh account snapshot
 shows both FR legs below 1 USDT. A missing margin or futures leg keeps the
 symbol in dump while another account venue remains listed. Market-making
-accounts use their futures venue. CTA maps are excluded. The audit `venues`
+accounts use their futures venue. Bybit automatic removal applies only to
+funding-rate accounts; Bybit intra/MM and CTA maps are excluded. The audit `venues`
 field records every venue that confirmed the removal.
 
 ### `GET /removals`
@@ -765,11 +825,13 @@ Environment (see `config/delist_risk_server.env.example`):
 
 | Variable | Purpose |
 | --- | --- |
-| `DELIST_BIND` | default `0.0.0.0:8787` |
+| `DELIST_BIND` | default `127.0.0.1:8787` |
 | `DELIST_PG_URL` | `postgres://delist_risk:...@127.0.0.1:5432/delist_risk` |
 | `DELIST_REDIS_URL` | JP Redis, default `redis://127.0.0.1:6379/0` |
 | `DELIST_SG_REDIS_URL` | SG Bybit Redis through a local SSH tunnel, `redis://127.0.0.1:16379/0` |
 | `DELIST_SG_REDIS_SSH_HOST` | SSH target for the SG tunnel, default `sg` |
+| `DELIST_SG_WEB_TUNNEL_PORT` | Optional JP loopback port forwarding to SG loopback 4191; deployed `14191` |
+| `DELIST_SG_FLATTEN_SSH_HOST` | Explicit SSH target enabling SG Bybit FR flatten; deployed `sg` |
 | `DELIST_ANNOUNCEMENT_INTERVAL_SECS` | default `86400` |
 | `DELIST_OFFICIAL_INTERVAL_SECS` | default `86400` |
 | `DELIST_LISTING_INTERVAL_SECS` | default `86400`; a separate catalog fetch runs at `00:00 UTC` |
@@ -799,6 +861,8 @@ the service:
 DELIST_SG_REDIS_URL=redis://127.0.0.1:16379/0
 DELIST_SG_REDIS_SSH_HOST=sg
 DELIST_SG_REDIS_TUNNEL_PORT=16379
+DELIST_SG_WEB_TUNNEL_PORT=14191
+DELIST_SG_FLATTEN_SSH_HOST=sg
 ```
 
 `start_delist_risk_server.sh` removes the previous app before creating the
@@ -807,7 +871,10 @@ namespace, so app cleanup after tunnel creation would immediately delete the
 new tunnel. The script owns a PM2 SSH tunnel from JP loopback port
 `16379` to SG loopback port `6379`. The SSH connection uses the existing `sg`
 control-plane target; the source data remains on SG and is never exposed to the
-public network.
+public network. The optional web forward exposes SG 4191 only on JP loopback
+14191; authenticated JP FR routes use it for Config, Viz, websocket and snapshot
+traffic. Bind SG backend ports to loopback and restrict SG FR gateway locations
+to loopback so the JP authorization gate cannot be bypassed.
 
 ## Local run
 

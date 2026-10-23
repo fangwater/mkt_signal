@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 
 FR_ENVS = [f'{venue}_fr_arb{instance:02}' for venue, instances in
-           [('binance', [2, 3, 4]), ('gate', [1, 2, 3]), ('bitget', [1, 2, 3])]
+           [('binance', [2, 3, 4]), ('gate', [1, 2, 3]), ('bitget', [1, 2, 3]), ('bybit', [1])]
            for instance in instances]
 
 

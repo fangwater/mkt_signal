@@ -101,6 +101,9 @@ fi
 if [[ -n "${DELIST_REDIS_URL:-}" ]]; then
   ARGS+=(--redis "${DELIST_REDIS_URL}")
 fi
+if [[ -n "${DELIST_SG_FLATTEN_SSH_HOST:-}" ]]; then
+  ARGS+=(--sg-flatten-ssh-host "${DELIST_SG_FLATTEN_SSH_HOST}")
+fi
 if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
   if [[ "${DELIST_SG_REDIS_URL}" != "redis://127.0.0.1:${SG_TUNNEL_PORT}/0" ]]; then
     echo "[ERROR] DELIST_SG_REDIS_URL must use redis://127.0.0.1:${SG_TUNNEL_PORT}/0" >&2
@@ -117,13 +120,21 @@ if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
   # creating its tunnel, or the later app cleanup deletes the new tunnel too.
   stop_existing_app
   npx pm2 delete "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  SG_FORWARDS=(-L "127.0.0.1:${SG_TUNNEL_PORT}:127.0.0.1:6379")
+  if [[ -n "${DELIST_SG_WEB_TUNNEL_PORT:-}" ]]; then
+    if [[ ! "$DELIST_SG_WEB_TUNNEL_PORT" =~ ^[0-9]+$ ]] || (( DELIST_SG_WEB_TUNNEL_PORT < 1024 || DELIST_SG_WEB_TUNNEL_PORT > 65535 )); then
+      echo "[ERROR] invalid DELIST_SG_WEB_TUNNEL_PORT" >&2
+      exit 1
+    fi
+    SG_FORWARDS+=(-L "127.0.0.1:${DELIST_SG_WEB_TUNNEL_PORT}:127.0.0.1:4191")
+  fi
   npx pm2 start "$SSH_BIN" --name "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" --interpreter none -- \
     -NT \
     -o BatchMode=yes \
     -o ExitOnForwardFailure=yes \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
-    -L "127.0.0.1:${SG_TUNNEL_PORT}:127.0.0.1:6379" \
+    "${SG_FORWARDS[@]}" \
     "$SG_SSH_HOST"
   tunnel_ready=0
   for _ in {1..10}; do

@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-22 15:06 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-23 07:10 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 2026-10-22 15:00–15:06 UTC，Exec08已接替JP RX02的执行：virtual02倍率1、
@@ -755,6 +755,20 @@ L3 说明:c7i.metal-24xl 的 L3 为全芯片共享(`shared_cpu_list=0-47`),
 ## sg(SSH: `sg`,ip-172-31-7-123,c7a.4xlarge,apse1-az3)
 
 CPU 布局:`0-7` housekeeping,`8-15` 隔离;AMD 实例无 SMT,全部为物理核。
+
+2026-10-23 06:47–07:10 UTC，预部署 `bybit_fr_arb01`，尚未从 `bybit-intra-arb01`
+切换交易。新环境的 Config PID1514349、Viz PID1514449、FR dashboard PID1514509
+运行于 housekeeping `0-7`，分别监听回环 `20041/20141/20151`。
+account_monitor、pre_trade、trade_engine、trade_signal、persist_manager 均已发布但停止；
+env.sh 为未来切换预留 `12/14/15/13`，当前不占用这些隔离核，原 intra 七个 PID 不变。
+短暂的 `TRADE_SIGNAL_NO_EMIT=1` 信号检查使用 CPU0，进入 FundingArb 后因新环境未启动
+pre_trade、缺少查询 IPC 而退出，已通过环境脚本停止；没有启动下单链路。
+新 FR namespace、Redis 名单、RocksDB 目录独立，名单为空；NAV 登记 `enabled=false`。
+正式切换时先停止旧 intra 的交易进程，再启用这些核绑定；需重新核对币种、持仓及完整启动顺序。
+JP delist 及其 SG 隧道更新后维持 CPU `0-5`，JP 九套 FR 的72个 PID 不变。
+部署和验证证据：`data/ops/bybit_fr_prepare_20261023/`，SG
+`~/bybit_fr_prepare_20261023/` / `~/bybit_fr_arb01/run/`，JP
+`~/delist_risk_server/run/bybit_fr_prepare_20261023/`。
 
 2026-10-19 08:21–08:28 UTC，按操作者要求，将原 intra arb02 账户的预备 Exec 02
 改为 `bybit_exec_trade01`（`bybit-01`），归 LGQ configure，跟随既有 virtual01，

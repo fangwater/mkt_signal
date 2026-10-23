@@ -40,6 +40,14 @@ struct RedisMutation {
     replacement: String,
 }
 
+fn supports_removal(spec: &AccountSpec) -> bool {
+    (matches!(
+        spec.kind.as_str(),
+        "funding_rate" | "intra_exchange" | "market_making"
+    ) && matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate"))
+        || (spec.kind == "funding_rate" && spec.exchange == "bybit")
+}
+
 pub fn confirmed_removal_candidates(
     accounts: &[AccountSpec],
     listings: &ListingIndex,
@@ -47,11 +55,7 @@ pub fn confirmed_removal_candidates(
 ) -> Vec<RedisRemovalCandidate> {
     let mut out = Vec::new();
     for spec in accounts {
-        if !matches!(
-            spec.kind.as_str(),
-            "funding_rate" | "intra_exchange" | "market_making"
-        ) || !matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
-        {
+        if !supports_removal(spec) {
             continue;
         }
         let Some(Ok(symbols)) = universes.get(&spec.slug) else {
@@ -88,11 +92,7 @@ pub fn removal_universe_errors(
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for spec in accounts {
-        if !matches!(
-            spec.kind.as_str(),
-            "funding_rate" | "intra_exchange" | "market_making"
-        ) || !matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
-        {
+        if !supports_removal(spec) {
             continue;
         }
         match universes.get(&spec.slug) {
@@ -288,6 +288,35 @@ mod tests {
             candidates[0].venues,
             vec!["binance-margin", "binance-futures"]
         );
+    }
+
+    #[test]
+    fn bybit_fr_removal_requires_both_catalogs_and_preserves_intra() {
+        let mut account = binance_intra_account();
+        account.slug = "bybit_fr_arb01".into();
+        account.exchange = "bybit".into();
+        account.kind = "funding_rate".into();
+        account.site = RedisSite::Sg;
+        let universes =
+            BTreeMap::from([(account.slug.clone(), Ok(BTreeSet::from(["HEIUSDT".into()])))]);
+        let mut listings = ListingIndex::default();
+        listings.insert_test("bybit-margin", "BTCUSDT");
+        assert!(confirmed_removal_candidates(&[account.clone()], &listings, &universes).is_empty());
+        listings.insert_test("bybit-futures", "BTCUSDT");
+        let candidates = confirmed_removal_candidates(&[account.clone()], &listings, &universes);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].redis_site, "sg");
+        assert_eq!(candidates[0].redis_keys.len(), 5);
+        assert!(candidates[0]
+            .redis_keys
+            .iter()
+            .all(|key| key.starts_with("bybit_fr_arb01:fr_")));
+        assert_eq!(
+            removal_universe_errors(&[account.clone()], &BTreeMap::new()).len(),
+            1
+        );
+        account.kind = "intra_exchange".into();
+        assert!(confirmed_removal_candidates(&[account], &listings, &universes).is_empty());
     }
 
     #[test]

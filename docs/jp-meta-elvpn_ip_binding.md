@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-22 15:06 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-23 07:10 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 2026-10-22 15:00–15:06 UTC，`binance_exec_trade08` 已作为RX02的JP Grid执行账户
 运行，STANDARD USD-M多资产模式、单向持仓，跟随virtual02倍率1。
@@ -474,6 +474,18 @@ binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原�
 2026-10-11 NAV 行情监控迁入独立 `fr_monitor`（只读 IPC/Viz/RocksDB，回环 18180），停用 `public-infra-monitor` 与常驻 BPF。未分配交易 source IP，未修改 ENI、EIP、trade_engine local_ips 或路由；NAV 中 RX02/RX03 退役数据由 `binance_exec_trade05`（别名 `lgq_cta`、既有 RapidX `.228`）替代。原交易目录及 RocksDB 保留。
 
 ## SG Bybit Exec 预部署
+
+2026-10-23，新增待切换 FR 环境 `bybit_fr_arb01`，凭据在 SG 本机从原 intra01
+复制，`local_ips=["172.31.7.124", "172.31.7.124"]`。FR dashboard 的私有利率请求
+和从 JP 经 SSH 调用的 `flatten_bybit_pm.py --symbols BTCUSDT --mode clear`
+dry-run 均确认使用该下单源 IP；没有执行清仓、撤单、还款或新策略交易。
+原 `bybit-intra-arb01` 保持运行，ENI/EIP、路由及隔离核分配不变。
+新 Config/Viz/FR dashboard 仅绑定 `127.0.0.1:20041/20141/20151`；
+SG 4191 的 `/fr/bybit_fr_arb01/` 全部只允许回环。
+JP delist 原有 SG Redis SSH 隧道增加 `127.0.0.1:14191 -> SG 127.0.0.1:4191`，
+JP 同名 FR 路由复用 delist 登录/授权门禁；快照只允许真实 JP 回环请求免登录读取。
+SSH 仍经既有 `sg` 入口，未新分配源 IP；新 FR 的 NAV 记录保持停用。
+详细准备状态与切换条件见 `docs/delist_risk_server.md`。
 
 2026-10-21 01:04–01:15 UTC，`bybit-intra-arb01` 中性对齐后恢复全部进程，
 `local_ips=["172.31.7.124", "172.31.7.124"]` 及 env.sh 哈希保持。

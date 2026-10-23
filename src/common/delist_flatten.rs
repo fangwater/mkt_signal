@@ -43,11 +43,31 @@ pub struct FlattenRunOutput {
 pub struct FlattenExecutor {
     env_root: PathBuf,
     timeout: Duration,
+    sg_ssh_host: Option<String>,
 }
 
 impl FlattenExecutor {
     pub fn new(env_root: PathBuf, timeout: Duration) -> Self {
-        Self { env_root, timeout }
+        Self {
+            env_root,
+            timeout,
+            sg_ssh_host: None,
+        }
+    }
+
+    pub fn with_sg_ssh_host(mut self, host: Option<String>) -> Result<Self> {
+        if let Some(host) = &host {
+            if host.is_empty()
+                || host.starts_with('-')
+                || !host
+                    .bytes()
+                    .all(|ch| ch.is_ascii_alphanumeric() || b".-_@".contains(&ch))
+            {
+                bail!("invalid SG flatten SSH host");
+            }
+        }
+        self.sg_ssh_host = host;
+        Ok(self)
     }
 
     pub async fn run(
@@ -55,18 +75,20 @@ impl FlattenExecutor {
         candidate: &FlattenCandidate,
         account: &AccountSpec,
     ) -> Result<FlattenRunOutput> {
-        let (cwd, script, args) = self.command_parts(candidate, account)?;
-        if !cwd.is_dir() {
-            bail!("flatten account directory is missing: {}", cwd.display());
+        let display = self.command(candidate, account)?;
+        let mut command = Command::new(&display[0]);
+        if account.site == RedisSite::Jp {
+            let (cwd, script, _) = self.command_parts(candidate, account)?;
+            if !cwd.is_dir() {
+                bail!("flatten account directory is missing: {}", cwd.display());
+            }
+            if !script.is_file() {
+                bail!("flatten script is missing: {}", script.display());
+            }
+            command.current_dir(cwd);
         }
-        if !script.is_file() {
-            bail!("flatten script is missing: {}", script.display());
-        }
-        let mut command = Command::new("python3");
         command
-            .current_dir(&cwd)
-            .arg(&script)
-            .args(&args)
+            .args(&display[1..])
             .env_remove("BINANCE_API_KEY")
             .env_remove("BINANCE_API_SECRET")
             .env_remove("BITGET_API_KEY")
@@ -75,10 +97,20 @@ impl FlattenExecutor {
             .env_remove("BITGET_API_PASSPHRASE")
             .env_remove("GATE_API_KEY")
             .env_remove("GATE_API_SECRET")
+            .env_remove("BYBIT_API_KEY")
+            .env_remove("BYBIT_API_SECRET")
             .env("PYTHONUNBUFFERED", "1")
             .kill_on_drop(true);
 
-        let output = time::timeout(self.timeout, command.output())
+        // The remote timeout also terminates the Python process if SSH disconnects.
+        // Allow SSH connection setup and timeout's TERM/KILL grace locally.
+        let wait = self.timeout
+            + if account.site == RedisSite::Sg {
+                Duration::from_secs(20)
+            } else {
+                Duration::ZERO
+            };
+        let output = time::timeout(wait, command.output())
             .await
             .with_context(|| {
                 format!(
@@ -94,8 +126,6 @@ impl FlattenExecutor {
                     candidate.account_slug, candidate.symbol
                 )
             })?;
-        let mut display = vec!["python3".to_string(), script.display().to_string()];
-        display.extend(args);
         Ok(FlattenRunOutput {
             command: display,
             exit_code: output.status.code(),
@@ -110,7 +140,34 @@ impl FlattenExecutor {
         candidate: &FlattenCandidate,
         account: &AccountSpec,
     ) -> Result<Vec<String>> {
-        let (_cwd, script, args) = self.command_parts(candidate, account)?;
+        let (cwd, script, args) = self.command_parts(candidate, account)?;
+        if account.site == RedisSite::Sg {
+            let host = self
+                .sg_ssh_host
+                .as_ref()
+                .context("SG flatten SSH host is not configured")?;
+            let remote = format!(
+                "cd -- {} && exec timeout --signal=TERM --kill-after=5s {}s python3 {} {}",
+                shell_quote(&cwd.to_string_lossy()),
+                self.timeout.as_secs().max(1),
+                shell_quote(&script.to_string_lossy()),
+                args.iter()
+                    .map(|arg| shell_quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            return Ok(vec![
+                "ssh".into(),
+                "-T".into(),
+                "-o".into(),
+                "BatchMode=yes".into(),
+                "-o".into(),
+                "ConnectTimeout=10".into(),
+                "--".into(),
+                host.clone(),
+                remote,
+            ]);
+        }
         let mut display = vec!["python3".to_string(), script.display().to_string()];
         display.extend(args);
         Ok(display)
@@ -124,9 +181,16 @@ impl FlattenExecutor {
         let symbol = validate_symbol(&candidate.symbol)?;
         if spec.slug != candidate.account_slug
             || spec.kind != "funding_rate"
-            || !matches!(spec.site, RedisSite::Jp)
             || spec.exchange != candidate.exchange
-            || !matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
+            || !spec.slug.starts_with(&format!("{}_fr_", spec.exchange))
+            || !spec
+                .slug
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || b"_-".contains(&ch))
+            || !matches!(
+                (spec.site, spec.exchange.as_str()),
+                (RedisSite::Jp, "binance" | "bitget" | "gate") | (RedisSite::Sg, "bybit")
+            )
         {
             bail!("flatten account/exchange is not supported");
         }
@@ -146,6 +210,10 @@ impl FlattenExecutor {
             ],
         ))
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 pub fn flatten_candidates(
@@ -347,6 +415,54 @@ mod tests {
         assert!(output.stdout.contains("clear"));
         assert!(output.stdout.contains("--execute"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sg_bybit_uses_remote_env_with_bounded_execution() {
+        let mut candidate = flatten_candidates(
+            &[positioned(500.0, "2026-10-23T09:00:00Z")],
+            DateTime::parse_from_rfc3339("2026-10-23T08:00:00Z")
+                .unwrap()
+                .timestamp_millis(),
+            86_400_000,
+            1_000.0,
+        )
+        .remove(0);
+        candidate.account_slug = "bybit_fr_arb01".into();
+        candidate.exchange = "bybit".into();
+        let mut account = AccountSpec {
+            slug: candidate.account_slug.clone(),
+            alias: "Bybit".into(),
+            exchange: "bybit".into(),
+            kind: "funding_rate".into(),
+            host: "sg".into(),
+            site: RedisSite::Sg,
+            config_url: String::new(),
+        };
+        let executor = FlattenExecutor::new("/home/ubuntu".into(), Duration::from_secs(300));
+        assert!(executor
+            .command(&candidate, &account)
+            .unwrap_err()
+            .to_string()
+            .contains("not configured"));
+        assert!(executor
+            .clone()
+            .with_sg_ssh_host(Some("sg;false".into()))
+            .is_err());
+        let executor = executor.with_sg_ssh_host(Some("sg".into())).unwrap();
+        let command = executor.command(&candidate, &account).unwrap();
+        assert_eq!(command[0], "ssh");
+        assert_eq!(command[7], "sg");
+        assert_eq!(command[8], "cd -- '/home/ubuntu/bybit_fr_arb01' && exec timeout --signal=TERM --kill-after=5s 300s python3 '/home/ubuntu/bybit_fr_arb01/scripts/flatten_bybit_pm.py' '--symbols' 'TSLAXUSDT' '--mode' 'clear' '--execute'");
+        account.kind = "intra_exchange".into();
+        assert!(executor.command(&candidate, &account).is_err());
+        account.kind = "funding_rate".into();
+        account.site = RedisSite::Jp;
+        assert!(executor.command(&candidate, &account).is_err());
+        account.site = RedisSite::Sg;
+        account.slug = "bybit_fr_../../other".into();
+        candidate.account_slug = account.slug.clone();
+        assert!(executor.command(&candidate, &account).is_err());
     }
 
     #[test]

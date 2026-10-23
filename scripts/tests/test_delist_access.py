@@ -19,7 +19,7 @@ class DelistRoutes(unittest.TestCase):
     def test_every_surface_and_future_config_subroute_is_guarded(self):
         source = self.site().replace('\n}', '\nlocation /fr/gate_fr_arb01/config/api/new { proxy_pass http://127.0.0.1:20021/; }\n}')
         result = protect(source, FR_ENVS)
-        self.assertEqual(result.count(GATE), 64)
+        self.assertEqual(result.count(GATE), 7 * len(FR_ENVS) + 1)
         self.assertEqual(result.count(ACCESS), 1)
         self.assertEqual(protect(result, FR_ENVS), result)
         self.assertIn('location /manager/ { proxy_pass http://127.0.0.1:18201/; }', result)

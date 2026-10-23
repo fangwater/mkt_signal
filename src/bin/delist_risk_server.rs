@@ -171,6 +171,10 @@ struct Args {
     #[arg(long, default_value_t = 300)]
     flatten_timeout_secs: u64,
 
+    /// SSH alias used to run SG Bybit FR flatten in its own environment.
+    #[arg(long)]
+    sg_flatten_ssh_host: Option<String>,
+
     /// Base URL serving /fr/<env>/snapshot.
     #[arg(long, default_value = "http://127.0.0.1:4191")]
     snapshot_base_url: String,
@@ -392,7 +396,8 @@ async fn main() -> Result<()> {
         flatten_executor: FlattenExecutor::new(
             args.flatten_env_root.clone(),
             Duration::from_secs(args.flatten_timeout_secs.max(1)),
-        ),
+        )
+        .with_sg_ssh_host(args.sg_flatten_ssh_host.clone())?,
         flatten_inflight: Arc::new(AsyncMutex::new(BTreeSet::new())),
         notification_client,
         flatten_api_token,
@@ -569,7 +574,7 @@ async fn query_accounts(
     );
     let mut accounts = build_account_views(&account_specs, &risk, &listings, &universes);
     for account in &mut accounts {
-        if account.kind == "funding_rate" && account.host == "jp" {
+        if account.kind == "funding_rate" {
             account.viz_url = Some(format!("/delist/open?env={}&panel=viz", account.slug));
             account.config_url = Some(format!("/delist/open?env={}&panel=config", account.slug));
         }
