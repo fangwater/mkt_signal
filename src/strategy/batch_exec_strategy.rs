@@ -1047,6 +1047,7 @@ pub struct BatchExecStrategy {
     batches: BTreeMap<u64, BatchState>,
     child_orders: FastHashMap<i64, ChildOrderMeta>,
     orphaned_child_orders: FastHashMap<i64, ChildOrderMeta>,
+    post_only_retry_levels: BTreeSet<(u64, u32)>,
     batch_seq: u64,
     order_seq: u32,
     next_batch_at_us: i64,
@@ -1088,6 +1089,7 @@ impl BatchExecStrategy {
             batches: BTreeMap::new(),
             child_orders: fast_hash_map(),
             orphaned_child_orders: fast_hash_map(),
+            post_only_retry_levels: BTreeSet::new(),
             batch_seq: 0,
             order_seq: 0,
             next_batch_at_us: 0,
@@ -2022,6 +2024,11 @@ impl BatchExecStrategy {
     }
 
     fn maybe_start_or_requote_batch(&mut self, now_ts: i64) {
+        self.post_only_retry_levels.retain(|(seq, _)| {
+            self.batches
+                .get(seq)
+                .is_some_and(|batch| batch.phase == BatchPhase::Live)
+        });
         if self.borrow_unavailable() {
             return;
         }
@@ -2085,9 +2092,16 @@ impl BatchExecStrategy {
         });
         // Exchange-minimum residuals disable new batch creation with i64::MAX,
         // but an existing batch may still need a maker requote or taker fallback.
-        if should_defer_batch_start(now_ts, self.next_batch_at_us, ready_batch.is_some())
-            && self.completion_reason != Some(BatchExecCompletionReason::ExchangeMinimum)
+        if should_defer_batch_start(
+            now_ts,
+            self.next_batch_at_us,
+            ready_batch.is_some() || !self.post_only_retry_levels.is_empty(),
+        ) && self.completion_reason != Some(BatchExecCompletionReason::ExchangeMinimum)
         {
+            return;
+        }
+        if let Some(&(batch_seq, _)) = self.post_only_retry_levels.first() {
+            self.submit_batch(batch_seq, now_ts);
             return;
         }
         let unallocated_qty = self.unallocated_qty_for_target(target_qty);
@@ -2429,12 +2443,55 @@ impl BatchExecStrategy {
         Ok(plans)
     }
 
+    fn post_only_retry_batch(&self, batch_seq: u64) -> Option<BatchState> {
+        let mut batch = self.batches.get(&batch_seq)?.clone();
+        if batch.phase != BatchPhase::Live {
+            return None;
+        }
+        let &(_, level_index) = self
+            .post_only_retry_levels
+            .range((batch_seq, 0)..=(batch_seq, u32::MAX))
+            .next()?;
+        let reserved_qty: f64 = self
+            .child_orders
+            .values()
+            .chain(self.orphaned_child_orders.values())
+            .filter(|meta| meta.batch_seq == batch_seq && meta.level_index == level_index)
+            .map(|meta| (meta.order_base_qty - meta.accounted_fill_base_qty).max(0.0))
+            .sum();
+        // Fills already debit the batch remainder. Retry only the rejected level's
+        // uncovered quantity, without adding it again or resubmitting live siblings.
+        let retry_qty = (batch
+            .remaining_qty_by_level
+            .get(&level_index)
+            .copied()
+            .unwrap_or(0.0)
+            - reserved_qty)
+            .max(0.0);
+        batch.remaining_base_qty = retry_qty;
+        batch.remaining_qty_by_level = BTreeMap::from([(level_index, retry_qty)]);
+        Some(batch)
+    }
+
     fn submit_batch(&mut self, batch_seq: u64, now_ts: i64) {
-        let Some(batch) = self.batches.get(&batch_seq).cloned() else {
+        let Some(mut batch) = self.batches.get(&batch_seq).cloned() else {
             return;
         };
+        let retry_post_only = batch.phase == BatchPhase::Live;
+        if retry_post_only {
+            let Some(retry_batch) = self.post_only_retry_batch(batch_seq) else {
+                return;
+            };
+            batch = retry_batch;
+        }
         if batch.remaining_base_qty <= QTY_EPS {
-            self.batches.remove(&batch_seq);
+            if retry_post_only {
+                for level in batch.remaining_qty_by_level.keys() {
+                    self.post_only_retry_levels.remove(&(batch_seq, *level));
+                }
+            } else {
+                self.batches.remove(&batch_seq);
+            }
             return;
         }
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
@@ -2451,7 +2508,9 @@ impl BatchExecStrategy {
             .as_ref()
             .is_none_or(|target| target.generation_time != batch.target_generation)
         {
-            self.batches.remove(&batch_seq);
+            if !retry_post_only {
+                self.batches.remove(&batch_seq);
+            }
             return;
         }
         let use_taker = should_use_taker(
@@ -2481,6 +2540,12 @@ impl BatchExecStrategy {
             }
         }
         if plans.is_empty() {
+            if retry_post_only {
+                for level in batch.remaining_qty_by_level.keys() {
+                    self.post_only_retry_levels.remove(&(batch_seq, *level));
+                }
+                return;
+            }
             warn!(
                 "BatchExecStrategy: strategy_id={} symbol={} batch={} has no order quantity satisfying min qty/notional; release residual to aggregate carry",
                 self.strategy_id, self.symbol, batch_seq
@@ -2490,7 +2555,11 @@ impl BatchExecStrategy {
             return;
         }
         let planned_base_qty: f64 = plans.iter().map(|plan| plan.qty_base).sum();
-        if let Some(batch) = self.batches.get_mut(&batch_seq) {
+        if let Some(batch) = self
+            .batches
+            .get_mut(&batch_seq)
+            .filter(|_| !retry_post_only)
+        {
             batch.remaining_base_qty = planned_base_qty;
             batch.remaining_qty_by_level = plans
                 .iter()
@@ -2503,8 +2572,10 @@ impl BatchExecStrategy {
                 now_ts.saturating_add(i64::from(self.config.maker_timeout_ms) * 1_000)
             };
         }
-        self.next_batch_at_us =
-            now_ts.saturating_add(i64::from(self.config.batch_interval_ms).saturating_mul(1_000));
+        if !retry_post_only {
+            self.next_batch_at_us = now_ts
+                .saturating_add(i64::from(self.config.batch_interval_ms).saturating_mul(1_000));
+        }
         let signal_bbo = SignalBbo::new(
             SignalBboLeg::checked(
                 self.exec_venue.to_u8(),
@@ -2612,6 +2683,8 @@ impl BatchExecStrategy {
                 client_order_id,
                 PendingOrderQueryReason::OrderWatchdog,
             );
+            self.post_only_retry_levels
+                .remove(&(batch_seq, plan.level_index));
             sent_ids.push(client_order_id);
         }
 
@@ -2908,14 +2981,27 @@ impl BatchExecStrategy {
     }
 
     fn finish_child_order(&mut self, client_order_id: i64) {
+        self.finish_child_order_with_requote(client_order_id, true);
+    }
+
+    fn finish_child_order_with_requote(
+        &mut self,
+        client_order_id: i64,
+        cancel_siblings_on_unfilled_live: bool,
+    ) {
         self.clear_order_query_state(client_order_id);
         let Some(meta) = self.child_orders.remove(&client_order_id) else {
             return;
         };
-        self.finish_child_order_meta(client_order_id, meta);
+        self.finish_child_order_meta(client_order_id, meta, cancel_siblings_on_unfilled_live);
     }
 
-    fn finish_child_order_meta(&mut self, client_order_id: i64, meta: ChildOrderMeta) {
+    fn finish_child_order_meta(
+        &mut self,
+        client_order_id: i64,
+        meta: ChildOrderMeta,
+        cancel_siblings_on_unfilled_live: bool,
+    ) {
         let batch_seq = meta.batch_seq;
         let has_orphaned_sibling = self
             .orphaned_child_orders
@@ -2926,7 +3012,10 @@ impl BatchExecStrategy {
         if let Some(batch) = self.batches.get_mut(&batch_seq) {
             batch.child_order_ids.remove(&client_order_id);
             let unfilled_qty = (meta.order_base_qty - meta.accounted_fill_base_qty).max(0.0);
-            if batch.phase == BatchPhase::Live && unfilled_qty > QTY_EPS {
+            if cancel_siblings_on_unfilled_live
+                && batch.phase == BatchPhase::Live
+                && unfilled_qty > QTY_EPS
+            {
                 batch.phase = BatchPhase::CancellingForRequote;
                 cancel_siblings_for_requote = !batch.child_order_ids.is_empty();
             }
@@ -2954,6 +3043,14 @@ impl BatchExecStrategy {
             self.batches.remove(&batch_seq);
         } else if cancel_siblings_for_requote {
             self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForRequote);
+        }
+        if self
+            .batches
+            .get(&batch_seq)
+            .is_none_or(|batch| batch.phase != BatchPhase::Live)
+        {
+            self.post_only_retry_levels
+                .retain(|(seq, _)| *seq != batch_seq);
         }
     }
 
@@ -3229,10 +3326,21 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         );
         if let Some(meta) = self.child_orders.get(&client_order_id) {
             if let Some(batch) = self.batches.get_mut(&meta.batch_seq) {
-                batch.saw_open_reject = true;
+                if retry_post_only_immediately {
+                    if batch.phase == BatchPhase::Live
+                        && meta.order_base_qty - meta.accounted_fill_base_qty > QTY_EPS
+                    {
+                        self.post_only_retry_levels
+                            .insert((meta.batch_seq, meta.level_index));
+                    }
+                } else {
+                    batch.saw_open_reject = true;
+                }
             }
         }
-        self.finish_child_order(client_order_id);
+        // A PostOnly reject never rested. Keep live siblings and do not suppress
+        // the maker-requote charge for a later, genuine batch cancellation.
+        self.finish_child_order_with_requote(client_order_id, !retry_post_only_immediately);
         if borrow_unavailable {
             let batch_ids = self.batches.keys().copied().collect::<Vec<_>>();
             for batch_seq in batch_ids {
@@ -3257,6 +3365,14 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         }
         if let Some(manager) = MonitorChannel::try_order_manager() {
             let _ = manager.borrow_mut().remove(client_order_id);
+        }
+        if retry_post_only_immediately
+            && !self.post_only_retry_levels.is_empty()
+            && self.active_target.is_some()
+        {
+            // Use the normal submission gates; if blocked, the next clock tick
+            // retries this level without needing to cancel the live batch.
+            self.maybe_start_or_requote_batch(get_timestamp_us());
         }
     }
 }
@@ -3353,7 +3469,7 @@ impl Strategy for BatchExecStrategy {
             next_accounted - previous_accounted,
         );
         let batch_seq = meta.batch_seq;
-        self.finish_child_order_meta(terminal.client_order_id, meta);
+        self.finish_child_order_meta(terminal.client_order_id, meta, true);
         info!(
             "BatchExecStrategy: strategy_id={} applied orphan terminal order_id={} batch_seq={} terminal_ts={} side={:?} source_order_base_qty={:.8} tracked_order_base_qty={:.8} cumulative_filled_base_qty={:.8} newly_accounted_base_qty={:.8} price={:.8}",
             self.strategy_id,
@@ -4426,7 +4542,158 @@ mod tests {
         assert_eq!(batch.maker_requotes, 0);
         assert!(batch.child_order_ids.is_empty());
         assert!(strategy.child_orders.is_empty());
+        assert!(strategy.post_only_retry_levels.is_empty());
         assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+    }
+
+    fn live_sibling_strategy() -> BatchExecStrategy {
+        let mut strategy = strategy_with_orphan_batch(&[
+            (101, 0, 1.0, 0.25),
+            (102, 1, 2.0, 0.0),
+            (103, 2, 3.0, 0.5),
+        ]);
+        strategy.child_orders = std::mem::take(&mut strategy.orphaned_child_orders);
+        strategy.batches.get_mut(&1).unwrap().child_order_ids = BTreeSet::from([101, 102, 103]);
+        strategy.next_batch_at_us = i64::MAX;
+        strategy
+    }
+
+    #[test]
+    fn post_only_rejection_preserves_live_siblings_and_retries_only_rejected_level() {
+        for (exchange, error_code) in [
+            (Exchange::Binance, -5022),
+            (Exchange::Bybit, 170218),
+            (
+                Exchange::Gate,
+                order_common::trade_error_code::gate::ORDER_POC,
+            ),
+        ] {
+            let mut strategy = live_sibling_strategy();
+            let original_batch = strategy.batches[&1].clone();
+            let response = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceWsNewUMOrder as u32,
+                exchange as u32,
+                102,
+                error_code,
+            );
+            let before_retry = get_timestamp_us();
+            strategy.handle_hedge_open_failed(&response, "Post Only rejected", 102);
+            let after_retry = get_timestamp_us();
+
+            let batch = &strategy.batches[&1];
+            assert_eq!(batch.phase, BatchPhase::Live);
+            assert_eq!(batch.child_order_ids, BTreeSet::from([101, 103]));
+            assert_eq!(batch.remaining_base_qty, original_batch.remaining_base_qty);
+            assert_eq!(
+                batch.remaining_qty_by_level,
+                original_batch.remaining_qty_by_level
+            );
+            assert_eq!(batch.expires_at_us, original_batch.expires_at_us);
+            assert_eq!(batch.maker_requotes, 0);
+            assert!(!batch.saw_open_reject);
+            assert!(!strategy.child_orders.contains_key(&102));
+            for sibling in [101, 103] {
+                assert!(!strategy.child_orders[&sibling].cancel_requested);
+            }
+            assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+
+            // Without runtime channels the retry remains queued. This is the same
+            // batch slice submit_batch uses when the submission gates permit it.
+            assert_eq!(strategy.post_only_retry_levels, BTreeSet::from([(1, 1)]));
+            let retry = strategy.post_only_retry_batch(1).unwrap();
+            assert_eq!(retry.remaining_base_qty, 2.0);
+            assert_eq!(retry.remaining_qty_by_level, BTreeMap::from([(1, 2.0)]));
+            let plans = rebuild_child_order_plans_at_preserved_levels(
+                &strategy.config,
+                retry.side,
+                &retry.remaining_qty_by_level,
+                100.0,
+                101.0,
+                1.0,
+                0.01,
+                0.01,
+                5.0,
+                1.0,
+            )
+            .unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].level_index, 1);
+            assert_eq!(plans[0].qty_base, 2.0);
+            assert_eq!(plans[0].price, 98.0);
+        }
+    }
+
+    #[test]
+    fn post_only_rejection_does_not_suppress_later_maker_timeout() {
+        let mut strategy = live_sibling_strategy();
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            102,
+            -5022,
+        );
+        strategy.handle_hedge_open_failed(&response, "Post Only rejected", 102);
+
+        // Model cancels already in flight so this test needs no execution IPC.
+        for meta in strategy.child_orders.values_mut() {
+            meta.cancel_requested = true;
+        }
+        strategy.handle_batch_timeouts(strategy.batches[&1].expires_at_us);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForRequote);
+        assert!(strategy.post_only_retry_batch(1).is_none());
+        strategy.finish_child_order(101);
+        strategy.finish_child_order(103);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(strategy.batches[&1].maker_requotes, 1);
+        assert!(strategy.post_only_retry_levels.is_empty());
+    }
+
+    #[test]
+    fn non_post_only_rejection_still_cancels_batch_for_requote() {
+        let mut strategy = live_sibling_strategy();
+        for meta in strategy.child_orders.values_mut() {
+            meta.cancel_requested = true;
+        }
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            102,
+            -2019,
+        );
+        strategy.handle_hedge_open_failed(&response, "Margin insufficient", 102);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForRequote);
+        assert!(strategy.batches[&1].saw_open_reject);
+        assert!(strategy.post_only_retry_levels.is_empty());
+        strategy.finish_child_order(101);
+        strategy.finish_child_order(103);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(strategy.batches[&1].maker_requotes, 0);
+    }
+
+    #[test]
+    fn post_only_rejection_does_not_revive_cancelling_target() {
+        let mut strategy = live_sibling_strategy();
+        strategy.batches.get_mut(&1).unwrap().phase = BatchPhase::CancellingForTarget;
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            102,
+            -5022,
+        );
+        strategy.handle_hedge_open_failed(&response, "Post Only rejected", 102);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert_eq!(
+            strategy.batches[&1].child_order_ids,
+            BTreeSet::from([101, 103])
+        );
+        assert!(strategy.post_only_retry_levels.is_empty());
+        strategy.finish_child_order(101);
+        strategy.finish_child_order(103);
+        assert!(strategy.batches.is_empty());
     }
 
     fn borrowing_reject_strategy() -> BatchExecStrategy {
