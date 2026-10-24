@@ -25,8 +25,10 @@ impl LimitConstants {
     pub const ACCOUNT_PER_MIN: u32 = 1200;
     pub const IP_WEIGHT_PER_MIN: u32 = 6000;
     pub const WARN_RATIO: f32 = 0.8;
-    pub const COOLDOWN_MS_429: u64 = 90_000;
-    pub const BAN_BACKOFF_MS_418: u64 = 120_000;
+    pub const WS_REQUEST_WEIGHT_COOL_THRESHOLD: u32 = 2100;
+    pub const WS_REQUEST_WEIGHT_PROACTIVE_COOL_MS: u64 = 60_000;
+    pub const COOLDOWN_MS_429: u64 = 300_000;
+    pub const BAN_BACKOFF_MS_418: u64 = 300_000;
 }
 
 /// 硬编码的 WebSocket 配置常量

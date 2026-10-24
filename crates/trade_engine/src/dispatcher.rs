@@ -9,7 +9,6 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
 
 type HmacSha256 = Hmac<Sha256>;
 #[derive(Debug)]
@@ -71,7 +70,6 @@ pub struct Dispatcher {
     ip_clients: Vec<IpClient>,
     binance_um_whitelist_ip: Option<IpAddr>,
     accounts: Vec<AccountState>,
-    shutdown: CancellationToken,
 }
 
 fn hot_symbol(params: &[(String, String)]) -> String {
@@ -180,7 +178,6 @@ impl Dispatcher {
     pub fn new(
         local_ips: &[IpAddr],
         account_keys: &[ApiKey],
-        shutdown: CancellationToken,
         binance_um_ip_whitelist_mode: bool,
         binance_um_whitelist_ip: Option<IpAddr>,
     ) -> Result<Self> {
@@ -266,7 +263,6 @@ impl Dispatcher {
             ip_clients,
             binance_um_whitelist_ip,
             accounts,
-            shutdown,
         })
     }
 
@@ -340,45 +336,25 @@ impl Dispatcher {
         best.map(|(i, _)| i)
     }
 
-    fn should_shutdown_on_rate_limit(&self) -> bool {
-        self.ip_clients.len() <= 1
-    }
-
     fn handle_limit_status(&mut self, ip_idx: usize, status: u16) {
         let ip = self.ip_clients[ip_idx].ip;
         match status {
             429 => {
-                warn!("429 Too Many Requests from IP {}. Cooling down.", ip);
                 self.ip_clients[ip_idx].cooldown_until =
                     Some(Instant::now() + Duration::from_millis(LimitConstants::COOLDOWN_MS_429));
-                if self.should_shutdown_on_rate_limit() {
-                    warn!(
-                        "trade_engine fuse tripped by Binance REST 429; shutting down request processing"
-                    );
-                    self.shutdown.cancel();
-                } else {
-                    warn!(
-                        "trade_engine REST 429 on IP {} in multi-ip mode; cooling down endpoint without global shutdown",
-                        ip
-                    );
-                }
+                warn!(
+                    "trade_engine REST 429 on IP {}; cooling down endpoint without global shutdown cooldown_ms={}",
+                    ip, LimitConstants::COOLDOWN_MS_429
+                );
             }
             418 => {
-                warn!("418 Banned for IP {}. Backing off.", ip);
                 self.ip_clients[ip_idx].banned_until = Some(
                     Instant::now() + Duration::from_millis(LimitConstants::BAN_BACKOFF_MS_418),
                 );
-                if self.should_shutdown_on_rate_limit() {
-                    warn!(
-                        "trade_engine fuse tripped by Binance REST 418; shutting down request processing"
-                    );
-                    self.shutdown.cancel();
-                } else {
-                    warn!(
-                        "trade_engine REST 418 on IP {} in multi-ip mode; backing off endpoint without global shutdown",
-                        ip
-                    );
-                }
+                warn!(
+                    "trade_engine REST 418 on IP {}; backing off endpoint without global shutdown cooldown_ms={}",
+                    ip, LimitConstants::BAN_BACKOFF_MS_418
+                );
             }
             _ => {}
         }
@@ -712,7 +688,6 @@ mod tests {
                 key: "key".to_string(),
                 secret: "secret".to_string(),
             }],
-            CancellationToken::new(),
             false,
             None,
         )
@@ -730,7 +705,6 @@ mod tests {
                 key: "key".to_string(),
                 secret: "secret".to_string(),
             }],
-            CancellationToken::new(),
             false,
             None,
         )
@@ -972,24 +946,41 @@ mod tests {
     }
 
     #[test]
-    fn single_ip_429_triggers_shutdown() {
-        let mut dispatcher = test_dispatcher();
+    fn single_ip_rate_limits_cool_for_five_minutes_without_shutdown() {
+        for status in [429, 418] {
+            let mut dispatcher = test_dispatcher();
+            let before = Instant::now();
 
-        dispatcher.handle_limit_status(0, 429);
+            dispatcher.handle_limit_status(0, status);
 
-        assert!(dispatcher.shutdown.is_cancelled());
-        assert!(dispatcher.ip_clients[0].cooldown_until.is_some());
+            let until = if status == 429 {
+                dispatcher.ip_clients[0].cooldown_until.unwrap()
+            } else {
+                dispatcher.ip_clients[0].banned_until.unwrap()
+            };
+            assert!(until >= before + Duration::from_secs(300));
+            assert!(until <= Instant::now() + Duration::from_secs(300));
+            assert_eq!(dispatcher.select_ip(1), None);
+
+            let expired = Instant::now() - Duration::from_secs(1);
+            dispatcher.ip_clients[0].cooldown_until = Some(expired);
+            dispatcher.ip_clients[0].banned_until = Some(expired);
+            assert_eq!(dispatcher.select_ip(1), Some(0));
+        }
     }
 
     #[test]
-    fn multi_ip_429_only_cools_down_current_ip() {
-        let mut dispatcher = test_dispatcher_multi_ip();
+    fn multi_ip_rate_limits_only_cool_down_current_ip() {
+        for status in [429, 418] {
+            let mut dispatcher = test_dispatcher_multi_ip();
 
-        dispatcher.handle_limit_status(0, 429);
+            dispatcher.handle_limit_status(0, status);
 
-        assert!(!dispatcher.shutdown.is_cancelled());
-        assert!(dispatcher.ip_clients[0].cooldown_until.is_some());
-        assert!(dispatcher.ip_clients[1].cooldown_until.is_none());
+            assert!(!dispatcher.ip_clients[0].is_available());
+            assert!(dispatcher.ip_clients[1].cooldown_until.is_none());
+            assert!(dispatcher.ip_clients[1].banned_until.is_none());
+            assert_eq!(dispatcher.select_ip(1), Some(1));
+        }
     }
 }
 

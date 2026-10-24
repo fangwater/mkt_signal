@@ -1754,7 +1754,6 @@ impl TradeEngine {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
                 &self.local_ips,
                 &self.accounts,
-                shutdown.clone(),
                 binance_um_ip_whitelist_mode,
                 self.binance_um_whitelist_ip,
             )?)))
@@ -2509,7 +2508,7 @@ impl TradeEngine {
                     .join(",")
             );
 
-            let um_shutdown_on_rate_limit = true;
+            let um_shutdown_on_rate_limit = false;
             let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(planned_um_connection_count);
             let mut um_endpoint_groups = Vec::with_capacity(1);

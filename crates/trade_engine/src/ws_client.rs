@@ -685,6 +685,7 @@ pub struct TradeWsClient {
     health_reconnect_pending: bool,
     shutdown_on_rate_limit: bool,
     rate_limit_cooldown_until: Option<std::time::Instant>,
+    binance_request_weight_count: Option<u32>,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
     planned_reconnect_period_ms: Option<u64>,
@@ -900,6 +901,7 @@ impl TradeWsClient {
             health_reconnect_pending: false,
             shutdown_on_rate_limit,
             rate_limit_cooldown_until: None,
+            binance_request_weight_count: None,
             shutdown: false,
             should_reconnect: false,
             planned_reconnect_period_ms: None,
@@ -1094,7 +1096,41 @@ impl TradeWsClient {
             || text.contains("Way too many requests")
     }
 
-    fn trigger_engine_shutdown_on_binance_rate_limit(
+    fn enter_rate_limit_cooldown(&mut self, cooldown_ms: u64) {
+        let until = std::time::Instant::now() + Duration::from_millis(cooldown_ms);
+        // An in-flight response must not shorten an existing 429/418 cooldown.
+        let until = self.rate_limit_cooldown_until.unwrap_or(until).max(until);
+        self.rate_limit_cooldown_until = Some(until);
+        let mut state = self.endpoint_state.borrow_mut();
+        state.cooldown_until = Some(state.cooldown_until.unwrap_or(until).max(until));
+    }
+
+    fn update_binance_request_weight(&mut self, rate_limits: &[binance_ws::BinanceWsRateLimit]) {
+        let mut request_weights = rate_limits
+            .iter()
+            .filter(|limit| limit.rate_limit_type == "REQUEST_WEIGHT");
+        let Some(limit) = request_weights
+            .clone()
+            .find(|limit| limit.interval == "MINUTE" && limit.interval_num == 1)
+            .or_else(|| request_weights.next())
+        else {
+            return;
+        };
+        self.binance_request_weight_count = Some(limit.count);
+        if limit.count >= LimitConstants::WS_REQUEST_WEIGHT_COOL_THRESHOLD {
+            self.enter_rate_limit_cooldown(LimitConstants::WS_REQUEST_WEIGHT_PROACTIVE_COOL_MS);
+            warn!(
+                "trade ws client id={} exchange=binance entering endpoint cooldown path=proactive_2100 request_weight_count={} interval={} interval_num={} cooldown_ms={}",
+                self.id,
+                limit.count,
+                limit.interval,
+                limit.interval_num,
+                LimitConstants::WS_REQUEST_WEIGHT_PROACTIVE_COOL_MS
+            );
+        }
+    }
+
+    fn handle_binance_rate_limit(
         &mut self,
         status: Option<u16>,
         error_code: Option<i32>,
@@ -1126,11 +1162,9 @@ impl TradeWsClient {
         } else {
             LimitConstants::COOLDOWN_MS_429
         };
-        let until = std::time::Instant::now() + Duration::from_millis(cooldown_ms);
-        self.rate_limit_cooldown_until = Some(until);
-        self.endpoint_state.borrow_mut().cooldown_until = Some(until);
+        self.enter_rate_limit_cooldown(cooldown_ms);
         warn!(
-            "trade ws client id={} exchange=binance entering endpoint cooldown due to rate limit at {} status={:?} code={:?} cooldown_ms={} detail={}",
+            "trade ws client id={} exchange=binance entering endpoint cooldown path=429/418/-1003 at {} status={:?} code={:?} cooldown_ms={} detail={}",
             self.id,
             context,
             status,
@@ -1470,7 +1504,7 @@ impl TradeWsClient {
                             self.health.entry.borrow_mut().remote_addr = None;
                             self.update_health_queue_depths();
                             let err_text = format_error_chain(&err);
-                            self.trigger_engine_shutdown_on_binance_rate_limit(
+                            self.handle_binance_rate_limit(
                                 None,
                                 None,
                                 &err_text,
@@ -1866,7 +1900,9 @@ impl TradeWsClient {
         &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
-        if self.waiting_for_binance_session_logon() {
+        if (self.exchange == Exchange::Binance && self.in_rate_limit_cooldown())
+            || self.waiting_for_binance_session_logon()
+        {
             return Ok(());
         }
         while let Some(msg) = self.pending.pop_front() {
@@ -3870,12 +3906,13 @@ impl TradeWsClient {
         let Some(resp) = binance_ws::parse_ws_response(payload) else {
             return false;
         };
-        self.trigger_engine_shutdown_on_binance_rate_limit(
+        self.handle_binance_rate_limit(
             resp.status,
             resp.error_code,
             payload,
             "binance_ws_response",
         );
+        self.update_binance_request_weight(&resp.rate_limits);
         let id = resp.id.unwrap_or(0);
         if id <= 0 {
             return false;
@@ -4885,6 +4922,283 @@ mod tests {
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct RateLimitTestIpc {
+        node: Option<iceoryx2::prelude::Node<iceoryx2::service::ipc::Service>>,
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for RateLimitTestIpc {
+        fn drop(&mut self) {
+            self.node.take();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn binance_rate_limit_test_client() -> (RateLimitTestIpc, TradeWsClient) {
+        use iceoryx2::prelude::*;
+
+        let root =
+            std::env::temp_dir().join(format!("binance_rate_limit_{}", uuid::Uuid::new_v4()));
+        let mut config = Config::default();
+        config
+            .global
+            .set_root_path(&Path::new(root.as_os_str().as_encoded_bytes()).unwrap());
+        let node = NodeBuilder::new()
+            .config(&config)
+            .create::<ipc::Service>()
+            .unwrap();
+        let name =
+            ServiceName::new(&format!("test/binance_rate_limit/{}", uuid::Uuid::new_v4())).unwrap();
+        let service = node
+            .service_builder(&name)
+            .publish_subscribe::<[u8; 64]>()
+            .create()
+            .unwrap();
+        let mut client = TradeWsClient::new(
+            0,
+            Exchange::Binance,
+            Exchange::Binance,
+            false,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            "ws://127.0.0.1".into(),
+            1_000,
+            15_000,
+            128,
+            None,
+            None,
+            None,
+            None,
+            super::WsCommandQueue::new(),
+            super::TradeResponseSink::new(service.publisher_builder().create().unwrap()),
+            Default::default(),
+            Default::default(),
+            tokio_util::sync::CancellationToken::new(),
+            Default::default(),
+            false,
+            super::WsHealthRegistry::default(),
+        );
+        // Keep tests independent of production credentials and signer environment variables.
+        client.binance_creds = Some(crate::config::ApiKey {
+            name: "test".into(),
+            key: "test-key".into(),
+            secret: "test-secret".into(),
+        });
+        client.binance_ws_signer = Some(super::BinanceWsSigner::HmacSha256 {
+            secret: "test-secret".into(),
+        });
+        client.endpoint_state.borrow_mut().mark_connected();
+        (
+            RateLimitTestIpc {
+                node: Some(node),
+                root,
+            },
+            client,
+        )
+    }
+
+    fn request_weight_response(count: u32) -> String {
+        serde_json::json!({
+            "status": 200,
+            "rateLimits": [{
+                "rateLimitType": "REQUEST_WEIGHT", "interval": "MINUTE", "intervalNum": 1,
+                "limit": 2400, "count": count
+            }]
+        })
+        .to_string()
+    }
+
+    fn assert_binance_cooldown(client: &mut TradeWsClient, before: Instant, seconds: u64) {
+        let until = client.rate_limit_cooldown_until.expect("endpoint cooldown");
+        assert!(until >= before + Duration::from_secs(seconds));
+        assert!(until <= Instant::now() + Duration::from_secs(seconds));
+        assert_eq!(client.endpoint_state.borrow().cooldown_until, Some(until));
+        assert!(client.in_rate_limit_cooldown());
+        assert!(!client
+            .endpoint_state
+            .borrow_mut()
+            .is_available_at(Instant::now()));
+        assert!(!client.engine_shutdown.is_cancelled());
+        assert!(!client.shutdown);
+    }
+
+    #[test]
+    fn binance_request_weight_cools_at_2100_without_shutdown() {
+        for count in [2099, 2100, 2101] {
+            for shutdown_on_rate_limit in [false, true] {
+                let (_node, mut client) = binance_rate_limit_test_client();
+                client.shutdown_on_rate_limit = shutdown_on_rate_limit;
+                let before = Instant::now();
+
+                client.handle_binance_payload(&request_weight_response(count));
+
+                assert_eq!(client.binance_request_weight_count, Some(count));
+                if count >= 2100 {
+                    assert_binance_cooldown(&mut client, before, 60);
+                } else {
+                    assert!(!client.in_rate_limit_cooldown());
+                    assert!(!client.engine_shutdown.is_cancelled());
+                    assert!(client
+                        .endpoint_state
+                        .borrow_mut()
+                        .is_available_at(Instant::now()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binance_request_weight_prefers_one_minute_and_retains_last_count() {
+        let (_node, mut client) = binance_rate_limit_test_client();
+        client.handle_binance_payload(r#"{"status":200,"rateLimits":[
+            {"rateLimitType":"ORDERS","interval":"MINUTE","intervalNum":1,"limit":2400,"count":2200},
+            {"rateLimitType":"REQUEST_WEIGHT","interval":"DAY","intervalNum":1,"limit":100000,"count":2200},
+            {"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":2,"limit":4800,"count":2200},
+            {"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":2400,"count":2099}
+        ]}"#);
+        assert_eq!(client.binance_request_weight_count, Some(2099));
+        assert!(!client.in_rate_limit_cooldown());
+
+        client.handle_binance_payload(r#"{"status":200}"#);
+        client.handle_binance_payload(
+            r#"{"status":200,"rateLimits":[
+            {"rateLimitType":"ORDERS","interval":"MINUTE","intervalNum":1,"limit":2400,"count":2200}
+        ]}"#,
+        );
+        assert_eq!(client.binance_request_weight_count, Some(2099));
+        assert!(!client.in_rate_limit_cooldown());
+
+        let before = Instant::now();
+        client.handle_binance_payload(r#"{"status":200,"rateLimits":[
+            {"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":2,"limit":4800,"count":2100}
+        ]}"#);
+        assert_eq!(client.binance_request_weight_count, Some(2100));
+        assert_binance_cooldown(&mut client, before, 60);
+    }
+
+    #[test]
+    fn binance_um_rate_limit_responses_cool_for_five_minutes_without_shutdown() {
+        for (status, error_code) in [(429, None), (418, None), (400, Some(-1003))] {
+            let (_node, mut client) = binance_rate_limit_test_client();
+            let before = Instant::now();
+            let mut payload: Value = serde_json::from_str(&request_weight_response(2400)).unwrap();
+            payload["status"] = status.into();
+            if let Some(code) = error_code {
+                payload["error"] = serde_json::json!({"code": code, "msg": "rate limited"});
+            }
+            client.handle_binance_payload(&payload.to_string());
+
+            assert_binance_cooldown(&mut client, before, 300);
+            let until = client.rate_limit_cooldown_until;
+            client.handle_binance_payload(&request_weight_response(2100));
+            client.handle_binance_payload(&request_weight_response(1));
+            assert_eq!(client.rate_limit_cooldown_until, until);
+            assert_eq!(client.binance_request_weight_count, Some(1));
+        }
+    }
+
+    #[test]
+    fn binance_um_handshake_rate_limits_cool_without_shutdown() {
+        for text in [
+            "HTTP 429 Too Many Requests",
+            "HTTP 418",
+            r#"{"code":-1003}"#,
+        ] {
+            let (_node, mut client) = binance_rate_limit_test_client();
+            let before = Instant::now();
+            client.handle_binance_rate_limit(None, None, text, "connect");
+            assert_binance_cooldown(&mut client, before, 300);
+        }
+    }
+
+    #[tokio::test]
+    async fn binance_cooldown_queues_order_and_cancel_then_resumes_sending() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::{client_async, MaybeTlsStream};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (mut server, mut ws) = tokio::join!(
+            async {
+                let (socket, _) = listener.accept().await.unwrap();
+                tokio_tungstenite::accept_async(socket).await.unwrap()
+            },
+            async {
+                let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+                client_async(format!("ws://{address}"), MaybeTlsStream::Plain(socket))
+                    .await
+                    .unwrap()
+                    .0
+            }
+        );
+        let (_node, mut client) = binance_rate_limit_test_client();
+        client.handle_binance_payload(&request_weight_response(2100));
+        let order = BinanceNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BinanceWsNewUMOrder,
+            1,
+            42,
+            "BTCUSDT",
+            Side::Buy,
+            OrderType::Limit,
+            QuantizedValue::from_parts(1, -3, 250),
+            QuantizedValue::from_parts(1, 0, 100000),
+            false,
+            false,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        let cancel = crate::trade_request::BinanceCancelOrderParams {
+            symbol: "BTCUSDT".into(),
+            orig_client_order_id: 42,
+        }
+        .to_bytes()
+        .unwrap();
+        client
+            .handle_send(TradeRequestMsg::parse(&order).unwrap(), &mut ws)
+            .await
+            .unwrap();
+        client
+            .handle_send(
+                TradeRequestMsg::create(TradeRequestType::BinanceWsCancelUMOrder, 1, 43, &cancel)
+                    .unwrap(),
+                &mut ws,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(client.pending.len(), 2);
+        assert!(client.inflight.is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), server.next())
+                .await
+                .is_err()
+        );
+
+        let expired = Instant::now() - Duration::from_secs(1);
+        client.rate_limit_cooldown_until = Some(expired);
+        client.endpoint_state.borrow_mut().cooldown_until = Some(expired);
+        client.flush_pending(&mut ws).await.unwrap();
+
+        assert!(client.pending.is_empty());
+        assert_eq!(client.inflight.len(), 2);
+        assert!(client.rate_limit_cooldown_until.is_none());
+        assert!(client
+            .endpoint_state
+            .borrow_mut()
+            .is_available_at(Instant::now()));
+        assert!(!client.engine_shutdown.is_cancelled());
+        for method in ["order.place", "order.cancel"] {
+            let message = tokio::time::timeout(Duration::from_secs(1), server.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let payload: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(payload["method"], method);
+        }
     }
 
     #[test]
