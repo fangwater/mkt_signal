@@ -4,6 +4,7 @@ mod bbo_spread;
 pub mod exporter;
 mod hyperliquid_account_fact;
 mod iceoryx;
+pub mod native_fill_import;
 mod order_queue_position;
 mod order_update;
 pub mod parquet;

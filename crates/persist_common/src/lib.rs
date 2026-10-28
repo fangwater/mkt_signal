@@ -1,3 +1,4 @@
+pub mod native_codec;
 pub mod order_queue_position;
 pub mod rapidx_execution;
 pub mod rapidx_fact;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
@@ -14,7 +14,8 @@ use crate::iceoryx::{create_record_subscriber, trim_uniform_order_payload};
 use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
 use crate::storage::RocksDbStore;
 use crate::sync::persist_with_outbox;
-use persist_common::{UNIFORM_ORDER_RECORD_CHANNEL, UNIFORM_ORDER_TAIL_BINARY_LEN};
+use persist_common::native_codec::append_bbo_spread;
+use persist_common::UNIFORM_ORDER_RECORD_CHANNEL;
 
 pub(crate) const CF_UNIFORM_ORDER: &str = "uniform_orders";
 
@@ -204,18 +205,6 @@ fn skip(cursor: &mut Bytes, len: usize, field: &str) -> Result<()> {
     }
     cursor.advance(len);
     Ok(())
-}
-
-fn append_bbo_spread(payload: Bytes, bbo_spread: &str) -> Bytes {
-    let bbo_bytes = bbo_spread.as_bytes();
-    let len = bbo_bytes.len().min(u16::MAX as usize);
-    let signal_start = payload.len().saturating_sub(UNIFORM_ORDER_TAIL_BINARY_LEN);
-    let mut out = BytesMut::with_capacity(payload.len() + 2 + len);
-    out.extend_from_slice(&payload[..signal_start]);
-    out.put_u16_le(len as u16);
-    out.extend_from_slice(&bbo_bytes[..len]);
-    out.extend_from_slice(&payload[signal_start..]);
-    out.freeze()
 }
 
 #[cfg(test)]

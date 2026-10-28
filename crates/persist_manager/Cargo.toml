@@ -53,7 +53,13 @@ name = "rapidx_statement_export"
 path = "src/bin/rapidx_statement_export.rs"
 required-features = ["runtime"]
 
+[[bin]]
+name = "native_fill_import"
+path = "src/bin/native_fill_import.rs"
+required-features = ["runtime"]
+
 [dependencies]
+sha2 = "0.10"
 anyhow = "1.0"
 bigdecimal = { version = "0.4", optional = true }
 axum = { version = "0.7", features = ["ws"], optional = true }

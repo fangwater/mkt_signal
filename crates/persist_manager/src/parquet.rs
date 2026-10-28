@@ -674,67 +674,67 @@ fn dataframe_to_parquet_bytes(df: &mut DataFrame) -> Result<Vec<u8>> {
 }
 
 #[derive(Debug)]
-struct DecodedTradeRecord {
-    event_time: i64,
-    trade_time: i64,
-    symbol: String,
-    order_id: i64,
-    client_order_id: i64,
-    side: String,
-    price: f64,
-    is_maker: bool,
-    trading_venue: String,
-    cumulative_filled_quantity: f64,
-    order_status: Option<String>,
+pub(crate) struct DecodedTradeRecord {
+    pub(crate) event_time: i64,
+    pub(crate) trade_time: i64,
+    pub(crate) symbol: String,
+    pub(crate) order_id: i64,
+    pub(crate) client_order_id: i64,
+    pub(crate) side: String,
+    pub(crate) price: f64,
+    pub(crate) is_maker: bool,
+    pub(crate) trading_venue: String,
+    pub(crate) cumulative_filled_quantity: f64,
+    pub(crate) order_status: Option<String>,
 }
 
 #[derive(Debug)]
-struct DecodedOrderRecord {
-    event_time: i64,
-    symbol: String,
-    order_id: i64,
-    client_order_id: i64,
-    client_order_id_str: Option<String>,
-    side: String,
-    order_type: String,
-    time_in_force: String,
-    price: f64,
-    quantity: f64,
-    cumulative_filled_quantity: f64,
-    status: String,
-    raw_status: String,
-    execution_type: String,
-    raw_execution_type: String,
-    trading_venue: String,
+pub(crate) struct DecodedOrderRecord {
+    pub(crate) event_time: i64,
+    pub(crate) symbol: String,
+    pub(crate) order_id: i64,
+    pub(crate) client_order_id: i64,
+    pub(crate) client_order_id_str: Option<String>,
+    pub(crate) side: String,
+    pub(crate) order_type: String,
+    pub(crate) time_in_force: String,
+    pub(crate) price: f64,
+    pub(crate) quantity: f64,
+    pub(crate) cumulative_filled_quantity: f64,
+    pub(crate) status: String,
+    pub(crate) raw_status: String,
+    pub(crate) execution_type: String,
+    pub(crate) raw_execution_type: String,
+    pub(crate) trading_venue: String,
 }
 
 #[derive(Debug)]
-struct DecodedUniformOrderRecord {
-    recv_ts_us: i64,
-    symbol: String,
-    create_ts: i64,
-    update_ts: i64,
-    signal_ts: i64,
-    submit_ts: i64,
-    local_ts: i64,
-    mkt_ts: i64,
-    client_order_id: i64,
-    trading_venue: String,
-    order_type: String,
-    side: String,
-    price: f64,
-    price_offset: f64,
-    amount_init: f64,
-    amount_update: f64,
-    status: String,
-    from_key: String,
-    from_key_hex: String,
-    signal_bbo: Option<SignalBbo>,
-    fill_liquidity: Option<FillLiquidity>,
-    bbo_spread: String,
+pub(crate) struct DecodedUniformOrderRecord {
+    pub(crate) recv_ts_us: i64,
+    pub(crate) symbol: String,
+    pub(crate) create_ts: i64,
+    pub(crate) update_ts: i64,
+    pub(crate) signal_ts: i64,
+    pub(crate) submit_ts: i64,
+    pub(crate) local_ts: i64,
+    pub(crate) mkt_ts: i64,
+    pub(crate) client_order_id: i64,
+    pub(crate) trading_venue: String,
+    pub(crate) order_type: String,
+    pub(crate) side: String,
+    pub(crate) price: f64,
+    pub(crate) price_offset: f64,
+    pub(crate) amount_init: f64,
+    pub(crate) amount_update: f64,
+    pub(crate) status: String,
+    pub(crate) from_key: String,
+    pub(crate) from_key_hex: String,
+    pub(crate) signal_bbo: Option<SignalBbo>,
+    pub(crate) fill_liquidity: Option<FillLiquidity>,
+    pub(crate) bbo_spread: String,
 }
 
-fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
+pub(crate) fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let _recv_ts_us = read_i64(&mut cursor, "trade update recv_ts_us")?;
     let event_time = read_i64(&mut cursor, "trade update event_time")?;
@@ -777,7 +777,7 @@ fn decode_trade_record(bytes: &[u8]) -> Result<DecodedTradeRecord> {
     })
 }
 
-fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
+pub(crate) fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let _recv_ts_us = read_i64(&mut cursor, "order update recv_ts_us")?;
     let event_time = read_i64(&mut cursor, "order update event_time")?;
@@ -836,7 +836,7 @@ fn decode_order_record(bytes: &[u8]) -> Result<DecodedOrderRecord> {
     })
 }
 
-fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
+pub(crate) fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord> {
     let mut cursor = Bytes::copy_from_slice(bytes);
     let recv_ts_us = read_i64(&mut cursor, "uniform order recv_ts_us")?;
 

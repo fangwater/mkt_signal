@@ -3719,6 +3719,8 @@ name = "persist_common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
+ "order_common",
  "serde",
  "serde_json",
  "sha2",
@@ -3753,6 +3755,7 @@ dependencies = [
  "runtime_common",
  "serde",
  "serde_json",
+ "sha2",
  "tar",
  "tokio",
  "tokio-stream",

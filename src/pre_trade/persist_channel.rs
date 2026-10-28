@@ -13,7 +13,7 @@ use ipc_common::iceoryx_publisher::{
 use order_common::TradingVenue;
 use order_common::{OrderUpdate, TradeUpdate};
 use persist_common::{
-    HyperliquidAccountFactAck, SignalBbo, UnifiedOrderRecord, HYPERLIQUID_ACCOUNT_FACT_ACK_CHANNEL,
+    HyperliquidAccountFactAck, UnifiedOrderRecord, HYPERLIQUID_ACCOUNT_FACT_ACK_CHANNEL,
     HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES, HYPERLIQUID_ACCOUNT_FACT_RECORD_CHANNEL,
     ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
     TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
@@ -376,53 +376,14 @@ fn normalize_symbol_and_qty(
 /// - cumulative_filled_quantity: f64 (8 bytes)
 /// - order_status: u8 (1 byte) + Option flag
 fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
-    let mut buf = BytesMut::with_capacity(512);
     let venue = trade.trading_venue();
-    let (normalized_symbol, normalized_cum_qty) = normalize_symbol_and_qty(
+    let (symbol, qty) = normalize_symbol_and_qty(
         venue,
         trade.symbol(),
         trade.cumulative_filled_quantity(),
         trade.price(),
     );
-
-    // 接收时间戳（在发布时记录）
-    buf.put_i64_le(get_timestamp_us());
-
-    // 基础时间戳
-    buf.put_i64_le(trade.event_time());
-    buf.put_i64_le(trade.trade_time());
-
-    // 交易对符号
-    put_string(&mut buf, normalized_symbol.as_str());
-
-    // ID 字段
-    buf.put_i64_le(trade.order_id());
-    buf.put_i64_le(trade.client_order_id());
-
-    // 方向
-    buf.put_u8(trade.side() as u8);
-
-    // 价格
-    buf.put_f64_le(trade.price());
-
-    // Maker/Taker
-    buf.put_u8(trade.is_maker() as u8);
-
-    // 交易所类型
-    buf.put_u8(venue as u8);
-
-    // 累计成交量
-    buf.put_f64_le(normalized_cum_qty);
-
-    // 订单状态（可选）
-    if let Some(status) = trade.order_status() {
-        buf.put_u8(1); // has value
-        buf.put_u8(status as u8);
-    } else {
-        buf.put_u8(0); // no value
-    }
-
-    buf.freeze()
+    persist_common::native_codec::serialize_trade_update(trade, get_timestamp_us(), &symbol, qty)
 }
 
 /// 将 OrderUpdate trait object 序列化为字节流
@@ -536,8 +497,6 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
 /// - signal_bbo: [u8; 83]
 /// - fill_liquidity: u8 (0=unknown, 1=maker, 2=taker)
 fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
-    let mut buf = BytesMut::with_capacity(512);
-
     let venue = TradingVenue::from_u8(record.venue).unwrap_or(TradingVenue::BinanceMargin);
     let raw_symbol = String::from_utf8_lossy(&record.symbol);
     let (normalized_symbol, normalized_amount_init) =
@@ -549,40 +508,13 @@ fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
         record.price,
     );
 
-    buf.put_i64_le(get_timestamp_us());
-
-    let symbol_len = normalized_symbol.len() as u16;
-    buf.put_u16_le(symbol_len);
-    buf.put_slice(normalized_symbol.as_bytes());
-
-    buf.put_i64_le(record.create_ts);
-    buf.put_i64_le(record.update_ts);
-    buf.put_i64_le(record.signal_ts);
-    buf.put_i64_le(record.submit_ts);
-    buf.put_i64_le(record.local_ts);
-    buf.put_i64_le(record.mkt_ts);
-
-    buf.put_i64_le(record.client_order_id);
-
-    buf.put_u8(record.venue);
-    buf.put_u8(record.ttype);
-    buf.put_u8(record.side);
-
-    buf.put_f64_le(record.price);
-    buf.put_f64_le(record.price_offset);
-    buf.put_f64_le(normalized_amount_init);
-    buf.put_f64_le(normalized_amount_update);
-
-    buf.put_u8(record.status);
-
-    let from_key_len = record.from_key.len() as u32;
-    buf.put_u32_le(from_key_len);
-    buf.put_slice(&record.from_key);
-
-    buf.put_slice(&SignalBbo::encode_optional(record.signal_bbo));
-    buf.put_u8(record.fill_liquidity as u8);
-
-    buf.freeze()
+    persist_common::native_codec::serialize_uniform_order(
+        record,
+        get_timestamp_us(),
+        &normalized_symbol,
+        normalized_amount_init,
+        normalized_amount_update,
+    )
 }
 
 #[cfg(test)]
@@ -591,7 +523,7 @@ mod wire_tests {
     use crate::strategy::uniform_order_helper::build_uniform_order_record;
     use bytes::Buf;
     use order_common::{Order, OrderStatus, OrderType, Side};
-    use persist_common::FillLiquidity;
+    use persist_common::{FillLiquidity, SignalBbo};
 
     // Exercise only the offline codec; never initialize Iceoryx publishers.
     #[test]
