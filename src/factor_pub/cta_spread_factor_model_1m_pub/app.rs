@@ -1325,7 +1325,7 @@ mod tests {
             .into_iter()
             .filter(|f| !requires_amount_thresholds(f))
             .collect();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 7);
         assert!(requires_amount_thresholds("baseline_046"));
         assert!(requires_amount_thresholds("net_buy_small"));
         assert!(requires_amount_thresholds("unreviewed"));
@@ -1465,12 +1465,12 @@ mod tests {
         ))
         .unwrap();
         config.universe.validate().unwrap();
-        assert_eq!(config.universe.symbols.len(), 18);
-        assert_eq!(config.universe.factors.len(), 15);
+        assert_eq!(config.universe.symbols.len(), 17);
+        assert_eq!(config.universe.factors.len(), 7);
         assert!(config
             .universe
             .factors
-            .contains(&"factor_trades_049".to_string()));
+            .contains(&"baseline_164".to_string()));
         assert!(config
             .universe
             .factors

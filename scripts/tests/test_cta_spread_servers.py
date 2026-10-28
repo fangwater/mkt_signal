@@ -40,12 +40,12 @@ class SpreadConfigTests(unittest.TestCase):
         from cta_spread_deployment import prepare_deployment
         source = json.loads((ROOT / 'config/cta_spread_deployment.json').read_text())
         prepared = prepare_deployment(source, self.config)
-        self.assertEqual(prepared['summary'], {'symbols':18, 'strategies':15, 'combinations':153})
-        self.assertEqual(len(prepared['universe']['factors']), 15)
+        self.assertEqual(prepared['summary'], {'symbols':17, 'strategies':7, 'combinations':55})
+        self.assertEqual(len(prepared['universe']['factors']), 7)
         row = prepared['symbol_factors']['AXSUSDT']
-        self.assertEqual(row['TD_PR_008'], 1)
-        self.assertEqual(row['TD_MT_019'], -1)
-        self.assertEqual(prepared['symbol_factors']['KAVAUSDT']['factor_trades_049'], -1)
+        self.assertEqual(row['TD_PR_011'], 1)
+        self.assertEqual(row['TD_TI_024'], -1)
+        self.assertEqual(prepared['symbol_factors']['KAVAUSDT']['baseline_164'], 1)
         self.assertEqual(prepared['symbol_factors'], json.loads((ROOT/'config/cta_spread_symbol_factors.json').read_text()))
         self.assertFalse(prepared['config']['enabled'])
         self.assertEqual(prepared['config']['entry']['nq_long_quantile'], .5)

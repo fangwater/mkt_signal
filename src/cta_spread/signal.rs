@@ -4,7 +4,7 @@ use crate::cta_spread::config::{
     CTA_SPREAD_STATUS_PATH, CTA_SPREAD_VENUE_NAME,
 };
 use crate::cta_spread::factor_channel::{IndependentFactorObservation, WeightedFactorChannel};
-use crate::cta_spread::factors::{runtime_factor_config_key, WeightedBar};
+use crate::cta_spread::factors::{runtime_factor_config_key, SymbolFactorTable, WeightedBar};
 use crate::cta_spread::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
 use crate::cta_spread::positions::{next_position_flag, StrategyPosition};
 use anyhow::{ensure, Context, Result};
@@ -104,20 +104,7 @@ impl CtaSpreadSignalApp {
         if !self.config.enabled {
             return;
         }
-        // Removing a binding exits its direction but preserves both hedged legs.
-        for (factor, rows) in &mut self.positions {
-            for (symbol, position) in rows {
-                let active = self.factors.table().get(symbol).is_some_and(|row| {
-                    row.factors
-                        .iter()
-                        .zip(&row.weights)
-                        .any(|(f, w)| f == factor && *w != 0.0)
-                });
-                if !active {
-                    position.exit();
-                }
-            }
-        }
+        sync_position_scope(&mut self.positions, self.factors.table());
     }
     fn publish_targets(&mut self) -> Result<()> {
         self.record_deliveries()?;
@@ -149,7 +136,9 @@ impl CtaSpreadSignalApp {
                 .get(&factor)
                 .into_iter()
                 .flat_map(|rows| rows.iter())
-                .flat_map(|(symbol, p)| market_targets(symbol, p))
+                .flat_map(|(symbol, p)| {
+                    market_targets(symbol, p, !self.factors.table().contains_key(symbol))
+                })
                 .collect();
             for (symbol, row) in self.factors.table() {
                 if row
@@ -466,17 +455,43 @@ fn cash_symbol(symbol: &str) -> Result<&str> {
     ensure!(!asset.is_empty(), "empty cash asset");
     Ok(asset)
 }
-fn market_targets(symbol: &str, p: &StrategyPosition) -> [(String, Value); 2] {
+fn sync_position_scope(positions: &mut Positions, table: &SymbolFactorTable) {
+    for (factor, rows) in positions {
+        for (symbol, position) in rows {
+            match table.get(symbol) {
+                // A removed coin has no future signal to release its exit hedge.
+                None => *position = StrategyPosition::default(),
+                Some(row)
+                    if !row
+                        .factors
+                        .iter()
+                        .zip(&row.weights)
+                        .any(|(f, w)| f == factor && *w != 0.0) =>
+                {
+                    position.exit();
+                }
+                Some(_) => {}
+            }
+        }
+    }
+}
+
+fn market_targets(symbol: &str, p: &StrategyPosition, removed: bool) -> [(String, Value); 2] {
     // Factor scope and persisted state are validated before publication.
+    // Explicit clear bypasses notional tolerance; signal 1 requests taker execution.
+    let target = |qty| {
+        if removed {
+            json!({"qty":"clear","signal":1})
+        } else {
+            json!({"qty":qty,"signal":0})
+        }
+    };
     [
         (
             symbol.strip_suffix("USDT").unwrap_or(symbol).to_string(),
-            json!({"qty":p.cash_qty,"signal":0}),
+            target(p.cash_qty),
         ),
-        (
-            symbol.to_string(),
-            json!({"qty":p.perpetual_qty,"signal":0}),
-        ),
+        (symbol.to_string(), target(p.perpetual_qty)),
     ]
 }
 fn position_payload(strategy_name: String, targets: &BTreeMap<String, Value>) -> Value {
@@ -594,7 +609,7 @@ mod tests {
             "factor_reversal"
         );
         assert_eq!((p.cash_qty, p.perpetual_qty, p.qty), (-3.0, 0.0, -3.0));
-        let targets = market_targets("ETHUSDT", &p);
+        let targets = market_targets("ETHUSDT", &p, false);
         assert_eq!(
             advance_position(
                 &mut p,
@@ -608,7 +623,7 @@ mod tests {
             .unwrap(),
             "hold"
         );
-        assert_eq!(market_targets("ETHUSDT", &p), targets);
+        assert_eq!(market_targets("ETHUSDT", &p, false), targets);
         // Exit works without any price or spread observations.
         assert_eq!(
             advance_position(&mut p, Some(&bar(0.8, None)), &c, 60000, 0, NOW, None).unwrap(),
@@ -732,7 +747,7 @@ mod tests {
                 }
                 let payload = position_payload(
                     "factor_170".into(),
-                    &market_targets("ETHUSDT", &p).into_iter().collect(),
+                    &market_targets("ETHUSDT", &p, false).into_iter().collect(),
                 );
                 assert_eq!(
                     payload,
@@ -747,6 +762,65 @@ mod tests {
             }
         }
         assert!(cash_symbol("ETHUSDC").is_err());
+    }
+
+    #[test]
+    fn removed_coins_clear_both_legs_while_retained_coins_keep_their_targets() {
+        let table = SymbolFactorTable::from([(
+            "ETHUSDT".into(),
+            SymbolFactors {
+                factors: vec!["current".into()],
+                weights: vec![1.0],
+            },
+        )]);
+        let mut long = StrategyPosition::default();
+        long.enter_cash(1, 200.0, 100.0).unwrap();
+        let mut short = StrategyPosition::default();
+        short.enter_cash(-1, 200.0, 100.0).unwrap();
+        short.exit();
+        let mut positions = Positions::from([
+            (
+                "current".into(),
+                BTreeMap::from([
+                    ("ETHUSDT".into(), long.clone()),
+                    ("KNCUSDT".into(), long.clone()),
+                ]),
+            ),
+            (
+                "old".into(),
+                BTreeMap::from([("ETHUSDT".into(), long.clone()), ("KNCUSDT".into(), short)]),
+            ),
+        ]);
+        sync_position_scope(&mut positions, &table);
+        assert_eq!(positions["current"]["ETHUSDT"], long);
+        let retained_hedge = &positions["old"]["ETHUSDT"];
+        assert_eq!(
+            (
+                retained_hedge.flag,
+                retained_hedge.cash_qty,
+                retained_hedge.perpetual_qty
+            ),
+            (0, 2.0, -2.0)
+        );
+        for factor in ["current", "old"] {
+            let removed = &positions[factor]["KNCUSDT"];
+            assert_eq!(*removed, StrategyPosition::default());
+            removed.validate().unwrap();
+            let targets = market_targets("KNCUSDT", removed, true);
+            for (symbol, value) in targets {
+                assert!(matches!(symbol.as_str(), "KNC" | "KNCUSDT"));
+                let target: crate::strategy::batch_exec_strategy::BatchExecTarget =
+                    serde_json::from_value(value).unwrap();
+                assert_eq!(target.qty, 0.0);
+                assert_eq!(target.tolerance_usdt(10.0), 0.0);
+                assert!(target.clear && target.uses_taker_only());
+            }
+        }
+        // Persisted zero targets survive restarts and repeated scope refreshes.
+        let saved = serde_json::to_string(&positions).unwrap();
+        let mut recovered = serde_json::from_str(&saved).unwrap();
+        sync_position_scope(&mut recovered, &table);
+        assert_eq!(recovered, positions);
     }
 
     #[test]

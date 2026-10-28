@@ -1,191 +1,91 @@
 {
-  "ALGOUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "baseline_005": -1.0,
-    "baseline_140": 1.0,
-    "baseline_169": -1.0
-  },
   "AXSUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_PT_003": 1.0,
-    "TD_TI_027": -1.0,
-    "TD_TI_038": -1.0,
+    "TD_PR_011": 1.0,
+    "TD_TI_024": -1.0,
     "baseline_005": -1.0,
-    "baseline_028": -1.0,
     "baseline_105": -1.0,
-    "baseline_169": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
   "BELUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_TI_038": -1.0,
-    "baseline_105": -1.0,
-    "baseline_169": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "TD_TI_024": -1.0,
+    "baseline_105": -1.0
   },
   "DASHUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_TI_027": -1.0,
-    "baseline_028": -1.0,
-    "baseline_105": -1.0,
-    "baseline_169": -1.0
+    "TD_TI_024": -1.0,
+    "baseline_164": 1.0
   },
   "ENJUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_TI_027": -1.0,
-    "baseline_005": -1.0,
-    "baseline_028": -1.0,
-    "baseline_105": -1.0,
-    "baseline_140": 1.0,
-    "baseline_169": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "TD_TI_024": -1.0,
+    "baseline_140": 1.0
   },
   "IOSTUSDT": {
+    "TD_TI_024": -1.0,
     "baseline_005": -1.0,
-    "baseline_105": -1.0,
-    "baseline_140": 1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_140": 1.0
   },
   "IOTAUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_TI_027": -1.0,
+    "TD_PR_011": 1.0,
+    "TD_TI_024": -1.0,
     "baseline_005": -1.0,
-    "baseline_105": -1.0,
     "baseline_140": 1.0,
-    "baseline_169": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
   "KAVAUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_PT_003": 1.0,
-    "TD_TI_038": -1.0,
+    "TD_TI_024": -1.0,
     "baseline_005": -1.0,
     "baseline_028": -1.0,
     "baseline_105": -1.0,
     "baseline_140": 1.0,
-    "baseline_169": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_049": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
-  "KNCUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_PT_003": 1.0,
-    "baseline_105": -1.0,
-    "baseline_140": 1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0
-  },
-  "KSMUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_PT_003": 1.0,
+  "NEARUSDT": {
+    "TD_TI_024": -1.0,
+    "baseline_005": -1.0,
     "baseline_028": -1.0,
-    "baseline_169": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
   "ONTUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_PT_003": 1.0,
-    "TD_TI_027": -1.0,
-    "TD_TI_038": -1.0,
+    "TD_TI_024": -1.0,
     "baseline_005": -1.0,
     "baseline_028": -1.0,
     "baseline_105": -1.0,
     "baseline_140": 1.0,
-    "baseline_169": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
   "QTUMUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_TI_038": -1.0,
-    "baseline_105": -1.0,
+    "TD_TI_024": -1.0,
     "baseline_140": 1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
-  "RSRUSDT": {
-    "TD_PR_008": 1.0,
-    "TD_TI_027": -1.0,
-    "TD_TI_038": -1.0,
-    "baseline_105": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+  "RUNEUSDT": {
+    "TD_PR_011": 1.0,
+    "baseline_140": 1.0
   },
   "SKLUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_PT_003": 1.0,
+    "TD_TI_024": -1.0,
     "baseline_028": -1.0,
     "baseline_105": -1.0,
-    "baseline_169": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "baseline_164": 1.0
   },
-  "SNXUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_TI_027": -1.0,
-    "TD_TI_038": -1.0,
-    "baseline_105": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+  "SOLUSDT": {
+    "baseline_005": -1.0,
+    "baseline_164": 1.0
   },
   "TRBUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_TI_027": -1.0,
-    "TD_TI_038": -1.0,
-    "baseline_005": -1.0,
-    "baseline_028": -1.0,
-    "baseline_105": -1.0,
-    "baseline_169": -1.0
+    "TD_PR_011": 1.0,
+    "baseline_005": -1.0
+  },
+  "VETUSDT": {
+    "TD_TI_024": -1.0,
+    "baseline_164": 1.0
   },
   "ZENUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_MT_021": -1.0,
-    "TD_TI_027": -1.0,
-    "baseline_005": -1.0,
-    "baseline_028": -1.0,
-    "baseline_105": -1.0,
-    "factor_trades_045": -1.0
+    "TD_TI_024": -1.0,
+    "baseline_164": 1.0
   },
   "ZRXUSDT": {
-    "TD_MT_019": -1.0,
-    "TD_PR_008": 1.0,
-    "TD_PT_003": 1.0,
-    "TD_TI_038": -1.0,
-    "baseline_105": -1.0,
-    "baseline_169": -1.0,
-    "factor_trades_008": -1.0,
-    "factor_trades_045": -1.0,
-    "factor_trades_050": -1.0
+    "TD_PR_011": 1.0,
+    "TD_TI_024": -1.0,
+    "baseline_164": 1.0
   }
 }

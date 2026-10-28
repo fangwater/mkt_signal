@@ -1,7 +1,7 @@
 [universe]
 # Spread signal factors only. Execution Vol includes every symbol in each Kafka market.
-symbols = ["ALGOUSDT", "AXSUSDT", "BELUSDT", "DASHUSDT", "ENJUSDT", "IOSTUSDT", "IOTAUSDT", "KAVAUSDT", "KNCUSDT", "KSMUSDT", "ONTUSDT", "QTUMUSDT", "RSRUSDT", "SKLUSDT", "SNXUSDT", "TRBUSDT", "ZENUSDT", "ZRXUSDT"]
-factors = ["TD_MT_019", "TD_MT_021", "TD_PR_008", "TD_PT_003", "TD_TI_027", "TD_TI_038", "baseline_005", "baseline_028", "baseline_105", "baseline_140", "baseline_169", "factor_trades_008", "factor_trades_045", "factor_trades_049", "factor_trades_050"]
+symbols = ["AXSUSDT", "BELUSDT", "DASHUSDT", "ENJUSDT", "IOSTUSDT", "IOTAUSDT", "KAVAUSDT", "NEARUSDT", "ONTUSDT", "QTUMUSDT", "RUNEUSDT", "SKLUSDT", "SOLUSDT", "TRBUSDT", "VETUSDT", "ZENUSDT", "ZRXUSDT"]
+factors = ["TD_PR_011", "TD_TI_024", "baseline_005", "baseline_028", "baseline_105", "baseline_140", "baseline_164"]
 
 [tlen_server]
 base_url = "http://127.0.0.1:6322"
