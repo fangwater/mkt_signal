@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from cta_spread_factor_config import source_factor
+from cta_spread_config_server import effective_config
 
 MINUTE = 60_000
 DAY = 1440 * MINUTE
@@ -59,9 +60,10 @@ def replay(records, factor, sign, config):
     This is NOT inventory or fills: historical BBO freshness/quantity rules and
     the publication switch cannot be reconstructed from these observations.
     """
-    entry, execution = config['entry'], config['execution']
     direction, points, events = 0, [], []
     for row in records:
+        effective = effective_config(config, row['symbol'])
+        entry, execution = effective['entry'], effective['execution']
         sample = row['inputs'].get(source_factor(factor), {})
         spread = row['spread']
         nq = row.get('nq', {})
@@ -174,6 +176,7 @@ class SpreadHistory:
         # During Kafka catch-up inspect the historical window that actually exists.
         end = min(current // MINUTE * MINUTE, latest) if latest else current // MINUTE * MINUTE
         start = end - hours * 60 * MINUTE
+        config = effective_config(config, symbol)
         points, events = replay(records, factor, sign, config)
         with self.lock:
             candles = [json.loads(r[0]) for r in self.db.execute('SELECT payload FROM candles WHERE symbol=? AND ts BETWEEN ? AND ? ORDER BY ts', (symbol, start, end))]

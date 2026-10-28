@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -27,13 +28,38 @@ HEDGE_VENUE = "binance-futures"
 
 MAX_BODY_BYTES = 512 * 1024
 
-TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution"}
+TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution", "symbol_overrides"}
 ENTRY_FIELDS = {
     "factor_long_quantile", "factor_short_quantile",
     "spread_long_quantile", "spread_short_quantile",
     "nq_long_quantile", "nq_short_quantile",
 }
 EXECUTION_FIELDS = {"factor_exit_quantile_long", "factor_exit_quantile_short"}
+OVERRIDE_FIELDS = ENTRY_FIELDS | EXECUTION_FIELDS
+
+
+def effective_config(config: dict, symbol: str) -> dict:
+    result = {**config, "entry": dict(config["entry"]),
+              "execution": dict(config["execution"]), "symbol_overrides": {}}
+    for field, value in config.get("symbol_overrides", {}).get(symbol, {}).items():
+        if value is not None:
+            result["execution" if field in EXECUTION_FIELDS else "entry"][field] = value
+    return result
+
+
+def validate_position_thresholds(config: dict) -> None:
+    entry, execution = config["entry"], config["execution"]
+    long, short = entry["factor_long_quantile"], entry["factor_short_quantile"]
+    if not 0 <= short < long <= 1:
+        raise ValueError("entry factor quantiles must satisfy 0 <= short < long <= 1")
+    if not all(0 <= entry[field] <= 1 for field in (
+        "spread_long_quantile", "spread_short_quantile", "nq_long_quantile", "nq_short_quantile"
+    )):
+        raise ValueError("entry spread and NQ quantiles must be in [0, 1]")
+    if not 0 <= execution["factor_exit_quantile_long"] < long:
+        raise ValueError("execution.factor_exit_quantile_long must be below entry.factor_long_quantile")
+    if not short < execution["factor_exit_quantile_short"] <= 1:
+        raise ValueError("execution.factor_exit_quantile_short must be above entry.factor_short_quantile")
 
 
 def _object(raw: Any, field: str) -> dict[str, Any]:
@@ -77,14 +103,10 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     _reject_unknown(entry, ENTRY_FIELDS, "entry")
     factor_long = _number(entry.get("factor_long_quantile", 0.9), "entry.factor_long_quantile")
     factor_short = _number(entry.get("factor_short_quantile", 0.1), "entry.factor_short_quantile")
-    if not (0.0 <= factor_short < factor_long <= 1.0):
-        raise ValueError("entry factor quantiles must satisfy 0 <= short < long <= 1")
     gates = {name: _number(entry.get(name, default), f"entry.{name}") for name, default in [
         ("spread_long_quantile", 0.7), ("spread_short_quantile", 0.3),
         ("nq_long_quantile", 0.5), ("nq_short_quantile", 0.5),
     ]}
-    if not all(0 <= value <= 1 for value in gates.values()):
-        raise ValueError("entry spread and NQ quantiles must be in [0, 1]")
 
     execution = _object(root["execution"], "execution")
     _reject_unknown(execution, EXECUTION_FIELDS, "execution")
@@ -96,16 +118,8 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         execution.get("factor_exit_quantile_short", 0.3),
         "execution.factor_exit_quantile_short",
     )
-    if not 0.0 <= exit_long < factor_long:
-        raise ValueError(
-            "execution.factor_exit_quantile_long must be below entry.factor_long_quantile"
-        )
-    if not factor_short < exit_short <= 1.0:
-        raise ValueError(
-            "execution.factor_exit_quantile_short must be above entry.factor_short_quantile"
-        )
-
-    return {
+    result = {
+        "symbol_overrides": {},
         "enabled": _bool(root.get("enabled", False), "enabled"),
         "max_pos_u": amount,
         "entry": {
@@ -118,6 +132,25 @@ def normalize_config(raw: Any) -> dict[str, Any]:
             "factor_exit_quantile_short": exit_short,
         },
     }
+
+    validate_position_thresholds(result)
+    overrides = _object(root.get("symbol_overrides", {}), "symbol_overrides")
+    if len(overrides) > 256:
+        raise ValueError("symbol_overrides supports at most 256 symbols")
+    for symbol, raw_row in sorted(overrides.items()):
+        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9]{1,32}", symbol):
+            raise ValueError(f"invalid symbol_overrides symbol: {symbol}")
+        field = f"symbol_overrides.{symbol}"
+        row = _object(raw_row, field)
+        _reject_unknown(row, OVERRIDE_FIELDS, field)
+        result["symbol_overrides"][symbol] = {
+            key: _number(value, f"{field}.{key}") for key, value in row.items() if value is not None
+        }
+        try:
+            validate_position_thresholds(effective_config(result, symbol))
+        except ValueError as error:
+            raise ValueError(f"{field}: {error}") from error
+    return result
 
 
 class ConfigConflict(ValueError):

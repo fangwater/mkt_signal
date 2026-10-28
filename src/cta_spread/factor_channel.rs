@@ -1,4 +1,4 @@
-use super::config::{EntryConfig, CTA_SPREAD_MAX_MODEL_AGE_MS};
+use super::config::{CtaSpreadConfig, EntryConfig, CTA_SPREAD_MAX_MODEL_AGE_MS};
 use super::factors::{
     aggregate_bar, model_bar_is_fresh, model_service, table_services, FactorConfigWatcher,
     SymbolFactorTable, SymbolFactors, WeightedBar,
@@ -66,7 +66,7 @@ impl WeightedFactorChannel {
     /// must not block this strategy's entries or exits.
     pub fn poll_independent(
         &mut self,
-        entry: &EntryConfig,
+        config: &CtaSpreadConfig,
     ) -> (bool, Vec<IndependentFactorObservation>) {
         let changed = if let Some(next) = self.watcher.take_change() {
             self.table = next.as_ref().clone();
@@ -90,6 +90,7 @@ impl WeightedFactorChannel {
             .collect();
         let mut updates = Vec::new();
         for symbol in touched {
+            let effective = config.for_symbol(&symbol);
             let Some(row) = self.table.get(&symbol) else {
                 continue;
             };
@@ -117,7 +118,7 @@ impl WeightedFactorChannel {
                     factors: vec![factor.clone()],
                     weights: vec![weight.signum()],
                 };
-                let mut bar = aggregate_bar(&single, &[input], entry);
+                let mut bar = aggregate_bar(&single, &[input], &effective.entry);
                 if let Some(bar) = &mut bar {
                     let nq = self.hub.cached_score(
                         &model_service("nq"),

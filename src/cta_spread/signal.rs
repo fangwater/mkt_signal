@@ -181,7 +181,7 @@ impl CtaSpreadSignalApp {
                     self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
                         "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
-                            "signal":row["signal"],"entry":context["entry"],"execution":context["execution"],"max_pos_u":context["max_pos_u"]}),
+                            "signal":row["signal"],"entry":row["entry"],"execution":row["execution"],"max_pos_u":row["max_pos_u"]}),
                         GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[cash_symbol(symbol)?]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
                 }
             }
@@ -209,7 +209,7 @@ impl CtaSpreadSignalApp {
                 }
                 self.write_status()?;
             }
-            let (changed, updates) = self.factors.poll_independent(&self.config.entry);
+            let (changed, updates) = self.factors.poll_independent(&self.config);
             if changed {
                 self.entry_live_after_ms = now / 1000;
             }
@@ -259,6 +259,7 @@ impl CtaSpreadSignalApp {
             model_ts_ms,
             bar,
         } = observation;
+        let effective = self.config.for_symbol(&symbol);
         let now = get_timestamp_us();
         let mut position = self
             .positions
@@ -269,7 +270,7 @@ impl CtaSpreadSignalApp {
         let reason = advance_position(
             &mut position,
             bar.as_ref(),
-            &self.config,
+            &effective,
             model_ts_ms,
             self.entry_live_after_ms,
             now,
@@ -277,9 +278,10 @@ impl CtaSpreadSignalApp {
         )?;
         let signal = bar.as_ref().map(|bar| signal_snapshot(bar, position.flag));
         let snapshot = json!({"enabled":self.config.enabled,"source":"independent_factor_strategy","strategy_name":factor,
-            "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u,"signal":signal,"decision_reason":reason,
+            "entry":effective.entry,"execution":effective.execution,"max_pos_u":effective.max_pos_u,"signal":signal,"decision_reason":reason,
             "position_flag":position.flag,"position_qty":position.qty,"cash_qty":position.cash_qty,"perpetual_qty":position.perpetual_qty});
         self.observations.entry(factor.clone()).or_default().insert(symbol.clone(), json!({"model_ts_ms":model_ts_ms,
+            "entry":effective.entry,"execution":effective.execution,"max_pos_u":effective.max_pos_u,
             "score_ready":bar.is_some(),"position_flag":position.flag,"position_qty":position.qty,"cash_qty":position.cash_qty,"perpetual_qty":position.perpetual_qty,"entry_notional":position.entry_notional,"signal":signal,"decision_reason":reason,"updated_ts_us":now}));
         self.positions
             .entry(factor)

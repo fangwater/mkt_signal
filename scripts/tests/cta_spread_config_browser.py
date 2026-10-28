@@ -27,11 +27,12 @@ def main():
             (directory / name).write_bytes((ROOT / 'config' / name).read_bytes())
         redis = FakeFactorRedis()
         env = 'binance-cta-spread-test'
-        redis.values[env + ':cta_symbol_factors'] = json.dumps({'FILUSDT': {'TD_TI_027': -1}})
-        redis.values[env + ':cta_factor_strategies'] = json.dumps({'TD_TI_027': {'max_pos_u': 1000, 'max_pos_u_overrides': {}}})
-        manager_key = 'binance-exec-cta-spread-test:binance-futures:batch_exec:TD_TI_027'
-        redis.values[manager_key] = '{"maker_timeout_ms":4321,"targets":{"FILUSDT":{"qty":"clear","signal":0}}}'
+        redis.values[env + ':cta_symbol_factors'] = json.dumps({'AXSUSDT': {'TD_TI_024': -1}})
+        redis.values[env + ':cta_factor_strategies'] = json.dumps({'TD_TI_024': {'max_pos_u': 1000, 'max_pos_u_overrides': {}}})
+        manager_key = 'binance-exec-cta-spread-test:binance-futures:batch_exec:TD_TI_024'
+        redis.values[manager_key] = '{"maker_timeout_ms":4321,"targets":{"AXSUSDT":{"qty":"clear","signal":0}}}'
         original_exec = redis.values[manager_key]
+        deployment = json.loads((ROOT / 'config/cta_spread_deployment.json').read_text())
         store = ConfigStore(directory / 'cta_spread.json')
         server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(store, ROOT / 'web/cta_spread_config/index.html', redis, env))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -43,7 +44,7 @@ def main():
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{server.server_port}/')
-                page.wait_for_function("() => document.querySelector('#signal-status').textContent === '读取完成' && document.querySelector('#factor-json').value.includes('FILUSDT')")
+                page.wait_for_function("() => document.querySelector('#signal-status').textContent === '读取完成' && document.querySelector('#factor-json').value.includes('AXSUSDT')")
                 for field in ('cooldown_seconds', 'trade_sides', 'signal_delay_seconds', 'factor_exit_enabled', 'strategy-table', 'risk-params', 'factor-strategies'):
                     assert page.locator('#' + field).count() == 0, field
                 assert page.locator('main > section').count() == 2
@@ -65,11 +66,29 @@ def main():
                 assert config['enabled'] is False
                 assert config['max_pos_u'] == 2000
                 assert redis.values[manager_key] == original_exec
+                overrides = {'AXSUSDT': {'factor_long_quantile': .8, 'factor_exit_quantile_long': .4,
+                                         'nq_long_quantile': .65, 'nq_short_quantile': .35}}
+                page.locator('#overrides-json').fill(json.dumps(overrides))
+                with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT'):
+                    page.locator('#signal-save').click()
+                assert store.load()[0]['symbol_overrides'] == overrides
+                page.locator('#signal-load').click()
+                page.wait_for_function("() => document.querySelector('#signal-status').textContent === '读取完成'")
+                assert json.loads(page.locator('#overrides-json').input_value()) == overrides
+                saved_overrides = store.load()[0]['symbol_overrides']
+                invalid = json.loads(json.dumps(saved_overrides))
+                invalid['AXSUSDT']['nq_long_quantile'] = 1.1
+                page.locator('#overrides-json').fill(json.dumps(invalid))
+                with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT') as invalid_nq:
+                    page.locator('#signal-save').click()
+                assert invalid_nq.value.status == 400
+                assert store.load()[0]['symbol_overrides'] == saved_overrides
+                page.locator('#overrides-json').fill(json.dumps(saved_overrides))
                 saved_sizing = redis.values[env + ':cta_factor_strategies']
                 saved_factors = redis.values[env + ':cta_symbol_factors']
                 page.locator('#factor_exit_quantile_long').fill('.95')
                 page.locator('details').filter(has=page.locator('#factor-json')).locator('summary').click()
-                page.locator('#factor-json').fill('{"FILUSDT":{"TD_TI_027":1}}')
+                page.locator('#factor-json').fill('{"AXSUSDT":{"TD_TI_024":1}}')
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT') as rejected:
                     page.locator('#save-all').click()
                 assert rejected.value.status == 400
@@ -77,23 +96,23 @@ def main():
                 assert redis.values[env + ':cta_factor_strategies'] == saved_sizing
                 assert store.load()[0]['max_pos_u'] == 2000
                 assert redis.values[manager_key] == original_exec
-                # Research import previews all 794 sleeves without a Redis write.
+                # Research import previews the current sleeves without a Redis write.
                 page.locator('#reload-all').click()
                 page.wait_for_function("() => document.querySelector('#signal-status').textContent === '读取完成'")
                 before_import = dict(redis.values)
                 page.locator('#deployment-file').set_input_files(str(ROOT / 'config/cta_spread_deployment.json'))
-                page.wait_for_function("() => document.querySelector('#sym-status').textContent.includes('794')")
+                page.wait_for_function("count => document.querySelector('#sym-status').textContent.includes(count + ' 组合')", arg=deployment['n_sleeves'])
                 assert redis.values == before_import
                 assert page.locator('#nq_long_quantile').input_value() == '0.5'
-                assert page.locator('#spread_long_quantile').input_value() == '0.7'
-                page.locator('#factor-search').fill('factor_169')
-                assert page.locator('#factor-editor input').count() == 2
+                assert float(page.locator('#spread_long_quantile').input_value()) == deployment['rule']['spread']['long_quantile']
+                page.locator('#factor-search').fill('TD_TI_024')
+                assert page.locator('#factor-editor input').count() == 1
                 with page.expect_response(lambda response: response.url.endswith('/api/symbol-factors') and response.request.method == 'POST'):
                     page.locator('#save-all').click()
                 table = json.loads(redis.values[env + ':cta_symbol_factors'])
-                assert sum(len(row) for row in table.values()) == 794
-                assert table['AXSUSDT']['factor_169_positive'] == 1
-                assert table['AXSUSDT']['factor_169_negative'] == -1
+                assert sum(len(row) for row in table.values()) == deployment['n_sleeves']
+                assert table == json.loads((ROOT / 'config/cta_spread_symbol_factors.json').read_text())
+                assert store.load()[0]['symbol_overrides'] == saved_overrides
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')

@@ -167,6 +167,9 @@ mod tests {
         }
     }
     fn bar(factor: f64, spread: Option<f64>) -> WeightedBar {
+        bar_for(factor, spread, &config())
+    }
+    fn bar_for(factor: f64, spread: Option<f64>, config: &CtaSpreadConfig) -> WeightedBar {
         let input = ModelOutputScoreLookupResult {
             service_name: String::new(),
             symbol_key: "ETHUSDT".into(),
@@ -192,7 +195,7 @@ mod tests {
                 weights: vec![1.0],
             },
             &[input],
-            &config().entry,
+            &config.entry,
         )
         .unwrap();
         let mut nq = result.spread.clone();
@@ -202,6 +205,41 @@ mod tests {
         result.nq = Some(nq);
         result
     }
+    #[test]
+    fn symbol_gates_and_exit_thresholds_are_independent() {
+        let mut c = config();
+        c.symbol_overrides = serde_json::from_value(serde_json::json!({
+            "ETHUSDT": {
+                "factor_long_quantile": 0.8, "factor_short_quantile": 0.2,
+                "factor_exit_quantile_long": 0.6, "factor_exit_quantile_short": 0.4,
+                "nq_long_quantile": 0.7, "nq_short_quantile": 0.3,
+                "spread_long_quantile": 0.25, "spread_short_quantile": 0.75
+            }
+        }))
+        .unwrap();
+        c.validate().unwrap();
+        let eth = c.for_symbol("ETHUSDT");
+        let btc = c.for_symbol("BTCUSDT");
+        for (q, spread_q, flag) in [(0.85, 0.2, 1), (0.15, 0.8, -1)] {
+            let mut bar = bar_for(q, Some(spread_q), &eth);
+            assert_eq!(next_position_flag(0, &bar, &eth), 0);
+            let default_bar = bar_for(q, Some(spread_q), &btc);
+            assert_eq!(next_position_flag(0, &default_bar, &btc), 0);
+            bar.nq.as_mut().unwrap().filter_long_quantile = Some(0.7);
+            bar.nq.as_mut().unwrap().filter_short_quantile = Some(0.3);
+            assert_eq!(next_position_flag(0, &bar, &eth), flag);
+            // The old direction still exits if a reverse entry fails its NQ gate.
+            bar.nq = None;
+            assert_eq!(next_position_flag(-flag, &bar, &eth), 0);
+        }
+        for (current, q) in [(1, 0.65), (-1, 0.35)] {
+            let bar = bar(q, None);
+            assert_eq!(next_position_flag(current, &bar, &eth), current);
+            assert_eq!(next_position_flag(current, &bar, &btc), 0);
+        }
+        assert_eq!(c.for_symbol("SOLUSDT").entry, c.entry);
+    }
+
     #[test]
     fn nq_and_spread_must_both_allow_entries_and_reversals() {
         let mut c = config();

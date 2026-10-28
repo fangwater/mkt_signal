@@ -274,7 +274,7 @@
           </div>
         </div>
         <div class="hint">
-          设置全局开多、开空、退多、退空阈值和 NQ；下方可按币种覆盖四个开平阈值。
+          设置全局开多、开空、退多、退空阈值和 NQ；下方 JSON 可按币种覆盖开平阈值和 NQ 阈值。
           满多、满空、空仓三个状态，同向信号保持原 qty。保存后约 1
           秒生效，下一根新闭合 bar 使用新设置。执行参数由 CTA Manager 管理。
         </div>
@@ -304,15 +304,20 @@
         </details>
         <div class="kv-table" id="signal-table"></div>
         <p class="hint">百分位用法：v0 直接使用 x，范围 [0, 1]；v1 使用 2x − 1，范围 [−1, 1]，例如 80% → 60%。四个开平阈值直接比较该算法的结果，切换算法不会自动换算阈值。v1 等待全部启用因子到齐同一根分钟后取等权算术平均，再比较开平阈值；NQ 使用原分位数。切换算法需先关闭现有仓位。</p>
-        <h3>币种开平阈值覆盖</h3>
-        <p class="hint">两套算法共用。留空继承对应全局值；删除一行恢复该币种全部默认值，与上方配置一起保存。</p>
-        <div style="overflow-x: auto">
-          <table id="overrides-table" style="width: 100%; text-align: left">
-            <thead><tr><th>Symbol</th><th>开多</th><th>开空</th><th>退多</th><th>退空</th><th></th></tr></thead>
-            <tbody id="override-rows"></tbody>
-          </table>
-        </div>
-        <button id="override-add" class="secondary" type="button">添加币种覆盖</button>
+        <h3>币种阈值 JSON</h3>
+        <p class="hint">按 symbol 单独配置因子开仓、平仓阈值和 NQ 开仓过滤阈值。省略字段或填 null 继承全局值，删除币种恢复全局设置；与上方参数一起保存，下一根新闭合 bar 生效。NQ 分位范围 [0, 1]。5m NQ 仍固定使用 Q50，不支持修改 NQ 分位阈值。</p>
+        <textarea id="overrides-json" class="mono" aria-label="币种阈值 JSON" spellcheck="false"
+          style="width:100%;min-height:250px;resize:vertical;box-sizing:border-box">{}</textarea>
+        <details class="hint"><summary>JSON 示例（字段可按需省略）</summary><pre style="overflow-x:auto">{
+  "BTCUSDT": {
+    "factor_long_quantile": 0.95,
+    "factor_short_quantile": 0.05,
+    "factor_exit_quantile_long": 0.4,
+    "factor_exit_quantile_short": 0.6,
+    "nq_long_quantile": 0.65,
+    "nq_short_quantile": 0.35
+  }
+}</pre></details>
         <div id="signal-status" class="status"></div>
       </section>
 
@@ -451,47 +456,13 @@
         el.textContent = text;
         el.className = "status" + (kind ? " " + kind : "");
       }
-      const overrideFields = [
-        "factor_long_quantile", "factor_short_quantile",
-        "factor_exit_quantile_long", "factor_exit_quantile_short",
-      ];
-      function addOverride(symbol = "", values = {}) {
-        const tr = document.createElement("tr");
-        for (const key of ["symbol", ...overrideFields]) {
-          const td = document.createElement("td"), input = document.createElement("input");
-          input.dataset.field = key;
-          input.setAttribute("aria-label", key);
-          input.style.width = key === "symbol" ? "130px" : "100px";
-          input.value = key === "symbol" ? symbol : (values[key] ?? "");
-          input.placeholder = key === "symbol" ? "BTCUSDT" : "继承全局";
-          if (key !== "symbol") input.inputMode = "decimal";
-          td.appendChild(input);
-          tr.appendChild(td);
-        }
-        const td = document.createElement("td"), remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "ghost";
-        remove.textContent = "删除";
-        remove.addEventListener("click", () => tr.remove());
-        td.appendChild(remove);
-        tr.appendChild(td);
-        byId("override-rows").appendChild(tr);
-      }
       function collectOverrides() {
-        const result = {};
-        for (const tr of byId("override-rows").children) {
-          const symbol = tr.querySelector('[data-field="symbol"]').value.trim().toUpperCase();
-          if (!/^[A-Z0-9]{1,32}$/.test(symbol) || Object.hasOwn(result, symbol))
-            throw new Error("覆盖配置中的币种无效或重复：" + symbol);
-          const row = {};
-          for (const key of overrideFields) {
-            const raw = tr.querySelector(`[data-field="${key}"]`).value.trim();
-            if (!raw) continue;
-            const value = Number(raw);
-            if (!Number.isFinite(value)) throw new Error(`${symbol}/${key} 必须是有限数字`);
-            row[key] = value;
-          }
-          result[symbol] = row;
+        const result = JSON.parse(byId("overrides-json").value);
+        if (!result || typeof result !== "object" || Array.isArray(result))
+          throw new Error("币种阈值 JSON 必须是 symbol → 阈值对象");
+        for (const [symbol, values] of Object.entries(result)) {
+          if (!/^[A-Z0-9]{1,32}$/.test(symbol) || !values || typeof values !== "object" || Array.isArray(values))
+            throw new Error("币种阈值配置格式无效：" + symbol);
         }
         return result;
       }
@@ -501,9 +472,7 @@
         byId("enabled").value = config.enabled ? "true" : "false";
         byId("max_pos_u").value = config.max_pos_u ?? "";
         byId("position_algorithm").value = config.position_algorithm ?? "v0";
-        byId("override-rows").replaceChildren();
-        for (const [symbol, values] of Object.entries(config.symbol_overrides || {}))
-          addOverride(symbol, values);
+        byId("overrides-json").value = JSON.stringify(config.symbol_overrides || {}, null, 2);
         loadedInterval = config.bar_interval || "1m";
         const entry = config.entry || {};
         for (const key of [
@@ -714,7 +683,6 @@
         }
       });
       byId("signal-save").addEventListener("click", save);
-      byId("override-add").addEventListener("click", () => addOverride());
       byId("sym-save").addEventListener("click", saveFactors);
       load();
       loadFactors();

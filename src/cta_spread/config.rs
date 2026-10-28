@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use order_common::TradingVenue;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -45,6 +46,27 @@ fn default_factor_exit_quantile_short() -> f64 {
     0.3
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SymbolThresholdOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_long_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_short_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_exit_quantile_long: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor_exit_quantile_short: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nq_long_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nq_short_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spread_long_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spread_short_quantile: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CtaSpreadConfig {
@@ -53,6 +75,8 @@ pub struct CtaSpreadConfig {
     /// USDT entry amount for each enabled symbol/factor pair.
     #[serde(default = "default_max_pos_u")]
     pub max_pos_u: f64,
+    #[serde(default)]
+    pub symbol_overrides: BTreeMap<String, SymbolThresholdOverrides>,
     #[serde(default)]
     pub entry: EntryConfig,
     pub execution: ExecutionConfig,
@@ -114,6 +138,64 @@ impl CtaSpreadConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.validate_controls()?;
+        if self.symbol_overrides.len() > 256 {
+            bail!("symbol_overrides supports at most 256 symbols");
+        }
+        for symbol in self.symbol_overrides.keys() {
+            if symbol.is_empty()
+                || symbol.len() > 32
+                || !symbol
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            {
+                bail!("invalid symbol_overrides symbol: {symbol}");
+            }
+            self.for_symbol(symbol)
+                .validate_controls()
+                .with_context(|| format!("symbol_overrides.{symbol}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn for_symbol(&self, symbol: &str) -> Self {
+        let mut effective = Self {
+            enabled: self.enabled,
+            max_pos_u: self.max_pos_u,
+            symbol_overrides: BTreeMap::new(),
+            entry: self.entry.clone(),
+            execution: self.execution.clone(),
+        };
+        if let Some(row) = self.symbol_overrides.get(symbol) {
+            if let Some(value) = row.factor_long_quantile {
+                effective.entry.factor_long_quantile = value;
+            }
+            if let Some(value) = row.factor_short_quantile {
+                effective.entry.factor_short_quantile = value;
+            }
+            if let Some(value) = row.factor_exit_quantile_long {
+                effective.execution.factor_exit_quantile_long = value;
+            }
+            if let Some(value) = row.factor_exit_quantile_short {
+                effective.execution.factor_exit_quantile_short = value;
+            }
+            if let Some(value) = row.nq_long_quantile {
+                effective.entry.nq_long_quantile = value;
+            }
+            if let Some(value) = row.nq_short_quantile {
+                effective.entry.nq_short_quantile = value;
+            }
+            if let Some(value) = row.spread_long_quantile {
+                effective.entry.spread_long_quantile = value;
+            }
+            if let Some(value) = row.spread_short_quantile {
+                effective.entry.spread_short_quantile = value;
+            }
+        }
+        effective
+    }
+
+    fn validate_controls(&self) -> Result<()> {
         if !self.max_pos_u.is_finite() || self.max_pos_u <= 0.0 {
             bail!("max_pos_u must be a positive finite USDT amount");
         }
@@ -171,6 +253,33 @@ mod tests {
         .expect("parse");
         config.validate().expect("validate");
         assert_eq!(config.venue(), TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn symbol_overrides_validate_the_resolved_controls() {
+        for overrides in [
+            serde_json::json!({"btcusdt":{"nq_long_quantile":0.65}}),
+            serde_json::json!({"BTCUSDT":{"nq_short_quantile":1.1}}),
+            serde_json::json!({"BTCUSDT":{"spread_long_quantile":-0.1}}),
+            serde_json::json!({"BTCUSDT":{"factor_long_quantile":0.6}}),
+        ] {
+            let config: CtaSpreadConfig = serde_json::from_value(serde_json::json!({
+                "execution":{}, "symbol_overrides":overrides
+            }))
+            .unwrap();
+            assert!(config.validate().is_err());
+        }
+        for overrides in [
+            serde_json::json!({"BTCUSDT":{"max_pos_u":200}}),
+            serde_json::json!({"BTCUSDT":{"nq_long_quantile":true}}),
+        ] {
+            assert!(
+                serde_json::from_value::<CtaSpreadConfig>(serde_json::json!({
+                    "execution":{}, "symbol_overrides":overrides
+                }))
+                .is_err()
+            );
+        }
     }
 
     #[test]

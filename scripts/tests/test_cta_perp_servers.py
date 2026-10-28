@@ -133,9 +133,9 @@ class CtaPerpServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "BTCUSDT"):
             CONFIG_SERVER.normalize_config(config)
 
-    def test_algorithm_range_and_four_override_fields_are_enforced(self):
+    def test_algorithm_range_and_override_fields_are_enforced(self):
         config = json.loads(self.config_path.read_text())
-        for field in ("max_pos_u", "nq_long_quantile", "position_algorithm"):
+        for field in ("max_pos_u", "position_algorithm"):
             config["symbol_overrides"] = {"ETHUSDT": {field: .5}}
             with self.assertRaisesRegex(ValueError, "unknown fields"):
                 CONFIG_SERVER.normalize_config(config)

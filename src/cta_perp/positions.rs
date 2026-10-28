@@ -213,6 +213,7 @@ mod tests {
                 factor_short_quantile: Some(0.0),
                 factor_exit_quantile_long: Some(0.6),
                 factor_exit_quantile_short: Some(0.2),
+                ..Default::default()
             },
         );
         for algorithm in [PositionAlgorithm::V0, PositionAlgorithm::V1] {
@@ -236,6 +237,34 @@ mod tests {
             assert_eq!(next_position_flag(1, &bar_for(q, true, &btc, 1.0), &btc), 1);
         }
     }
+    #[test]
+    fn symbol_nq_gates_are_independent_and_do_not_block_factor_exits() {
+        use crate::cta_perp::config::SymbolThresholdOverrides;
+        let mut c = config();
+        c.symbol_overrides.insert(
+            "ETHUSDT".into(),
+            SymbolThresholdOverrides {
+                nq_long_quantile: Some(0.95),
+                nq_short_quantile: Some(0.05),
+                ..Default::default()
+            },
+        );
+        c.validate().unwrap();
+        let eth = c.for_symbol("ETHUSDT");
+        let btc = c.for_symbol("BTCUSDT");
+        for (q, flag) in [(0.99, 1), (0.01, -1)] {
+            let mut bar = bar_for(q, true, &eth, 1.0);
+            bar.nq.filter_long_quantile = Some(0.9);
+            bar.nq.filter_short_quantile = Some(0.1);
+            assert_eq!(next_position_flag(0, &bar, &eth), 0);
+            assert_eq!(next_position_flag(0, &bar, &btc), flag);
+            assert_eq!(next_position_flag(-flag, &bar, &eth), 0);
+            bar.nq.filter_long_quantile = Some(0.95);
+            bar.nq.filter_short_quantile = Some(0.05);
+            assert_eq!(next_position_flag(0, &bar, &eth), flag);
+        }
+    }
+
     #[test]
     fn independent_states_hold_and_exit_without_nq() {
         let c = config();

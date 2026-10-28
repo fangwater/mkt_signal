@@ -79,6 +79,10 @@ impl PositionAlgorithm {
 #[serde(deny_unknown_fields)]
 pub struct SymbolThresholdOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nq_long_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nq_short_quantile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factor_long_quantile: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factor_short_quantile: Option<f64>,
@@ -160,7 +164,7 @@ impl CtaPerpConfig {
         CTA_PERP_VENUE
     }
 
-    /// Resolve only the four position thresholds; all other controls are global.
+    /// Resolve position thresholds and NQ entry gates independently per symbol.
     pub fn for_symbol(&self, symbol: &str) -> Self {
         let mut effective = Self {
             bar_interval: self.bar_interval,
@@ -172,6 +176,12 @@ impl CtaPerpConfig {
             execution: self.execution.clone(),
         };
         if let Some(row) = self.symbol_overrides.get(symbol) {
+            if let Some(value) = row.nq_long_quantile {
+                effective.entry.nq_long_quantile = value;
+            }
+            if let Some(value) = row.nq_short_quantile {
+                effective.entry.nq_short_quantile = value;
+            }
             if let Some(value) = row.factor_long_quantile {
                 effective.entry.factor_long_quantile = value;
             }
@@ -189,11 +199,6 @@ impl CtaPerpConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.bar_interval == BarInterval::FiveMinutes
-            && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
-        {
-            bail!("5m NQ uses fixed 0.50 linear quantile thresholds");
-        }
         self.validate_controls()?;
         if self.symbol_overrides.len() > 256 {
             bail!("symbol_overrides supports at most 256 symbols");
@@ -215,6 +220,11 @@ impl CtaPerpConfig {
     }
 
     fn validate_controls(&self) -> Result<()> {
+        if self.bar_interval == BarInterval::FiveMinutes
+            && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
+        {
+            bail!("5m NQ uses fixed 0.50 linear quantile thresholds");
+        }
         let minimum = self.position_algorithm.minimum();
         if !self.max_pos_u.is_finite() || self.max_pos_u <= 0.0 {
             bail!("max_pos_u must be a positive finite USDT amount");
@@ -303,6 +313,28 @@ mod tests {
     }
 
     #[test]
+    fn symbol_nq_bounds_and_five_minute_contract_are_validated() {
+        let mut config: CtaPerpConfig = serde_json::from_value(serde_json::json!({
+            "execution": {}, "symbol_overrides": {
+                "BTCUSDT": {"nq_long_quantile":0.65, "nq_short_quantile":0.35}
+            }
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        config.bar_interval = BarInterval::FiveMinutes;
+        assert!(format!("{:#}", config.validate().unwrap_err()).contains("BTCUSDT"));
+        config.bar_interval = BarInterval::OneMinute;
+        for value in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            config
+                .symbol_overrides
+                .get_mut("BTCUSDT")
+                .unwrap()
+                .nq_long_quantile = Some(value);
+            assert!(format!("{:#}", config.validate().unwrap_err()).contains("BTCUSDT"));
+        }
+    }
+
+    #[test]
     fn algorithm_ranges_and_override_fields_are_validated() {
         let mut raw = serde_json::json!({"position_algorithm":"v1", "entry":{
             "factor_long_quantile":0.6, "factor_short_quantile":-0.6
@@ -329,7 +361,7 @@ mod tests {
             .unwrap();
             assert!(config.validate().is_err());
         }
-        for field in ["max_pos_u", "nq_long_quantile", "position_algorithm"] {
+        for field in ["max_pos_u", "position_algorithm"] {
             assert!(serde_json::from_value::<CtaPerpConfig>(serde_json::json!({
                 "execution":{}, "symbol_overrides":{"ETHUSDT":{field:0.5}}
             }))

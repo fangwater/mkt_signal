@@ -274,7 +274,7 @@
           </div>
         </div>
         <div class="hint">
-          统一开多、开空、退多、退空分位和
+          全局默认开多、开空、退多、退空分位和
           价差过滤。同向保持原 qty；退出保留现货、以合约对冲；反向信号通过过滤时直接反转。保存后约 1
           秒生效，下一根新闭合 bar 使用新设置。执行参数由 CTA Manager 管理。
         </div>
@@ -285,6 +285,20 @@
           <p>价差不触发退出。因子退出时保留现货，合约目标为现货数量的相反数。反向因子同时通过 NQ 与价差过滤时直接发布反转后的完整目标；未通过时只退出旧方向。</p>
         </details>
         <div class="kv-table" id="signal-table"></div>
+        <h3>币种阈值 JSON</h3>
+        <p class="hint">按 symbol 单独配置因子开仓、平仓阈值和 NQ 开仓过滤阈值。省略字段或填 null 继承全局值，删除币种恢复全局设置；与上方参数一起保存，下一根新闭合 bar 生效。NQ 分位范围 [0, 1]。也可覆盖 spread_long_quantile、spread_short_quantile 价差过滤阈值。</p>
+        <textarea id="overrides-json" class="mono" aria-label="币种阈值 JSON" spellcheck="false"
+          style="width:100%;min-height:250px;resize:vertical;box-sizing:border-box">{}</textarea>
+        <details class="hint"><summary>JSON 示例（字段可按需省略）</summary><pre style="overflow-x:auto">{
+  "BTCUSDT": {
+    "factor_long_quantile": 0.95,
+    "factor_short_quantile": 0.05,
+    "factor_exit_quantile_long": 0.4,
+    "factor_exit_quantile_short": 0.6,
+    "nq_long_quantile": 0.65,
+    "nq_short_quantile": 0.35
+  }
+}</pre></details>
         <div id="signal-status" class="status"></div>
       </section>
 
@@ -414,11 +428,22 @@
         el.textContent = text;
         el.className = "status" + (kind ? " " + kind : "");
       }
+      function collectOverrides() {
+        const result = JSON.parse(byId("overrides-json").value);
+        if (!result || typeof result !== "object" || Array.isArray(result))
+          throw new Error("币种阈值 JSON 必须是 symbol → 阈值对象");
+        for (const [symbol, values] of Object.entries(result)) {
+          if (!/^[A-Z0-9]{1,32}$/.test(symbol) || !values || typeof values !== "object" || Array.isArray(values))
+            throw new Error("币种阈值配置格式无效：" + symbol);
+        }
+        return result;
+      }
       function populate(config, nextRevision) {
         revision = nextRevision;
         byId("revision").textContent = revision.slice(0, 12);
         byId("enabled").value = config.enabled ? "true" : "false";
         byId("max_pos_u").value = config.max_pos_u ?? "";
+        byId("overrides-json").value = JSON.stringify(config.symbol_overrides || {}, null, 2);
         const entry = config.entry || {};
         for (const key of [
           "factor_long_quantile",
@@ -463,6 +488,7 @@
         return {
           enabled: byId("enabled").value === "true",
           max_pos_u: amount,
+          symbol_overrides: collectOverrides(),
           entry,
           execution,
         };

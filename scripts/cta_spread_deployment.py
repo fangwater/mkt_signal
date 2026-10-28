@@ -39,6 +39,8 @@ def prepare_deployment(raw: dict, current_config: dict) -> dict:
     table = normalize_table(table)
     config = deepcopy(current_config)
     config["enabled"] = False
+    if "symbol_overrides" in raw:
+        config["symbol_overrides"] = deepcopy(raw["symbol_overrides"])
     config["entry"] = {
         "factor_long_quantile": rules["entry"]["long"],
         "factor_short_quantile": rules["entry"]["short"],

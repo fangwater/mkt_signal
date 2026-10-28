@@ -62,23 +62,21 @@ def main():
                 assert config['max_pos_u'] == 2000
                 assert redis.values[manager_key] == original_exec
                 page.locator('#position_algorithm').select_option('v1')
-                page.locator('#override-add').click()
-                row = page.locator('#override-rows tr').first
-                row.locator('[data-field="symbol"]').fill('NEARUSDT')
-                row.locator('[data-field="factor_long_quantile"]').fill('.7')
-                row.locator('[data-field="factor_exit_quantile_long"]').fill('.2')
+                overrides = {'NEARUSDT': {'factor_long_quantile': .7, 'factor_exit_quantile_long': .2,
+                                          'nq_long_quantile': .65, 'nq_short_quantile': .35}}
+                page.locator('#overrides-json').fill(json.dumps(overrides))
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT'):
                     page.locator('#signal-save').click()
                 config, _ = store.load()
                 assert config['position_algorithm'] == 'v1'
-                assert config['symbol_overrides'] == {'NEARUSDT': {'factor_long_quantile': .7, 'factor_exit_quantile_long': .2}}
+                assert config['symbol_overrides'] == overrides
                 page.locator('#position_algorithm').select_option('v0')
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT'):
                     page.locator('#signal-save').click()
                 assert store.load()[0]['symbol_overrides'] == config['symbol_overrides']
                 page.locator('#position_algorithm').select_option('v1')
-                row.locator('[data-field="factor_short_quantile"]').fill('-.6')
-                row.locator('[data-field="factor_exit_quantile_short"]').fill('-.2')
+                overrides['NEARUSDT'].update(factor_short_quantile=-.6, factor_exit_quantile_short=-.2)
+                page.locator('#overrides-json').fill(json.dumps(overrides))
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT'):
                     page.locator('#signal-save').click()
                 assert store.load()[0]['symbol_overrides']['NEARUSDT']['factor_short_quantile'] == -.6
@@ -88,10 +86,20 @@ def main():
                 assert invalid_algorithm.value.status == 400
                 assert store.load()[0]['position_algorithm'] == 'v1'
                 page.locator('#position_algorithm').select_option('v1')
-                row.locator('[data-field="factor_exit_quantile_short"]').fill('')
+                del overrides['NEARUSDT']['factor_exit_quantile_short']
+                page.locator('#overrides-json').fill(json.dumps(overrides))
                 with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT'):
                     page.locator('#signal-save').click()
                 assert 'factor_exit_quantile_short' not in store.load()[0]['symbol_overrides']['NEARUSDT']
+                saved_overrides = store.load()[0]['symbol_overrides']
+                invalid = json.loads(json.dumps(saved_overrides))
+                invalid['NEARUSDT']['nq_long_quantile'] = 1.1
+                page.locator('#overrides-json').fill(json.dumps(invalid))
+                with page.expect_response(lambda response: response.url.endswith('/api/config') and response.request.method == 'PUT') as invalid_nq:
+                    page.locator('#signal-save').click()
+                assert invalid_nq.value.status == 400
+                assert store.load()[0]['symbol_overrides'] == saved_overrides
+                page.locator('#overrides-json').fill(json.dumps(saved_overrides))
                 saved_sizing = redis.values[env + ':cta_factor_strategies']
                 saved_factors = redis.values[env + ':cta_symbol_factors']
                 page.locator('#factor_exit_quantile_long').fill('.95')

@@ -34,7 +34,7 @@ ENTRY_FIELDS = {
     "nq_long_quantile", "nq_short_quantile",
 }
 EXECUTION_FIELDS = {"factor_exit_quantile_long", "factor_exit_quantile_short"}
-OVERRIDE_FIELDS = {"factor_long_quantile", "factor_short_quantile"} | EXECUTION_FIELDS
+OVERRIDE_FIELDS = {"factor_long_quantile", "factor_short_quantile", "nq_long_quantile", "nq_short_quantile"} | EXECUTION_FIELDS
 SYMBOL_MEAN_STRATEGY = "symbol_mean"
 
 
@@ -92,6 +92,10 @@ def effective_config(config: dict, symbol: str) -> dict:
 def validate_position_thresholds(config: dict) -> None:
     minimum = position_decision_value(0.0, config["position_algorithm"])
     entry, execution = config["entry"], config["execution"]
+    if not all(0 <= entry[field] <= 1 for field in ("nq_long_quantile", "nq_short_quantile")):
+        raise ValueError("entry NQ quantiles must be in [0, 1]")
+    if config["bar_interval"] == "5m" and any(entry[field] != 0.5 for field in ("nq_long_quantile", "nq_short_quantile")):
+        raise ValueError("5m NQ uses fixed 0.50 linear quantile thresholds")
     long, short = entry["factor_long_quantile"], entry["factor_short_quantile"]
     if not minimum <= short < long <= 1.0:
         raise ValueError(f"entry factor thresholds must satisfy {minimum} <= short < long <= 1")
