@@ -1,0 +1,14 @@
+{
+  "verified_at_us": 1792732113982194,
+  "installed_files_match_manifest": 37,
+  "credential_mode": "0600",
+  "new_persist_store_not_started": true,
+  "exec_ports_listening": [],
+  "pages": {
+    "/cta/binance-cta-perp-rx04/config/": 200,
+    "/cta/binance-cta-perp-rx04/": 200,
+    "/manager/config/": 200
+  },
+  "risk_matches_old_slot": true,
+  "exec_processes": []
+}

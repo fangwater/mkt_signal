@@ -1,0 +1,11 @@
+{
+  "at_ms": 1792987415303,
+  "sha256": "a6a4f71d3ef43d712e2b26c9242f5822309aae0c2a80bf79b7faccd67a8a18ab",
+  "signal_process": [
+    {
+      "pid": 3267446,
+      "comm": "cta_spread_sign"
+    }
+  ],
+  "other_processes_unchanged": true
+}

@@ -1,0 +1,11 @@
+{
+  "environment": "binance_exec_rx04_5m05",
+  "risk": {
+    "max_pending_limit_orders": "10",
+    "exec_max_pending_limit_buy_orders": "10",
+    "exec_max_pending_limit_sell_orders": "10",
+    "exec_order_rate_limit_per_min": "400",
+    "exec_order_rate_limit_10s": "300"
+  },
+  "matches_old_slot": true
+}

@@ -1,0 +1,380 @@
+{
+  "host": "jp-meta-elvpn",
+  "verified_at_ms": 1793091968784,
+  "trading_started": false,
+  "nginx_routes_installed": false,
+  "environments": [
+    {
+      "env": "gate_fr_arb04",
+      "env_file_mode": "0o600",
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "artifacts": {
+        "account_monitor": {
+          "sha256": "a6e406884816a3db674eb0e921f708faf55ccc2df3d52af796b357f7b46d484d",
+          "size": 8422032
+        },
+        "trade_engine": {
+          "sha256": "6cff99e7c797905c6b7b42b8f246a4b4e47e03572d30722bcda6ad7877714314",
+          "size": 12257376
+        },
+        "pre_trade": {
+          "sha256": "7e0e4925245b122a106c08f4f0b2282b7f14233efaab19411fb993a07c6376e8",
+          "size": 19909120
+        },
+        "trade_signal": {
+          "sha256": "c23d7def110a99100db15cbe887b66ddcf0c6fe443d11e4e9220b9aa39f98aed",
+          "size": 11433840
+        },
+        "persist_manager": {
+          "sha256": "a9c6791aaf2546ed17e1b4a8542b16a9914220e2f98fb760afd4c9eed6ffc6bb",
+          "size": 18764680
+        },
+        "viz_server": {
+          "sha256": "9099172a2099e799a285864827f08d4892bf48f5ee3fb2e3f4dd586fc439826c",
+          "size": 8027536
+        },
+        "fr_signal_dashboard": {
+          "sha256": "7855f9cacb6241e01cb5ec69b2062fff29141126e7efaaa9cf22ae4d6036d557",
+          "size": 13571032
+        }
+      },
+      "processes": [
+        {
+          "pid": 3060643,
+          "binary": "account_monitor",
+          "cpus": "0-5,48-95"
+        }
+      ]
+    },
+    {
+      "env": "gate_fr_arb05",
+      "env_file_mode": "0o600",
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "artifacts": {
+        "account_monitor": {
+          "sha256": "a6e406884816a3db674eb0e921f708faf55ccc2df3d52af796b357f7b46d484d",
+          "size": 8422032
+        },
+        "trade_engine": {
+          "sha256": "6cff99e7c797905c6b7b42b8f246a4b4e47e03572d30722bcda6ad7877714314",
+          "size": 12257376
+        },
+        "pre_trade": {
+          "sha256": "7e0e4925245b122a106c08f4f0b2282b7f14233efaab19411fb993a07c6376e8",
+          "size": 19909120
+        },
+        "trade_signal": {
+          "sha256": "c23d7def110a99100db15cbe887b66ddcf0c6fe443d11e4e9220b9aa39f98aed",
+          "size": 11433840
+        },
+        "persist_manager": {
+          "sha256": "a9c6791aaf2546ed17e1b4a8542b16a9914220e2f98fb760afd4c9eed6ffc6bb",
+          "size": 18764680
+        },
+        "viz_server": {
+          "sha256": "9099172a2099e799a285864827f08d4892bf48f5ee3fb2e3f4dd586fc439826c",
+          "size": 8027536
+        },
+        "fr_signal_dashboard": {
+          "sha256": "7855f9cacb6241e01cb5ec69b2062fff29141126e7efaaa9cf22ae4d6036d557",
+          "size": 13571032
+        }
+      },
+      "processes": []
+    }
+  ],
+  "nav_registration": [
+    {
+      "slug": "gate_fr_arb04",
+      "alias": "GateAM36_LTP",
+      "db_schema": "gate_fr_arb04",
+      "account_mode": "unified",
+      "st_ms": 1793091610625,
+      "enabled": true,
+      "config_url": "/fr/gate_fr_arb04/config",
+      "snapshot_url": "http://127.0.0.1:20124/snapshot"
+    },
+    {
+      "slug": "gate_fr_arb05",
+      "alias": "GateAM05_LTP",
+      "db_schema": "gate_fr_arb05",
+      "account_mode": "classic",
+      "st_ms": 1793091610625,
+      "enabled": true,
+      "config_url": "/fr/gate_fr_arb05/config",
+      "snapshot_url": "http://127.0.0.1:20125/snapshot"
+    }
+  ],
+  "nav_accounts": [
+    {
+      "account": "GateAM36_LTP",
+      "account_kind": "fr",
+      "collection_status": "live",
+      "date_ms": 1793091935000,
+      "equity": 0.01,
+      "history_rebuilt_at_ms": null,
+      "history_start_ms": null,
+      "long_leverage": null,
+      "long_position": null,
+      "margin": 1.0259589673260431e-09,
+      "margin_percent": 1.025958967326043e-05,
+      "max_drawdown_15d_percent": null,
+      "net_position": null,
+      "position_unpriced_assets": [],
+      "profit_percent": null,
+      "queried_at_ms": 1793091958267,
+      "short_leverage": null,
+      "short_position": null,
+      "source_id": "gate_fr_arb04",
+      "today_profit": null,
+      "venue": "gate",
+      "yesterday_equity": null
+    },
+    {
+      "account": "GateAM05_LTP",
+      "account_kind": "fr",
+      "collection_status": "unavailable",
+      "date_ms": null,
+      "equity": null,
+      "history_rebuilt_at_ms": null,
+      "history_start_ms": null,
+      "long_leverage": null,
+      "long_position": null,
+      "margin": null,
+      "margin_percent": null,
+      "max_drawdown_15d_percent": null,
+      "net_position": null,
+      "position_unpriced_assets": [],
+      "profit_percent": null,
+      "queried_at_ms": 1793091958268,
+      "short_leverage": null,
+      "short_position": null,
+      "source_id": "gate_fr_arb05",
+      "today_profit": null,
+      "venue": "gate",
+      "yesterday_equity": null
+    }
+  ],
+  "nav_health": {
+    "status": "ok",
+    "strategies": 23,
+    "readOnly": false
+  },
+  "mode_switch": {
+    "env": "gate_fr_arb05",
+    "subaccount": "GateAM05_LTP",
+    "attempted_mode": "multi_currency",
+    "usdt_futures_requested": true,
+    "http_status": 400,
+    "label": "INVALID_PARAM_VALUE",
+    "message": "account balance must greater than 500 USDT",
+    "current_mode": "classic",
+    "checked_at_ms": 1793091813058
+  },
+  "classic_connectivity": [
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/unified/unified_mode",
+      "status": 200,
+      "mode": "classic"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/spot/accounts",
+      "status": 200,
+      "usdt_available": "0.000000799719"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.229",
+      "path": "/unified/unified_mode",
+      "status": 200,
+      "mode": "classic"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.229",
+      "path": "/spot/accounts",
+      "status": 200,
+      "usdt_available": "0.000000799719"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.230",
+      "path": "/unified/unified_mode",
+      "status": 200,
+      "mode": "classic"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.230",
+      "path": "/spot/accounts",
+      "status": 200,
+      "usdt_available": "0.000000799719"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.234",
+      "path": "/unified/unified_mode",
+      "status": 200,
+      "mode": "classic"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.234",
+      "path": "/spot/accounts",
+      "status": 200,
+      "usdt_available": "0.000000799719"
+    }
+  ],
+  "initial_connectivity": [
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/unified/unified_mode",
+      "status": 200,
+      "mode": "multi_currency",
+      "settings": {
+        "usdt_futures": true,
+        "use_funding": false,
+        "options": true
+      }
+    },
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/unified/accounts",
+      "status": 200,
+      "user_id": 52233256,
+      "equity": null,
+      "usdt_equity": "-0.000000003875"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/futures/usdt/accounts",
+      "status": 200
+    },
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/futures/usdt/positions",
+      "status": 200,
+      "nonzero_positions": 0
+    },
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.229",
+      "path": "/unified/accounts",
+      "status": 200,
+      "user_id": 52233256,
+      "equity": null,
+      "usdt_equity": "-0.000000003875"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.230",
+      "path": "/unified/accounts",
+      "status": 200,
+      "user_id": 52233256,
+      "equity": null,
+      "usdt_equity": "-0.000000003875"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "subaccount": "GateAM36_LTP",
+      "source_ip": "172.31.35.234",
+      "path": "/unified/accounts",
+      "status": 200,
+      "user_id": 52233256,
+      "equity": null,
+      "usdt_equity": "-0.000000003875"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/unified/unified_mode",
+      "status": 200,
+      "mode": "classic",
+      "settings": null
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/unified/accounts",
+      "status": 403,
+      "error_label": "REQUEST_FORBIDDEN"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/futures/usdt/accounts",
+      "status": 400,
+      "error_label": "USER_NOT_FOUND"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.231",
+      "path": "/futures/usdt/positions",
+      "status": 400,
+      "error_label": "USER_NOT_FOUND"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.229",
+      "path": "/unified/accounts",
+      "status": 403,
+      "error_label": "REQUEST_FORBIDDEN"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.230",
+      "path": "/unified/accounts",
+      "status": 403,
+      "error_label": "REQUEST_FORBIDDEN"
+    },
+    {
+      "env": "gate_fr_arb05",
+      "subaccount": "GateAM05_LTP",
+      "source_ip": "172.31.35.234",
+      "path": "/unified/accounts",
+      "status": 403,
+      "error_label": "REQUEST_FORBIDDEN"
+    }
+  ],
+  "build_source": {
+    "branch": "arbmm",
+    "commit": "774352f5bcc257c47f15a7589be623d3b126ac99",
+    "existing_uncommitted_changes": true,
+    "worktree": "/home/fanghaizhou/mkt_signal",
+    "matches_origin_arbmm": true
+  }
+}

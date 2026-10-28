@@ -1,0 +1,273 @@
+{
+  "at_ms": 1792988202993,
+  "exec_ts_ms": 1792988202841,
+  "other_owner_rows": [],
+  "factual_retired": [
+    {
+      "coin": "1INCH",
+      "cash_qty": -54.52616388361417,
+      "perp_qty": 0.0,
+      "cash_usdt": -4.807940466486114,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "AAVE",
+      "cash_qty": -0.007747800015135421,
+      "perp_qty": 0.0,
+      "cash_usdt": -1.046427104414594,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "ADA",
+      "cash_qty": 0.0955708411123248,
+      "perp_qty": 2.0,
+      "cash_usdt": 0.019382287438663534,
+      "perp_usdt": 0.4056109
+    },
+    {
+      "coin": "ALGO",
+      "cash_qty": -0.5146558111349523,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.05342612640010705,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "ATOM",
+      "cash_qty": -2.0826195245556165,
+      "perp_qty": 0.0,
+      "cash_usdt": -3.398870760173417,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "AVAX",
+      "cash_qty": 0.006793276331231991,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.060253576222328534,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "BAND",
+      "cash_qty": 2.1749,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.437218037347,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "BAT",
+      "cash_qty": -0.6161889765536465,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.0908797649947314,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "BCH",
+      "cash_qty": 0.000654539556186251,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.18288296956555478,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "BNB",
+      "cash_qty": -0.004671204718432526,
+      "perp_qty": 0.0,
+      "cash_usdt": -3.460672266469355,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "BTC",
+      "cash_qty": 6.66401093008e-06,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.5331895673208185,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "COMP",
+      "cash_qty": -0.0016174143265,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.03374129781679903,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "CRV",
+      "cash_qty": 0.07739415735313514,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.02643937346038026,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "DOGE",
+      "cash_qty": 0.36257877476639255,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.027826684569698678,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "DOT",
+      "cash_qty": -0.020653026448873568,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.021111138663625555,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "EGLD",
+      "cash_qty": 0.012095036538618582,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.03885034047256492,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "ETC",
+      "cash_qty": 0.005596488280455731,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.041795814772176115,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "ETH",
+      "cash_qty": 2.2673049834761e-05,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.05253490121496265,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "FIL",
+      "cash_qty": -4.592245470745996,
+      "perp_qty": 0.1,
+      "cash_usdt": -4.20412376243387,
+      "perp_usdt": 0.091548324
+    },
+    {
+      "coin": "GRT",
+      "cash_qty": -1.0070912850486862,
+      "perp_qty": 90.0,
+      "cash_usdt": -0.02253218707877533,
+      "perp_usdt": 2.0136177
+    },
+    {
+      "coin": "KNC",
+      "cash_qty": 0.08404,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.0100572247952,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "KSM",
+      "cash_qty": -0.002998275814239903,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.011335169107972344,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "LINK",
+      "cash_qty": 0.007689927931494899,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.08762660512534323,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "LTC",
+      "cash_qty": 0.000533462248188214,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.030147206849778226,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "NEO",
+      "cash_qty": -0.46606967219827405,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.9747118960164093,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "RLC",
+      "cash_qty": 0.1918,
+      "perp_qty": 0.1,
+      "cash_usdt": 0.10180126404,
+      "perp_usdt": 0.05307678
+    },
+    {
+      "coin": "RSR",
+      "cash_qty": -2.5336445932556253,
+      "perp_qty": 1.0,
+      "cash_usdt": -0.00403797073405522,
+      "perp_usdt": 0.00159374
+    },
+    {
+      "coin": "SNX",
+      "cash_qty": -3.9809059904685298,
+      "perp_qty": 1.3,
+      "cash_usdt": -0.7761906009538494,
+      "perp_usdt": 0.253471894
+    },
+    {
+      "coin": "SUSHI",
+      "cash_qty": -5.293157969724671,
+      "perp_qty": 0.0,
+      "cash_usdt": -1.0592819113330947,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "THETA",
+      "cash_qty": -4.8488857877388805,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.8723751642865712,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "TRX",
+      "cash_qty": -0.3025696248144303,
+      "perp_qty": 1.0,
+      "cash_usdt": -0.09999587827276378,
+      "perp_usdt": 0.33048882
+    },
+    {
+      "coin": "UNI",
+      "cash_qty": -0.00459969775806468,
+      "perp_qty": 0.0,
+      "cash_usdt": -0.03167529617724106,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "XLM",
+      "cash_qty": 0.8884923507181133,
+      "perp_qty": 1.0,
+      "cash_usdt": 0.1491913263446846,
+      "perp_usdt": 0.16791515
+    },
+    {
+      "coin": "XRP",
+      "cash_qty": 0.1357405265548413,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.1746283535582896,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "XTZ",
+      "cash_qty": 0.04964754227434045,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.01403310620253679,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "YFI",
+      "cash_qty": -0.001967455246895863,
+      "perp_qty": 0.0,
+      "cash_usdt": -4.138711804860493,
+      "perp_usdt": 0.0
+    },
+    {
+      "coin": "ZEC",
+      "cash_qty": -0.002082099230909888,
+      "perp_qty": 0.001,
+      "cash_usdt": -2.5076281498347877,
+      "perp_usdt": 1.2043749465
+    },
+    {
+      "coin": "ZIL",
+      "cash_qty": 0.59608,
+      "perp_qty": 0.0,
+      "cash_usdt": 0.00112420688,
+      "perp_usdt": 0.0
+    }
+  ]
+}

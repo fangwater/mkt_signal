@@ -1,6 +1,33 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-23 07:10 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-27 09:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-27，部署 `gate_fr_arb04`（`GateAM36_LTP`）和
+`gate_fr_arb05`（`GateAM05_LTP`），两环境的 `trade_engine.toml` 均预配置
+`local_ips=["172.31.35.231","172.31.35.231"]`，沿用 ens41 / table100 / EIP
+`52.69.78.134`。未分配新 ENI/EIP，未修改路由。arb04 只读账户监控已启动，
+实测 WS 连接源地址为 `.231`，REST 轮询另有既有默认出口 `.228`；交易进程均停止。
+arb05 全部程序停止。两账户在 `.231` 及 NAV 现有 Gate REST 池
+`.229` / `.230` / `.234` 上的只读鉴权均通过。
+arb04 已是 multi_currency；arb05 尝试通过 API 切换同一模式并启用 USDT futures，
+Gate 返回 `INVALID_PARAM_VALUE: account balance must greater than 500 USDT`，
+实际仍为 classic，未调拨资金。NAV 两项按 SubAccount ID 启用登记，
+共用 `st_ms=1793091610625`；arb04 为 live，arb05 为 unavailable。
+预留 Viz/Config/dashboard 端口分别为 20124/20024/20174 和 20125/20025/20175，
+均未启动，网关路由未安装；本次仅部署、账户连通性核验和 NAV 登记/只读采集。
+证据：`artifacts/gate_fr_arb04_05_deploy_20261027/`。
+
+2026-10-23，新增RX04 5min的独立账户环境 `binance_exec_rx04_5m05`，
+复用原RX02的 `/exec_trade05/` 入口及保留端口10045/18165，别名 `RX04 5min`。
+凭据对应新RapidX portfolio，因此使用全新namespace、Redis前缀和数据目录；
+旧 `binance_exec_trade05` 的source、私有配置和历史数据保留，继续停用，移出其
+gateway/Exec URL配置。Nginx仅将05入口鉴权source改为新账户，保留原鉴权门禁。
+`local_ips=["172.31.35.228"]`，只读鉴权、余额及空仓/空挂单校验通过。
+新交易IP配置已加入Manager Kline排除清单；没有ENI/EIP、路由或CPU绑定变更。
+05:57 UTC已开启Manager账户监控，跟随virtual05倍率1，RX04策略开启；单份100 USDT，
+既有模拟仓位已按当前配置重算，采用lgq_grid_prep。Exec六个进程在线，
+loopback10045/18165已监听；策略配置页19188保持在线。
+证据：`artifacts/rx04_5min_slot05_20261023/`。
 
 2026-10-22 15:00–15:06 UTC，`binance_exec_trade08` 已作为RX02的JP Grid执行账户
 运行，STANDARD USD-M多资产模式、单向持仓，跟随virtual02倍率1。
@@ -338,7 +365,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01 Spread 接 Exec `trade06`，RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]`；新 `trade08` 原生STANDARD USD-M Grid执行RX02。RX02新版双Manager推送；`trade05` 已停机归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`、`bitget_fr_arb01`/`02`/`03` |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 仅只读监控，05 停止）、`bitget_fr_arb01`/`02`/`03` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 已配置 | Exec `trade02`、`trade03`、`trade04` `local_ips[1]` |
@@ -403,7 +430,7 @@ binance-cta-spread-rx01      172.31.35.228                  配置服务、因�
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
-binance-cta-perp-rx04        默认出口 / 172.31.35.228       独立5min观察信号，loopback10198/19188，未绑定Manager/Exec
+binance-cta-perp-rx04        默认出口 / 172.31.35.228       5min实盘信号，loopback10198/19188；关联virtual05/RX04 5min，单份100 USDT
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230
@@ -413,6 +440,8 @@ binance_fr_arb03             172.31.35.231, 172.31.35.231
 binance_fr_arb04             172.31.35.231, 172.31.35.231
 gate_fr_arb01                172.31.35.231, 172.31.35.231
 gate_fr_arb03                172.31.35.231, 172.31.35.231
+gate_fr_arb04                172.31.35.231, 172.31.35.231   仅只读账户监控，REST 轮询另走默认 .228；交易停止
+gate_fr_arb05                172.31.35.231, 172.31.35.231   仅部署、全部停止；classic，待余额大于500 USDT后切换统一账户
 bitget_fr_arb01              172.31.35.231, 172.31.35.231
 bitget_fr_arb02              172.31.35.231, 172.31.35.231
 bitget_fr_arb03              172.31.35.231, 172.31.35.231
@@ -423,6 +452,7 @@ binance_exec_trade02         172.31.35.228, 172.31.35.234
 binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
+binance_exec_rx04_5m05       172.31.35.228                  RX04 5min，复用05页面/端口，follow virtual05倍率1，lgq_grid_prep；六个Exec进程在线
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，在线，follow virtual03/cta_spread_rx01，ctaker；默认4倍（BEL/ZIL上限3倍）
 binance_exec_trade07         172.31.35.228                  RX03 RapidX，永续在线，follow virtual04/cta_perp_rx03，ctaker
 binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生STANDARD USD-M多资产/单向，在线Grid，follow virtual02/RX02，倍率1
@@ -474,6 +504,23 @@ binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原�
 2026-10-11 NAV 行情监控迁入独立 `fr_monitor`（只读 IPC/Viz/RocksDB，回环 18180），停用 `public-infra-monitor` 与常驻 BPF。未分配交易 source IP，未修改 ENI、EIP、trade_engine local_ips 或路由；NAV 中 RX02/RX03 退役数据由 `binance_exec_trade05`（别名 `lgq_cta`、既有 RapidX `.228`）替代。原交易目录及 RocksDB 保留。
 
 ## SG Bybit Exec 预部署
+
+2026-10-23 10:49 UTC，`bybit_fr_arb01` 完成授权撤单、全账户市价清仓与还款后
+重新启用实盘。重启前永续、挂单、借款均为0，仅保留约52.15 USDT不可交易零头。
+新trade_engine PID1603071的3条外连及持续运行account_monitor PID1581248的4条外连
+均使用 `172.31.7.124`；ENI/EIP/路由及 `local_ips` 不变。8进程在线，
+开仓/UniMMR名单均为指定19币，反套/dump/pos_dump均为空。详见
+`docs/delist_risk_server.md` 和SG `~/bybit_fr_arb01/run/reset_20261023/`。
+下段保留首次切换验收记录。
+
+2026-10-23 10:15 UTC，`bybit_fr_arb01` 已接替原 intra01 实盘交易。
+新 trade_engine PID1580489 的3条外连、account_monitor PID1581248 的4条外连
+均确认使用 `172.31.7.124`；`local_ips` 仍为重复的下单网卡地址，未改ENI/EIP/路由。
+新 FR 8进程在线，原 intra 的4个交易/监控进程停止，Config/Viz/persist 保留历史。
+原 intra 的 NAV 记录停用，新 FR 已启用；JP delist 可读取新环境的实时暴露快照。
+19币正套、27币dump，参数参考Binance FR arb02；详细验收和现存告警/集中度限制
+见 `docs/delist_risk_server.md`。新持久化使用独立本地RocksDB，旧6351同步源保留
+原历史及身份，没有将旧订单重标为FR，也未分配新的同步端口。
 
 2026-10-23，新增待切换 FR 环境 `bybit_fr_arb01`，凭据在 SG 本机从原 intra01
 复制，`local_ips=["172.31.7.124", "172.31.7.124"]`。FR dashboard 的私有利率请求

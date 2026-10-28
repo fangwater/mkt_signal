@@ -3,7 +3,20 @@
 新增 bin：`cta_perp_factor_model_5m_pub`、`cta_perp_5m_signal`。
 本目录为用户指定的 15 币、35 因子、48 项有符号绑定；默认 `enabled=false`，
 单份金额沿用 Perp 模板的 200 USDT。2026-10-21 已部署到 JP 的
-`~/binance-cta-perp-rx04`，只运行信号及仓位展示，尚未绑定 Manager/Exec。
+`~/binance-cta-perp-rx04`，运行信号及仓位展示。
+2026-10-23 05:57 UTC已开启交易：账户与虚拟账户均命名
+`RX04 5min`，virtual05有35项因子绑定；新账户环境/source为
+`binance_exec_rx04_5m05`，复用原RX02的 `/exec_trade05/` 入口和10045/18165端口。
+跟随倍率1，策略 `enabled=true`，线上单份金额为100 USDT，Exec六个进程在线。
+开启前仅重启仓位signal，从现有5min因子历史按当前配置重算仓位；48组信号就绪，
+26组非零仓位的入场名义金额均为100 USDT。因子publisher及预热历史保留。
+新账户的namespace、
+Redis和数据目录独立，旧RX02的Exec05历史保留；新版RX02继续使用Exec08。
+2026-10-23 05:40 UTC，35个因子绑定全部改用现有 `lgq_grid_prep` 下单模板：
+合约3档、10秒一轮、单手100 USDT、Vol倍数1、目标容差10 USDT、无限Maker重挂。
+共享模板参数保持不变；Manager账户监控已开启。
+远端回执及私有备份：`run/slot05_20261023/`；脱敏记录：
+`artifacts/rx04_5min_slot05_20261023/`。
 
 | 环节 | 数据与窗口 | 最少有效样本 |
 |---|---|---|
@@ -33,7 +46,7 @@ UTC 区间 `[T,T+5min)` 的图表及历史 `bar_start_ms` 是 T；IPC 和历史
 环境目录用独立的 `binance-cta-perp-rx04`，Redis key 自动按该目录隔离。
 5min 因子历史默认在 `data/cta_perp_5m/factor_history`。现有 1min NQ 语义不变。
 
-准备部署文件的入口（默认仅打印计划）：
+准备信号部署文件的入口（默认仅打印计划）：
 
 ```bash
 scripts/deploy_cta_perp_5m.sh --env-name binance-cta-perp-rx04
@@ -56,5 +69,11 @@ Kafka 配置预热 5 天，公式就绪仍取决于实际保留的原始行情�
 - [仓位表](http://13.115.227.29:4191/cta/binance-cta-perp-rx04/)
 - [5min 信号](http://13.115.227.29:4191/cta/binance-cta-perp-rx04/signals/)
 - [配置](http://13.115.227.29:4191/cta/binance-cta-perp-rx04/config/)
+- [Manager账户配置](http://13.115.227.29:4191/manager/config/)：选择 `RX04 5min`。
+
+Exec页面与配置上游已在线，运行日志、目标一致性与真实账户持仓均已核验。
+调整单份金额只影响之后的新入场；若需重算已有模拟仓位，先关闭策略，使用明确的
+恢复请求重启仓位signal，保留因子publisher，验收恢复结果后再开启。实盘已有仓位
+时，重新发布目标会触发实际调仓，须按当次授权处理。
 
 部署和在线验收记录保存在 `artifacts/cta_perp_rx04_deployment/`。

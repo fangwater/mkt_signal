@@ -1,0 +1,2155 @@
+{
+  "verified_at_us": 1792734030015850,
+  "virtual": {
+    "virtual_id": "virtual05",
+    "name": "RX04 5min",
+    "bindings": [
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_MT_032",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_032",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_MT_040",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_040",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_MT_042",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_042",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_PR_010",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_PR_010",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_TI_008",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_008",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_TI_027",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_027",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_TI_033",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_033",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_avg_price",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_001",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_001",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_013",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_013",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_022",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_022",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_040",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_040",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_051",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_051",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_104",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_104",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_111",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_111",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_118",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_118",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_119",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_119",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_120",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_120",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_132",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_132",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_138",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_138",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_141",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_141",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_195",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_195",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_200",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_200",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_032",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_032",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_049",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_049",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_051",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_051",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_094",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_094",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_128",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_128",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_171",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_171",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_sell_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_sell_avg_price",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0
+      }
+    ],
+    "updated_at_us": 1792734028788924,
+    "followers": [
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "multiplier": 0.0,
+        "pending_publishes": []
+      }
+    ],
+    "created_by_user_id": 1,
+    "owner_username": "prc",
+    "managers": [
+      {
+        "user_id": 3,
+        "username": "lgq"
+      }
+    ],
+    "can_configure": true,
+    "can_manage_grants": true
+  },
+  "account": {
+    "source_id": "binance_exec_rx04_5m05",
+    "estimated_fee_rate": 0.0004,
+    "maker_fee_rate": 0.0004,
+    "taker_fee_rate": 0.0004,
+    "theoretical_twap_fee_rate": 0.0004,
+    "quote_fee_rates": {},
+    "bindings": [
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_MT_032",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_032",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_MT_040",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_040",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_MT_042",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_042",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_PR_010",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_PR_010",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_TI_008",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_008",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_TI_027",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_027",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_TI_033",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_033",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_avg_price",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_001",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_001",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_013",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_013",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_022",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_022",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_040",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_040",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_051",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_051",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_104",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_104",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_111",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_111",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_118",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_118",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_119",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_119",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_120",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_120",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_132",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_132",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_138",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_138",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_141",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_141",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_195",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_195",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_200",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_200",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_032",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_032",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_049",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_049",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_051",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_051",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_094",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_094",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_128",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_128",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_171",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_171",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_sell_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_sell_avg_price",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 0.0,
+        "updated_at_us": 1792734028788924
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "follows": [
+        {
+          "virtual_id": "virtual05",
+          "multiplier": 0.0
+        }
+      ]
+    },
+    "pending_publishes": []
+  },
+  "order_strategy": {
+    "strategy_name": "lgq_grid_prep",
+    "order_parameters": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "chase": {
+        "batch_floor_usdt": 100.0,
+        "max_batch": 4,
+        "max_open_batches": 2,
+        "maker_recenter_trigger_bps": 5.0,
+        "maker_amend_cooldown_ms": 1000,
+        "maker_timeout_sec": 120,
+        "target_tolerance_usdt": 10.0,
+        "strategy_order_rate_limit_per_min": 0,
+        "strategy_order_rate_limit_10s": 0
+      },
+      "signal_execution_enabled": true,
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0
+    },
+    "updated_at_us": 1792656083005658,
+    "owner": "lgq",
+    "can_configure": true
+  },
+  "runtime": {
+    "binance_cta_perp_rx04_TD_MT_032": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028809269
+    },
+    "binance_cta_perp_rx04_TD_MT_040": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "VETUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028810727
+    },
+    "binance_cta_perp_rx04_TD_MT_042": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "ETCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028811902
+    },
+    "binance_cta_perp_rx04_TD_PR_010": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028813032
+    },
+    "binance_cta_perp_rx04_TD_TI_008": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028814387
+    },
+    "binance_cta_perp_rx04_TD_TI_027": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "VETUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028815480
+    },
+    "binance_cta_perp_rx04_TD_TI_033": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "BELUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SKLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028816565
+    },
+    "binance_cta_perp_rx04_TP_VPI_001": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "VETUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028817809
+    },
+    "binance_cta_perp_rx04_TP_VPI_006": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "SKLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028818995
+    },
+    "binance_cta_perp_rx04_TP_VPI_009": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028819904
+    },
+    "binance_cta_perp_rx04_TP_VPI_018": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ETCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028820877
+    },
+    "binance_cta_perp_rx04_TP_VPI_019": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028821840
+    },
+    "binance_cta_perp_rx04_avg_price": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "YFIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028822900
+    },
+    "binance_cta_perp_rx04_baseline_001": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "RUNEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028823818
+    },
+    "binance_cta_perp_rx04_baseline_013": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "ETCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "IOTAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028825862
+    },
+    "binance_cta_perp_rx04_baseline_022": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "IOTAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028827050
+    },
+    "binance_cta_perp_rx04_baseline_040": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "BANDUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SKLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028827943
+    },
+    "binance_cta_perp_rx04_baseline_051": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028829058
+    },
+    "binance_cta_perp_rx04_baseline_104": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "ETCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "VETUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZENUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028829988
+    },
+    "binance_cta_perp_rx04_baseline_111": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028830981
+    },
+    "binance_cta_perp_rx04_baseline_118": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DASHUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028831920
+    },
+    "binance_cta_perp_rx04_baseline_119": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "BANDUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028832805
+    },
+    "binance_cta_perp_rx04_baseline_120": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "SKLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028833820
+    },
+    "binance_cta_perp_rx04_baseline_132": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "DOTUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "IOTAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028834777
+    },
+    "binance_cta_perp_rx04_baseline_138": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "RUNEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028835792
+    },
+    "binance_cta_perp_rx04_baseline_141": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "ETCUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "ZENUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028836799
+    },
+    "binance_cta_perp_rx04_baseline_195": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "IOTAUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028837727
+    },
+    "binance_cta_perp_rx04_baseline_200": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "VETUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        },
+        "YFIUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028838604
+    },
+    "binance_cta_perp_rx04_factor_032": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "SOLUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028839589
+    },
+    "binance_cta_perp_rx04_factor_049": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "DOGEUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028840595
+    },
+    "binance_cta_perp_rx04_factor_051": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "NEARUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028841502
+    },
+    "binance_cta_perp_rx04_factor_094": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "BELUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028842433
+    },
+    "binance_cta_perp_rx04_factor_128": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "BELUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028843451
+    },
+    "binance_cta_perp_rx04_factor_171": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "XLMUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028844279
+    },
+    "binance_cta_perp_rx04_sell_avg_price": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0,
+      "targets": {
+        "BELUSDT": {
+          "qty": 0.0,
+          "signal": 0
+        }
+      },
+      "updated_at_us": 1792734028845278
+    }
+  },
+  "template_unchanged": true,
+  "rx02_unchanged": true,
+  "processes_unchanged": true,
+  "signal_enabled": false,
+  "exec_processes": []
+}

@@ -1,0 +1,312 @@
+{
+  "TD_MT_032": {
+    "DASHUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    },
+    "DOTUSDT": {
+      "flag": 1,
+      "qty": 172.99541562148605,
+      "entry_notional": 200.0
+    }
+  },
+  "TD_MT_040": {
+    "VETUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "TD_MT_042": {
+    "ETCUSDT": {
+      "flag": -1,
+      "qty": -25.740025740025743,
+      "entry_notional": 200.0
+    }
+  },
+  "TD_PR_010": {
+    "DOGEUSDT": {
+      "flag": 1,
+      "qty": 2405.002405002405,
+      "entry_notional": 200.0
+    }
+  },
+  "TD_TI_008": {
+    "DOGEUSDT": {
+      "flag": -1,
+      "qty": -2533.890789306981,
+      "entry_notional": 200.0
+    }
+  },
+  "TD_TI_027": {
+    "VETUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "TD_TI_033": {
+    "BELUSDT": {
+      "flag": 1,
+      "qty": 1839.926402943882,
+      "entry_notional": 200.0
+    },
+    "SKLUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "TP_VPI_001": {
+    "VETUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "TP_VPI_006": {
+    "SKLUSDT": {
+      "flag": 1,
+      "qty": 46533.27128897162,
+      "entry_notional": 200.0
+    }
+  },
+  "TP_VPI_009": {
+    "XLMUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "TP_VPI_018": {
+    "DOGEUSDT": {
+      "flag": -1,
+      "qty": -2517.9403248143017,
+      "entry_notional": 200.0
+    },
+    "ETCUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "TP_VPI_019": {
+    "DOGEUSDT": {
+      "flag": -1,
+      "qty": -2516.3563160543536,
+      "entry_notional": 200.0
+    }
+  },
+  "avg_price": {
+    "YFIUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_001": {
+    "RUNEUSDT": {
+      "flag": -1,
+      "qty": -297.7519726068185,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_013": {
+    "ETCUSDT": {
+      "flag": -1,
+      "qty": -25.740025740025743,
+      "entry_notional": 200.0
+    },
+    "IOTAUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    },
+    "NEARUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_022": {
+    "IOTAUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_040": {
+    "BANDUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    },
+    "SKLUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_051": {
+    "NEARUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_104": {
+    "ETCUSDT": {
+      "flag": -1,
+      "qty": -26.014568158168576,
+      "entry_notional": 200.0
+    },
+    "SOLUSDT": {
+      "flag": -1,
+      "qty": -1.9336749492410328,
+      "entry_notional": 200.0
+    },
+    "VETUSDT": {
+      "flag": -1,
+      "qty": -27643.400138217,
+      "entry_notional": 200.0
+    },
+    "ZENUSDT": {
+      "flag": 1,
+      "qty": 32.211306168465136,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_111": {
+    "DOTUSDT": {
+      "flag": 1,
+      "qty": 173.70158068438425,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_118": {
+    "DASHUSDT": {
+      "flag": 1,
+      "qty": 3.650967506389193,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_119": {
+    "BANDUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_120": {
+    "SKLUSDT": {
+      "flag": 1,
+      "qty": 47698.545194371574,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_132": {
+    "DOGEUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    },
+    "DOTUSDT": {
+      "flag": 1,
+      "qty": 173.70158068438425,
+      "entry_notional": 200.0
+    },
+    "IOTAUSDT": {
+      "flag": -1,
+      "qty": -4538.234626730202,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_138": {
+    "RUNEUSDT": {
+      "flag": -1,
+      "qty": -310.4625892579944,
+      "entry_notional": 200.0
+    }
+  },
+  "baseline_141": {
+    "ETCUSDT": {
+      "flag": -1,
+      "qty": -25.970653161927025,
+      "entry_notional": 200.0
+    },
+    "ZENUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_195": {
+    "IOTAUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "baseline_200": {
+    "VETUSDT": {
+      "flag": -1,
+      "qty": -28137.31007315701,
+      "entry_notional": 200.0
+    },
+    "YFIUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "factor_032": {
+    "SOLUSDT": {
+      "flag": 1,
+      "qty": 1.9280825219319384,
+      "entry_notional": 200.0
+    }
+  },
+  "factor_049": {
+    "DOGEUSDT": {
+      "flag": -1,
+      "qty": -2514.774299006664,
+      "entry_notional": 200.0
+    }
+  },
+  "factor_051": {
+    "NEARUSDT": {
+      "flag": -1,
+      "qty": -40.7000407000407,
+      "entry_notional": 200.0
+    }
+  },
+  "factor_094": {
+    "BELUSDT": {
+      "flag": 1,
+      "qty": 1801.8018018018015,
+      "entry_notional": 200.0
+    }
+  },
+  "factor_128": {
+    "BELUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "factor_171": {
+    "XLMUSDT": {
+      "flag": 0,
+      "qty": 0.0,
+      "entry_notional": 0.0
+    }
+  },
+  "sell_avg_price": {
+    "BELUSDT": {
+      "flag": 1,
+      "qty": 1855.4596901382315,
+      "entry_notional": 200.0
+    }
+  }
+}

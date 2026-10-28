@@ -1,0 +1,25 @@
+{
+  "rust_tests.log": [
+    "{\"factor\":\"baseline_140\",\"first_raw_bar\":60,\"first_ready_bar\":2498,\"first_score_bar\":1059,\"size_independent\":true}",
+    "{\"factor\":\"baseline_164\",\"first_raw_bar\":30,\"first_ready_bar\":2468,\"first_score_bar\":1029,\"size_independent\":true}",
+    "test factor_pub::cta_spread_factor_model_1m_pub::app::tests::configured_factors_warm_within_two_days_without_size_metadata ... ok",
+    "",
+    "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 1347 filtered out; finished in 2.28s",
+    ""
+  ],
+  "python_tests.log": [
+    "127.0.0.1 - - [26/Oct/2026 03:25:04] \"POST /api/signal-panel HTTP/1.1\" 501 -",
+    "..........",
+    "----------------------------------------------------------------------",
+    "Ran 19 tests in 0.946s",
+    "",
+    "OK"
+  ],
+  "handoff_tests.log": [
+    "....",
+    "----------------------------------------------------------------------",
+    "Ran 4 tests in 0.226s",
+    "",
+    "OK"
+  ]
+}

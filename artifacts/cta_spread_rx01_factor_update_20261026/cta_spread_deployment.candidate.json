@@ -1,0 +1,131 @@
+{
+  "rule": {
+    "entry": {
+      "long": 0.9,
+      "short": 0.1
+    },
+    "exit": {
+      "long": 0.3,
+      "short": 0.7
+    },
+    "nq": {
+      "long_quantile": 0.5,
+      "short_quantile": 0.5,
+      "lookback": 120,
+      "quantile_window": 120
+    },
+    "spread": {
+      "long_quantile": 0.3,
+      "short_quantile": 0.7,
+      "lag": "previous minute"
+    }
+  },
+  "n_factors": 7,
+  "n_sleeves": 55,
+  "factors": [
+    {
+      "factor": "TD_PR_011",
+      "sign": 1.0,
+      "n_symbols": 5,
+      "symbols": [
+        "AXSUSDT",
+        "IOTAUSDT",
+        "RUNEUSDT",
+        "TRBUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "TD_TI_024",
+      "sign": -1.0,
+      "n_symbols": 14,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "DASHUSDT",
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "VETUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_005",
+      "sign": -1.0,
+      "n_symbols": 8,
+      "symbols": [
+        "AXSUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "SOLUSDT",
+        "TRBUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_028",
+      "sign": -1.0,
+      "n_symbols": 4,
+      "symbols": [
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "SKLUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_105",
+      "sign": -1.0,
+      "n_symbols": 5,
+      "symbols": [
+        "AXSUSDT",
+        "BELUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "SKLUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_140",
+      "sign": 1.0,
+      "n_symbols": 7,
+      "symbols": [
+        "ENJUSDT",
+        "IOSTUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "RUNEUSDT"
+      ]
+    },
+    {
+      "factor": "baseline_164",
+      "sign": 1.0,
+      "n_symbols": 12,
+      "symbols": [
+        "AXSUSDT",
+        "DASHUSDT",
+        "IOTAUSDT",
+        "KAVAUSDT",
+        "NEARUSDT",
+        "ONTUSDT",
+        "QTUMUSDT",
+        "SKLUSDT",
+        "SOLUSDT",
+        "VETUSDT",
+        "ZENUSDT",
+        "ZRXUSDT"
+      ]
+    }
+  ]
+}

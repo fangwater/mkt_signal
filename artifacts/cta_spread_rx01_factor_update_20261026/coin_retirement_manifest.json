@@ -1,0 +1,9 @@
+{
+  "sha256": "a6a4f71d3ef43d712e2b26c9242f5822309aae0c2a80bf79b7faccd67a8a18ab",
+  "size": 11975904,
+  "branch": "arbmm",
+  "base_commit": "774352f5bcc257c47f15a7589be623d3b126ac99",
+  "source_sha256": "ba12c4b1d93aa497d8248464e8fadc0182a36f65a8b5bc47d061b4ff917d34f1",
+  "scope": "Clear both markets only for coins absent from the new factor table; retain all 17 configured coins",
+  "tests": "36 cta_spread tests passed"
+}

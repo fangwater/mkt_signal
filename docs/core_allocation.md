@@ -1,7 +1,67 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-23 07:10 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-27 09:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-27，新增 JP `gate_fr_arb04` / `gate_fr_arb05`，分别对应
+`GateAM36_LTP` / `GateAM05_LTP`。由本机已同步的 `arbmm` `774352f5`
+工作树（含部署时已有本地改动）构建七个 release 程序，SCP 上传、SHA-256 校验后
+原子安装。仅启动 arb04 的只读 `account_monitor`（PID3060643，CPU mask
+`0-5,48-95`），未新增隔离核绑定；`PERSIST_MANAGER_CORE=15` 仅为停用程序的
+预配置。两环境的 trade_engine、pre_trade、trade_signal、persist_manager、
+Viz、Config 和 FR dashboard 均未启动，Redis 名单前缀为空。
+NAV 按上述 SubAccount ID 登记并重载，公共 `st_ms=1793091610625`
+（09:00:10.625 UTC）；arb04 实时权益采集及四类历史首轮同步通过。
+arb05 的统一账户切换 API 被 Gate 拒绝：余额必须大于 500 USDT；仍为 classic，
+NAV 登记实际模式并显示 unavailable，未启动账户监控或调拨资金。
+证据：`artifacts/gate_fr_arb04_05_deploy_20261027/`。
+
+2026-10-26 04:03–04:22 UTC，按用户明确的“仅新表完全没有的币直接平仓”规则，
+更新 RX01 Spread signal：新表内17币保持原目标及退出对冲，完全移除的币持续发布
+现货/永续 `qty="clear", signal=1`，不受普通金额容差影响。本地同步arbmm构建release，
+上传校验SHA-256后原子安装，signal PID2879622 → PID3267446；publisher PID3173585
+仍CPU17，Config PID2879569、Dashboard PID3207816未重启。初次历史批量退出触发
+RapidX 429后，通过环境本地脚本暂停并恢复Exec06 pre_trade，PID502412 → PID3289558；
+其他五个Exec进程保持。signal与pre_trade全部线程仍`0-5,48-95`，ENI/source IP/监听保持。
+344个退场组合688个市场目标及inventory的76个市场目标明确清仓；通过已有内部对敲
+记账承接剩余旧仓，再按币逐项ctaker退出，未清零账本或重置历史快照。
+新表内456个历史退出对冲组合数量保持（仅JSON浮点末位差）。普通lgq_grid_spread模板、
+17币/55组合、单组合10 USDT、entry/exit/NQ、env.sh及跟随倍率均保持。
+04:22核验退场因子仓位为0，相关挂单/pending为0；旧币绝对仓位市值约2519.62 →
+34.06 USDT，剩47个市场零头均低于最小下单门槛，最大约4.80 USDT；不声明账户完全归零。
+新清单IOST借币不足差额仍保留。1710项信号目标链路一致，交易所/Exec账户数量一致。
+36项Spread Rust测试通过。证据：`artifacts/cta_spread_rx01_factor_update_20261026/coin_retirement_result.json`；
+远端回执：`~/binance-cta-spread-rx01/run/factor_update_20261026/coin_retirement/`。
+
+2026-10-26 03:42:36 UTC，RX01 已切换新清单：17币、7因子、55组合；
+按用户确认排除现货和合约规则均缺失的ICX。复用本地与远端SHA-256一致的既有
+release publisher（`693b9277…43f0d023`），通过环境本地脚本旁路回放后交接，
+PID3973994 → PID3173585，全部线程仍CPU17，进程名`cta_spread_factor_rx01_20261026`。
+signal PID2879622、Config PID2879569、Dashboard PID3207816及Exec06六个进程
+未重启；三个信号服务仍为`0-5,48-95`。enabled=true、单组合10 USDT、现有
+entry/exit/NQ、lgq_grid_spread及virtual03→Exec06倍率1保持；env.sh仅更新publisher进程名。
+55/55组合因子、spread和NQ就绪，解码/计算/发布错误均0；133个移除组合的内部
+方向状态归零，对冲库存保留。1710项目标在signal/Manager/Redis/Exec间一致，待投递0。
+03:46核验新清单110个市场目标中109个在原10 USDT容差内；baseline_140/IOST现货
+仍因借币不足差约19.82 USDT，不能声明全部实仓到位。另有20项历史对冲库存目标
+超容差（借币不足、最小下单限制及仍在执行的旧目标）。交易所110项余额/仓位与Exec
+账户快照一致；切换后已观察到20笔成交记录。source IP、ENI、路由和监听保持。
+证据：`artifacts/cta_spread_rx01_factor_update_20261026/deployment_result.json`；
+远端备份与回执：`~/binance-cta-spread-rx01/run/factor_update_20261026/`。
+
+2026-10-23 05:57 UTC，RX04 5min 接入原 RX02 的05号页面/端口槽位并开启交易。
+新账户使用独立环境/source `binance_exec_rx04_5m05`，别名 `RX04 5min`；
+`virtual05` 有35项因子绑定、覆盖15币/48组合，实账户跟随倍率1，采用lgq_grid_prep。
+RX04策略 `enabled=true`、单份100 USDT；开启前只重启仓位signal按既有历史重算。
+本地arbmm `f9424e8d` release构建后，37份程序/脚本校验SHA-256并原子发布。
+新Exec六个进程在线：persist_manager 2011312、trade_engine 2011593、
+rapidx_account_monitor 2011864、exec-pre-trade 2012013、viz_server 2012588、
+config_server 2012847；各进程全部线程CPU mask均为 `0-5,48-95`，无专用绑核。
+Manager PID2010667全部线程仍为CPU24；RX04 signal PID2010605、配置620503、
+dashboard 620577全部线程为 `0-5,48-95`；publisher PID705737全部线程保持CPU28。
+89个其他受保护进程身份及新版RX02/Exec08绑定保持；仅RX04策略配置开关改变，
+其余受保护环境配置哈希保持。
+旧Exec05仍停用并保留全部历史。证据：`artifacts/rx04_5min_slot05_20261023/`。
 
 2026-10-22 15:00–15:06 UTC，Exec08已接替JP RX02的执行：virtual02倍率1、
 `lgq_cta_symbol_mean` / `lgq_grid_prep`，23币、单币50 USDT。
@@ -618,7 +678,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-22 因子18币/15组/153组合全就绪，PID3973994；全市场Vol继续，合约524/现货362就绪 |
+| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-26 因子17币/7组/55组合全就绪，PID3173585；全市场Vol继续发布，既有release二进制复用 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-22 新版23币/22因子/69组合，PID160373，双Manager推送；68/69就绪，RLC继续预热 |
 | 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 2026-10-14 独立RX03实盘信号publisher，PID2038356/5线程；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
@@ -627,7 +687,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 23 | trade_engine(okex_mm_alpha) | 单线程 |
 | 24 | crypto_cta_manager / cta_web | Manager 网页服务，2026-10-22 实测仍固定 CPU24 |
 | 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
-| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | 2026-10-21 09:51 UTC更新；PID705737全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；5min观察信号 |
+| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；2026-10-23开启5min实盘，仓位重算保留publisher |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
@@ -649,7 +709,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 2026-10-11 05:46 UTC trade05 待执行量/权益修复：本地 release 上传并校验 SHA-256 后原子安装，通过环境脚本重启 exec-pre-trade（PID 3371755）、Viz（PID 3371634），并重启 Manager 网页服务。trade_engine、账户监控、persist_manager 与 RX02 四个信号进程继续运行，RX03 无进程。CPU 分配仍为 housekeeping 0-5。Manager 已解析 RapidX 账户权益；待下单量按步长、minQty、minNotional 检查，真实余量保留在差额中。线上证据：`artifacts/trade05_pending_equity_live_validation.json`、`artifacts/trade05_pending_equity_live_browser.json`。
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
-binance_fr_arb01/02/03/04、gate_fr_arb01/02/03、bitget_fr_arb01/02、
+binance_fr_arb01/02/03/04、gate_fr_arb01/02/03、gate_fr_arb04 的只读账户监控、bitget_fr_arb01/02、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `binance_exec_trade08` 的engine、executor、监控、持久化、Viz/Config均有效CPU0–5；
@@ -756,6 +816,37 @@ L3 说明:c7i.metal-24xl 的 L3 为全芯片共享(`shared_cpu_list=0-47`),
 
 CPU 布局:`0-7` housekeeping,`8-15` 隔离;AMD 实例无 SMT,全部为物理核。
 
+2026-10-23 10:39–10:49 UTC，经操作者再次授权，FR signal/pre_trade/trade_engine
+先停机，账户13笔挂单全部撤销，21个永续持仓使用reduce-only市价单全部平仓，
+现货通过市价买回/卖出并显式no-convert-repay清理。重启前交易所回查确认
+永续持仓=0、挂单=0、全部币种借款=0；仅留每币低于最小交易金额的现货零头，
+合计约52.15 USDT。旧dump与pos_dump均为空；开仓名单和UniMMR候选均为指定19币，
+仅正套。10:45–10:46 UTC通过环境脚本恢复trade_engine PID1603071/CPU15、
+pre_trade PID1603176/CPU14、trade_signal PID1603903/CPU13，实盘信号已启用。
+account_monitor PID1581248/CPU12及4个读写辅助进程持续运行，8进程验收通过；
+14个无关行情/MM/bridge进程与私有API源IP不变。保留当前配置中的操作者调整：
+max_leverage=1.5、UniMMR锁定/恢复5.0/5.1、强平/恢复4.5/4.6，未覆盖回初始参考值。
+停机前约193673 USD累计借款对应约11560 USD维持保证金，UniMMR约4.79；
+清仓还款后交易所初始/维持保证金和MMR均为0，重启后的暴露快照已刷新。
+证据位于SG `~/bybit_fr_arb01/run/reset_20261023/` 及本地
+`data/ops/bybit_fr_reset_20261023/`。下段是首次切换时的历史状态。
+
+2026-10-23 09:51–10:15 UTC，经操作者授权，`bybit-intra-arb01` 切换至
+`bybit_fr_arb01` 实盘 FR。旧 signal/pre_trade/trade_engine/account_monitor 已通过
+环境脚本停止；旧 Config/Viz/persist_manager 保留历史读取。新 FR 共8进程在线：
+account_monitor PID1581248/CPU12、trade_signal PID1589108/CPU13（no_emit=0）、
+pre_trade PID1582841/CPU14、trade_engine PID1580489/CPU15；persist PID1580196、
+Config PID1514349、Viz PID1514449、FR dashboard PID1514509 均为0–7。
+19个指定币种仅正套，27个旧持仓/原清仓币种放入dump，UniMMR平仓候选覆盖46币。
+参数参考实时 `binance_fr_arb02`：MM、100 USDT/单、max_pos_u=5000、max_leverage=2.1；
+Bybit rolling 在原分位数中补25，46币阈值全部加载。已确认真实平仓/对冲成交和
+独立RocksDB写入，14个无关行情/MM/bridge进程身份及绑核不变。
+NAV 原 intra 停用、新 FR 启用，统计起点为10:03:29.591 UTC；IP/路由不变。
+已补通知URL，但SG与参考JP的18100服务均未运行；EUR/HFT历史零头无标记价，
+集中度自动dump扫描当前跳过，其他单币/杠杆/UniMMR风控仍执行。详见
+`docs/delist_risk_server.md`；证据/备份：`data/ops/bybit_fr_cutover_20261023/`、
+SG `~/bybit_fr_arb01/run/cutover_20261023/`。
+
 2026-10-23 06:47–07:10 UTC，预部署 `bybit_fr_arb01`，尚未从 `bybit-intra-arb01`
 切换交易。新环境的 Config PID1514349、Viz PID1514449、FR dashboard PID1514509
 运行于 housekeeping `0-7`，分别监听回环 `20041/20141/20151`。
@@ -817,10 +908,10 @@ NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp
 | 9 | spread_pbs bybit-both(bookticker 角色) | BBO 专核 |
 | 10 | NIC IRQ: enp39s0 下单网卡 | 禁止再绑用户进程 |
 | 11 | NIC IRQ: enp40s0 行情网卡 | 禁止再绑用户进程 |
-| 12 | account_monitor_bybit(bybit-intra-arb01) | 2026-10-21 恢复，PID 388050 |
-| 13 | trade_signal(bybit-intra-arb01) | 2026-10-21 显式启动，PID 395919；start-intra 默认不拉起 |
-| 14 | pre_trade(bybit-intra-arb01) | 2026-10-21 恢复，PID 388213 |
-| 15 | trade_engine(bybit-intra-arb01) | 2026-10-21 恢复，PID 387890；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
+| 12 | account_monitor_bybit(bybit_fr_arb01) | 2026-10-23 FR切换，PID1581248 |
+| 13 | trade_signal(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603903；实盘信号启用 |
+| 14 | pre_trade(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603176 |
+| 15 | trade_engine(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603071；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
 
 未绑核、跑在 housekeeping 0-7 的热路径进程(截至本次盘点):
 mm_bybit_alpha 全套(trade_engine/trade_signal/pre_trade/account_monitor/persist_manager)、

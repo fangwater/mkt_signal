@@ -1,0 +1,94 @@
+{
+  "method": "2880 complete synthetic one-minute bars through the actual Spread SymbolFactorState and normalization implementation extracted without algorithm changes from current source, using the existing local debug library for BaselineReplayState/formulas (formula sources last changed before that library was built). Scores, quantiles and readiness compared for varied size buckets with metadata, NaN size buckets without metadata, and zero size buckets without metadata. Synthetic OHLC fixture varies candle body to exercise both TD_PR_011 outcomes. These are ideal complete-history sample bounds, not completed live Kafka replay.",
+  "normalize": {
+    "window_bars": 1440,
+    "min_periods": 1000,
+    "clip_zscore": 3.0
+  },
+  "percentile": {
+    "window_bars": 2880,
+    "min_samples": 1440
+  },
+  "factors": [
+    {
+      "factor": "TD_PR_011",
+      "first_raw_bar": 1,
+      "first_score_bar": 1000,
+      "first_ready_bar": 2439,
+      "minimum_history_minutes": 2439,
+      "minimum_history_hours": 40.65,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "first_raw_bar": 1,
+      "first_score_bar": 1000,
+      "first_ready_bar": 2439,
+      "minimum_history_minutes": 2439,
+      "minimum_history_hours": 40.65,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    },
+    {
+      "factor": "baseline_005",
+      "first_raw_bar": 61,
+      "first_score_bar": 1060,
+      "first_ready_bar": 2499,
+      "minimum_history_minutes": 2499,
+      "minimum_history_hours": 41.65,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    },
+    {
+      "factor": "baseline_028",
+      "first_raw_bar": 31,
+      "first_score_bar": 1030,
+      "first_ready_bar": 2469,
+      "minimum_history_minutes": 2469,
+      "minimum_history_hours": 41.15,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    },
+    {
+      "factor": "baseline_105",
+      "first_raw_bar": 15,
+      "first_score_bar": 1014,
+      "first_ready_bar": 2453,
+      "minimum_history_minutes": 2453,
+      "minimum_history_hours": 40.88333333333333,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    },
+    {
+      "factor": "baseline_140",
+      "first_raw_bar": 60,
+      "first_score_bar": 1059,
+      "first_ready_bar": 2498,
+      "minimum_history_minutes": 2498,
+      "minimum_history_hours": 41.63333333333333,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    },
+    {
+      "factor": "baseline_164",
+      "first_raw_bar": 30,
+      "first_score_bar": 1029,
+      "first_ready_bar": 2468,
+      "minimum_history_minutes": 2468,
+      "minimum_history_hours": 41.13333333333333,
+      "size_independent": true,
+      "ready_within_2880_bars": true
+    }
+  ],
+  "source_sha256": {
+    "src/factor_pub/cta_spread_factor_model_1m_pub/app.rs": "8073186682dca7f3722d818b426126289de736ac4c47b00f485b937bfea4db28",
+    "src/factor_pub/cta_spread_factor_model_1m_pub/cfg.rs": "97fb267f82393af843cdd851eae8ce5a7b1d3f2f99bb45123fc04905355d829c",
+    "src/factor_pub/fusion_factor_pub/app.rs": "1c10f5985680b4a253dcf5f68857521243d2a870aa5556a71a3eb8faed730308",
+    "src/factor_pub/fusion_factor_pub/opv_factors.rs": "539a587825419426fd123cee99d4d6205e1a4ad83f4f1f02874071e63481bcca",
+    "crates/factor_engine/src/baseline.rs": "595f90f50ec2960cf217858acd10e1adbe310975302a27f79a2a63b3738aa59c",
+    "crates/rolling_common/src/exact_rolling_window.rs": "34c430b63c7381338a63e78f26df95a4fc2a66af5e18b3d2c3a9ca64edee89ac"
+  },
+  "formula_library": "target/debug/deps/libmkt_signal-6bacf97c735afe6a.rlib",
+  "live_changed": false
+}

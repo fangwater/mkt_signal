@@ -1,0 +1,373 @@
+{
+  "verified_at_ms": 1792988521336,
+  "retained_symbols": [
+    "AXSUSDT",
+    "BELUSDT",
+    "DASHUSDT",
+    "ENJUSDT",
+    "IOSTUSDT",
+    "IOTAUSDT",
+    "KAVAUSDT",
+    "NEARUSDT",
+    "ONTUSDT",
+    "QTUMUSDT",
+    "RUNEUSDT",
+    "SKLUSDT",
+    "SOLUSDT",
+    "TRBUSDT",
+    "VETUSDT",
+    "ZENUSDT",
+    "ZRXUSDT"
+  ],
+  "retained_symbol_count": 17,
+  "retained_factor_combinations": 55,
+  "retained_coin_legacy_bindings_preserved": 456,
+  "retained_legacy_max_quantity_rounding": 1.8189894035458565e-12,
+  "retired_signal_combinations_cleared": 344,
+  "retired_signal_market_clear_targets": 688,
+  "retired_inventory_clear_targets": 76,
+  "inventory_manager_redis_clear_targets_match": true,
+  "retired_factor_positions_zero": true,
+  "retired_pending_or_live_orders": 0,
+  "retired_gross_usdt": 34.05906502288138,
+  "max_retired_market_usdt": 4.795576113563866,
+  "system_rounding_and_fee_residuals": [
+    {
+      "symbol": "ALGO",
+      "current_qty": -0.01679999999998738,
+      "current_usdt": -0.0017413199999986918,
+      "completion_reason": "target_tolerance"
+    },
+    {
+      "symbol": "BAT",
+      "current_qty": -0.017799999999996152,
+      "current_usdt": -0.0026201599999994335,
+      "completion_reason": "target_tolerance"
+    },
+    {
+      "symbol": "COMP",
+      "current_qty": -7.85999999999966e-05,
+      "current_usdt": -0.0016340939999999293,
+      "completion_reason": "target_tolerance"
+    },
+    {
+      "symbol": "DOT",
+      "current_qty": -0.0023860000000012933,
+      "current_usdt": -0.0024325270000013187,
+      "completion_reason": "target_tolerance"
+    },
+    {
+      "symbol": "GRT",
+      "current_qty": -0.22899999999992665,
+      "current_usdt": -0.005114714999998361,
+      "completion_reason": "target_tolerance"
+    },
+    {
+      "symbol": "KSM",
+      "current_qty": -0.0009189999999994034,
+      "current_usdt": -0.003469224999997748,
+      "completion_reason": "target_tolerance"
+    },
+    {
+      "symbol": "RSR",
+      "current_qty": -2.3932200000012736,
+      "current_usdt": -0.0038040231900020247,
+      "completion_reason": "target_tolerance"
+    }
+  ],
+  "remaining_markets": [
+    {
+      "symbol": "1INCH",
+      "current_qty": -54.52616388361417,
+      "current_usdt": -4.795576113563866,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "AAVE",
+      "current_qty": -0.007747800015135421,
+      "current_usdt": -1.0437448790389685,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ADA",
+      "current_qty": 0.0955708411123248,
+      "current_usdt": 0.01936743095141262,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ADAUSDT",
+      "current_qty": 2.0,
+      "current_usdt": 0.4049,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ALGO",
+      "current_qty": -0.49785581113495425,
+      "current_usdt": -0.051602754824138,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ATOM",
+      "current_qty": -2.0826195245556165,
+      "current_usdt": -3.3873806566897104,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "AVAX",
+      "current_qty": 0.006793276331231991,
+      "current_usdt": 0.06011030561690628,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "BAND",
+      "current_qty": 2.174899999999985,
+      "current_usdt": 0.437372389999997,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "BAT",
+      "current_qty": -0.5983889765536503,
+      "current_usdt": -0.08808285734869732,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "BCH",
+      "current_qty": 0.000654539556186251,
+      "current_usdt": 0.18238744733129883,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "BNB",
+      "current_qty": -0.004671204718432526,
+      "current_usdt": -3.45853661750385,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "BTC",
+      "current_qty": 6.66401093008e-06,
+      "current_usdt": 0.5328010352018109,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "COMP",
+      "current_qty": -0.0015388143264999932,
+      "current_usdt": -0.03199194984793486,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "CRV",
+      "current_qty": 0.0773941573531367,
+      "current_usdt": 0.026379798533816647,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "DOGE",
+      "current_qty": 0.36257877476639255,
+      "current_usdt": 0.027793475979717822,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "DOT",
+      "current_qty": -0.018267026448873125,
+      "current_usdt": -0.018623233464626153,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "EGLD",
+      "current_qty": 0.012095036538616988,
+      "current_usdt": 0.03877668714280606,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ETC",
+      "current_qty": 0.00559648828045578,
+      "current_usdt": 0.04172182013079785,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ETH",
+      "current_qty": 2.2673049834761e-05,
+      "current_usdt": 0.05246282991690596,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "FIL",
+      "current_qty": -4.592245470745996,
+      "current_usdt": -4.193179339338169,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "FILUSDT",
+      "current_qty": 0.09999999999999964,
+      "current_usdt": 0.09121499999999969,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "GRT",
+      "current_qty": -0.7780912850487312,
+      "current_usdt": -0.01737866885156341,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "current_qty": 89.99999999999997,
+      "current_usdt": 2.0065499999999994,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "KNC",
+      "current_qty": 0.08404000000000167,
+      "current_usdt": 0.0100427800000002,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "KSM",
+      "current_qty": -0.002079275814240056,
+      "current_usdt": -0.007849266198756212,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "LINK",
+      "current_qty": 0.007689927931494899,
+      "current_usdt": 0.08741525576126825,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "LTC",
+      "current_qty": 0.000533462248188214,
+      "current_usdt": 0.03007926886409245,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "NEO",
+      "current_qty": -0.46606967219827405,
+      "current_usdt": -0.9738525800582936,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "RLC",
+      "current_qty": 0.1918,
+      "current_usdt": 0.10154851,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "current_qty": 0.1,
+      "current_usdt": 0.052855,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "RSR",
+      "current_qty": -0.14042459325355594,
+      "current_usdt": -0.0002232048909765272,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "current_qty": 0.999999999990905,
+      "current_usdt": 0.0015884999999855526,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "SNX",
+      "current_qty": -3.9809059904685222,
+      "current_usdt": -0.7748833510446979,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "SNXUSDT",
+      "current_qty": 1.3,
+      "current_usdt": 0.252655,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "SUSHI",
+      "current_qty": -5.293157969724671,
+      "current_usdt": -1.0567789886555303,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "THETA",
+      "current_qty": -4.8488857877388805,
+      "current_usdt": -0.8740116632399333,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "TRX",
+      "current_qty": -0.3025696248144303,
+      "current_usdt": -0.09998413251992848,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "current_qty": 1.0,
+      "current_usdt": 0.330235,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "UNI",
+      "current_qty": -0.00459969775806468,
+      "current_usdt": -0.03154242737592854,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "XLM",
+      "current_qty": 0.8884923507181133,
+      "current_usdt": 0.1489557425978917,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "current_qty": 1.0,
+      "current_usdt": 0.16758499999999998,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "XRP",
+      "current_qty": 0.1357405265548413,
+      "current_usdt": 0.17424332691212208,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "XTZ",
+      "current_qty": 0.04964754227434298,
+      "current_usdt": 0.014008054052705872,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "YFI",
+      "current_qty": -0.001967455246895862,
+      "current_usdt": -4.14149329471579,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ZEC",
+      "current_qty": -0.002082099230909888,
+      "current_usdt": -2.498154709726456,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "current_qty": 0.001,
+      "current_usdt": 1.199205,
+      "completion_reason": "exchange_minimum"
+    },
+    {
+      "symbol": "ZIL",
+      "current_qty": 0.59608,
+      "current_usdt": 0.0011236108,
+      "completion_reason": "exchange_minimum"
+    }
+  ],
+  "signal_pid": 3267446,
+  "exec_pre_trade_pid": 3289558,
+  "other_exec_processes_unchanged": true,
+  "signal_aux_processes_unchanged": true,
+  "grid_template_unchanged": true,
+  "main_config_unchanged": true,
+  "factor_table_unchanged": true,
+  "env_unchanged": true,
+  "signal_binary_sha256": "a6a4f71d3ef43d712e2b26c9242f5822309aae0c2a80bf79b7faccd67a8a18ab",
+  "signal_cpu_mask": "0-5,48-95",
+  "exec_cpu_mask": "0-5,48-95"
+}

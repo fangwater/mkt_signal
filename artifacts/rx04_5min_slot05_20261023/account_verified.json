@@ -1,0 +1,10 @@
+{
+  "mode": "GET only",
+  "normal_net": true,
+  "open_orders": 0,
+  "nonzero_cash": {
+    "USDT": "10000"
+  },
+  "nonzero_perpetuals": {},
+  "explicit_rapidx_loans": 0
+}

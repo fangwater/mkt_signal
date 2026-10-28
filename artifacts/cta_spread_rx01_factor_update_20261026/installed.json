@@ -1,0 +1,11 @@
+{
+  "manifest": {
+    "cta_spread_factor_model_1m_pub": "693b9277c42dfed0ba39e1c5c7f6aff0cc8855ccbf2a49af8094538443f0d023",
+    "cta_spread_factor_model_1m_pub.toml": "aa09b6d07199c0d69a9e575ceea1ea9b6daae1e65eea50cb6134c79b000c9ba8",
+    "cta_spread_symbol_factors.json": "411bd318c4b820e74d0de16d72d041476e8bc4f2ce5740382b6ce0b89869fdfe",
+    "cta_spread_deployment.json": "d3424ccfb72baf311025fe4707fef8adaadf1f3f9501affaed2fb68cb3da9f01"
+  },
+  "started_ms": 1792985035987,
+  "process_name": "cta_spread_factor_rx01_20261026",
+  "binary_reused": true
+}

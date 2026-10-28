@@ -1,0 +1,1160 @@
+{
+  "virtual": {
+    "virtual_id": "virtual05",
+    "name": "RX04 5min",
+    "bindings": [
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_MT_032",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_032",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_MT_040",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_040",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_MT_042",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_042",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_PR_010",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_PR_010",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_TI_008",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_008",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_TI_027",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_027",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TD_TI_033",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_033",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_avg_price",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_001",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_001",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_013",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_013",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_022",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_022",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_040",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_040",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_051",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_051",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_104",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_104",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_111",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_111",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_118",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_118",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_119",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_119",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_120",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_120",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_132",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_132",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_138",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_138",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_141",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_141",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_195",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_195",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_baseline_200",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_200",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_032",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_032",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_049",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_049",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_051",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_051",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_094",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_094",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_128",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_128",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_factor_171",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_171",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      },
+      {
+        "binding_name": "binance_cta_perp_rx04_sell_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_sell_avg_price",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 1.0
+      }
+    ],
+    "updated_at_us": 1792731716577366,
+    "followers": [
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "multiplier": 0.0,
+        "pending_publishes": []
+      }
+    ],
+    "created_by_user_id": 1,
+    "owner_username": "prc",
+    "managers": [
+      {
+        "user_id": 3,
+        "username": "lgq"
+      }
+    ],
+    "can_configure": true,
+    "can_manage_grants": true
+  },
+  "account": {
+    "source_id": "binance_exec_rx04_5m05",
+    "estimated_fee_rate": 0.0004,
+    "maker_fee_rate": 0.0004,
+    "taker_fee_rate": 0.0004,
+    "theoretical_twap_fee_rate": 0.0004,
+    "quote_fee_rates": {},
+    "bindings": [
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_MT_032",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_032",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_MT_040",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_040",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_MT_042",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_MT_042",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_PR_010",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_PR_010",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_TI_008",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_008",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_TI_027",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_027",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TD_TI_033",
+        "position_strategy_name": "binance_cta_perp_rx04_TD_TI_033",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_001",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_006",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_009",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_018",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "position_strategy_name": "binance_cta_perp_rx04_TP_VPI_019",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_avg_price",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_001",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_001",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_013",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_013",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_022",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_022",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_040",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_040",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_051",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_051",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_104",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_104",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_111",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_111",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_118",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_118",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_119",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_119",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_120",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_120",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_132",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_132",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_138",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_138",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_141",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_141",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_195",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_195",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_baseline_200",
+        "position_strategy_name": "binance_cta_perp_rx04_baseline_200",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_032",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_032",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_049",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_049",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_051",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_051",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_094",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_094",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_128",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_128",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_factor_171",
+        "position_strategy_name": "binance_cta_perp_rx04_factor_171",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      },
+      {
+        "source_id": "binance_exec_rx04_5m05",
+        "binding_name": "binance_cta_perp_rx04_sell_avg_price",
+        "position_strategy_name": "binance_cta_perp_rx04_sell_avg_price",
+        "order_strategy_name": "binance_cta_perp_rx04_ctaker",
+        "shares": 0.0,
+        "updated_at_us": 1792731716627885
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "follows": [
+        {
+          "virtual_id": "virtual05",
+          "multiplier": 0.0
+        }
+      ]
+    },
+    "pending_publishes": []
+  },
+  "grid_template": {
+    "strategy_name": "lgq_grid_prep",
+    "order_parameters": {
+      "algorithm": "grid",
+      "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": null
+      },
+      "grid": {
+        "spot": {
+          "orders_per_batch": 5,
+          "maker_timeout_ms": 120000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": 0
+        },
+        "futures": {
+          "orders_per_batch": 3,
+          "maker_timeout_ms": 10000,
+          "vol_multiplier": 1.0,
+          "max_maker_requotes": null
+        }
+      },
+      "chase": {
+        "batch_floor_usdt": 100.0,
+        "max_batch": 4,
+        "max_open_batches": 2,
+        "maker_recenter_trigger_bps": 5.0,
+        "maker_amend_cooldown_ms": 1000,
+        "maker_timeout_sec": 120,
+        "target_tolerance_usdt": 10.0,
+        "strategy_order_rate_limit_per_min": 0,
+        "strategy_order_rate_limit_10s": 0
+      },
+      "signal_execution_enabled": true,
+      "single_order_usdt": 100.0,
+      "orders_per_batch": 3,
+      "max_batch": 20,
+      "maker_price_anchor": "own_best",
+      "tick_spacing": 1,
+      "batch_interval_ms": 500,
+      "maker_timeout_ms": 1000,
+      "max_maker_requotes": 2,
+      "target_tolerance_usdt": 10.0
+    },
+    "updated_at_us": 1792656083005658,
+    "owner": "lgq",
+    "can_configure": true
+  },
+  "rx02_account": {
+    "source_id": "binance_exec_trade08",
+    "estimated_fee_rate": 0.000146,
+    "maker_fee_rate": -5e-05,
+    "taker_fee_rate": 0.000146,
+    "theoretical_twap_fee_rate": 4.8e-05,
+    "quote_fee_rates": {},
+    "bindings": [
+      {
+        "source_id": "binance_exec_trade08",
+        "binding_name": "lgq_cta_symbol_mean",
+        "position_strategy_name": "lgq_cta_symbol_mean",
+        "order_strategy_name": "lgq_grid_prep",
+        "shares": 1.0,
+        "updated_at_us": 1792680501152370
+      }
+    ],
+    "configuration": {
+      "mode": "follow",
+      "follows": [
+        {
+          "virtual_id": "virtual02",
+          "multiplier": 1.0
+        }
+      ]
+    },
+    "pending_publishes": []
+  },
+  "processes": [
+    {
+      "pid": 43876,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "account_monitor",
+      "start": "120794"
+    },
+    {
+      "pid": 43996,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "persist_manager",
+      "start": "120838"
+    },
+    {
+      "pid": 44293,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "viz_server",
+      "start": "120880"
+    },
+    {
+      "pid": 44350,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "python3",
+      "start": "121007"
+    },
+    {
+      "pid": 44461,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "account_monitor",
+      "start": "121075"
+    },
+    {
+      "pid": 44581,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "persist_manager",
+      "start": "121121"
+    },
+    {
+      "pid": 44889,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "viz_server",
+      "start": "121163"
+    },
+    {
+      "pid": 44946,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "python3",
+      "start": "121223"
+    },
+    {
+      "pid": 45056,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "account_monitor",
+      "start": "121291"
+    },
+    {
+      "pid": 45178,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "persist_manager",
+      "start": "121335"
+    },
+    {
+      "pid": 45486,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "viz_server",
+      "start": "121378"
+    },
+    {
+      "pid": 45543,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "python3",
+      "start": "121435"
+    },
+    {
+      "pid": 47756,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "trade_engine",
+      "start": "127645"
+    },
+    {
+      "pid": 47920,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "trade_engine",
+      "start": "127772"
+    },
+    {
+      "pid": 48089,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "trade_engine",
+      "start": "127907"
+    },
+    {
+      "pid": 58430,
+      "cwd": "/home/ubuntu/binance_futures_ipc_proxy",
+      "comm": "binance_futures",
+      "start": "151094"
+    },
+    {
+      "pid": 60856,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "fr_signal_dashb",
+      "start": "154461"
+    },
+    {
+      "pid": 61245,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "fr_signal_dashb",
+      "start": "154569"
+    },
+    {
+      "pid": 61528,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "fr_signal_dashb",
+      "start": "154691"
+    },
+    {
+      "pid": 84400,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "comm": "persist_manager",
+      "start": "210038"
+    },
+    {
+      "pid": 85012,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "comm": "account_monitor",
+      "start": "210855"
+    },
+    {
+      "pid": 85308,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "comm": "viz_server",
+      "start": "211587"
+    },
+    {
+      "pid": 85514,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "comm": "python3",
+      "start": "212000"
+    },
+    {
+      "pid": 85925,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "comm": "persist_manager",
+      "start": "212630"
+    },
+    {
+      "pid": 86311,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "comm": "trade_engine",
+      "start": "212990"
+    },
+    {
+      "pid": 86546,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "comm": "account_monitor",
+      "start": "213437"
+    },
+    {
+      "pid": 87496,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "comm": "exec-pre-trade",
+      "start": "213798"
+    },
+    {
+      "pid": 88791,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "comm": "viz_server",
+      "start": "214165"
+    },
+    {
+      "pid": 89027,
+      "cwd": "/home/ubuntu/binance_exec_trade02",
+      "comm": "python3",
+      "start": "214577"
+    },
+    {
+      "pid": 89461,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "comm": "persist_manager",
+      "start": "215210"
+    },
+    {
+      "pid": 89855,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "comm": "trade_engine",
+      "start": "215575"
+    },
+    {
+      "pid": 90108,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "comm": "account_monitor",
+      "start": "216023"
+    },
+    {
+      "pid": 90287,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "comm": "exec-pre-trade",
+      "start": "216388"
+    },
+    {
+      "pid": 90416,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "comm": "viz_server",
+      "start": "216755"
+    },
+    {
+      "pid": 90639,
+      "cwd": "/home/ubuntu/binance_exec_trade03",
+      "comm": "python3",
+      "start": "217177"
+    },
+    {
+      "pid": 91219,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "comm": "persist_manager",
+      "start": "217835"
+    },
+    {
+      "pid": 91622,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "comm": "trade_engine",
+      "start": "218209"
+    },
+    {
+      "pid": 91888,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "comm": "account_monitor",
+      "start": "218673"
+    },
+    {
+      "pid": 92076,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "comm": "exec-pre-trade",
+      "start": "219049"
+    },
+    {
+      "pid": 92209,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "comm": "viz_server",
+      "start": "219424"
+    },
+    {
+      "pid": 94386,
+      "cwd": "/home/ubuntu/binance_exec_trade04",
+      "comm": "python3",
+      "start": "219845"
+    },
+    {
+      "pid": 99911,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "pre_trade",
+      "start": "225809"
+    },
+    {
+      "pid": 100495,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "python3",
+      "start": "226487"
+    },
+    {
+      "pid": 100556,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "python3",
+      "start": "226546"
+    },
+    {
+      "pid": 100626,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "cta_perp_signal",
+      "start": "226601"
+    },
+    {
+      "pid": 100976,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "python3",
+      "start": "228124"
+    },
+    {
+      "pid": 101151,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "viz_server",
+      "start": "228554"
+    },
+    {
+      "pid": 101408,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "persist_manager",
+      "start": "228968"
+    },
+    {
+      "pid": 101876,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "trade_engine",
+      "start": "229388"
+    },
+    {
+      "pid": 102229,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "pre_trade",
+      "start": "229816"
+    },
+    {
+      "pid": 102472,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "account_monitor",
+      "start": "230278"
+    },
+    {
+      "pid": 105323,
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "persist_manager",
+      "start": "233435"
+    },
+    {
+      "pid": 105844,
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "trade_engine",
+      "start": "233835"
+    },
+    {
+      "pid": 106116,
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "rapidx_account_",
+      "start": "234315"
+    },
+    {
+      "pid": 106434,
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "viz_server",
+      "start": "235085"
+    },
+    {
+      "pid": 106578,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx03",
+      "comm": "cta_perp_factor",
+      "start": "235264"
+    },
+    {
+      "pid": 121148,
+      "cwd": "/home/ubuntu/okex_mm_alpha",
+      "comm": "trade_signal",
+      "start": "272769"
+    },
+    {
+      "pid": 144946,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "pre_trade",
+      "start": "337482"
+    },
+    {
+      "pid": 147066,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "pre_trade",
+      "start": "342776"
+    },
+    {
+      "pid": 149220,
+      "cwd": "/home/ubuntu/binance_fr_arb02",
+      "comm": "trade_signal",
+      "start": "346996"
+    },
+    {
+      "pid": 149309,
+      "cwd": "/home/ubuntu/binance_fr_arb03",
+      "comm": "trade_signal",
+      "start": "347336"
+    },
+    {
+      "pid": 149403,
+      "cwd": "/home/ubuntu/binance_fr_arb04",
+      "comm": "trade_signal",
+      "start": "347669"
+    },
+    {
+      "pid": 157817,
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "comm": "account_monitor",
+      "start": "36450478"
+    },
+    {
+      "pid": 160373,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "comm": "cta_perp_factor",
+      "start": "36462034"
+    },
+    {
+      "pid": 163885,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "python3",
+      "start": "24985600"
+    },
+    {
+      "pid": 166080,
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "python3",
+      "start": "24986565"
+    },
+    {
+      "pid": 168550,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "comm": "python3",
+      "start": "36485530"
+    },
+    {
+      "pid": 168607,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "comm": "python3",
+      "start": "36485862"
+    },
+    {
+      "pid": 315020,
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "comm": "python3",
+      "start": "36931678"
+    },
+    {
+      "pid": 342673,
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "comm": "trade_engine",
+      "start": "37027029"
+    },
+    {
+      "pid": 343474,
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "comm": "exec-pre-trade",
+      "start": "37027459"
+    },
+    {
+      "pid": 351338,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx02",
+      "comm": "cta_perp_signal",
+      "start": "37052327"
+    },
+    {
+      "pid": 384621,
+      "cwd": "/home/ubuntu/binance_exec_trade07",
+      "comm": "exec-pre-trade",
+      "start": "25632810"
+    },
+    {
+      "pid": 502412,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "exec-pre-trade",
+      "start": "25957038"
+    },
+    {
+      "pid": 502880,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "viz_server",
+      "start": "25957302"
+    },
+    {
+      "pid": 620503,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "comm": "python3",
+      "start": "26293163"
+    },
+    {
+      "pid": 620577,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "comm": "python3",
+      "start": "26293433"
+    },
+    {
+      "pid": 705737,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "comm": "cta_perp_factor",
+      "start": "26538366"
+    },
+    {
+      "pid": 1912192,
+      "cwd": "/home/ubuntu/binance-cta-perp-rx04",
+      "comm": "cta_perp_5m_sig",
+      "start": "42084593"
+    },
+    {
+      "pid": 2879569,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "python3",
+      "start": "8388285"
+    },
+    {
+      "pid": 2879622,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "cta_spread_sign",
+      "start": "8388408"
+    },
+    {
+      "pid": 3199097,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "persist_manager",
+      "start": "9324950"
+    },
+    {
+      "pid": 3199439,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "rapidx_account_",
+      "start": "9325179"
+    },
+    {
+      "pid": 3207816,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "python3",
+      "start": "9346838"
+    },
+    {
+      "pid": 3207923,
+      "cwd": "/home/ubuntu/binance_exec_trade06",
+      "comm": "trade_engine",
+      "start": "9349113"
+    },
+    {
+      "pid": 3919545,
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "comm": "persist_manager",
+      "start": "35043720"
+    },
+    {
+      "pid": 3919789,
+      "cwd": "/home/ubuntu/binance_exec_trade08",
+      "comm": "viz_server",
+      "start": "35044586"
+    },
+    {
+      "pid": 3973994,
+      "cwd": "/home/ubuntu/binance-cta-spread-rx01",
+      "comm": "cta_spread_fact",
+      "start": "35227235"
+    },
+    {
+      "pid": 4064693,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "comm": "trade_engine",
+      "start": "24133156"
+    },
+    {
+      "pid": 4066760,
+      "cwd": "/home/ubuntu/binance_exec_trade01",
+      "comm": "exec-pre-trade",
+      "start": "24135215"
+    }
+  ]
+}

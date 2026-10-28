@@ -154,3 +154,20 @@ local_binance_ed25519_test/
 /artifacts/**/stage/cta_spread_factor_model_1m_pub
 # Temporary source snapshots; release manifests retain their checksums.
 /artifacts/**/*.patch
+
+# Local observation snapshots from the RX01/RX04 cutovers. Keep release
+# manifests, final verification, reviewed configs and historical operation code.
+/artifacts/cta_spread_rx01_factor_update_20261026/execution_before.json
+/artifacts/cta_spread_rx01_factor_update_20261026/execution_after.json
+/artifacts/cta_spread_rx01_factor_update_20261026/execution_legacy_review.json
+/artifacts/cta_spread_rx01_factor_update_20261026/legacy_coin_exposures.json
+/artifacts/cta_spread_rx01_factor_update_20261026/legacy_position_inputs.json
+/artifacts/cta_spread_rx01_factor_update_20261026/post_activation_timeline.json
+/artifacts/cta_spread_rx01_factor_update_20261026/retirement_latest_exec.json
+/artifacts/cta_spread_rx01_factor_update_20261026/retirement_progress.json
+/artifacts/cta_spread_rx01_factor_update_20261026/warmup_probe.rs
+/artifacts/rx04_5min_slot05_20261023/preflight.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/preflight.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/recovered.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/exec_before_enable.json
+/artifacts/rx04_5min_slot05_20261023/activate_100/execution_*.json

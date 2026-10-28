@@ -1,0 +1,52 @@
+{
+  "checked_at_us": 1792984478639090,
+  "source_id": "binance_exec_trade06",
+  "markets": {
+    "binance-margin": {
+      "fetched_at_us": 1792984422080316,
+      "symbols": {
+        "KAVAUSDT": "TRADING",
+        "ONTUSDT": "TRADING",
+        "AXSUSDT": "TRADING",
+        "IOTAUSDT": "TRADING",
+        "ICXUSDT": "MISSING",
+        "NEARUSDT": "TRADING",
+        "SKLUSDT": "TRADING",
+        "IOSTUSDT": "TRADING",
+        "QTUMUSDT": "TRADING",
+        "ZRXUSDT": "TRADING",
+        "BELUSDT": "TRADING",
+        "DASHUSDT": "TRADING",
+        "ENJUSDT": "TRADING",
+        "RUNEUSDT": "TRADING",
+        "SOLUSDT": "TRADING",
+        "TRBUSDT": "TRADING",
+        "VETUSDT": "TRADING",
+        "ZENUSDT": "TRADING"
+      }
+    },
+    "binance-futures": {
+      "fetched_at_us": 1792984477995254,
+      "symbols": {
+        "KAVAUSDT": "TRADING",
+        "ONTUSDT": "TRADING",
+        "AXSUSDT": "TRADING",
+        "IOTAUSDT": "TRADING",
+        "ICXUSDT": "MISSING",
+        "NEARUSDT": "TRADING",
+        "SKLUSDT": "TRADING",
+        "IOSTUSDT": "TRADING",
+        "QTUMUSDT": "TRADING",
+        "ZRXUSDT": "TRADING",
+        "BELUSDT": "TRADING",
+        "DASHUSDT": "TRADING",
+        "ENJUSDT": "TRADING",
+        "RUNEUSDT": "TRADING",
+        "SOLUSDT": "TRADING",
+        "TRBUSDT": "TRADING",
+        "VETUSDT": "TRADING",
+        "ZENUSDT": "TRADING"
+      }
+    }
+  }
+}

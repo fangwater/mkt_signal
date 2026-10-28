@@ -1,0 +1,20 @@
+{
+  "source": {
+    "venue": "binance-futures",
+    "estimated_fee_rate": 0.0004,
+    "id": "binance_exec_rx04_5m05",
+    "account": "trade05",
+    "alias": "RX04 5min",
+    "rocksdb_path": "/home/ubuntu/binance_exec_rx04_5m05/data/persist_manager",
+    "enabled": true,
+    "monitor_enabled": false,
+    "gateway_prefix": "/exec_trade05",
+    "exec_config_url": "http://127.0.0.1:18165/",
+    "exec_viz_url": "http://127.0.0.1:10045/",
+    "ipc_namespace": "binance_exec_rx04_5m05",
+    "account_ipc_service": "account_pubs/rapidx_binance_2224101339031877_pm"
+  },
+  "old_source_preserved": true,
+  "gateway_reused": true,
+  "exec_processes_started": false
+}

@@ -1,0 +1,45 @@
+{
+  "deployed_at_ms": 1792986156858,
+  "symbols": 17,
+  "factors": 7,
+  "combinations": 55,
+  "ready_combinations": 55,
+  "retired_directional_positions": [],
+  "chain_checked_targets": 1710,
+  "manager_mismatches": [],
+  "redis_mismatches": [],
+  "exec_target_mismatches": [],
+  "requested_market_targets": 110,
+  "requested_within_tolerance": 109,
+  "requested_outside_tolerance": [
+    {
+      "strategy_name": "binance_cta_spread_rx01_baseline_140",
+      "symbol": "IOST",
+      "target_qty": -12300.123001230011,
+      "current_qty": 13661.20218579235,
+      "delta_usdt": -19.821471780291574,
+      "completion_reason": "borrow_unavailable",
+      "target_tolerance_usdt": 10.0
+    }
+  ],
+  "requested_live_orders_or_pending": 0,
+  "exchange_account_state_differences": [],
+  "exchange_observed_markets": 110,
+  "post_activation_fill_records": 20,
+  "post_activation_fill_notional_quote": 79.84610020141645,
+  "legacy_outside_tolerance": 20,
+  "total_exec_incomplete": 8,
+  "manager_pending_publishes": [],
+  "exec_processes_unchanged": true,
+  "config_unchanged": true,
+  "publisher_pid": 3173585,
+  "publisher_cpu": 17,
+  "release_binary_reused": true,
+  "coin_retirement_followup": {
+    "verified_at_ms": 1792988521336,
+    "result_file": "coin_retirement_result.json",
+    "retired_gross_usdt": 34.05906502288138,
+    "retired_pending_or_live_orders": 0,
+    "rule": "Clear both markets only for coins entirely absent from the new factor table"
+  }
+}

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-23 UTC
+最后更新：2026-10-23 10:49 UTC
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -44,8 +44,8 @@ its separate operation token in addition to the login session.
 ## Login and FR panel access
 
 Delist is the entry point for the nine active JP FR environments: Binance arb02/03/04,
-Gate arb01/02/03, and Bitget arb01/02/03. The same authenticated gateway is prepared
-for SG `bybit_fr_arb01`; its NAV record remains disabled until trading cutover. After login, use the account row's Viz
+Gate arb01/02/03, and Bitget arb01/02/03, plus the active SG
+`bybit_fr_arb01` after its 2026-10-23 trading cutover. After login, use the account row's Viz
 or Config link. `/delist/open?env=<slug>&panel=viz|config` grants that environment
 to the current session and redirects to its existing `/fr/<slug>/` route.
 The launch link must originate from the delist board. A direct panel URL without
@@ -99,6 +99,84 @@ place. Retain access gates and port rules together: removing only the port
 guard exposes the existing wildcard-bound FR backend listeners.
 
 ## Current JP deployment
+
+On 2026-10-23 at 10:39–10:49 UTC, the operator authorized a complete reset of
+this account. Signal, pre_trade and trade_engine were stopped through env-local
+scripts; all 13 active orders were canceled, all 21 perpetual positions were
+closed with reduce-only market orders, and spot balances/liabilities were cleared
+using market buys/sells plus explicit no-convert repayment. HOME's first market
+buy was partially filled and canceled by the venue; its remaining debt was
+bought back and repaid in a subsequent pass. The final exchange snapshot before
+restart has zero perpetual positions, zero open orders and zero borrowing.
+Only spot amounts below each market's minimum order value remain, totaling
+approximately 52.15 USDT, as accepted by the operator.
+
+Both the forward and UniMMR close lists now contain only the 19 requested symbols
+listed below; backward, dump and pos_dump are empty. Live trading was restored
+at 10:45–10:46 UTC: trade_engine PID1603071, pre_trade PID1603176 and signal
+PID1603903, on cores 15/14/13. Account monitor PID1581248 remained on core 12;
+all eight FR components and 14 unrelated processes were verified. Signal dry-run
+is disabled. Existing operator changes to risk settings were preserved:
+max_leverage=1.5, UniMMR lock/recover=5.0/5.1, force-close/recover=4.5/4.6.
+
+The displayed UniMMR of 4.79 during the stop was the last pre_trade snapshot:
+about 193673 USD of gross borrowing still required about 11560 USD maintenance
+margin despite small net positions. After repayment, exchange initial margin,
+maintenance margin, MMR and LTV are all zero. The refreshed snapshot has zero
+borrow and derivative exposure; the infinite margin ratio serializes as null.
+No current source IP or NAV accounting identity changed. Reset evidence is in
+`data/ops/bybit_fr_reset_20261023/` and SG
+`~/bybit_fr_arb01/run/reset_20261023/`.
+
+The following records describe the initial cutover and its earlier preparation.
+
+On 2026-10-23 at 10:15 UTC, SG `bybit_fr_arb01` completed the authorized live
+cutover. All eight components run; the old intra signal, pre_trade, trade engine
+and account monitor are stopped. Old Config, Viz and persist_manager remain
+for historical access, with the original persistence identity and port 6351.
+The new FR store is local and separate; no new collector endpoint was allocated.
+NAV atomically disabled `bybit-intra-arb01` and enabled `bybit_fr_arb01` with
+accounting start `2026-10-23T10:03:29.591Z`; existing user grants were preserved.
+Delist's NAV catalog includes the new FR and excludes the old intra; its JP
+loopback snapshot route serves fresh Bybit FR exposure.
+
+The forward list is the operator's 19 symbols; the backward list is empty:
+`QTUMUSDT WOOUSDT SNXUSDT COMPUSDT DYDXUSDT VELOUSDT MERLUSDT FLOWUSDT EGLDUSDT
+BASEDUSDT BILLUSDT WETUSDT EDGEUSDT BSBUSDT RECALLUSDT HUSDT COOKIEUSDT GRVTUSDT SLXUSDT`.
+Dump contains 27 symbols: all nonzero old perpetual positions, spot net holdings
+worth at least 1 USDT, and the previous dump list. Sub-dollar spot dust in
+COMP/EGLD/H/COOKIE does not block the new forward list. UniMMR close candidates
+cover the union of 46 forward/dump symbols. Two residual SAHARA spot orders were
+canceled after stopping intra and the account was verified clear of open orders
+before FR startup; legacy positions were entrusted to normal dump decisions.
+
+Live Binance FR arb02 parameters were copied through the FR Config API:
+MM mode, 100 USDT order amount, 5000 USDT per-symbol cap, 2.1 leverage cap,
+UniMMR lock/recover 3.0/3.1 and force-close/recover 2.8/2.9, plus its funding
+thresholds and spread-quantile mapping. The disabled Binance model service name
+was cleared. Bybit's existing rolling spread quantiles gained 25 without changing
+other factors or windows; runtime then loaded 184 spread entries for all 46
+symbols with zero missing references. A no-emit check preceded the final live
+signal; observed execution records include spot ETHFI/ZK closes and ZK perpetual
+hedges. The new RocksDB WAL is writing, all process/thread core masks match the
+SG inventory, both private API consumers bind 172.31.7.124, and 14 unrelated
+market-data/MM/bridge processes retained their identities and affinity.
+
+Known limitations found during startup: `PRE_TRADE_NOTIFICATION_URL` was missing
+and has been added from the existing account, but neither SG nor the reference
+JP host currently runs the configured loopback 18100 notification service, so
+alert delivery fails. EUR has no Bybit linear perpetual and HFT linear is Closed (its spot market
+remains Trading). The derivatives-only valuation therefore lacks marks for their
+roughly 0.0054/0.1115 USDT historical dust. The concentration-to-pos_dump guard
+preserves its state and skips the entire scan when any position lacks a mark;
+per-symbol, leverage and UniMMR controls still run. The operator accepted leaving
+these immaterial balances in place; no dust cleanup orders were submitted. BRETT/TAIKO dump symbols lack borrowing
+rates; runtime evaluates readiness per symbol and bypasses the rate gate for dump
+closes, so this does not block the 19 requested forward symbols. Evidence and
+sanitized checks are in `data/ops/bybit_fr_cutover_20261023/`; SG config backups and
+verification are in `~/bybit_fr_arb01/run/cutover_20261023/`.
+
+The following preparation record describes the state before this cutover.
 
 On 2026-10-23, published Bybit FR position handling and prepared
 `/home/ubuntu/bybit_fr_arb01` on SG without switching the active intra strategy.
