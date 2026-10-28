@@ -1,0 +1,1570 @@
+[
+  {
+    "name": "holiday_official_date_and_short_year_identity",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "expected": [
+      {
+        "product": "URO",
+        "trading_day": "2021-11-24",
+        "segments": [
+          [
+            1637708400000000000,
+            1637791200000000000
+          ]
+        ],
+        "volume_multiple": 125000.0,
+        "contracts": [
+          {
+            "ric": "UROZ1",
+            "contract_id": "CME:URO:2021-12"
+          }
+        ]
+      },
+      {
+        "product": "URO",
+        "trading_day": "2021-11-26",
+        "segments": [
+          [
+            1637794800000000000,
+            1637863200000000000
+          ],
+          [
+            1637881200000000000,
+            1637950500000000000
+          ]
+        ],
+        "volume_multiple": 125000.0,
+        "contracts": [
+          {
+            "ric": "UROZ1",
+            "contract_id": "CME:URO:2021-12"
+          }
+        ]
+      },
+      {
+        "product": "TU",
+        "trading_day": "2021-11-24",
+        "segments": [
+          [
+            1637708400000000000,
+            1637791200000000000
+          ]
+        ],
+        "volume_multiple": 2000.0,
+        "contracts": [
+          {
+            "ric": "TUZ1",
+            "contract_id": "CBOT:TU:2021-12"
+          }
+        ]
+      },
+      {
+        "product": "TU",
+        "trading_day": "2021-11-26",
+        "segments": [
+          [
+            1637794800000000000,
+            1637863200000000000
+          ],
+          [
+            1637881200000000000,
+            1637950500000000000
+          ]
+        ],
+        "volume_multiple": 2000.0,
+        "contracts": [
+          {
+            "ric": "TUZ1",
+            "contract_id": "CBOT:TU:2021-12"
+          }
+        ]
+      }
+    ],
+    "valid": true
+  },
+  {
+    "name": "missing_closed_date",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "overlapping_sessions",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637863140000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "overlapping_trade_dates",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "late_calendar",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1637708400000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "late_identity",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1637708400000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "ambiguous_identity",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "late_multiplier",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1637708400000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "missing_multiplier_coverage",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-25",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "wrong_exchange",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "NYMEX:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "missing_evidence",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  },
+  {
+    "name": "future_closure_cannot_delete_past_day",
+    "catalog": {
+      "days": [
+        {
+          "product": "URO",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1637950500000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "URO",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-24",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637708400000000000,
+              1637791200000000000
+            ]
+          ]
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-25",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": []
+        },
+        {
+          "product": "TU",
+          "trading_day": "2021-11-26",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "segments": [
+            [
+              1637794800000000000,
+              1637863200000000000
+            ],
+            [
+              1637881200000000000,
+              1637950500000000000
+            ]
+          ]
+        }
+      ],
+      "contracts": [
+        {
+          "product": "URO",
+          "ric": "UROZ1",
+          "contract_id": "CME:URO:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        },
+        {
+          "product": "TU",
+          "ric": "TUZ1",
+          "contract_id": "CBOT:TU:2021-12",
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-24",
+          "until": "2021-11-27"
+        }
+      ],
+      "multipliers": [
+        {
+          "product": "URO",
+          "exchange": "CME",
+          "volume_multiple": 125000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        },
+        {
+          "product": "TU",
+          "exchange": "CBOT",
+          "volume_multiple": 2000.0,
+          "known_at_ns": 1635742800000000000,
+          "source": "SYNTHETIC algorithm fixture, not historical certification",
+          "from": "2021-11-01",
+          "until": "2021-12-01"
+        }
+      ]
+    },
+    "products": [
+      "URO",
+      "TU"
+    ],
+    "start": "2021-11-24",
+    "end": "2021-11-27",
+    "valid": false
+  }
+]

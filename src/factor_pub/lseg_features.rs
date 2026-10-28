@@ -107,13 +107,19 @@ impl LsegDepth10 {
     }
 
     fn validate_levels(&self) -> Result<()> {
+        self.validate_prices_and_sizes(false)
+    }
+
+    /// Additive continuous adjustments may produce finite negative prices.
+    /// Quantities and the book ordering retain their native constraints.
+    fn validate_prices_and_sizes(&self, signed_prices: bool) -> Result<()> {
         for (name, values) in [
             ("bid_prices", &self.bid_prices),
             ("ask_prices", &self.ask_prices),
         ] {
             for (index, value) in values.iter().copied().enumerate() {
-                if !value.is_nan() && !nonnegative_finite(value) {
-                    bail!("{name}[{index}] must be NaN or finite and non-negative, got {value}");
+                if !value.is_nan() && (!value.is_finite() || (!signed_prices && value < 0.0)) {
+                    bail!("invalid {name}[{index}]={value} (signed_prices={signed_prices})");
                 }
             }
         }
@@ -354,6 +360,22 @@ impl LsegTradeOnlyFeatureState {
         trade: LsegTradeBar,
         segment_break: bool,
     ) -> Result<()> {
+        self.push_with_hfq_depth(ts_ms, symbol, trade, None, segment_break)
+    }
+
+    /// Advance with a native ten-level HFQ book when present. Missing books
+    /// explicitly advance missing-depth metrics and never reuse an old book.
+    pub fn push_with_hfq_depth(
+        &mut self,
+        ts_ms: i64,
+        symbol: &str,
+        trade: LsegTradeBar,
+        depth: Option<LsegDepth10>,
+        segment_break: bool,
+    ) -> Result<()> {
+        if let Some(depth) = &depth {
+            depth.validate_prices_and_sizes(true)?;
+        }
         validate_lseg_symbol(symbol)?;
         if let Some(current) = self.symbol.as_deref() {
             if current != symbol {
@@ -372,7 +394,15 @@ impl LsegTradeOnlyFeatureState {
         if segment_break {
             self.formula_state = LsegReplayState::default();
         }
-        self.formula_state.push_trade_only(ts_ms, &trade.values);
+        if let Some(depth) = depth {
+            self.formula_state.push_native(
+                ts_ms,
+                &trade.values,
+                Some(native_depth_snapshot(&depth)),
+            )?;
+        } else {
+            self.formula_state.push_trade_only(ts_ms, &trade.values);
+        }
         self.last_ts_ms = Some(ts_ms);
         self.has_input = true;
         Ok(())
@@ -539,5 +569,60 @@ mod tests {
             .unwrap();
         assert_eq!(state.factor_values(&depth_plan).unwrap()[0], None);
         assert!(state.factor_values(&trade_plan).unwrap()[0].is_some());
+    }
+
+    #[test]
+    fn optional_book_matches_all_native_factors_and_drops_stale_depth() {
+        let plan = LsegFactorPlan::from_factor_names(vec![LSEG_ALL_FACTORS.to_string()]).unwrap();
+        let book_plan =
+            LsegFactorPlan::from_factor_names(vec!["lseg_features_factor_013".into()]).unwrap();
+        let mut native = LsegFeatureState::default();
+        let mut mixed = LsegTradeOnlyFeatureState::default();
+        for i in 0..80 {
+            let row = input(i * 60_000, i == 50);
+            mixed
+                .push_with_hfq_depth(
+                    row.ts_ms,
+                    &row.symbol,
+                    row.trade.clone(),
+                    Some(row.depth.clone()),
+                    row.segment_break,
+                )
+                .unwrap();
+            native.push(row).unwrap();
+            assert_eq!(
+                mixed.factor_values(&plan).unwrap(),
+                native.factor_values(&plan).unwrap()
+            );
+        }
+        assert!(mixed.factor_values(&book_plan).unwrap()[0].is_some());
+        let row = input(80 * 60_000, false);
+        mixed
+            .push(row.ts_ms, &row.symbol, row.trade, false)
+            .unwrap();
+        assert_eq!(mixed.factor_values(&book_plan).unwrap()[0], None);
+    }
+
+    #[test]
+    fn hfq_depth_accepts_signed_prices_but_rejects_bad_quantities() {
+        let mut book = depth();
+        for p in book.bid_prices.iter_mut().chain(book.ask_prices.iter_mut()) {
+            *p -= 200.0;
+        }
+        assert!(book.validate_levels().is_err());
+        let mut state = LsegTradeOnlyFeatureState::default();
+        state
+            .push_with_hfq_depth(
+                0,
+                "NYMEX:CL",
+                input(0, false).trade,
+                Some(book.clone()),
+                false,
+            )
+            .unwrap();
+        book.bid_amounts[0] = -1.0;
+        assert!(state
+            .push_with_hfq_depth(60_000, "NYMEX:CL", input(0, false).trade, Some(book), false)
+            .is_err());
     }
 }

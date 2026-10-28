@@ -14,7 +14,12 @@ use std::path::{Path, PathBuf};
 const DEFAULT_DB: &str = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb_all_products";
 const DEFAULT_SECONDARY: &str =
     "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_settlement_export.secondary";
-const SUPPORTED_PRODUCTS: &[&str] = &["ES", "NQ", "RTY", "YM", "GC", "CL"];
+// Settlement export is also used to audit prospective continuous series.
+// This list does not extend the backtest/baseline exporter universe.
+const SUPPORTED_PRODUCTS: &[&str] = &[
+    "ES", "NQ", "RTY", "YM", "GC", "CL", "URO", "JY", "HG", "SI", "TU", "FV", "TY", "TN", "US",
+    "AUL",
+];
 
 #[derive(Parser, Debug)]
 #[command(name = "cme_tas_export_settlements")]
@@ -296,6 +301,14 @@ mod tests {
     #[test]
     fn products_are_narrow_and_deduplicated() {
         assert_eq!(parse_products("NQ,ES,NQ").unwrap(), ["ES", "NQ"]);
+        assert_eq!(
+            parse_products("uro,JY,HG,SI,URO").unwrap(),
+            ["HG", "JY", "SI", "URO"]
+        );
+        assert_eq!(
+            parse_products("TU,fv,TY,TN,US,AUL,TY").unwrap(),
+            ["AUL", "FV", "TN", "TU", "TY", "US"]
+        );
         assert!(parse_products("ETH").is_err());
     }
 

@@ -88,6 +88,7 @@ name = "cme_tas_ll2_match"
 path = "src/bin/cme_tas_ll2_match.rs"
 
 [dependencies]
+cme_roll_metadata = { path = "../cme_roll_metadata" }
 anyhow = "1.0"
 bytes = { version = "1.0", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -108,6 +109,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rocksdb = { version = "0.25", default-features = false, features = ["lz4"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 toml = "0.8"
 zstd = "0.13"
 

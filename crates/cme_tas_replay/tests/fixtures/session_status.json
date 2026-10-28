@@ -1,0 +1,546 @@
+[
+  {
+    "name": "midminute_halt_and_advance_resume",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 125000000000,
+        "effective_ns": 125000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 300000000000,
+        "effective_ns": 420000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        180000000000
+      ],
+      [
+        420000000000,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "exact_boundary_halt",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 120000000000,
+        "effective_ns": 120000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 300000000000,
+        "effective_ns": 420000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        120000000000
+      ],
+      [
+        420000000000,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "future_announcement_does_not_open_early",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 0,
+        "effective_ns": 0,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 30000000000,
+        "effective_ns": 420000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        420000000000,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "halt_persists_across_planned_break",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        180000000000
+      ],
+      [
+        300000000000,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 125000000000,
+        "effective_ns": 125000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        180000000000
+      ]
+    ]
+  },
+  {
+    "name": "resume_during_break_cannot_expand_plan",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        180000000000
+      ],
+      [
+        300000000000,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 125000000000,
+        "effective_ns": 125000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 200000000000,
+        "effective_ns": 250000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        180000000000
+      ],
+      [
+        300000000000,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "other_product_and_other_ric_do_not_halt",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "URO",
+        "ric": null,
+        "known_at_ns": 0,
+        "effective_ns": 0,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": "TYM26",
+        "known_at_ns": 0,
+        "effective_ns": 0,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "short_intraminute_pause_has_no_whole_minute_gap",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 10000000000,
+        "effective_ns": 10000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 20000000000,
+        "effective_ns": 20000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "all_minutes_halted",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 0,
+        "effective_ns": 0,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": []
+  },
+  {
+    "name": "updated_future_announcement_same_effective_time",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 0,
+        "effective_ns": 0,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 30000000000,
+        "effective_ns": 420000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 300000000000,
+        "effective_ns": 420000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": []
+  },
+  {
+    "name": "source_duplicate_does_not_change_grid",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 125000000000,
+        "effective_ns": 125000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 125000000000,
+        "effective_ns": 125000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 300000000000,
+        "effective_ns": 420000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": true,
+    "expected": [
+      [
+        0,
+        180000000000
+      ],
+      [
+        420000000000,
+        600000000000
+      ]
+    ]
+  },
+  {
+    "name": "late_message_must_not_backdate",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 200000000000,
+        "effective_ns": 120000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "ambiguous_product_and_ric_status",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 120000000000,
+        "effective_ns": 120000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      },
+      {
+        "product": "TY",
+        "ric": "TYH26",
+        "known_at_ns": 120000000000,
+        "effective_ns": 120000000000,
+        "state": "open",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "unaligned_plan",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        1,
+        600000000000
+      ]
+    ],
+    "events": [],
+    "valid": false
+  },
+  {
+    "name": "overlap_plan",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        300000000000
+      ],
+      [
+        240000000000,
+        600000000000
+      ]
+    ],
+    "events": [],
+    "valid": false
+  },
+  {
+    "name": "unknown_state",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 120000000000,
+        "effective_ns": 120000000000,
+        "state": "maybe",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "missing_source",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": 120000000000,
+        "effective_ns": 120000000000,
+        "state": "halted",
+        "source": ""
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "negative_known",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": null,
+        "known_at_ns": -1,
+        "effective_ns": 120000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "empty_ric_scope",
+    "product": "TY",
+    "ric": "TYH26",
+    "planned": [
+      [
+        0,
+        600000000000
+      ]
+    ],
+    "events": [
+      {
+        "product": "TY",
+        "ric": "",
+        "known_at_ns": 120000000000,
+        "effective_ns": 120000000000,
+        "state": "halted",
+        "source": "SYNTHETIC fixed status fixture; not historical evidence"
+      }
+    ],
+    "valid": false
+  }
+]

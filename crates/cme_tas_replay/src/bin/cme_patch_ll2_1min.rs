@@ -1,11 +1,12 @@
 //! Fill only existing null LL2 columns, preserving the published minute grid.
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use clap::Parser;
 use cme_tas_replay::ll2_1min::{decode_ll2_minute, encode_ll2_minute_key, Ll2MinuteKey};
 use cme_tas_replay::product::{parse_product, product_cf_name};
 use cme_tas_replay::{CF_REPLAY_META, MISSING_PRICE, PRICE_SCALE};
 use polars::prelude::{NamedFrom, ParquetReader, ParquetWriter, SerReader, Series};
+use rayon::prelude::*;
 use rocksdb::{IteratorMode, Options, DB};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,15 +34,47 @@ struct Args {
     /// Fixture DBs only; production sources require done watermarks.
     #[arg(long)]
     allow_sample: bool,
+    /// Only donors with a known, valid, non-crossed two-sided L1 are usable.
+    #[arg(long)]
+    require_valid_l1: bool,
+    /// Include wire snapshots in provenance for bounded Python comparisons.
+    #[arg(long)]
+    audit_snapshot_values: bool,
+    #[arg(long, default_value_t = 4)]
+    workers: usize,
 }
 struct Source {
     db: DB,
     windows: Vec<(u64, u64, String)>,
     raw: bool,
 }
-fn open_source(path: &Path, allow_sample: bool) -> Result<Source> {
+fn open_source(path: &Path, args: &Args) -> Result<Source> {
     let names = DB::list_cf(&Options::default(), path)?;
-    let descriptors = names.into_iter().map(|name| {
+    let selected: Vec<_> = names
+        .into_iter()
+        .filter(|name| {
+            if name == "default" || name == CF_REPLAY_META {
+                return true;
+            }
+            let data = name.strip_prefix("q:").unwrap_or(name);
+            let data = data.strip_prefix("s15:").unwrap_or(data);
+            let Some(rest) = data.strip_prefix("p:") else {
+                return false;
+            };
+            let Some((year, product)) = rest.split_once(':') else {
+                return false;
+            };
+            year.parse::<i32>()
+                .is_ok_and(|year| (args.start.year() - 1..=args.end.year()).contains(&year))
+                && args.products.iter().any(|p| p == product)
+        })
+        .collect();
+    eprintln!(
+        "opening read-only LL2 {} selected_cfs={}",
+        path.display(),
+        selected.len()
+    );
+    let descriptors = selected.into_iter().map(|name| {
         let mut options = Options::default();
         if name.starts_with("p:") {
             options.set_merge_operator_associative(
@@ -51,7 +84,11 @@ fn open_source(path: &Path, allow_sample: bool) -> Result<Source> {
         }
         rocksdb::ColumnFamilyDescriptor::new(name, options)
     });
-    let db = DB::open_cf_descriptors_read_only(&Options::default(), path, descriptors, false)?;
+    // Thousands of CFs share a large source DB. Bound table readers rather
+    // than pre-opening every SST and reading unrelated products' indexes.
+    let mut db_options = Options::default();
+    db_options.set_max_open_files(256);
+    let db = DB::open_cf_descriptors_read_only(&db_options, path, descriptors, false)?;
     let raw = db.get(b"db_kind")?.as_deref() == Some(b"cme_raw_ll2_v1");
     let meta = db
         .cf_handle(CF_REPLAY_META)
@@ -72,7 +109,7 @@ fn open_source(path: &Path, allow_sample: bool) -> Result<Source> {
                 )? * 1_000_000_000)
             };
             let status = std::str::from_utf8(&value)?.to_string();
-            if status == "sample" && !allow_sample {
+            if status == "sample" && !args.allow_sample {
                 bail!("sample LL2 source requires --allow-sample");
             }
             windows.push((timestamp(start)?, timestamp(end)?, status));
@@ -81,6 +118,11 @@ fn open_source(path: &Path, allow_sample: bool) -> Result<Source> {
     if windows.is_empty() {
         bail!("LL2 source has no period watermarks");
     }
+    eprintln!(
+        "opened read-only LL2 {} periods={} raw={raw}",
+        path.display(),
+        windows.len()
+    );
     Ok(Source { db, windows, raw })
 }
 fn pair(price: i64, size: i64) -> Option<(f64, f64)> {
@@ -176,13 +218,23 @@ fn candidate(
     cme_tas_replay::raw_ll2::validate_quality(&snapshot, known)?;
     Ok(Some((snapshot, known)))
 }
-const SPECS: [(&str, &str); 6] = [
+const SPECS: [(&str, &str); 16] = [
     ("ES", "CME"),
     ("NQ", "CME"),
     ("RTY", "CME"),
     ("YM", "CBOT"),
     ("GC", "COMEX"),
     ("CL", "NYMEX"),
+    ("URO", "CME"),
+    ("JY", "CME"),
+    ("HG", "COMEX"),
+    ("SI", "COMEX"),
+    ("TU", "CBOT"),
+    ("FV", "CBOT"),
+    ("TY", "CBOT"),
+    ("TN", "CBOT"),
+    ("US", "CBOT"),
+    ("AUL", "CBOT"),
 ];
 fn patch_file(input: &Path, output: &Path, sources: &[Source], args: &Args) -> Result<Value> {
     if output.exists() {
@@ -220,6 +272,7 @@ fn patch_file(input: &Path, output: &Path, sources: &[Source], args: &Args) -> R
         "source_ts_utc_ns",
         "source_order",
         "known_mask",
+        "value_hex",
     ])?;
     let mut unique = BTreeSet::new();
     for i in 0..frame.height() {
@@ -232,6 +285,9 @@ fn patch_file(input: &Path, output: &Path, sources: &[Source], args: &Args) -> R
             let Some((snapshot, known)) = candidate(source, ric, ts)? else {
                 continue;
             };
+            if args.require_valid_l1 && !valid_l1(&snapshot, known) {
+                continue;
+            }
             let mut fills = Vec::new();
             for level in 0..10 {
                 for side in 0..2 {
@@ -294,6 +350,14 @@ fn patch_file(input: &Path, output: &Path, sources: &[Source], args: &Args) -> R
                     snapshot.source_ts_utc_ns.to_string(),
                     snapshot.source_order.to_string(),
                     known.to_string(),
+                    if args.audit_snapshot_values {
+                        cme_tas_replay::ll2_1min::encode_ll2_minute(&snapshot)
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect()
+                    } else {
+                        String::new()
+                    },
                 ])?;
             }
             // One source per row: avoid assembling levels from different source instants.
@@ -335,6 +399,9 @@ fn run() -> Result<()> {
     if args.start >= args.end {
         bail!("end must be exclusive and after start");
     }
+    if args.workers == 0 {
+        bail!("workers must be positive");
+    }
     let input = fs::canonicalize(&args.input_root)?;
     if args.output_root.exists() {
         bail!("use a new independent output root");
@@ -346,14 +413,14 @@ fn run() -> Result<()> {
     }
     let mut sources = Vec::new();
     for path in &args.ll2_rocksdb {
-        sources.push(open_source(path, args.allow_sample)?);
+        sources.push(open_source(path, &args)?);
     }
     let mut jobs = Vec::new();
     for product in &args.products {
         let (_, exchange) = SPECS
             .iter()
             .find(|(p, _)| p == product)
-            .context("baseline product outside six-root allowlist")?;
+            .context("baseline product outside reviewed allowlist")?;
         let directory = input.join(exchange).join(product);
         if !directory.is_dir() {
             continue;
@@ -376,11 +443,24 @@ fn run() -> Result<()> {
     if jobs.is_empty() {
         bail!("no baseline files selected");
     }
-    for path in jobs {
-        let dest = output.join(path.strip_prefix(&input)?);
-        println!("{}", patch_file(&path, &dest, &sources, &args)?);
-    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(args.workers)
+        .build()?;
+    pool.install(|| {
+        jobs.par_iter().try_for_each(|path| -> Result<()> {
+            let dest = output.join(path.strip_prefix(&input)?);
+            println!("{}", patch_file(path, &dest, &sources, &args)?);
+            Ok(())
+        })
+    })?;
     Ok(())
+}
+fn valid_l1(snapshot: &cme_tas_replay::ll2_1min::Ll2Minute, known: u64) -> bool {
+    known & 27 == 27
+        && matches!(
+        (pair(snapshot.bid_prices[0], snapshot.bid_sizes[0]),
+         pair(snapshot.ask_prices[0], snapshot.ask_sizes[0])),
+        (Some((bid, _)), Some((ask, _))) if ask >= bid)
 }
 fn main() {
     if let Err(e) = run() {
@@ -395,6 +475,28 @@ mod tests {
     use cme_tas_replay::ll2_1min::encode_ll2_minute;
     use cme_tas_replay::raw_ll2::{raw_cf, Extractor, RawScanner, RawSnapshot};
     use polars::prelude::DataFrame;
+
+    #[test]
+    fn valid_l1_rejects_unknown_crossed_and_missing_sides() {
+        let mut snapshot = cme_tas_replay::ll2_1min::Ll2Minute {
+            source_ts_utc_ns: 1,
+            source_order: 1,
+            exch_time_ns: 0,
+            gmt_offset_minutes: 0,
+            bid_prices: [100 * PRICE_SCALE as i64; 10],
+            ask_prices: [101 * PRICE_SCALE as i64; 10],
+            bid_sizes: [PRICE_SCALE as i64; 10],
+            ask_sizes: [PRICE_SCALE as i64; 10],
+            bid_counts: [0; 10],
+            ask_counts: [0; 10],
+        };
+        assert!(valid_l1(&snapshot, 27));
+        assert!(!valid_l1(&snapshot, 3));
+        snapshot.ask_prices[0] = 99 * PRICE_SCALE as i64;
+        assert!(!valid_l1(&snapshot, 27));
+        snapshot.ask_prices[0] = MISSING_PRICE;
+        assert!(!valid_l1(&snapshot, 27));
+    }
 
     #[test]
     fn minute_from_sparse_15s_keeps_last_invalidation_and_stays_in_ric_and_minute() {
@@ -546,6 +648,9 @@ mod tests {
             products: vec!["ES".into()],
             dry_run: false,
             allow_sample: false,
+            require_valid_l1: false,
+            audit_snapshot_values: false,
+            workers: 1,
         };
         let audit = patch_file(&input, &output, &[source], &args).unwrap();
         assert_eq!(audit["filled_rows"], 3);

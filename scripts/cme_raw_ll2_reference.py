@@ -231,6 +231,35 @@ def fill_baseline_records(records, snapshots):
     return output
 
 
+def fill_baseline_sources(records, source_snapshots, require_valid_l1=False):
+    """Choose the first usable same-minute donor; never combine source books."""
+    selected = [{bytes.fromhex(s['key_hex']): s for s in minute_snapshots(snapshots)}
+                for snapshots in source_snapshots]
+    output = []
+    for original in records:
+        key = original['ric'].encode().ljust(16, b'\0') + struct.pack('>Q', original['ts']*10**9)
+        result = dict(original)
+        for source in selected:
+            snapshot = source.get(key)
+            if snapshot is None:
+                continue
+            value = bytes.fromhex(snapshot['value_hex'])
+            source_ns = struct.unpack_from('<Q', value, 4)[0]
+            if not original['ts']*10**9 <= source_ns < (original['ts']+60)*10**9:
+                raise ValueError('snapshot source outside baseline minute')
+            bp,bv,ap,av,_,_ = struct.unpack_from('<qqqqII', value, 32)
+            if require_valid_l1 and not (
+                    snapshot['known'] & 27 == 27 and MISSING not in (bp,bv,ap,av)
+                    and bp > 0 and ap >= bp and bv >= 0 and av >= 0):
+                continue
+            candidate = fill_baseline_records([original], [snapshot])[0]
+            if candidate != original:
+                result = candidate
+                break
+        output.append(result)
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, nargs='+', required=True)

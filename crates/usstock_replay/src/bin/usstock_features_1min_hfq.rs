@@ -18,8 +18,10 @@ use polars::prelude::{
     ParquetReader, ParquetWriter, SerReader, Series, StringChunked,
 };
 use rayon::prelude::*;
-use std::collections::BTreeSet;
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -55,6 +57,64 @@ struct Args {
     raw: bool,
     #[arg(long)]
     dry_run: bool,
+    /// Coarse RAW bars use bar-count windows and carry across scheduled sessions.
+    #[arg(long, default_value = "1min", value_parser = ["1min", "1h", "1day"])]
+    bar_frequency: String,
+    /// Root containing _bars' venue/RIC/YYYYMMDD.json.zst files.
+    #[arg(long)]
+    bar_metadata_root: Option<PathBuf>,
+    /// Frozen NY RTH calendar, required for coarse bar session continuity.
+    #[arg(long)]
+    calendar: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct CalendarSession {
+    session_date: String,
+    open_ts: i64,
+    close_ts: i64,
+}
+
+#[derive(Deserialize)]
+struct CoarseBar {
+    ts: i64,
+    end_ts: i64,
+    last_minute_ts: i64,
+    source_minutes: usize,
+    segment_start: bool,
+}
+
+#[derive(Deserialize)]
+struct BarMetadata {
+    frequency: String,
+    session_date: String,
+    bars: Vec<CoarseBar>,
+}
+
+fn load_calendar(path: &Path) -> Result<BTreeMap<NaiveDate, (usize, i64, i64)>> {
+    let mut result = BTreeMap::new();
+    let mut previous = None;
+    for (index, row) in csv::Reader::from_path(path)?
+        .deserialize::<CalendarSession>()
+        .enumerate()
+    {
+        let row = row?;
+        let day = parse_day(&row.session_date)?;
+        if previous.is_some_and(|p| p >= day) || row.open_ts >= row.close_ts {
+            bail!("invalid calendar row {}", row.session_date);
+        }
+        result.insert(day, (index, row.open_ts, row.close_ts));
+        previous = Some(day);
+    }
+    Ok(result)
+}
+
+fn coarse_break(index: usize, bar: &CoarseBar, missing_session: bool) -> bool {
+    if index == 0 {
+        missing_session
+    } else {
+        bar.segment_start
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -95,8 +155,23 @@ fn main() -> Result<()> {
         bail!("factor output_root must differ from input_root");
     }
     if args.raw {
-        require_raw_roots(&args.input_root, &args.output_root)?;
+        require_raw_roots(&args.input_root, &args.output_root, &args.bar_frequency)?;
     }
+    let calendar = if args.bar_frequency != "1min" {
+        if !args.raw {
+            bail!("coarse bar replay requires the RAW contract");
+        }
+        args.bar_metadata_root
+            .as_ref()
+            .context("coarse bars require --bar-metadata-root")?;
+        Some(load_calendar(
+            args.calendar
+                .as_deref()
+                .context("coarse bars require --calendar")?,
+        )?)
+    } else {
+        None
+    };
     let start = parse_day(&args.start)?;
     let end = parse_day(&args.end)?;
     if end < start {
@@ -132,7 +207,8 @@ fn main() -> Result<()> {
     let rows = AtomicU64::new(0);
     pool.install(|| {
         jobs.par_iter().try_for_each(|job| -> Result<()> {
-            let (written_files, written_rows) = replay_ric(&args, &plan, &factor_names, job)?;
+            let (written_files, written_rows) =
+                replay_ric(&args, &plan, &factor_names, job, calendar.as_ref())?;
             files.fetch_add(written_files, Ordering::Relaxed);
             rows.fetch_add(written_rows, Ordering::Relaxed);
             Ok(())
@@ -147,12 +223,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn require_raw_roots(input: &Path, output: &Path) -> Result<()> {
+fn require_raw_roots(input: &Path, output: &Path, frequency: &str) -> Result<()> {
     let input_name = input.file_name().and_then(|value| value.to_str());
     let output_name = output.file_name().and_then(|value| value.to_str());
-    if input_name != Some(RAW_INPUT_DIR) || output_name != Some(RAW_OUTPUT_DIR) {
+    let expected_input = if frequency == "1min" {
+        RAW_INPUT_DIR.to_string()
+    } else {
+        format!("baseline_data_{frequency}_hfq_raw")
+    };
+    let expected_output = if frequency == "1min" {
+        RAW_OUTPUT_DIR.to_string()
+    } else {
+        format!("baseline_factor_{frequency}_hfq_raw")
+    };
+    if input_name != Some(expected_input.as_str()) || output_name != Some(expected_output.as_str())
+    {
         bail!(
-            "--raw requires input root basename {RAW_INPUT_DIR:?} and output root basename {RAW_OUTPUT_DIR:?}"
+            "--raw requires input root basename {expected_input:?} and output root basename {expected_output:?}"
         );
     }
     Ok(())
@@ -241,6 +328,7 @@ fn replay_ric(
     plan: &LsegFactorPlan,
     factor_names: &[String],
     job: &RicJob,
+    calendar: Option<&BTreeMap<NaiveDate, (usize, i64, i64)>>,
 ) -> Result<(u64, u64)> {
     let state_symbol = state_symbol(&job.venue, &job.ric)?;
     let mut state = LsegTradeOnlyFeatureState::default();
@@ -248,7 +336,50 @@ fn replay_ric(
     let mut pending_factors = None;
     let mut files = 0u64;
     let mut rows = 0u64;
+    let mut previous_session = None;
     for day in &job.days {
+        let mut missing_session = false;
+        let clock = if let Some(calendar) = calendar {
+            let &(index, open, close) = calendar
+                .get(&day.day)
+                .context("source day outside frozen calendar")?;
+            missing_session = previous_session.is_some_and(|p| index != p + 1);
+            previous_session = Some(index);
+            let path = args
+                .bar_metadata_root
+                .as_ref()
+                .unwrap()
+                .join(&job.venue)
+                .join(&job.ric)
+                .join(format!("{}.json.zst", day.day.format("%Y%m%d")));
+            let metadata: BarMetadata =
+                serde_json::from_reader(zstd::stream::read::Decoder::new(File::open(&path)?)?)?;
+            if metadata.frequency != args.bar_frequency
+                || metadata.session_date != day.day.format("%Y%m%d").to_string()
+                || metadata.bars.is_empty()
+                || (args.bar_frequency == "1day" && metadata.bars.len() != 1)
+            {
+                bail!("invalid coarse metadata {}", path.display());
+            }
+            for (i, bar) in metadata.bars.iter().enumerate() {
+                if bar.ts < open
+                    || bar.end_ts > close
+                    || bar.last_minute_ts + 60 != bar.end_ts
+                    || bar.source_minutes == 0
+                    || (args.bar_frequency == "1h"
+                        && (bar.source_minutes > 60
+                            || bar.end_ts - bar.ts != bar.source_minutes as i64 * 60))
+                    || (i > 0
+                        && (bar.ts < metadata.bars[i - 1].end_ts
+                            || (!bar.segment_start && bar.ts != metadata.bars[i - 1].end_ts)))
+                {
+                    bail!("invalid coarse bar {i} in {}", path.display());
+                }
+            }
+            Some(metadata.bars)
+        } else {
+            None
+        };
         let output = args
             .output_root
             .join(&job.venue)
@@ -264,6 +395,8 @@ fn replay_ric(
             &mut pending_factors,
             plan,
             args.raw,
+            clock.as_deref(),
+            missing_session,
         )?;
         if output.exists() && !args.overwrite {
             continue;
@@ -286,11 +419,16 @@ fn process_day(
     pending_factors: &mut Option<Vec<f64>>,
     plan: &LsegFactorPlan,
     raw: bool,
+    coarse_clock: Option<&[CoarseBar]>,
+    missing_session: bool,
 ) -> Result<Vec<OutputRow>> {
     let frame = ParquetReader::new(File::open(path)?)
         .set_low_memory(true)
         .finish()
         .with_context(|| format!("read {}", path.display()))?;
+    if coarse_clock.is_some_and(|clock| clock.len() != frame.height()) {
+        bail!("coarse metadata row count mismatch {}", path.display());
+    }
     let rics = string_column(&frame, "ric")?;
     let venues = string_column(&frame, "venue")?;
     let timestamps = i64_column(&frame, "ts")?;
@@ -337,12 +475,27 @@ fn process_day(
         if ts.rem_euclid(60) != 0 {
             bail!("non-minute ts {ts} in {}", path.display());
         }
-        let segment_break = match *previous_ts {
+        let minute_break = match *previous_ts {
             Some(previous) if ts <= previous => {
                 bail!("non-increasing ts {previous} -> {ts} in {}", path.display());
             }
             Some(previous) => ts - previous != 60,
             None => false,
+        };
+        let segment_break = if let Some(clock) = coarse_clock {
+            let bar = &clock[index];
+            if bar.ts != ts
+                || i64_column(&frame, "n_seconds")?.get(index)
+                    != Some(bar.source_minutes as i64 * 60)
+            {
+                bail!(
+                    "coarse metadata key/duration mismatch {} row={index}",
+                    path.display()
+                );
+            }
+            coarse_break(index, bar, missing_session)
+        } else {
+            minute_break
         };
         let size_buckets = raw_size_columns
             .as_ref()
@@ -526,9 +679,12 @@ fn write_day(
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     let temporary = path.with_extension("parquet.tmp");
     let result = (|| -> Result<()> {
-        ParquetWriter::new(File::create(&temporary)?)
+        let mut writer = BufWriter::with_capacity(1024 * 1024, File::create(&temporary)?);
+        ParquetWriter::new(&mut writer)
             .with_compression(ParquetCompression::Zstd(None))
             .finish(&mut frame)?;
+        writer.flush()?;
+        drop(writer);
         fs::rename(&temporary, path)?;
         Ok(())
     })();
@@ -638,5 +794,36 @@ mod tests {
         assert!(take_shifted_factors(&mut pending, true, 2)
             .into_iter()
             .all(f64::is_nan));
+    }
+
+    #[test]
+    fn coarse_windows_continue_across_scheduled_days_and_reset_missing_days() {
+        let first = CoarseBar {
+            ts: 1000,
+            end_ts: 4600,
+            last_minute_ts: 4540,
+            source_minutes: 60,
+            segment_start: true,
+        };
+        assert!(!coarse_break(0, &first, false));
+        assert!(coarse_break(0, &first, true));
+        assert!(coarse_break(2, &first, false));
+        let next = CoarseBar {
+            segment_start: false,
+            ..first
+        };
+        assert!(!coarse_break(1, &next, false));
+        require_raw_roots(
+            Path::new("baseline_data_1day_hfq_raw"),
+            Path::new("baseline_factor_1day_hfq_raw"),
+            "1day",
+        )
+        .unwrap();
+        assert!(require_raw_roots(
+            Path::new("baseline_data_1min_hfq_raw"),
+            Path::new("baseline_factor_1day_hfq_raw"),
+            "1day"
+        )
+        .is_err());
     }
 }

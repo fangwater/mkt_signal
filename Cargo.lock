@@ -868,6 +868,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cme_roll_metadata"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "csv",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "cme_tas_replay"
 version = "0.1.0"
 dependencies = [
@@ -876,6 +887,7 @@ dependencies = [
  "chrono",
  "chrono-tz 0.8.6",
  "clap",
+ "cme_roll_metadata",
  "crossbeam-channel",
  "csv",
  "csv-core",
@@ -891,6 +903,7 @@ dependencies = [
  "rocksdb",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml 0.8.23",
  "zstd",
@@ -3157,6 +3170,7 @@ dependencies = [
  "chrono",
  "chrono-tz 0.8.6",
  "clap",
+ "cme_roll_metadata",
  "comfy-table",
  "crc32fast",
  "crossbeam-channel",
@@ -3228,6 +3242,7 @@ dependencies = [
  "viz_common",
  "zip 4.6.1",
  "zmq",
+ "zstd",
 ]
 
 [[package]]
@@ -6005,6 +6020,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tardis_order_size"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "csv",
+ "flate2",
+ "rayon",
+ "rolling_common",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "target-features"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6788,6 +6819,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
+name = "usstock_aggregate_baseline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "polars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zstd",
+]
+
+[[package]]
 name = "usstock_lseg_mbp_replay"
 version = "0.1.0"
 dependencies = [
@@ -6843,6 +6887,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "usstock_nasdaq_baseline"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "chrono",
+ "clap",
+ "csv",
+ "flate2",
+ "hex",
+ "polars",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
 name = "usstock_replay"
 version = "0.1.0"
 dependencies = [
@@ -6861,6 +6925,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml 0.8.23",
+ "zstd",
 ]
 
 [[package]]

@@ -1,0 +1,334 @@
+{
+  "config": {
+    "confirmation_days": 2,
+    "decision_buffer_seconds": 300,
+    "max_reference_age": 3
+  },
+  "decisions": [
+    {
+      "product": "TY",
+      "trading_day": "2026-02-23",
+      "decision_ns": 1771800900000000000,
+      "effective_ns": 1771801200000000000,
+      "previous_day": "2026-02-20",
+      "previous_close_ns": 1771624800000000000,
+      "calendar_known_at_ns": 1767247200000000000,
+      "calendar_source": "synthetic_fixture",
+      "reference_days": [
+        {
+          "day": "2026-02-20",
+          "settlement_expected": true
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-24",
+      "decision_ns": 1771887300000000000,
+      "effective_ns": 1771887600000000000,
+      "previous_day": "2026-02-23",
+      "previous_close_ns": 1771884000000000000,
+      "calendar_known_at_ns": 1767247200000000000,
+      "calendar_source": "synthetic_fixture",
+      "reference_days": [
+        {
+          "day": "2026-02-23",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-20",
+          "settlement_expected": true
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-25",
+      "decision_ns": 1771973700000000000,
+      "effective_ns": 1771974000000000000,
+      "previous_day": "2026-02-24",
+      "previous_close_ns": 1771970400000000000,
+      "calendar_known_at_ns": 1767247200000000000,
+      "calendar_source": "synthetic_fixture",
+      "reference_days": [
+        {
+          "day": "2026-02-24",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-23",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-20",
+          "settlement_expected": true
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-26",
+      "decision_ns": 1772060100000000000,
+      "effective_ns": 1772060400000000000,
+      "previous_day": "2026-02-25",
+      "previous_close_ns": 1772056800000000000,
+      "calendar_known_at_ns": 1767247200000000000,
+      "calendar_source": "synthetic_fixture",
+      "reference_days": [
+        {
+          "day": "2026-02-25",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-24",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-23",
+          "settlement_expected": true
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-27",
+      "decision_ns": 1772146500000000000,
+      "effective_ns": 1772146800000000000,
+      "previous_day": "2026-02-26",
+      "previous_close_ns": 1772143200000000000,
+      "calendar_known_at_ns": 1767247200000000000,
+      "calendar_source": "synthetic_fixture",
+      "reference_days": [
+        {
+          "day": "2026-02-26",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-25",
+          "settlement_expected": true
+        },
+        {
+          "day": "2026-02-24",
+          "settlement_expected": true
+        }
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "product": "TY",
+      "ric": "TYH26",
+      "delivery_month": "2026-03",
+      "known_at_ns": 1767247200000000000,
+      "valid_from_ns": 0,
+      "valid_to_ns": null,
+      "listed_ns": 1735711200000000000,
+      "roll_by_ns": 1771974000000000000,
+      "risk_deadline_ns": 1772085600000000000,
+      "verified": true,
+      "source": "synthetic_fixture_not_historical_metadata"
+    },
+    {
+      "product": "TY",
+      "ric": "TYM26",
+      "delivery_month": "2026-06",
+      "known_at_ns": 1767247200000000000,
+      "valid_from_ns": 0,
+      "valid_to_ns": null,
+      "listed_ns": 1735711200000000000,
+      "roll_by_ns": 1779832800000000000,
+      "risk_deadline_ns": 1779944400000000000,
+      "verified": true,
+      "source": "synthetic_fixture_not_historical_metadata"
+    }
+  ],
+  "volumes": [
+    {
+      "product": "TY",
+      "trading_day": "2026-02-20",
+      "available_at_ns": 1771627800000000000,
+      "complete": true,
+      "source": "tas_printable",
+      "rows": [
+        {
+          "ric": "TYH26",
+          "volume": 100
+        },
+        {
+          "ric": "TYM26",
+          "volume": 30
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-23",
+      "available_at_ns": 1771887000000000000,
+      "complete": true,
+      "source": "tas_printable",
+      "rows": [
+        {
+          "ric": "TYH26",
+          "volume": 200
+        },
+        {
+          "ric": "TYM26",
+          "volume": 60
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-24",
+      "available_at_ns": 1771973400000000000,
+      "complete": true,
+      "source": "tas_printable",
+      "rows": [
+        {
+          "ric": "TYH26",
+          "volume": 1161479
+        },
+        {
+          "ric": "TYM26",
+          "volume": 659597
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-25",
+      "available_at_ns": 1772059800000000000,
+      "complete": true,
+      "source": "tas_printable",
+      "rows": [
+        {
+          "ric": "TYH26",
+          "volume": 441599
+        },
+        {
+          "ric": "TYM26",
+          "volume": 1029387
+        }
+      ]
+    },
+    {
+      "product": "TY",
+      "trading_day": "2026-02-26",
+      "available_at_ns": 1772146200000000000,
+      "complete": true,
+      "source": "tas_printable",
+      "rows": [
+        {
+          "ric": "TYH26",
+          "volume": 144257
+        },
+        {
+          "ric": "TYM26",
+          "volume": 2045549
+        }
+      ]
+    }
+  ],
+  "settlements": [
+    {
+      "product": "TY",
+      "ric": "TYH26",
+      "reference_day": "2026-02-20",
+      "price_e9": 113296875000,
+      "published_ns": 1771627200000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYM26",
+      "reference_day": "2026-02-20",
+      "price_e9": 113234375000,
+      "published_ns": 1771627200000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYH26",
+      "reference_day": "2026-02-23",
+      "price_e9": 113296875000,
+      "published_ns": 1771886400000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYM26",
+      "reference_day": "2026-02-23",
+      "price_e9": 113234375000,
+      "published_ns": 1771886400000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYH26",
+      "reference_day": "2026-02-24",
+      "price_e9": 113296875000,
+      "published_ns": 1771972800000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYM26",
+      "reference_day": "2026-02-24",
+      "price_e9": 113234375000,
+      "published_ns": 1771972800000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYH26",
+      "reference_day": "2026-02-25",
+      "price_e9": 113296875000,
+      "published_ns": 1772059200000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYM26",
+      "reference_day": "2026-02-25",
+      "price_e9": 113234375000,
+      "published_ns": 1772059200000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYH26",
+      "reference_day": "2026-02-26",
+      "price_e9": 113296875000,
+      "published_ns": 1772145600000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    },
+    {
+      "product": "TY",
+      "ric": "TYM26",
+      "reference_day": "2026-02-26",
+      "price_e9": 113234375000,
+      "published_ns": 1772145600000000000,
+      "part": 0,
+      "seq": 1,
+      "basis": "daily_settlement"
+    }
+  ]
+}

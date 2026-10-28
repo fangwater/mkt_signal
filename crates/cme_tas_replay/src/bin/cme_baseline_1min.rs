@@ -13,11 +13,12 @@ use cme_tas_replay::ll2_1min::{
     decode_ll2_minute, decode_ll2_minute_key, encode_ll2_minute_key, ll2_latest_merge,
     Ll2MinuteKey, LL2_MINUTE_KEY_LEN,
 };
-use cme_tas_replay::product::{encode_all_key, exch_event_time_ns, product_cf_name, ALL_KEY_LEN};
+use cme_tas_replay::product::{encode_all_key, product_cf_name, ALL_KEY_LEN};
+use cme_tas_replay::trade_timing::{bar_time, TimeBasis, TimingAudit};
 use cme_tas_replay::{
     decode_cme_special, decode_cme_trade, decode_period_status, price_e9_to_f64, PeriodStatus,
-    CF_REPLAY_META, KIND_CME_SPECIAL, KIND_CME_TRADE, MISSING_EXCH_HMS_NS, MISSING_PRICE,
-    MISSING_VOLUME, PRICE_SCALE, RIC_LEN,
+    CF_REPLAY_META, KIND_CME_SPECIAL, KIND_CME_TRADE, MISSING_PRICE, MISSING_VOLUME, PRICE_SCALE,
+    RIC_LEN,
 };
 use mimalloc::MiMalloc;
 use polars::prelude::{
@@ -29,6 +30,8 @@ use rocksdb::{
 };
 use serde::Serialize;
 
+#[path = "../baseline_history.rs"]
+mod historical;
 #[path = "../baseline_raw.rs"]
 mod raw_baseline;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,6 +66,15 @@ const SESSION_BREAK_SECONDS: i64 = 30 * 60;
 #[derive(Parser, Debug)]
 #[command(name = "cme_baseline_1min")]
 struct Args {
+    /// Reviewed official trade dates, explicit RIC identities and bounded multipliers.
+    #[arg(long)]
+    history_catalog: Option<PathBuf>,
+    /// Timestamped halt/resume events for the reviewed planned calendar.
+    #[arg(long)]
+    session_status: Option<PathBuf>,
+    /// Source publication time makes each closed minute immutable.
+    #[arg(long, value_enum, default_value_t = TimeBasis::Exchange)]
+    trade_time_basis: TimeBasis,
     #[arg(long, default_value = DEFAULT_TAS_DB)]
     tas_rocksdb: PathBuf,
     #[arg(long, default_value = DEFAULT_LL2_DB)]
@@ -192,10 +204,34 @@ const RATE_PRODUCTS: &[ProductSpec] = &[
     },
 ];
 
+const ADDITIONAL_PRODUCTS: &[ProductSpec] = &[
+    ProductSpec {
+        product: "URO",
+        exchange: "CME",
+        schedule_group: "fx",
+    },
+    ProductSpec {
+        product: "JY",
+        exchange: "CME",
+        schedule_group: "fx",
+    },
+    ProductSpec {
+        product: "HG",
+        exchange: "COMEX",
+        schedule_group: "metals",
+    },
+    ProductSpec {
+        product: "SI",
+        exchange: "COMEX",
+        schedule_group: "metals",
+    },
+];
+
 fn product_spec(product: &str) -> Result<ProductSpec> {
     PRODUCTS
         .iter()
         .chain(RATE_PRODUCTS.iter())
+        .chain(ADDITIONAL_PRODUCTS.iter())
         .copied()
         .find(|spec| spec.product == product)
         .ok_or_else(|| anyhow!("unsupported baseline product {product:?}"))
@@ -210,6 +246,7 @@ struct RawInterval {
 struct SessionCalendar {
     by_group: BTreeMap<String, Vec<RawInterval>>,
     coverage: BTreeMap<String, (NaiveDate, NaiveDate)>,
+    history: Option<Arc<historical::ReviewedHistory>>,
 }
 
 fn chicago_window(day: NaiveDate) -> Result<(i64, i64)> {
@@ -221,6 +258,24 @@ fn chicago_window(day: NaiveDate) -> Result<(i64, i64)> {
 }
 
 impl SessionCalendar {
+    fn segments_for_product(&self, spec: ProductSpec, day: NaiveDate) -> Result<Vec<(i64, i64)>> {
+        if let Some(history) = &self.history {
+            if day < history.from || day >= history.until {
+                bail!("historical calendar range missing {} {day}", spec.product);
+            }
+            return Ok(history
+                .days
+                .get(&(spec.product.to_string(), day))
+                .map(|r| {
+                    r.segments
+                        .iter()
+                        .map(|&(lo, hi)| ((lo / NS_PER_SEC) as i64, (hi / NS_PER_SEC) as i64 - 60))
+                        .collect()
+                })
+                .unwrap_or_default());
+        }
+        self.minute_segments_for(spec.schedule_group, day)
+    }
     fn minute_segments_for(&self, group: &str, day: NaiveDate) -> Result<Vec<(i64, i64)>> {
         let (coverage_start, coverage_end) = self
             .coverage
@@ -347,7 +402,11 @@ fn load_calendar(
         }
         by_group.entry(group).or_default().push(interval);
     }
-    Ok(SessionCalendar { by_group, coverage })
+    Ok(SessionCalendar {
+        by_group,
+        coverage,
+        history: None,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -366,10 +425,20 @@ struct RicGrid {
     contract_id: String,
     ric: String,
     segments: Vec<(i64, i64)>,
+    status_segments: Option<Vec<(i64, i64)>>,
+}
+
+impl RicGrid {
+    fn output_segments(&self) -> &[(i64, i64)] {
+        self.status_segments.as_deref().unwrap_or(&self.segments)
+    }
 }
 
 #[derive(Default, Serialize)]
 struct DayAudit {
+    trade_time_basis: TimeBasis,
+    trade_timing: TimingAudit,
+    special_timing: TimingAudit,
     exchange: String,
     product: String,
     trading_day: String,
@@ -378,6 +447,7 @@ struct DayAudit {
     ric_count: u64,
     output_ric_count: u64,
     grid_minutes: u64,
+    status_removed_grid_minutes: u64,
     output_rows: u64,
     trade_rows: u64,
     special_rows: u64,
@@ -388,6 +458,8 @@ struct DayAudit {
     raw_last_invalid_minutes: u64,
     raw_no_snapshot_minutes: u64,
     outside_session_trades: u64,
+    outside_session_specials: u64,
+    threshold_source_max_published_ns: Option<u64>,
     rics_without_ll2: Vec<String>,
     calendar_closed: bool,
     published: bool,
@@ -549,6 +621,7 @@ fn read_contracts(path: &Path, expected_product: &str, day: NaiveDate) -> Result
                 contract_id: resolve_ambiguous_ric(&ric, day, contracts)?,
                 ric,
                 segments: Vec::new(),
+                status_segments: None,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -583,20 +656,13 @@ fn key_ts_ns(key: &[u8]) -> Result<u64> {
     Ok(u64::from_be_bytes(key[17..25].try_into().unwrap()))
 }
 
-fn event_time_ns(source_ns: u64, exch_hms_ns: u64) -> Result<u64> {
-    if exch_hms_ns == MISSING_EXCH_HMS_NS {
-        Ok(source_ns)
-    } else {
-        exch_event_time_ns(source_ns, exch_hms_ns)
-    }
-}
-
 fn scan_trades(
     db: &DB,
     cf: &impl rocksdb::AsColumnFamilyRef,
     grid: &RicGrid,
+    basis: TimeBasis,
 ) -> Result<Vec<BaselineTrade>> {
-    Ok(scan_trades_audited(db, cf, grid, None)?.0)
+    Ok(scan_trades_audited(db, cf, grid, None, basis)?.0)
 }
 
 fn scan_trades_audited(
@@ -604,18 +670,39 @@ fn scan_trades_audited(
     cf: &impl rocksdb::AsColumnFamilyRef,
     grid: &RicGrid,
     audit_day: Option<NaiveDate>,
-) -> Result<(Vec<BaselineTrade>, u64)> {
+    basis: TimeBasis,
+) -> Result<(Vec<BaselineTrade>, u64, TimingAudit)> {
     let Some(&(start, _)) = grid.segments.first() else {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), 0, TimingAudit::default()));
     };
-    let audit_window = audit_day.map(chicago_window).transpose()?;
+    let audit_window = audit_day.map(chicago_window).transpose()?.map(|(lo, hi)| {
+        if basis == TimeBasis::Publication {
+            (lo.min(start), hi.max(grid.segments.last().unwrap().1 + 60))
+        } else {
+            (lo, hi)
+        }
+    });
     let mut outside_session = 0;
+    let mut timing = TimingAudit::default();
     let end = grid.segments.last().unwrap().1 + 60;
-    let padded_start =
-        (u64::try_from(start)?.saturating_mul(NS_PER_SEC)).saturating_sub(HALF_DAY_NS);
-    let padded_end = u64::try_from(end)?
+    let padding = if basis == TimeBasis::Exchange {
+        HALF_DAY_NS
+    } else {
+        0
+    };
+    let mut padded_start =
+        (u64::try_from(start)?.saturating_mul(NS_PER_SEC)).saturating_sub(padding);
+    let mut padded_end = u64::try_from(end)?
         .saturating_mul(NS_PER_SEC)
-        .saturating_add(HALF_DAY_NS);
+        .saturating_add(padding);
+    // Include closed portions of the labeled day in the audit. Membership in
+    // the official half-open segments below still controls bar inclusion.
+    if let Some((lo, hi)) = audit_window {
+        if basis == TimeBasis::Publication {
+            padded_start = padded_start.min(u64::try_from(lo)? * NS_PER_SEC);
+            padded_end = padded_end.max(u64::try_from(hi)? * NS_PER_SEC);
+        }
+    }
     let prefix = key_prefix(KIND_CME_TRADE, &grid.ric)?;
     let seek = encode_all_key(KIND_CME_TRADE, &grid.ric, padded_start, 0, 0)?;
     let mut output = Vec::new();
@@ -624,13 +711,13 @@ fn scan_trades_audited(
         if !key.starts_with(&prefix) {
             break;
         }
-        if key_ts_ns(&key)? > padded_end {
+        if key_ts_ns(&key)? >= padded_end {
             break;
         }
         let rec = decode_cme_trade(&value)?;
-        let event_ns = event_time_ns(rec.ts_utc_ns, rec.exch_hms_ns)?;
+        let event_ns = bar_time(rec.ts_utc_ns, rec.exch_hms_ns, basis)?;
         let minute = (event_ns / NS_PER_SEC / 60 * 60) as i64;
-        if !minute_in_segments(minute, &grid.segments) {
+        if !minute_in_segments(minute, grid.output_segments()) {
             if audit_window.is_some_and(|(lo, hi)| {
                 event_ns >= lo as u64 * NS_PER_SEC && event_ns < hi as u64 * NS_PER_SEC
             }) {
@@ -644,6 +731,7 @@ fn scan_trades_audited(
         if rec.volume == MISSING_VOLUME || rec.volume == 0 {
             bail!("trade {} has invalid volume {}", grid.ric, rec.volume);
         }
+        timing.add(rec.ts_utc_ns, rec.exch_hms_ns, rec.volume as u64)?;
         output.push(BaselineTrade {
             event_ns,
             source_order: key.to_vec(),
@@ -652,39 +740,66 @@ fn scan_trades_audited(
             aggressor: rec.aggressor,
         });
     }
-    Ok((output, outside_session))
+    Ok((output, outside_session, timing))
 }
 
 fn scan_specials(
     db: &DB,
     cf: &impl rocksdb::AsColumnFamilyRef,
     grid: &RicGrid,
-) -> Result<(Vec<BaselineSpecial>, u64)> {
+    audit_day: Option<NaiveDate>,
+    basis: TimeBasis,
+) -> Result<(Vec<BaselineSpecial>, u64, u64, TimingAudit)> {
     let Some(&(start, _)) = grid.segments.first() else {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), 0, 0, TimingAudit::default()));
     };
+    let audit_window = audit_day.map(chicago_window).transpose()?.map(|(lo, hi)| {
+        if basis == TimeBasis::Publication {
+            (lo.min(start), hi.max(grid.segments.last().unwrap().1 + 60))
+        } else {
+            (lo, hi)
+        }
+    });
+    let mut outside_session = 0;
     let end = grid.segments.last().unwrap().1 + 60;
-    let padded_start =
-        (u64::try_from(start)?.saturating_mul(NS_PER_SEC)).saturating_sub(HALF_DAY_NS);
-    let padded_end = u64::try_from(end)?
+    let padding = if basis == TimeBasis::Exchange {
+        HALF_DAY_NS
+    } else {
+        0
+    };
+    let mut padded_start =
+        (u64::try_from(start)?.saturating_mul(NS_PER_SEC)).saturating_sub(padding);
+    let mut padded_end = u64::try_from(end)?
         .saturating_mul(NS_PER_SEC)
-        .saturating_add(HALF_DAY_NS);
+        .saturating_add(padding);
+    if let Some((lo, hi)) = audit_window {
+        if basis == TimeBasis::Publication {
+            padded_start = padded_start.min(u64::try_from(lo)? * NS_PER_SEC);
+            padded_end = padded_end.max(u64::try_from(hi)? * NS_PER_SEC);
+        }
+    }
     let prefix = key_prefix(KIND_CME_SPECIAL, &grid.ric)?;
     let seek = encode_all_key(KIND_CME_SPECIAL, &grid.ric, padded_start, 0, 0)?;
     let mut output = Vec::new();
     let mut invalid = 0u64;
+    let mut timing = TimingAudit::default();
     for item in db.iterator_cf(cf, IteratorMode::From(&seek, Direction::Forward)) {
         let (key, value) = item?;
         if !key.starts_with(&prefix) {
             break;
         }
-        if key_ts_ns(&key)? > padded_end {
+        if key_ts_ns(&key)? >= padded_end {
             break;
         }
         let rec = decode_cme_special(&value)?;
-        let event_ns = event_time_ns(rec.ts_utc_ns, rec.exch_hms_ns)?;
+        let event_ns = bar_time(rec.ts_utc_ns, rec.exch_hms_ns, basis)?;
         let minute = (event_ns / NS_PER_SEC / 60 * 60) as i64;
-        if !minute_in_segments(minute, &grid.segments) {
+        if !minute_in_segments(minute, grid.output_segments()) {
+            if audit_window.is_some_and(|(lo, hi)| {
+                event_ns >= lo as u64 * NS_PER_SEC && event_ns < hi as u64 * NS_PER_SEC
+            }) {
+                outside_session += 1;
+            }
             continue;
         }
         if rec.volume == MISSING_VOLUME || rec.volume == 0 {
@@ -694,12 +809,13 @@ fn scan_specials(
             invalid += 1;
             continue;
         }
+        timing.add(rec.ts_utc_ns, rec.exch_hms_ns, rec.volume as u64)?;
         output.push(BaselineSpecial {
             event_ns,
             volume: f64::from(rec.volume),
         });
     }
-    Ok((output, invalid))
+    Ok((output, invalid, outside_session, timing))
 }
 
 fn scaled_option(value: i64) -> Option<f64> {
@@ -792,8 +908,13 @@ fn process_job(
             audit.rics_without_ll2.push(grid.ric.clone());
             continue;
         }
-        let trades = scan_trades(tas, &tas_cf, &grid)?;
-        let (specials, invalid_specials) = scan_specials(tas, &tas_cf, &grid)?;
+        let (trades, _, trade_timing) =
+            scan_trades_audited(tas, &tas_cf, &grid, None, args.trade_time_basis)?;
+        let (specials, invalid_specials, _, special_timing) =
+            scan_specials(tas, &tas_cf, &grid, None, args.trade_time_basis)?;
+        audit.trade_time_basis = args.trade_time_basis;
+        audit.trade_timing.merge(trade_timing);
+        audit.special_timing.merge(special_timing);
         audit.trade_rows += trades.len() as u64;
         audit.special_rows += specials.len() as u64;
         audit.invalid_special_rows += invalid_specials;
@@ -854,14 +975,14 @@ fn process_trade_only_job(
     multipliers: &BTreeMap<String, f64>,
     calendar: &SessionCalendar,
     ll2: Option<&DB>,
-    thresholds: Option<cme_tas_replay::baseline_1min::SizeThresholds>,
+    thresholds: Option<raw_baseline::VisibleThresholds>,
     args: &Args,
     parquet_lock: &Mutex<()>,
 ) -> Result<DayAudit> {
     let started = Instant::now();
     let mut grids = raw_baseline::job_grids(job)?;
     let spec = product_spec(&job.product)?;
-    let segments = calendar.minute_segments_for(spec.schedule_group, job.day)?;
+    let segments = calendar.segments_for_product(spec, job.day)?;
     let mut audit = DayAudit {
         exchange: job.exchange.clone(),
         product: job.product.clone(),
@@ -880,27 +1001,53 @@ fn process_trade_only_job(
         );
         return Ok(audit);
     }
+    audit.threshold_source_max_published_ns = thresholds.and_then(|t| t.source_max_published_ns);
+    let thresholds = thresholds
+        .map(|t| t.for_open(segments[0].0 as u64 * NS_PER_SEC, args.trade_time_basis))
+        .transpose()?;
     let multiplier = *multipliers
         .get(&job.product)
         .with_context(|| format!("missing verified multiplier for {}", job.product))?;
-    let tas_cf_name = product_cf_name(job.day.year() as u16, &job.product)?;
-    let tas_cf = tas
-        .cf_handle(&tas_cf_name)
-        .with_context(|| format!("missing TAS CF {tas_cf_name}"))?;
+    let source_years = if calendar.history.is_some() {
+        historical::source_years(&segments)?
+    } else {
+        BTreeSet::from([job.day.year()])
+    };
     let mut rows = Vec::new();
     for grid in &mut grids {
         grid.segments.clone_from(&segments);
-        audit.grid_minutes += grid_minutes(&grid.segments);
-        let (trades, outside_session) = scan_trades_audited(tas, &tas_cf, grid, Some(job.day))?;
-        audit.outside_session_trades += outside_session;
-        let (specials, invalid_specials) = scan_specials(tas, &tas_cf, grid)?;
+        if let Some(history) = &calendar.history {
+            grid.status_segments = history.status_segments(&job.product, &grid.ric, &segments)?;
+        }
+        let output_minutes = grid_minutes(grid.output_segments());
+        audit.grid_minutes += output_minutes;
+        audit.status_removed_grid_minutes += grid_minutes(&segments) - output_minutes;
+        let mut trades = Vec::new();
+        let mut specials = Vec::new();
+        for year in &source_years {
+            let cf_name = product_cf_name(*year as u16, &job.product)?;
+            let cf = tas
+                .cf_handle(&cf_name)
+                .with_context(|| format!("missing TAS CF {cf_name}"))?;
+            let (mut t, outside_session, trade_timing) =
+                scan_trades_audited(tas, &cf, grid, Some(job.day), args.trade_time_basis)?;
+            let (mut s, invalid_specials, outside_specials, special_timing) =
+                scan_specials(tas, &cf, grid, Some(job.day), args.trade_time_basis)?;
+            audit.outside_session_trades += outside_session;
+            audit.outside_session_specials += outside_specials;
+            audit.invalid_special_rows += invalid_specials;
+            audit.trade_timing.merge(trade_timing);
+            audit.special_timing.merge(special_timing);
+            trades.append(&mut t);
+            specials.append(&mut s);
+        }
+        audit.trade_time_basis = args.trade_time_basis;
         audit.trade_rows += trades.len() as u64;
         audit.special_rows += specials.len() as u64;
-        audit.invalid_special_rows += invalid_specials;
         let mut built = build_trade_only_minutes(
             &grid.contract_id,
             &grid.ric,
-            &grid.segments,
+            grid.output_segments(),
             &trades,
             &specials,
             multiplier,
@@ -1254,6 +1401,21 @@ fn validate_args(args: &Args) -> Result<Vec<ProductSpec>> {
     if args.end <= args.start || args.workers == 0 {
         bail!("invalid date range or worker count");
     }
+    if args.session_status.is_some() && args.history_catalog.is_none() {
+        bail!("--session-status requires --history-catalog");
+    }
+    if args.trade_time_basis == TimeBasis::Publication
+        && (!args.trade_only || args.output_root == Path::new(DEFAULT_OUTPUT))
+    {
+        bail!("publication minutes require --trade-only and a separate --output-root");
+    }
+    if args.history_catalog.is_some()
+        && (!args.trade_only
+            || !args.tas_contract_grid
+            || args.trade_time_basis != TimeBasis::Publication)
+    {
+        bail!("historical catalog requires --trade-only --tas-contract-grid --trade-time-basis publication");
+    }
     let output = args.output_root.to_string_lossy();
     if output.contains("drop_special") || output.contains("rocksdb") {
         bail!(
@@ -1272,15 +1434,23 @@ fn validate_args(args: &Args) -> Result<Vec<ProductSpec>> {
     if products.is_empty() {
         bail!("no products selected");
     }
+    if args.history_catalog.is_none()
+        && products
+            .iter()
+            .any(|p| ADDITIONAL_PRODUCTS.iter().any(|a| a.product == p.product))
+    {
+        bail!("additional products require --history-catalog");
+    }
     if products
         .iter()
         .any(|p| p.schedule_group == "interest_rates")
-        && (!args.raw_ll2
+        && args.history_catalog.is_none()
+        && (!(args.raw_ll2 || (args.trade_only && args.trade_time_basis == TimeBasis::Publication))
             || !args.tas_contract_grid
             || args.start < NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
             || args.end > NaiveDate::from_ymd_opt(2026, 6, 1).unwrap())
     {
-        bail!("rates support is scoped to 2026 Jan-May with --raw-ll2 --tas-contract-grid");
+        bail!("rates support is scoped to 2026 Jan-May with --tas-contract-grid and either --raw-ll2 or --trade-only --trade-time-basis publication");
     }
     if args.raw_ll2 && !args.tas_contract_grid {
         bail!("--raw-ll2 requires --tas-contract-grid");
@@ -1294,9 +1464,24 @@ fn validate_args(args: &Args) -> Result<Vec<ProductSpec>> {
 fn run() -> Result<()> {
     let args = Arc::new(Args::parse());
     let products = validate_args(&args)?;
-    let multipliers = Arc::new(load_multipliers(&args, &products)?);
-    let years =
+    let history = historical::load(&args, &products)?;
+    let multipliers = Arc::new(if let Some(h) = &history {
+        h.multipliers.clone()
+    } else {
+        load_multipliers(&args, &products)?
+    });
+    let mut years =
         (args.start.year()..=(args.end - Duration::days(1)).year()).collect::<BTreeSet<_>>();
+    if let Some(h) = &history {
+        for day in h.days.values() {
+            let segments = day
+                .segments
+                .iter()
+                .map(|&(lo, hi)| ((lo / NS_PER_SEC) as i64, (hi / NS_PER_SEC) as i64 - 60))
+                .collect::<Vec<_>>();
+            years.extend(historical::source_years(&segments)?);
+        }
+    }
     let mut selected_cf_names = vec!["default".to_string(), CF_REPLAY_META.to_string()];
     for year in &years {
         for spec in &products {
@@ -1364,6 +1549,13 @@ fn run() -> Result<()> {
     }
     let calendar = (args.trade_only || args.raw_ll2)
         .then(|| {
+            if let Some(h) = &history {
+                return Ok(SessionCalendar {
+                    by_group: BTreeMap::new(),
+                    coverage: BTreeMap::new(),
+                    history: Some(h.clone()),
+                });
+            }
             load_calendar(
                 &args.psql,
                 &args.pg_socket,
@@ -1377,7 +1569,9 @@ fn run() -> Result<()> {
         })
         .transpose()?
         .map(Arc::new);
-    let jobs = if args.tas_contract_grid {
+    let jobs = if let Some(h) = &history {
+        historical::list_jobs(&args, h)?
+    } else if args.tas_contract_grid {
         raw_baseline::list_tas_jobs(
             &tas,
             ll2.as_deref().filter(|_| args.raw_ll2),
@@ -1469,6 +1663,74 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_scan_keeps_late_prints_in_new_minutes_and_audits_closures() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let db = DB::open_cf(&options, dir.path(), ["p:2025:FV"])?;
+        let cf = db.cf_handle("p:2025:FV").unwrap();
+        let source_ns = 1_764_044_430_849_697_706;
+        let closed_ns = Chicago
+            .with_ymd_and_hms(2025, 11, 24, 16, 30, 0)
+            .unwrap()
+            .timestamp() as u64
+            * NS_PER_SEC;
+        let mut trade = cme_tas_replay::ali_h26_fixture();
+        trade.ric = "FVZ25".into();
+        trade.price = 109_609_375_000;
+        trade.exch_hms_ns = 58_963_000_000_000;
+        for (published, seq, volume) in [(source_ns, 0, 5000), (source_ns, 1, 7), (closed_ns, 0, 9)]
+        {
+            trade.ts_utc_ns = published;
+            trade.volume = volume;
+            db.put_cf(
+                &cf,
+                encode_all_key(KIND_CME_TRADE, &trade.ric, published, 3, seq)?,
+                cme_tas_replay::encode_cme_trade(&trade)?,
+            )?;
+        }
+        trade.price = MISSING_PRICE;
+        trade.aggressor = 0;
+        db.put_cf(
+            &cf,
+            encode_all_key(KIND_CME_SPECIAL, &trade.ric, closed_ns, 3, 0)?,
+            cme_tas_replay::encode_cme_special(&trade)?,
+        )?;
+        let day = NaiveDate::from_ymd_opt(2025, 11, 24).unwrap();
+        let grid = |d| {
+            let (lo, hi) = chicago_window(d).unwrap();
+            RicGrid {
+                ric: "FVZ25".into(),
+                contract_id: "CBOT:FV:2025-12".into(),
+                segments: vec![(lo, hi - 3600 - 60)],
+                status_segments: None,
+            }
+        };
+        let (old, outside, _) =
+            scan_trades_audited(&db, &cf, &grid(day), Some(day), TimeBasis::Publication)?;
+        assert!(old.is_empty());
+        assert_eq!(outside, 1);
+        let (specials, invalid, outside, _) =
+            scan_specials(&db, &cf, &grid(day), Some(day), TimeBasis::Publication)?;
+        assert!(specials.is_empty());
+        assert_eq!((invalid, outside), (0, 1));
+        let (next, outside, timing) = scan_trades_audited(
+            &db,
+            &cf,
+            &grid(day + Duration::days(1)),
+            Some(day + Duration::days(1)),
+            TimeBasis::Publication,
+        )?;
+        assert_eq!(next.len(), 2);
+        assert_eq!(outside, 0);
+        assert_eq!(timing.later_minute_volume, 5007);
+        assert!(next.iter().all(|t| t.event_ns == source_ns));
+        assert_ne!(next[0].source_order, next[1].source_order);
+        Ok(())
+    }
 
     #[test]
     fn period_mapping_includes_historical_tas_replays() {

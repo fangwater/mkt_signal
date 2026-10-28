@@ -49,6 +49,7 @@ fn ric_spans(
     cf_name: &str,
     from: NaiveDate,
     until: NaiveDate,
+    basis: TimeBasis,
 ) -> Result<Vec<(String, u64, u64)>> {
     let cf = db.cf_handle(cf_name).context("TAS CF")?;
     let lo = chicago_window(from)?.0.max(0) as u64 * NS_PER_SEC;
@@ -77,7 +78,7 @@ fn ric_spans(
             .is_some_and(|k| k.starts_with(&prefix) && key_ts_ns(k).is_ok_and(|t| t < hi))
         {
             let r = decode_cme_trade(it.value().context("first trade")?)?;
-            Some(event_time_ns(r.ts_utc_ns, r.exch_hms_ns)?)
+            Some(bar_time(r.ts_utc_ns, r.exch_hms_ns, basis)?)
         } else {
             None
         };
@@ -91,7 +92,7 @@ fn ric_spans(
             .is_some_and(|k| k.starts_with(&prefix) && key_ts_ns(k).is_ok_and(|t| t >= lo))
         {
             let r = decode_cme_trade(it.value().context("last trade")?)?;
-            Some(event_time_ns(r.ts_utc_ns, r.exch_hms_ns)?)
+            Some(bar_time(r.ts_utc_ns, r.exch_hms_ns, basis)?)
         } else {
             None
         };
@@ -123,6 +124,7 @@ pub(super) fn list_tas_jobs(
                 &product_cf_name(year as u16, spec.product)?,
                 args.start,
                 args.end,
+                args.trade_time_basis,
             )?;
             for (ric, first, last) in spans {
                 let id = contract_id(&ric, *spec)?;
@@ -144,10 +146,7 @@ pub(super) fn list_tas_jobs(
                 let mut day = trading_day(grid_first)?.max(args.start);
                 let last_day = trading_day(grid_last)?.min(args.end - Duration::days(1));
                 while day <= last_day {
-                    if !calendar
-                        .minute_segments_for(spec.schedule_group, day)?
-                        .is_empty()
-                    {
+                    if !calendar.segments_for_product(*spec, day)?.is_empty() {
                         selected
                             .entry((day, spec.product.into()))
                             .or_default()
@@ -155,6 +154,7 @@ pub(super) fn list_tas_jobs(
                                 contract_id: id.clone(),
                                 ric: ric.clone(),
                                 segments: vec![],
+                                status_segments: None,
                             });
                     }
                     day += Duration::days(1);
@@ -385,7 +385,28 @@ pub(super) fn apply_size_buckets(
     Ok(())
 }
 
-type ThresholdMap = BTreeMap<(String, i32, u32), SizeThresholds>;
+#[derive(Clone, Copy)]
+pub(super) struct VisibleThresholds {
+    pub values: SizeThresholds,
+    // Only publication mode proves this bound. Exchange-time samples retain
+    // the legacy behavior and must not claim source-time availability.
+    pub source_max_published_ns: Option<u64>,
+}
+
+impl VisibleThresholds {
+    pub fn for_open(self, open_ns: u64, basis: TimeBasis) -> Result<SizeThresholds> {
+        if basis == TimeBasis::Publication
+            && !self
+                .source_max_published_ns
+                .is_some_and(|latest| latest < open_ns)
+        {
+            bail!("size thresholds contain unknown or post-open source information");
+        }
+        Ok(self.values)
+    }
+}
+
+type ThresholdMap = BTreeMap<(String, i32, u32), VisibleThresholds>;
 
 pub(super) fn load_size_thresholds(
     db: &DB,
@@ -402,31 +423,54 @@ pub(super) fn load_size_thresholds(
         let mut target=args.start.with_day(1).context("month")?;
         while target<args.end {
             let source=previous_month_start(target)?;
-            let cf_name=product_cf_name(source.year() as u16,spec.product)?;
-            let cf=db.cf_handle(&cf_name).context("size source CF")?;
-            let spans=ric_spans(db,&cf_name,source,target)?;
             let mut samples=Vec::new();
-            for (ric,_,_) in spans {
+            let mut latest_sample_ns=0;
+            if let Some(history) = &calendar.history {
+                for ((product,day),record) in &history.days {
+                    if product != spec.product || *day < source || *day >= target { continue; }
+                    let segments=calendar.segments_for_product(*spec,*day)?;
+                    for contract in &record.contracts {
+                        let grid=RicGrid {contract_id:contract.contract_id.clone(),ric:contract.ric.clone(),segments:segments.clone(),status_segments:history.status_segments(spec.product,&contract.ric,&segments)?};
+                        for year in historical::source_years(&segments)? {
+                            let cf_name=product_cf_name(year as u16,spec.product)?;
+                            let cf=db.cf_handle(&cf_name).context("historical size source CF")?;
+                            for t in scan_trades(db,&cf,&grid,args.trade_time_basis)? {
+                                latest_sample_ns=latest_sample_ns.max(t.event_ns);
+                                samples.push(t.price*t.volume*multipliers[spec.product]);
+                            }
+                        }
+                    }
+                }
+            } else {
+              let cf_name=product_cf_name(source.year() as u16,spec.product)?;
+              let cf=db.cf_handle(&cf_name).context("size source CF")?;
+              let spans=ric_spans(db,&cf_name,source,target,args.trade_time_basis)?;
+              for (ric,_,_) in spans {
                 // Reject indices and non-outright instruments before sampling.
                 contract_id(&ric,*spec)?;
                 let mut day=source;
                 while day<target {
-                    let segments=calendar.minute_segments_for(spec.schedule_group,day)?;
+                    let segments=calendar.segments_for_product(*spec,day)?;
                     if !segments.is_empty() {
-                        let grid=RicGrid {contract_id:String::new(),ric:ric.clone(),segments};
-                        for t in scan_trades(db,&cf,&grid)? { samples.push(t.price*t.volume*multipliers[spec.product]); }
+                        let grid=RicGrid {contract_id:String::new(),ric:ric.clone(),segments,status_segments:None};
+                        for t in scan_trades(db,&cf,&grid,args.trade_time_basis)? {
+                            latest_sample_ns=latest_sample_ns.max(t.event_ns);
+                            samples.push(t.price*t.volume*multipliers[spec.product]);
+                        }
                     }
                     day+=Duration::days(1);
                 }
+              }
             }
             samples.sort_unstable_by(f64::total_cmp);
             let p50=linear_percentile(&samples,0.5).context("no previous-month trades; refuse incomplete size buckets")?;
             let p90=linear_percentile(&samples,0.9).context("previous-month P90")?;
             let thresholds=SizeThresholds::new(p50,p90)?;
-            let audit=serde_json::json!({"product":spec.product,"chicago_trading_month":target.format("%Y-%m").to_string(),"threshold_source_month":source.format("%Y-%m").to_string(),"threshold_method":"previous month linear P50/P90","threshold_sample_trades":samples.len(),"p50":p50,"p90":p90,"implied_in_total":true,"special_excluded":true});
+            let source_max_published_ns=(args.trade_time_basis==TimeBasis::Publication).then_some(latest_sample_ns);
+            let audit=serde_json::json!({"product":spec.product,"chicago_trading_month":target.format("%Y-%m").to_string(),"threshold_source_month":source.format("%Y-%m").to_string(),"threshold_method":"previous month linear P50/P90","threshold_sample_trades":samples.len(),"p50":p50,"p90":p90,"implied_in_total":true,"special_excluded":true,"trade_time_basis":args.trade_time_basis,"source_max_published_ns":source_max_published_ns});
             write_json_atomic(&args.output_root.join("_audit/size_buckets").join(spec.product).join(format!("{}.json",target.format("%Y%m"))),&audit)?;
             eprintln!("baseline_size_threshold product={} month={} source={} trades={} p50={p50} p90={p90}",spec.product,target,source,samples.len());
-            map.insert((spec.product.into(),target.year(),target.month()),thresholds);
+            map.insert((spec.product.into(),target.year(),target.month()),VisibleThresholds { values:thresholds, source_max_published_ns });
             target=target.checked_add_months(Months::new(1)).context("next month")?;
         }
         Ok(map)
@@ -441,6 +485,26 @@ pub(super) fn load_size_thresholds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn size_thresholds_must_be_known_before_open() -> Result<()> {
+        let values = SizeThresholds::new(1.0, 2.0)?;
+        for (latest, accepted) in [
+            (None, false),
+            (Some(99), true),
+            (Some(100), false),
+            (Some(101), false),
+        ] {
+            let threshold = VisibleThresholds {
+                values,
+                source_max_published_ns: latest,
+            };
+            assert_eq!(
+                threshold.for_open(100, TimeBasis::Publication).is_ok(),
+                accepted
+            );
+        }
+        Ok(())
+    }
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
@@ -541,6 +605,7 @@ mod tests {
                         contract_id: String::new(),
                         ric: row["ric"].as_str().unwrap().into(),
                         segments: vec![(ts, ts)],
+                        status_segments: None,
                     };
                     let books = scan_raw_books(&db, "s15:p:2024:ES", &grid)?;
                     let book = books.get(&ts).cloned().unwrap_or_default();
@@ -587,7 +652,7 @@ mod tests {
         let mut trade = cme_tas_replay::ali_h26_fixture();
         trade.ric = "AULZ26".into();
         trade.ts_utc_ns = ns(13);
-        trade.exch_hms_ns = MISSING_EXCH_HMS_NS;
+        trade.exch_hms_ns = cme_tas_replay::MISSING_EXCH_HMS_NS;
         tas.put_cf(
             &tas.cf_handle("p:2026:AUL").unwrap(),
             encode_all_key(KIND_CME_TRADE, "AULZ26", ns(13), 0, 0)?,
@@ -622,6 +687,7 @@ mod tests {
             }
         }
         let calendar = SessionCalendar {
+            history: None,
             by_group: BTreeMap::from([("interest_rates".into(), intervals)]),
             coverage: BTreeMap::from([(
                 "interest_rates".into(),

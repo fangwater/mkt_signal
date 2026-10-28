@@ -1,0 +1,2986 @@
+[
+  {
+    "name": "multi_day_holiday_frozen_volume",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": 15,
+            "volume_lower": 15,
+            "volume_upper": 15
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 7,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 0,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_appends_cannot_change_frozen_batch",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637969400000000000,
+        "exchange_hms_ns": 59400000000000,
+        "volume": 999,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637967299000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 999,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": 15,
+            "volume_lower": 15,
+            "volume_upper": 15
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 7,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 0,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "missing_scan_is_not_zero",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": false,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": null,
+            "volume_lower": null,
+            "volume_upper": null
+          },
+          {
+            "ric": "TYM2",
+            "volume": null,
+            "volume_lower": null,
+            "volume_upper": null
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": null,
+            "volume_upper": null
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 7,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 0,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": [
+        "source_scan_incomplete"
+      ]
+    }
+  },
+  {
+    "name": "future_exchange_clock_same_completed_segment",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637908200000000000,
+        "exchange_hms_ns": 59400000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": 24,
+            "volume_lower": 24,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 5,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 1
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "duplicate_source_key_rejected",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "overlap_rejected",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637859600000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "calendar_not_known",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1637967299000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "identity_not_known",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1637967299000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "identity_not_listed",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1637967299000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "reference_still_open",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637950500000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "freeze_not_before_decision",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967300000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "invalid_printable_volume",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 0,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "invalid_exchange_clock",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 86400000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": false
+  },
+  {
+    "name": "future_exchange_clock_crosses_completed_segments",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637859600000000000,
+        "exchange_hms_ns": 84600000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": 15,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_exchange_clock_published_during_break",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637879400000000000,
+        "exchange_hms_ns": 84600000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": 15,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_exchange_clock_at_segment_close",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637908200000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": 15,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_append_cannot_change_resolved_clock_batch",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637908200000000000,
+        "exchange_hms_ns": 59400000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637967299000000000,
+        "exchange_hms_ns": 59400000000000,
+        "volume": 999,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 7
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": 24,
+            "volume_lower": 24,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 5,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 1
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_clocks_both_before_reference",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637791200000000000,
+        "exchange_hms_ns": 81000000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": 15,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_clocks_both_after_reference",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950560000000000,
+        "exchange_hms_ns": 65820000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": 15,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "future_append_cannot_resolve_uncertain_quantity",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637859600000000000,
+        "exchange_hms_ns": 84600000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637967299000000000,
+        "exchange_hms_ns": 84600000000000,
+        "volume": 999,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 7
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1",
+      "TYM2"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": true,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": 23,
+            "volume_lower": 23,
+            "volume_upper": 23
+          },
+          {
+            "ric": "TYM2",
+            "volume": 0,
+            "volume_lower": 0,
+            "volume_upper": 0
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": 15,
+            "volume_upper": 24
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": []
+    }
+  },
+  {
+    "name": "incomplete_scan_has_no_usable_bounds",
+    "request": {
+      "product": "TY",
+      "trading_day": "2021-11-26",
+      "calendar_known_at_ns": 1635724800000000000,
+      "calendar_source": "SYNTHETIC algorithm fixture; not certified historical calendar",
+      "freeze_ns": 1637967299000000000,
+      "decision_ns": 1637967300000000000,
+      "segments": [
+        [
+          1637794800000000000,
+          1637863200000000000
+        ],
+        [
+          1637881200000000000,
+          1637950500000000000
+        ]
+      ],
+      "contracts": [
+        {
+          "ric": "TYZ1",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYH2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        },
+        {
+          "ric": "TYM2",
+          "listed_ns": 1635724800000000000,
+          "known_at_ns": 1635724800000000000,
+          "source": "SYNTHETIC listed identity fixture"
+        }
+      ]
+    },
+    "events": [
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637794861000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 10,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637881261000000000,
+        "exchange_hms_ns": 82860000000000,
+        "volume": 20,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637965800000000000,
+        "exchange_hms_ns": 54000000000000,
+        "volume": 5,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637870401000000000,
+        "exchange_hms_ns": 72000000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637950501000000000,
+        "exchange_hms_ns": 65700000000000,
+        "volume": 500,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYH2",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": null,
+        "volume": 3,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637920800000000000,
+        "exchange_hms_ns": 35999000000000,
+        "volume": 4294967295,
+        "price_e9": null,
+        "part": 1,
+        "seq": 0
+      },
+      {
+        "ric": "TYZ1",
+        "published_ns": 1637859600000000000,
+        "exchange_hms_ns": 84600000000000,
+        "volume": 9,
+        "price_e9": 100000000000,
+        "part": 1,
+        "seq": 0
+      }
+    ],
+    "completed_rics": [
+      "TYH2",
+      "TYZ1"
+    ],
+    "valid": true,
+    "expected": {
+      "batch": {
+        "product": "TY",
+        "trading_day": "2021-11-26",
+        "available_at_ns": 1637967299000000000,
+        "complete": false,
+        "source": "tas_printable",
+        "rows": [
+          {
+            "ric": "TYH2",
+            "volume": null,
+            "volume_lower": null,
+            "volume_upper": null
+          },
+          {
+            "ric": "TYM2",
+            "volume": null,
+            "volume_lower": null,
+            "volume_upper": null
+          },
+          {
+            "ric": "TYZ1",
+            "volume": null,
+            "volume_lower": null,
+            "volume_upper": null
+          }
+        ]
+      },
+      "audit": {
+        "source_start_ns": 1637751600000000000,
+        "source_cutoff_ns": 1637967299000000000,
+        "source_max_published_ns": 1637965800000000000,
+        "inspected": 8,
+        "included": 4,
+        "outside_session": 2,
+        "invalid_price": 1,
+        "missing_exchange_time": 1,
+        "future_exchange_time": 1,
+        "future_exchange_same_session": 0
+      },
+      "blocked_reasons": [
+        "source_scan_incomplete"
+      ]
+    }
+  }
+]

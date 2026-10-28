@@ -2,6 +2,10 @@
 
 pub mod backtest_1s;
 pub mod baseline_1min;
+pub mod causal_roll;
+pub mod causal_volumes;
+pub mod daily_inventory;
+pub mod history_catalog;
 pub mod ll2_1min;
 pub mod ll2_shard;
 pub mod ll2_source;
@@ -9,7 +13,9 @@ pub mod product;
 pub mod raw_ll2;
 pub mod raw_ll2_io;
 pub mod raw_ll2_stage;
+pub mod session_status;
 pub mod shard;
+pub mod trade_timing;
 pub mod ylabel_1min;
 
 use anyhow::{anyhow, bail, Context, Result};

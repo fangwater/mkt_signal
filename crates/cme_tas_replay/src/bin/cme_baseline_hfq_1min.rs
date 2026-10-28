@@ -39,6 +39,9 @@ const BASE_PRICE_COLUMNS: &[&str] = &[
 #[derive(Parser, Debug)]
 #[command(name = "cme_baseline_hfq_1min")]
 struct Args {
+    /// Read day-local offset_e9/segment_id; never apply future roll gaps.
+    #[arg(long)]
+    causal_roll: bool,
     #[arg(long, default_value = DEFAULT_INPUT)]
     input_root: PathBuf,
     #[arg(long, default_value = DEFAULT_ROLL)]
@@ -64,6 +67,46 @@ struct ProductSpec {
 }
 
 const PRODUCTS: &[ProductSpec] = &[
+    ProductSpec {
+        product: "URO",
+        exchange: "CME",
+    },
+    ProductSpec {
+        product: "JY",
+        exchange: "CME",
+    },
+    ProductSpec {
+        product: "HG",
+        exchange: "COMEX",
+    },
+    ProductSpec {
+        product: "SI",
+        exchange: "COMEX",
+    },
+    ProductSpec {
+        product: "TU",
+        exchange: "CBOT",
+    },
+    ProductSpec {
+        product: "FV",
+        exchange: "CBOT",
+    },
+    ProductSpec {
+        product: "TY",
+        exchange: "CBOT",
+    },
+    ProductSpec {
+        product: "TN",
+        exchange: "CBOT",
+    },
+    ProductSpec {
+        product: "US",
+        exchange: "CBOT",
+    },
+    ProductSpec {
+        product: "AUL",
+        exchange: "CBOT",
+    },
     ProductSpec {
         product: "ES",
         exchange: "CME",
@@ -117,6 +160,7 @@ struct Job {
     day: NaiveDate,
     ric: String,
     gap: f64,
+    causal: Option<cme_roll_metadata::Day>,
     input: PathBuf,
     output: PathBuf,
 }
@@ -231,11 +275,20 @@ fn list_jobs(args: &Args) -> Result<(Vec<Job>, Vec<CoverageRow>)> {
     {
         bail!("refusing unsafe HFQ output {}", args.output_root.display());
     }
+    if args.causal_roll {
+        if args.output_root == Path::new(DEFAULT_OUTPUT) {
+            bail!("causal HFQ requires a separate --output-root");
+        }
+        return list_causal_jobs(args);
+    }
     let mut jobs = Vec::new();
     let mut coverage = Vec::new();
     for requested in &args.products {
         let product = requested.trim().to_ascii_uppercase();
         let spec = product_spec(&product)?;
+        if cme_roll_metadata::exchange(&product).is_some() {
+            bail!("new products require --causal-roll");
+        }
         let metadata = load_product_inputs(&args.roll_root, spec)?;
         let dir = args.input_root.join(spec.exchange).join(spec.product);
         for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
@@ -291,6 +344,7 @@ fn list_jobs(args: &Args) -> Result<(Vec<Job>, Vec<CoverageRow>)> {
                 day,
                 ric: ric.clone(),
                 gap,
+                causal: None,
                 input,
                 output,
             });
@@ -306,6 +360,71 @@ fn list_jobs(args: &Args) -> Result<(Vec<Job>, Vec<CoverageRow>)> {
             .cmp(&right.trading_day)
             .then(left.product.cmp(&right.product))
     });
+    Ok((jobs, coverage))
+}
+
+fn list_causal_jobs(args: &Args) -> Result<(Vec<Job>, Vec<CoverageRow>)> {
+    let mut jobs = Vec::new();
+    let mut coverage = Vec::new();
+    let mut products = std::collections::BTreeSet::new();
+    for product in &args.products {
+        let product = product.trim().to_ascii_uppercase();
+        if !products.insert(product.clone()) {
+            bail!("duplicate product {product}");
+        }
+        let spec = product_spec(&product)?;
+        let dir = Path::new(spec.exchange).join(&product);
+        let daily = cme_roll_metadata::read_daily(
+            &args.roll_root.join(&dir).join("dominant.csv"),
+            &product,
+        )?;
+        let mut selected = 0;
+        for (day, meta) in daily.range(args.start..args.end) {
+            let name = format!("{}.parquet", day.format("%Y%m%d"));
+            let input = args.input_root.join(&dir).join(&name);
+            let output = args.output_root.join(&dir).join(&name);
+            if output.exists() && !args.overwrite {
+                bail!("output exists: {}", output.display());
+            }
+            if meta.selected() {
+                if !input.is_file() {
+                    bail!("missing required causal baseline {}", input.display());
+                }
+                jobs.push(Job {
+                    product: product.clone(),
+                    day: *day,
+                    ric: meta.ric.clone(),
+                    gap: meta.offset(),
+                    causal: Some(meta.clone()),
+                    input: input.clone(),
+                    output: output.clone(),
+                });
+                selected += 1;
+            } else if output.exists() {
+                bail!("stale output on exit_only day: {}", output.display());
+            }
+            coverage.push(CoverageRow {
+                exchange: spec.exchange.to_owned(),
+                product: product.clone(),
+                trading_day: day.to_string(),
+                status: if meta.selected() {
+                    "ready"
+                } else {
+                    "exit_only"
+                }
+                .to_owned(),
+                ric: meta.ric.clone(),
+                gap: meta.selected().then(|| meta.offset()),
+                input_file: input.display().to_string(),
+                output_file: output.display().to_string(),
+            });
+        }
+        if selected == 0 {
+            bail!("no selected causal days for {product} in requested range");
+        }
+    }
+    jobs.sort_by_key(|j| (j.day, j.product.clone()));
+    coverage.sort_by_key(|r| (r.trading_day.clone(), r.product.clone()));
     Ok((jobs, coverage))
 }
 
@@ -345,6 +464,28 @@ fn apply_hfq(mut df: DataFrame, job: &Job) -> Result<DataFrame> {
             job.ric
         );
     }
+    if let Some(meta) = &job.causal {
+        if df
+            .column("contract_id")?
+            .str()?
+            .into_iter()
+            .any(|v| v != Some(meta.contract_id.as_str()))
+        {
+            bail!(
+                "causal source contract_id mismatch for {} {}",
+                job.product,
+                job.day
+            );
+        }
+        df.with_column(Series::new(
+            "segment_id".into(),
+            vec![meta.segment_id; df.height()],
+        ))?;
+        df.with_column(Series::new(
+            "offset_e9".into(),
+            vec![meta.offset_e9; df.height()],
+        ))?;
+    }
     df.replace(
         "contract_id",
         Series::new("contract_id".into(), vec![job.product.clone(); df.height()]),
@@ -363,6 +504,18 @@ fn apply_hfq(mut df: DataFrame, job: &Job) -> Result<DataFrame> {
     let mut previous = None;
     for index in 0..df.height() {
         let ts = timestamps.get(index).context("null HFQ ts")?;
+        if let Some(meta) = &job.causal {
+            if ts
+                .checked_mul(1_000_000_000)
+                .is_none_or(|ns| ns < meta.effective_ns)
+            {
+                bail!(
+                    "HFQ row precedes causal decision effectiveness {} {}",
+                    job.product,
+                    job.day
+                );
+            }
+        }
         if previous.is_some_and(|value| ts <= value) {
             bail!("{} {} timestamps are not increasing", job.product, job.day);
         }

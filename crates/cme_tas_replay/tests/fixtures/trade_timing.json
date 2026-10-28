@@ -1,0 +1,54 @@
+[
+  {
+    "published_ns": 1764044430849697706,
+    "exchange_hms_ns": 58963000000000,
+    "volume": 5000,
+    "publication_ns": 1764044430849697706,
+    "exchange_ns": 1764001363000000000,
+    "audit": {
+      "later_minute": 1,
+      "later_minute_volume": 5000,
+      "earlier_minute": 0,
+      "missing_exchange_time": 0
+    }
+  },
+  {
+    "published_ns": 1764001380001000000,
+    "exchange_hms_ns": 58979999000000,
+    "volume": 2,
+    "publication_ns": 1764001380001000000,
+    "exchange_ns": 1764001379999000000,
+    "audit": {
+      "later_minute": 1,
+      "later_minute_volume": 2,
+      "earlier_minute": 0,
+      "missing_exchange_time": 0
+    }
+  },
+  {
+    "published_ns": 1719002764565332653,
+    "exchange_hms_ns": 28346000000000,
+    "volume": 10,
+    "publication_ns": 1719002764565332653,
+    "exchange_ns": 1719042746000000000,
+    "audit": {
+      "later_minute": 0,
+      "later_minute_volume": 0,
+      "earlier_minute": 1,
+      "missing_exchange_time": 0
+    }
+  },
+  {
+    "published_ns": 1764001380000000000,
+    "exchange_hms_ns": null,
+    "volume": 3,
+    "publication_ns": 1764001380000000000,
+    "exchange_ns": 1764001380000000000,
+    "audit": {
+      "later_minute": 0,
+      "later_minute_volume": 0,
+      "earlier_minute": 0,
+      "missing_exchange_time": 1
+    }
+  }
+]
