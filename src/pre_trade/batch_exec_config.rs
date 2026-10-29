@@ -240,7 +240,7 @@ impl BatchExecLeverageInitState {
         if self.scope.rapidx_portfolio_id.is_some()
             || matches!(
                 self.scope.venue.as_str(),
-                "bybit-futures" | "bitget-futures"
+                "bybit-futures" | "bitget-futures" | "okex-futures"
             )
         {
             BTreeSet::new()
@@ -964,12 +964,17 @@ impl BatchExecConfigReloader {
             )
             .await
             {
-                Ok(()) => {
+                Ok(crate::pre_trade::leverage_guard::LeverageInitOutcome::Set) => {
                     info!(
                         "BatchExec default leverage set: symbol={} venue={:?} leverage={}",
                         symbol, self.venue, self.leverage_init.leverage
                     );
                     newly_initialized.insert(symbol.clone());
+                    self.leverage_confirmed_symbols.insert(symbol.clone());
+                }
+                Ok(crate::pre_trade::leverage_guard::LeverageInitOutcome::PortfolioMargin) => {
+                    // Applicable account checks passed, but no fixed leverage
+                    // was set. Cache only for this run; do not persist a 5x marker.
                     self.leverage_confirmed_symbols.insert(symbol.clone());
                 }
                 Err(err) => {
@@ -3066,15 +3071,17 @@ mod tests {
     }
 
     #[test]
-    fn rapidx_audit_marker_never_confirms_leverage_after_restart() {
+    fn okx_and_rapidx_audit_markers_require_confirmation_after_restart() {
         let mut state = BatchExecLeverageInitState::empty();
         state.symbols.insert("BTCUSDT".into());
         state.scope = BatchExecLeverageInitScope {
-            venue: "okex-futures".into(),
+            venue: "binance-futures".into(),
             backend: "native".into(),
             rapidx_portfolio_id: None,
         };
         assert_eq!(state.confirmed_on_startup(), state.symbols);
+        state.scope.venue = "okex-futures".into();
+        assert!(state.confirmed_on_startup().is_empty());
         state.scope.backend = "ltp".into();
         state.scope.rapidx_portfolio_id = Some("123".into());
         assert!(state.confirmed_on_startup().is_empty());

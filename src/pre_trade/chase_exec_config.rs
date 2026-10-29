@@ -239,7 +239,7 @@ impl ChaseExecLeverageInitState {
         if self.scope.rapidx_portfolio_id.is_some()
             || matches!(
                 self.scope.venue.as_str(),
-                "bybit-futures" | "bitget-futures"
+                "bybit-futures" | "bitget-futures" | "okex-futures"
             )
         {
             BTreeSet::new()
@@ -828,12 +828,17 @@ impl ChaseExecConfigReloader {
             )
             .await
             {
-                Ok(()) => {
+                Ok(crate::pre_trade::leverage_guard::LeverageInitOutcome::Set) => {
                     info!(
                         "ChaseExec default leverage set: symbol={} venue={:?} leverage={}",
                         symbol, self.venue, self.leverage_init.leverage
                     );
                     newly_initialized.insert(symbol.clone());
+                    self.leverage_confirmed_symbols.insert(symbol.clone());
+                }
+                Ok(crate::pre_trade::leverage_guard::LeverageInitOutcome::PortfolioMargin) => {
+                    // Recheck account mode after restart instead of recording
+                    // a fixed leverage that is inapplicable to portfolio margin.
                     self.leverage_confirmed_symbols.insert(symbol.clone());
                 }
                 Err(err) => {
@@ -2350,6 +2355,18 @@ mod tests {
         let applied = overrides["ETHUSDT"].apply_to(&value.config);
         assert_eq!(applied.batch_floor_usdt, 250.0);
         assert_eq!(applied.max_open_batches, 2);
+    }
+
+    #[test]
+    fn native_okx_rechecks_account_mode_instead_of_trusting_leverage_marker() {
+        let mut state =
+            ChaseExecLeverageInitState::empty().with_scope(ChaseExecLeverageInitScope {
+                venue: "okex-futures".into(),
+                backend: "native".into(),
+                rapidx_portfolio_id: None,
+            });
+        state.symbols.insert("BTCUSDT".into());
+        assert!(state.confirmed_on_startup().is_empty());
     }
 
     #[test]

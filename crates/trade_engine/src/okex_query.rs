@@ -8,7 +8,7 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-const OKEX_REST_BASE: &str = "https://www.okx.com";
+pub const OKEX_REST_BASE: &str = "https://www.okx.com";
 
 fn build_okex_sign(timestamp: &str, method: &str, path: &str, body: &str, secret: &str) -> String {
     let payload = format!("{}{}{}{}", timestamp, method, path, body);
@@ -21,6 +21,15 @@ fn build_okex_sign(timestamp: &str, method: &str, path: &str, body: &str, secret
 pub async fn okex_rest_get(
     client: &Client,
     credentials: &OkexCredentials,
+    path_with_query: &str,
+) -> Result<(u16, String)> {
+    okex_rest_get_with_base(client, credentials, OKEX_REST_BASE, path_with_query).await
+}
+
+pub async fn okex_rest_get_with_base(
+    client: &Client,
+    credentials: &OkexCredentials,
+    base_url: &str,
     path_with_query: &str,
 ) -> Result<(u16, String)> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -39,7 +48,7 @@ pub async fn okex_rest_get(
     headers.insert("OK-ACCESS-PASSPHRASE", credentials.passphrase.parse()?);
     headers.insert(reqwest::header::CONTENT_TYPE, "application/json".parse()?);
 
-    let url = format!("{}{}", OKEX_REST_BASE, path_with_query);
+    let url = format!("{}{}", base_url.trim_end_matches('/'), path_with_query);
     let resp = client.get(&url).headers(headers).send().await?;
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
