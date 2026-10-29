@@ -1,6 +1,11 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-27 09:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-28，JP RX01 / `binance_exec_trade06` 交易及 Exec 进程已停止，Spread
+signal 已停止并关闭发布；账户已市价清仓，订单归档并移出原数据目录。
+`local_ips` 和网络配置未改，清仓与账户只读核查均绑定原地址 `172.31.35.228`；
+该地址仍由其他运行中的环境共享。
 
 2026-10-27，部署 `gate_fr_arb04`（`GateAM36_LTP`）和
 `gate_fr_arb05`（`GateAM05_LTP`），两环境的 `trade_engine.toml` 均预配置
@@ -426,7 +431,7 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
-binance-cta-spread-rx01      172.31.35.228                  配置服务、因子及signal运行，18币/15因子/153组合就绪，发布开启，Exec06在线；Kafka 默认出口
+binance-cta-spread-rx01      172.31.35.228                  因子及页面辅助进程运行；signal停止、发布关闭，Exec06已退役；Kafka 默认出口
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
@@ -453,7 +458,7 @@ binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
 binance_exec_rx04_5m05       172.31.35.228                  RX04 5min，复用05页面/端口，follow virtual05倍率1，lgq_grid_prep；六个Exec进程在线
-binance_exec_trade06         172.31.35.228                  RX01 RapidX，在线，follow virtual03/cta_spread_rx01，ctaker；默认4倍（BEL/ZIL上限3倍）
+binance_exec_trade06         172.31.35.228                  RX01 RapidX，交易与Exec进程已停止；清仓并归档，Manager已移除
 binance_exec_trade07         172.31.35.228                  RX03 RapidX，永续在线，follow virtual04/cta_perp_rx03，ctaker
 binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生STANDARD USD-M多资产/单向，在线Grid，follow virtual02/RX02，倍率1
 ```

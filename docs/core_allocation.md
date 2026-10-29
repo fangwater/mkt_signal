@@ -1,7 +1,16 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-27 09:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-28 按操作员要求退役 JP RX01 / `binance_exec_trade06`：Spread signal
+已停止并关闭发布，Exec pre-trade、trade_engine、账户监控、持久化、Viz 和 Config
+均已停止；专用 Spread 因子发布器及页面辅助进程保留。以 RapidX 市价单清仓，
+98 笔订单对应 416 条 taker 成交，最终永续、负债、普通及条件挂单均为零；
+55 种现货碎额均小于数量步长，合计约 3.80 USDT，USDT 余额 19007.33043254。
+Manager 已解除跟随、停止并删除 65 条绑定，主机配置已移除该来源。最终订单库、
+账户事件和清仓成交归档及校验文件在
+`~/crypto_cta_manager/archives/rx01_retire_20261028/`；原数据目录已移至其中。
 
 2026-10-27，新增 JP `gate_fr_arb04` / `gate_fr_arb05`，分别对应
 `GateAM36_LTP` / `GateAM05_LTP`。由本机已同步的 `arbmm` `774352f5`
