@@ -541,7 +541,7 @@ def exec_markets(venue: str) -> List[str]:
     selected = overrides.get(venue.split("-", 1)[0], overrides.get("*", selected))
     if venue not in ("binance-futures", "okex-futures") and selected != "native":
         raise ValueError("This Exec market requires its native backend")
-    if selected == "ltp":
+    if selected == "ltp" or venue == "okex-futures":
         return [venue, "okex-margin" if venue == "okex-futures" else "binance-margin"]
     return [venue]
 
@@ -553,7 +553,7 @@ def validate_grid_account_config(venue: str, config: Dict[str, Any]) -> None:
         return
     markets = exec_markets(venue)
     if len(markets) == 2:
-        return  # RapidX; exec_markets validates the backend/market pair.
+        return  # RapidX or native OKX unified; backend/market pair validated above.
     if venue in ("okex-futures", "bybit-futures", "bitget-futures"):
         return  # Native unified-account startup gates are enforced by Exec.
     binance_mode = os.environ.get("BINANCE_ACCOUNT_MODE", "").strip().upper()
@@ -612,7 +612,7 @@ class ExecConfigStore:
         else:
             selected = f"{exchange}-margin"
         if selected not in self.markets:
-            raise ValueError(f"symbol {symbol} does not belong to Exec market {self.venue}; cash targets require RapidX")
+            raise ValueError(f"symbol {symbol} does not belong to Exec market {self.venue}; cash targets require RapidX or native OKX unified Exec")
         return selected
 
     @staticmethod

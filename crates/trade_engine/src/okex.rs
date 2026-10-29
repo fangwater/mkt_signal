@@ -1015,6 +1015,43 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn unified_spot_orders_use_base_quantity_and_cross_mode() {
+        for side in [Side::Buy, Side::Sell] {
+            for order_type in [
+                OkexOrderType::Market,
+                OkexOrderType::Limit,
+                OkexOrderType::PostOnly,
+                OkexOrderType::Ioc,
+            ] {
+                let params = OkexNewOrderParams {
+                    side,
+                    order_type,
+                    reduce_only: false,
+                    quantity_qv: QuantizedValue::from_decimal(0.125).unwrap(),
+                    price_qv: QuantizedValue::from_decimal(123.45).unwrap(),
+                    symbol: "BTC-USDT".into(),
+                    client_order_id: 42,
+                };
+                let req = OkexNewOrderRequest::create_margin(1, 42, params).unwrap();
+                let payload: Value =
+                    serde_json::from_str(&req.to_ws_json_string(123456, 99).unwrap()).unwrap();
+                let arg = &payload["args"][0];
+                assert_eq!(arg["sz"], "0.125");
+                assert_eq!(arg["tdMode"], "cross");
+                assert!(arg.get("reduceOnly").is_none());
+                if order_type == OkexOrderType::Market {
+                    assert!(arg.get("px").is_none());
+                    if side == Side::Buy {
+                        assert_eq!(arg["tgtCcy"], "base_ccy");
+                    }
+                } else {
+                    assert_eq!(arg["px"], "123.45");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn okex_new_order_ws_payload_uses_inst_id_code_only() {
         let params = OkexNewOrderParams {
             side: Side::Buy,

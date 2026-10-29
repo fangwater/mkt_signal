@@ -8,7 +8,8 @@ pub fn runtime_venues(venue: TradingVenue, backend: ExecBackend) -> Vec<TradingV
         (TradingVenue::BinanceFutures, ExecBackend::Ltp) => {
             vec![venue, TradingVenue::BinanceMargin]
         }
-        (TradingVenue::OkexFutures, ExecBackend::Ltp) => {
+        // Native OKX unified accounts share collateral across cash and SWAP.
+        (TradingVenue::OkexFutures, _) => {
             vec![venue, TradingVenue::OkexMargin]
         }
         _ => vec![venue],
@@ -117,6 +118,22 @@ mod tests {
             target_symbol(TradingVenue::BinanceFutures, "BTCUSDT"),
             "BTCUSDT"
         );
+    }
+
+    #[test]
+    fn native_okx_owns_cash_and_perpetuals_with_distinct_symbols() {
+        assert_eq!(
+            runtime_venues(TradingVenue::OkexFutures, ExecBackend::Native),
+            vec![TradingVenue::OkexFutures, TradingVenue::OkexMargin]
+        );
+        assert_eq!(runtime_symbol(TradingVenue::OkexMargin, "BTC"), "BTCUSDT");
+        assert_eq!(target_symbol(TradingVenue::OkexMargin, "BTCUSDT"), "BTC");
+        assert_eq!(
+            target_symbol(TradingVenue::OkexFutures, "BTCUSDT"),
+            "BTCUSDT"
+        );
+        assert!(validate_symbol(TradingVenue::OkexMargin, "BTCUSDT").is_ok());
+        assert!(validate_symbol(TradingVenue::OkexMargin, "BTCUSDC").is_err());
     }
 
     #[test]

@@ -14,6 +14,18 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ExecConfigServerSymbolTests(unittest.TestCase):
+    def test_native_okx_unified_scopes_and_config_symbol_routing(self) -> None:
+        with patch.dict(MODULE.os.environ, {"TRADE_ENGINE_EXEC_BACKEND": "native"}, clear=True):
+            self.assertEqual(MODULE.exec_markets("okex-futures"), ["okex-futures", "okex-margin"])
+            self.assertEqual(MODULE.exec_markets("binance-futures"), ["binance-futures"])
+            store = object.__new__(MODULE.ExecConfigStore)
+            store.venue = "okex-futures"
+            store.markets = MODULE.exec_markets(store.venue)
+            self.assertEqual(store._symbol_market("BTC"), "okex-margin")
+            self.assertEqual(store._symbol_market("BTCUSDT"), "okex-futures")
+            with self.assertRaises(ValueError):
+                store._symbol_market("BTCUSD")
+
     def test_grid_parameters_roundtrip_and_symbol_overrides(self) -> None:
         raw = {**MODULE.DEFAULT_CONFIG, "algorithm": "grid", "targets": {"BTC": 1.0},
                "grid": {"spot": {"orders_per_batch": 2, "maker_timeout_ms": 2000, "vol_multiplier": 0.5, "max_maker_requotes": None},
@@ -53,10 +65,10 @@ class ExecConfigServerSymbolTests(unittest.TestCase):
 
     def test_grid_account_gate_covers_base_and_symbol_selected_algorithms(self) -> None:
         for config in ({"algorithm": "grid"}, {"algorithm": "batch", "symbol_overrides": {"BTCUSDT": {"algorithm": "grid"}}}):
-            for env in ({}, {"BINANCE_ACCOUNT_MODE": "STANDARD"}):
+            for env in ({}, {"BINANCE_ACCOUNT_MODE": "invalid"}):
                 with patch.dict(MODULE.os.environ, env, clear=True), self.assertRaises(ValueError):
                     MODULE.validate_grid_account_config("binance-futures", config)
-            for env in ({"BINANCE_ACCOUNT_MODE": "UNIFIED"}, {"TRADE_ENGINE_EXEC_BACKEND": "rapidx"}, {"TRADE_ENGINE_EXEC_BACKEND_MAP": "binance=rapidx"}):
+            for env in ({"BINANCE_ACCOUNT_MODE": "STANDARD"}, {"BINANCE_ACCOUNT_MODE": "UNIFIED"}, {"TRADE_ENGINE_EXEC_BACKEND": "rapidx"}, {"TRADE_ENGINE_EXEC_BACKEND_MAP": "binance=rapidx"}):
                 with patch.dict(MODULE.os.environ, env, clear=True):
                     MODULE.validate_grid_account_config("binance-futures", config)
             with patch.dict(MODULE.os.environ, {}, clear=True):

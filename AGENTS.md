@@ -134,8 +134,9 @@ Never copy passwords, API keys, or values from the remote `env.sh` into this fil
 
 ## Exec Delisting And Forced Close
 
-Native Exec deployments own one configured market. RapidX Binance/OKX linear
-Execs also own that exchange's USDT cash market: bare targets such as `BTC`
+Native Exec deployments normally own one configured market. Native OKX unified
+Execs and RapidX Binance/OKX linear Execs also own that exchange's USDT cash market:
+bare targets such as `BTC`
 mean spot, while `BTCUSDT` / `BTCUSDC` mean perpetuals. Cash and perpetual
 strategy indexes, rules and position ledgers remain venue-scoped; FIFO is
 computed per market before aggregation. `binance-coin-futures` accepts only USD
@@ -144,7 +145,10 @@ environment directories, namespaces, Redis prefixes, persistence stores and
 Viz/Config listeners for each market. Exec Viz requires an explicit configured
 venue and uses independently maintained USD-M and COIN-M frontends. Shared
 Portfolio Margin collateral/risk remains account-wide, but order/position streams
-and trade/query submission must stay within the deployment's market.
+and trade/query submission must stay within the deployment's owned markets.
+Native OKX cash uses cross SPOT with base-quantity targets and the existing
+`okex-margin` venue scope; borrowing follows the account's auto-loan setting.
+Do not run another strategy against the same account's cash inventory.
 
 Manager is the sole owner of venue order-rule refresh for Exec and publishes one
 complete current cache every 60 seconds. `exec-pre-trade` hot-reloads that cache

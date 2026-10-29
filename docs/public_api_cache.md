@@ -1,6 +1,11 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-13 UTC
+最后更新：2026-10-29 UTC
+
+2026-10-29 审核原生 OKX 统一账户 Exec 的现货接入：CTA Manager 每 60 秒直连官方
+`GET /api/v5/public/instruments?instType=SPOT`，为 `okex-margin` 发布完整 USDT
+现货规则；交易引擎沿用同一公共端点获取 WS `instIdCode`。不新增本机缓存代理或
+Nginx 白名单。私有账户查询、挂单查询及撤单继续签名直连并绑定账户交易源 IP。
 
 2026-10-13 审核一次性运维工具 `scripts/neutralize_rapidx_binance.py`：
 Binance 实时 `/fapi/v1/depth` 直连官方 HTTPS，不进入缓存；RapidX 的所有

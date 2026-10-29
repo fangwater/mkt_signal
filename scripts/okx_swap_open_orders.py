@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query OKX SWAP open orders and optionally cancel them.
+"""Query OKX SWAP or unified-account SPOT open orders and optionally cancel them.
 
 Defaults to REAL trading. Add --simulate for paper.
 
@@ -81,7 +81,8 @@ def request_okx_private(
     if simulated:
         req.add_header("x-simulated-trading", "1")
 
-    opener = urllib.request.build_opener()
+    # Private account operations must not inherit a process-level HTTP proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     local_ip = os.environ.get("OKX_LOCAL_IP", "").strip()
     if local_ip and local_ip not in {"0.0.0.0", "::"}:
         import http.client
@@ -95,7 +96,7 @@ def request_okx_private(
                     req_inner,
                 )
 
-        opener = urllib.request.build_opener(SourceAddressHTTPSHandler())
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SourceAddressHTTPSHandler())
 
     try:
         with opener.open(req, timeout=timeout) as resp:
@@ -135,11 +136,13 @@ def parse_okx_body(body_text: str) -> Tuple[bool, str, str, List[Dict[str, Any]]
         parsed = json.loads(body_text)
     except json.JSONDecodeError:
         return False, "non-json", "", []
+    if not isinstance(parsed, dict):
+        return False, "invalid-object", "", []
     code = str(parsed.get("code", "")).strip()
     msg = str(parsed.get("msg", "")).strip()
     data = parsed.get("data")
-    if not isinstance(data, list):
-        data = []
+    if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+        return False, code, "invalid-data", []
     return code == "0", code, msg, data
 
 
@@ -153,8 +156,9 @@ def fetch_open_orders(
     after: Optional[str],
     timeout: int,
     simulated: bool,
+    inst_type: str = "SWAP",
 ) -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
-    params: Dict[str, Any] = {"instType": "SWAP", "limit": str(limit)}
+    params: Dict[str, Any] = {"instType": inst_type, "limit": str(limit)}
     if inst_id:
         params["instId"] = inst_id
     if after:
@@ -172,7 +176,7 @@ def fetch_open_orders(
         simulated=simulated,
     )
     ok, code, msg, data = parse_okx_body(body_text)
-    if not ok:
+    if not ok or not 200 <= status < 300:
         print(
             f"Query failed: http={status} code={code} msg={msg} body={body_text}",
             file=sys.stderr,
@@ -259,10 +263,12 @@ def cancel_orders(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Query OKX SWAP open orders and optionally cancel them",
+        description="Query OKX SWAP or unified-account SPOT open orders and optionally cancel them",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--inst-id", dest="inst_id", help="Optional instId filter, e.g. BTC-USDT-SWAP")
+    parser.add_argument("--inst-type", choices=("SWAP", "SPOT"), default="SWAP")
+    parser.add_argument("--quote-ccy", choices=("USDT",), help="Restrict cancellation to this quote currency")
     parser.add_argument("--limit", type=int, default=100, help="Orders per request (1-100)")
     parser.add_argument("--fetch-all", action="store_true", help="Paginate until no more orders")
     parser.add_argument("--max-pages", type=int, default=10, help="Max pages when using --fetch-all")
@@ -273,20 +279,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    if args.limit < 1 or args.limit > 100:
-        print("ERROR: --limit must be between 1 and 100", file=sys.stderr)
-        sys.exit(1)
-
-    api_key, api_secret, passphrase = load_credentials()
+def collect_open_orders(args, api_key, api_secret, passphrase) -> List[Dict[str, Any]]:
     base_url = args.base_url.rstrip("/")
-    simulated = args.simulate
-
     inst_id = args.inst_id.strip().upper() if args.inst_id else None
-
     orders: List[Dict[str, Any]] = []
     after = None
+    seen_cursors = set()
     pages = 0
     while True:
         batch, next_after, ok = fetch_open_orders(
@@ -298,19 +296,42 @@ def main() -> None:
             limit=args.limit,
             after=after,
             timeout=args.timeout,
-            simulated=simulated,
+            simulated=args.simulate,
+            inst_type=args.inst_type,
         )
         if not ok:
-            sys.exit(2)
-        orders.extend(batch)
+            raise RuntimeError("open-order query failed")
+        for order in batch:
+            inst = order.get("instId")
+            if not isinstance(inst, str) or not inst or not order.get("ordId"):
+                raise RuntimeError("open-order query omitted order identity")
+            pair = inst.removesuffix("-SWAP") if args.inst_type == "SWAP" else inst
+            if not args.quote_ccy or pair.endswith(f"-{args.quote_ccy}"):
+                orders.append(order)
         pages += 1
         if not args.fetch_all or not batch:
             break
-        if next_after is None or next_after == after:
-            break
+        if next_after is None or next_after in seen_cursors:
+            raise RuntimeError("open-order pagination did not advance")
         if args.max_pages and pages >= args.max_pages:
-            break
+            raise RuntimeError("open-order pagination reached --max-pages before completion")
+        seen_cursors.add(next_after)
         after = next_after
+    return orders
+
+
+def main() -> None:
+    args = parse_args()
+    if args.limit < 1 or args.limit > 100 or args.max_pages < 0:
+        print("ERROR: --limit must be 1-100 and --max-pages must be nonnegative", file=sys.stderr)
+        sys.exit(1)
+
+    api_key, api_secret, passphrase = load_credentials()
+    try:
+        orders = collect_open_orders(args, api_key, api_secret, passphrase)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     print(f"Open orders count: {len(orders)}")
     for order in orders:
@@ -325,15 +346,28 @@ def main() -> None:
         return
 
     if not cancel_orders(
-        base_url=base_url,
+        base_url=args.base_url.rstrip("/"),
         api_key=api_key,
         api_secret=api_secret,
         passphrase=passphrase,
         orders=orders,
         timeout=args.timeout,
-        simulated=simulated,
+        simulated=args.simulate,
     ):
         sys.exit(3)
+    # A successful cancel acknowledgement is not proof that every order left
+    # the book. Re-read the complete selected market before allowing startup.
+    args.fetch_all = True
+    args.max_pages = 0
+    try:
+        remaining = collect_open_orders(args, api_key, api_secret, passphrase)
+    except RuntimeError as exc:
+        print(f"ERROR: cancellation verification failed: {exc}", file=sys.stderr)
+        sys.exit(4)
+    if remaining:
+        print(f"ERROR: {len(remaining)} open orders remain after cancellation", file=sys.stderr)
+        sys.exit(4)
+    print("Verified selected market has no open orders.")
 
 
 if __name__ == "__main__":

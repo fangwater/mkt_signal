@@ -66,7 +66,7 @@ use trade_signal::ArbMode;
 #[command(name = env!("CARGO_BIN_NAME"))]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
-    /// The only execution market managed by this Exec deployment.
+    /// The configured execution market (OKX unified Exec also owns USDT cash).
     #[arg(long, value_enum)]
     venue: Option<ExecVenue>,
 
@@ -550,20 +550,24 @@ async fn cancel_all_orders_on_startup(
             ),
             None => anyhow::bail!("BINANCE_ACCOUNT_MODE is required for binance-coin-futures"),
         },
-        TradingVenue::OkexFutures => (
+        TradingVenue::OkexFutures | TradingVenue::OkexMargin => (
             "okx_swap_open_orders.py",
             vec![
+                "--inst-type".to_string(),
+                if venue.is_spot() { "SPOT" } else { "SWAP" }.to_string(),
+                "--quote-ccy".to_string(),
+                "USDT".to_string(),
                 "--fetch-all".to_string(),
                 "--max-pages".to_string(),
                 "0".to_string(),
                 "--cancel".to_string(),
             ],
         ),
-        _ => anyhow::bail!(
-            "startup cancellation only supports binance-futures, binance-coin-futures and okex-futures: venue={venue:?}"
-        ),
+        _ => anyhow::bail!("unsupported startup cancellation venue={venue:?}"),
     };
-    if let Some(local_ip) = account_query_local_ip {
+    if let Some(local_ip) =
+        account_query_local_ip.filter(|_| venue.trade_engine_exchange() == "binance")
+    {
         // Reuse the fixed binding from accountConfig for the STANDARD UM
         // startup order query; leave the live trade-engine configuration intact.
         args.extend(["--local-address".to_string(), local_ip.to_string()]);
@@ -592,6 +596,11 @@ async fn cancel_all_orders_on_startup(
         .kill_on_drop(true);
     if account_query_local_ip.is_some() {
         command.env("NO_PROXY", "*").env("no_proxy", "*");
+    }
+    if venue.trade_engine_exchange() == "okex" {
+        if let Some(local_ip) = account_query_local_ip {
+            command.env("OKX_LOCAL_IP", local_ip.to_string());
+        }
     }
     let status = tokio::time::timeout(Duration::from_secs(timeout_secs), command.status())
         .await
@@ -764,13 +773,13 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     } else {
         hedge_venue
     };
-    if exec_pre_trade && !rapidx_exchanges.is_empty() {
+    if exec_pre_trade && (!rapidx_exchanges.is_empty() || open_venue == TradingVenue::OkexFutures) {
         anyhow::ensure!(
             matches!(
                 open_venue,
                 TradingVenue::BinanceFutures | TradingVenue::OkexFutures
             ),
-            "RapidX Exec supports Binance/OKX linear perpetual venues only"
+            "multi-market Exec supports Binance/OKX linear venues only"
         );
         for venue in &exec_venues {
             let mut redis = RedisSettings::default();
@@ -863,7 +872,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
-    let mut binance_startup_query_ip = None;
+    let mut startup_query_ip = None;
     if exec_pre_trade
         && open_venue == TradingVenue::BinanceFutures
         && !rapidx_binance
@@ -875,12 +884,29 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             .parse::<IpAddr>()
             .with_context(|| format!("invalid Binance REST local IP {raw_ip} from {source}"))?;
         let local_ip = exec_account_query_local_ip(configured_ip)?;
-        binance_startup_query_ip = Some(local_ip);
+        startup_query_ip = Some(local_ip);
         info!(
             "exec-pre-trade account-mode startup gate using Binance REST local_ip={} ({})",
             local_ip, source
         );
         require_binance_multi_assets_mode_on_exec_startup(local_ip).await?;
+    }
+    if exec_pre_trade && open_venue == TradingVenue::OkexFutures && !rapidx_okex {
+        let (raw_ip, _) = load_primary_local_ip_from_trade_engine_sync()
+            .context("load OKX Exec account trading IP")?;
+        let local_ip = exec_account_query_local_ip(raw_ip.parse()?)?;
+        startup_query_ip = Some(local_ip);
+        let client = reqwest::Client::builder()
+            .local_address(local_ip)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        trade_engine::okex_precheck::ensure_unified_margin_mode(
+            &client,
+            &account_common::okex_auth::OkexCredentials::from_env()?,
+        )
+        .await?;
     }
     if let Some(mode) = hyperliquid_account_mode {
         info!(
@@ -891,13 +917,8 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     let startup_cancel_gate = exec_pre_trade.then_some("exec-pre-trade");
     if let Some(gate_name) = startup_cancel_gate {
         for venue in &exec_venues {
-            cancel_all_orders_on_startup(
-                *venue,
-                binance_account_mode,
-                gate_name,
-                binance_startup_query_ip,
-            )
-            .await?;
+            cancel_all_orders_on_startup(*venue, binance_account_mode, gate_name, startup_query_ip)
+                .await?;
         }
     }
     let local = tokio::task::LocalSet::new();
@@ -1525,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn native_exec_manages_only_its_configured_market() {
+    fn native_exec_keeps_binance_markets_separate_and_adds_okx_cash() {
         assert_eq!(
             runtime_common::exec_market::runtime_venues(
                 TradingVenue::BinanceFutures,
@@ -1545,7 +1566,7 @@ mod tests {
                 TradingVenue::OkexFutures,
                 runtime_common::execution_backend::ExecBackend::Native
             ),
-            vec![TradingVenue::OkexFutures]
+            vec![TradingVenue::OkexFutures, TradingVenue::OkexMargin]
         );
     }
 

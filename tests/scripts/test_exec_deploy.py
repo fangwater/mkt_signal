@@ -82,6 +82,17 @@ class ExecDeployTests(unittest.TestCase):
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertIn(exchange,result.stdout)
 
+    def test_okx_unified_prepares_both_market_data_scopes_without_starting(self):
+        result = self.run_deploy("okex_exec_spot01", "okex-futures", "--skip-build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for venue in ("okex-futures", "okex-margin"):
+            target = self.deploy_root / "spread_pbs" / venue
+            self.assertEqual((target / "spread_pbs").read_text(), "artifact:spread_pbs\n")
+            self.assertTrue((target / "scripts/start_spread_pbs.sh").is_file())
+            self.assertTrue((target / "scripts/stop_spread_pbs.sh").is_file())
+        self.assertFalse((self.deploy_root / "spread_pbs/binance-margin").exists())
+        self.assertIn("Processes were not started", result.stdout)
+
     def test_existing_rapidx_env_is_preserved_and_selects_monitor_automatically(self) -> None:
         target = self.deploy_root / "binance_exec_rx01"
         target.mkdir(parents=True)

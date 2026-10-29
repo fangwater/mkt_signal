@@ -150,7 +150,8 @@ pub fn validate_grid_account(
                 binance_mode == Some(BinanceAccountMode::Unified)
             }
             // Exec startup already verifies these native unified account modes.
-            TradingVenue::OkexFutures
+            TradingVenue::OkexMargin
+            | TradingVenue::OkexFutures
             | TradingVenue::BybitFutures
             | TradingVenue::BitgetFutures => true,
             _ => false,
@@ -203,6 +204,7 @@ mod tests {
             assert!(validate_grid_account(venue, ExecBackend::Ltp, None).is_ok());
         }
         for venue in [
+            TradingVenue::OkexMargin,
             TradingVenue::OkexFutures,
             TradingVenue::BybitFutures,
             TradingVenue::BitgetFutures,

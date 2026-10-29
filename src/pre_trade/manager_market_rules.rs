@@ -259,6 +259,15 @@ impl ManagerMarketRulesSnapshot {
                     "UTA Exec requires base-quantity USDT perpetual rules"
                 );
             }
+            if expected_venue == TradingVenue::OkexMargin {
+                runtime_common::exec_market::validate_symbol(expected_venue, &symbol)?;
+                anyhow::ensure!(
+                    rule.quote_asset == "USDT"
+                        && symbol == format!("{}USDT", rule.base_asset)
+                        && rule.contract_multiplier.is_none(),
+                    "OKX cash Exec requires USDT spot rules in base quantity"
+                );
+            }
             let entry = MinQtyEntry {
                 symbol: symbol.clone(),
                 base_asset: rule.base_asset.to_uppercase(),
@@ -364,6 +373,38 @@ mod tests {
             assert!(multipliers.is_empty());
             assert_eq!(active.len(), filters.len());
         }
+    }
+
+    #[test]
+    fn native_okx_cash_rules_keep_base_units_and_inactive_symbols_blocked() {
+        let mut snapshot = sample_snapshot();
+        snapshot.venue = "okex-margin".into();
+        snapshot.execution_backend = "native".into();
+        snapshot.portfolio_id = None;
+        for rule in snapshot.symbols.values_mut() {
+            rule.status = "live".into();
+            rule.contract_multiplier = None;
+        }
+        snapshot
+            .validate_provenance(TradingVenue::OkexMargin, ExecBackend::Native, None)
+            .unwrap();
+        let (kind, filters, multipliers, active) =
+            snapshot.into_tables(TradingVenue::OkexMargin).unwrap();
+        assert!(matches!(kind, MarketType::Spot));
+        assert!(multipliers.is_empty());
+        assert_eq!(active.len(), filters.len());
+        for rule in snapshot.symbols.values_mut() {
+            rule.status = "suspend".into();
+        }
+        assert!(snapshot
+            .into_tables(TradingVenue::OkexMargin)
+            .unwrap()
+            .3
+            .is_empty());
+        for rule in snapshot.symbols.values_mut() {
+            rule.contract_multiplier = Some("0.01".into());
+        }
+        assert!(snapshot.into_tables(TradingVenue::OkexMargin).is_err());
     }
 
     #[test]

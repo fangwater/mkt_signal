@@ -68,8 +68,9 @@ its USDT cash market. Publish both legs in the same Manager strategy:
 
 `BTC` means the BTC/USDT cash pair, `BTCUSDT` and `BTCUSDC` mean perpetuals.
 All quantities are base coins. Cash uses the existing Binance SPOT/MARGIN setting
-above (MARGIN permits borrowing); OKX uses SPOT. Native deployments retain their
-single-market scope, and COIN-M is never added to a RapidX deployment.
+above (MARGIN permits borrowing); RapidX OKX uses SPOT. Native OKX unified Exec
+also owns USDT cross SPOT; see [OKX unified Exec](okx_unified_exec.md). Other native
+deployments retain their single-market scope, and COIN-M is never added to a RapidX deployment.
 Manager writes the two venue scopes in one Redis transaction, including empty
 scopes when a leg is removed. Exec expands bare assets only inside the cash
 reloader; order, quote, rule and ledger identities retain the native pair plus

@@ -1421,6 +1421,16 @@ mod tests {
             false,
         ));
         assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::OkexAccountBalanceSnapshot,
+            order_common::TradingVenue::OkexMargin,
+            false,
+        ));
+        assert!(!snapshot_initializes_exec_venue(
+            QueryRequestType::OkexPositionsSnapshot,
+            order_common::TradingVenue::OkexMargin,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
             QueryRequestType::GateUnifiedPositionsSnapshot,
             order_common::TradingVenue::GateFutures,
             false,

@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
     --skip-build) SKIP_BUILD=1; shift ;;
     -h|--help)
       echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures|bybit-futures|bitget-futures> [--exec-backend <native|rapidx>] [--viz-port <port>] [--config-port <port>] [--scripts-only|--skip-build]"
-      echo "Deploys the complete Exec runtime plus the matching spread_pbs venue; nothing is started."
+      echo "Deploys the complete Exec runtime plus matching spread_pbs markets (OKX: SWAP and USDT cash); nothing is started."
       echo "Backend: new environments default to native; existing environments use env.sh."
       echo "--scripts-only prepares scripts/config; --skip-build also installs prebuilt release binaries."
       echo "Default ports: U/OKX 01 -> 10041/18161; COIN-M 01 -> 10141/18261."
@@ -86,7 +86,10 @@ if [[ "$EXEC_BACKEND" == "ltp" && "$VENUE" != "binance-futures" && "$VENUE" != "
   exit 1
 fi
 SPREAD_ROOT="${DEPLOY_ROOT}/spread_pbs"
-SPREAD_DIR="${SPREAD_ROOT}/${VENUE}"
+SPREAD_VENUES=("${VENUE}")
+if [[ "$VENUE" == "okex-futures" ]]; then
+  SPREAD_VENUES+=("okex-margin")
+fi
 HOST_CONFIG_DIR="${DEPLOY_ROOT}/config"
 ACCOUNT_MONITOR_BIN="${EXCHANGE}_account_monitor"
 ACCOUNT_MONITOR_DEST="account_monitor"
@@ -103,9 +106,11 @@ mkdir -p \
   "${TARGET_DIR}/scripts" \
   "${TARGET_DIR}/config" \
   "${TARGET_DIR}/data/persist_manager" \
-  "${SPREAD_DIR}/scripts" \
   "${SPREAD_ROOT}/config" \
   "${HOST_CONFIG_DIR}"
+for spread_venue in "${SPREAD_VENUES[@]}"; do
+  mkdir -p "${SPREAD_ROOT}/${spread_venue}/scripts"
+done
 if [[ $DO_BUILD -eq 1 ]]; then
   if [[ "$SKIP_BUILD" -eq 0 ]]; then
     (cd "$ROOT_DIR" && cargo build --release -p mkt_signal \
@@ -123,7 +128,9 @@ if [[ $DO_BUILD -eq 1 ]]; then
   install -m 755 "${ROOT_DIR}/target/release/${ACCOUNT_MONITOR_BIN}" "${TARGET_DIR}/${ACCOUNT_MONITOR_DEST}"
   install -m 755 "${ROOT_DIR}/target/release/persist_manager" "${TARGET_DIR}/persist_manager"
   install -m 755 "${ROOT_DIR}/target/release/viz_server" "${TARGET_DIR}/viz_server"
-  install -m 755 "${ROOT_DIR}/target/release/spread_pbs" "${SPREAD_DIR}/spread_pbs"
+  for spread_venue in "${SPREAD_VENUES[@]}"; do
+    install -m 755 "${ROOT_DIR}/target/release/spread_pbs" "${SPREAD_ROOT}/${spread_venue}/spread_pbs"
+  done
 fi
 
 FILES=(
@@ -144,8 +151,10 @@ FILES=(
   sync_exec_max_pos_u.py print_exec_max_pos_u.py
 )
 for file in "${FILES[@]}"; do install -m 755 "${ROOT_DIR}/scripts/${file}" "${TARGET_DIR}/scripts/${file}"; done
-for file in start_spread_pbs.sh stop_spread_pbs.sh; do
-  install -m 755 "${ROOT_DIR}/scripts/spread_pbs/${file}" "${SPREAD_DIR}/scripts/${file}"
+for spread_venue in "${SPREAD_VENUES[@]}"; do
+  for file in start_spread_pbs.sh stop_spread_pbs.sh; do
+    install -m 755 "${ROOT_DIR}/scripts/spread_pbs/${file}" "${SPREAD_ROOT}/${spread_venue}/scripts/${file}"
+  done
 done
 if [[ ! -f "${TARGET_DIR}/config/iceoryx2.toml" ]]; then
   install -m 644 "${ROOT_DIR}/config/iceoryx2.toml" "${TARGET_DIR}/config/iceoryx2.toml"
@@ -214,6 +223,8 @@ ENV
 fi
 echo "[INFO] Deployed complete Exec runtime to ${TARGET_DIR}"
 echo "[INFO] Execution backend=${EXEC_BACKEND} account monitor=${ACCOUNT_MONITOR_DEST}"
-echo "[INFO] Deployed spread_pbs venue to ${SPREAD_DIR}"
+for spread_venue in "${SPREAD_VENUES[@]}"; do
+  echo "[INFO] Deployed spread_pbs venue to ${SPREAD_ROOT}/${spread_venue}"
+done
 echo "[INFO] Ports: viz=${VIZ_PORT} config=${CONFIG_PORT} instance=${INSTANCE_SUFFIX}"
 echo "[INFO] Processes were not started"

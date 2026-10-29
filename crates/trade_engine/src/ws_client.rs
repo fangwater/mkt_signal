@@ -2318,7 +2318,9 @@ impl TradeWsClient {
     fn okex_inst_type_for_req(req_type: TradeRequestType) -> Result<&'static str> {
         match req_type {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexCancelMarginOrder => {
-                Ok("MARGIN")
+                // acctLv 3/4 cash trading is cross SPOT, including automatic
+                // borrowing. MARGIN describes the separate futures-mode path.
+                Ok("SPOT")
             }
             TradeRequestType::OkexNewUMOrder
             | TradeRequestType::OkexCancelUMOrder
@@ -4839,6 +4841,24 @@ impl TradeWsClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unified_okx_cash_uses_spot_instrument_codes() {
+        use crate::trade_request::TradeRequestType;
+        for request in [
+            TradeRequestType::OkexNewMarginOrder,
+            TradeRequestType::OkexCancelMarginOrder,
+        ] {
+            assert_eq!(
+                super::TradeWsClient::okex_inst_type_for_req(request).unwrap(),
+                "SPOT"
+            );
+        }
+        assert_eq!(
+            super::TradeWsClient::okex_inst_type_for_req(TradeRequestType::OkexNewUMOrder).unwrap(),
+            "SWAP"
+        );
+    }
+
     #[tokio::test]
     async fn ltp_login_gate_requires_explicit_login_success() {
         use futures_util::SinkExt;
