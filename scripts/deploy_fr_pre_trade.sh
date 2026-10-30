@@ -149,6 +149,7 @@ SCRIPTS_TO_SYNC=(
   "sync_fr_risk_params.py"
   "print_fr_risk_params.py"
   "start_fr_pre_trade.sh"
+  "check_fr_collateral.py"
   "stop_fr_pre_trade.sh"
   "process_match_lib.sh"
   "set_online_futures_leverage.py"
@@ -156,6 +157,8 @@ SCRIPTS_TO_SYNC=(
 )
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
+  mkdir -p "$TARGET_DIR/scripts/lib"
+  rsync -a "$SCRIPT_DIR_SRC/lib/exchange_signing.py" "$SCRIPT_DIR_SRC/lib/intra_symbols.py" "$TARGET_DIR/scripts/lib/"
   for script in "${SCRIPTS_TO_SYNC[@]}"; do
     if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
       rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"

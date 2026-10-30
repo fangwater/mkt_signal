@@ -173,6 +173,11 @@ if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
   echo "[INFO] core bind ${TRADE_SIGNAL_CORE} (from $ENV_FILE:TRADE_SIGNAL_CORE)"
 fi
 
+if [[ "$NS" == "fr" ]]; then
+  # Fail before deleting any live process; there is intentionally no bypass.
+  python3 "${SCRIPT_DIR}/check_fr_collateral.py" --env-dir "$BASE_DIR" --exchange "$EXCHANGE" --execute
+fi
+
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
 if [[ -n "$LEGACY_PROC_NAME" ]]; then
   npx pm2 delete "$LEGACY_PROC_NAME" </dev/null >/dev/null 2>&1 || true

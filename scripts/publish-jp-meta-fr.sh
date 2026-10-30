@@ -202,6 +202,11 @@ LOCAL_RELATIVE=(
   "scripts/print_fr_risk_params.py"
   "scripts/sync_fr_risk_params.py"
   "scripts/start_trade_engine.sh"
+  "scripts/start_trade_signal.sh"
+  "scripts/start_fr_pre_trade.sh"
+  "scripts/check_fr_collateral.py"
+  "scripts/lib/exchange_signing.py"
+  "scripts/lib/intra_symbols.py"
 )
 UPLOAD_NAMES=(
   "trade_signal"
@@ -214,6 +219,11 @@ UPLOAD_NAMES=(
   "print_fr_risk_params.py"
   "sync_fr_risk_params.py"
   "start_trade_engine.sh"
+  "start_trade_signal.sh"
+  "start_fr_pre_trade.sh"
+  "check_fr_collateral.py"
+  "exchange_signing.py"
+  "intra_symbols.py"
 )
 LOCAL_PATHS=()
 for relative_path in "${LOCAL_RELATIVE[@]}"; do
@@ -317,6 +327,12 @@ publish_file fr_config_server.py scripts/fr_config_server.py
 publish_file print_fr_risk_params.py scripts/print_fr_risk_params.py
 publish_file sync_fr_risk_params.py scripts/sync_fr_risk_params.py
 publish_file start_trade_engine.sh scripts/start_trade_engine.sh
+mkdir -p "$target/scripts/lib"
+publish_file exchange_signing.py scripts/lib/exchange_signing.py
+publish_file intra_symbols.py scripts/lib/intra_symbols.py
+publish_file check_fr_collateral.py scripts/check_fr_collateral.py
+publish_file start_trade_signal.sh scripts/start_trade_signal.sh
+publish_file start_fr_pre_trade.sh scripts/start_fr_pre_trade.sh
 
 rm -f "$stage/SHA256SUMS"
 rmdir "$stage"

@@ -135,6 +135,9 @@ required_files=(
   "$target/config/fr_config_server.env"
   "$scripts_dir/process_match_lib.sh"
   "$scripts_dir/fr_config_server.py"
+  "$scripts_dir/check_fr_collateral.py"
+  "$scripts_dir/lib/exchange_signing.py"
+  "$scripts_dir/lib/intra_symbols.py"
 )
 required_executables=(
   "$target/viz_server"
@@ -587,6 +590,12 @@ start_and_verify() {
   echo "[INFO] $label health check passed pid=$pid"
 }
 
+# Run before the orchestrator stops/restarts any component, including pre_trade.
+collateral_args=(--env-dir "$target" --exchange "$exchange")
+if [[ "$check_only" != "1" ]]; then
+  collateral_args+=(--execute)
+fi
+python3 "$scripts_dir/check_fr_collateral.py" "${collateral_args[@]}"
 echo "[INFO] remote preflight passed"
 print_process_state
 require_trade_signal_stopped

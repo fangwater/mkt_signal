@@ -148,6 +148,7 @@ fi
 SCRIPT_DIR_SRC="$ROOT_DIR/scripts"
 SCRIPTS_TO_SYNC=(
   "start_trade_signal.sh"
+  "check_fr_collateral.py"
   "stop_trade_signal.sh"
   "start_fr_signal.sh"
   "stop_fr_signal.sh"
@@ -176,6 +177,8 @@ SCRIPTS_TO_SYNC=(
 )
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   mkdir -p "$TARGET_DIR/scripts"
+  mkdir -p "$TARGET_DIR/scripts/lib"
+  rsync -a "$SCRIPT_DIR_SRC/lib/exchange_signing.py" "$SCRIPT_DIR_SRC/lib/intra_symbols.py" "$TARGET_DIR/scripts/lib/"
   for script in "${SCRIPTS_TO_SYNC[@]}"; do
     if [[ -f "$SCRIPT_DIR_SRC/$script" ]]; then
       rsync -a "$SCRIPT_DIR_SRC/$script" "$TARGET_DIR/scripts/"

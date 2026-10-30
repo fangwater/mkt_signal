@@ -147,6 +147,13 @@ build_json_array() {
   printf '%s' "$out"
 }
 
+# Check before the stop script or supervisor can change a running environment.
+PREFLIGHT_ARGS=(--env-dir "$BASE_DIR" --exchange "$EXCHANGE" --execute)
+if [[ -n "$OPEN_VENUE" ]]; then
+  PREFLIGHT_ARGS+=(--open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE")
+fi
+python3 "${SCRIPT_DIR}/check_fr_collateral.py" "${PREFLIGHT_ARGS[@]}"
+
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 

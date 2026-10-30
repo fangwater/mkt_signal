@@ -1,6 +1,12 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-29 UTC
+最后更新：2026-10-30 UTC
+
+2026-10-30 审核 FR 启动抵押检查 `scripts/check_fr_collateral.py`：所有账户查询、
+抵押开关写入及回读均绑定部署环境的交易源 IP，直连官方 HTTPS。辅助查询
+Gate `/api/v4/unified/currency_discount_tiers` 和 Bitget
+`/api/v3/account/custom-collateral-coins` 同样直连；此工具携带账户签名，
+不进入公共缓存，不新增 Nginx 代理或白名单。
 
 2026-10-29 审核原生 OKX 统一账户 Exec 的现货接入：CTA Manager 每 60 秒直连官方
 `GET /api/v5/public/instruments?instType=SPOT`，为 `okex-margin` 发布完整 USDT
