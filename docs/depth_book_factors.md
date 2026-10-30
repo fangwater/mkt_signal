@@ -4,7 +4,9 @@
 
 本记录依据用户提供的 Python 实现，保存本批 23 个因子的名称、公式、输入字段和
 有效值条件，作为后续实现及研究结果核对的依据。
-[原始 Python 参考实现](reference/depth_book_factors.py) 与本文一起保留。
+[Python 参考实现](reference/depth_book_factors.py) 与本文一起维护。
+2026-10-30 按操作员确认，将 `depth_flow_net`、`depth_touch_net` 的分母修正为
+双边净流量的绝对值之和；最初提供的代码保留在 Git 提交 `adf9687c` 中。
 
 ## 输入与输出
 
@@ -42,12 +44,14 @@ Kafka 保留区间可能从某段增量中间开始，因此这里的整本指�
 不把 20 档快照当作交易所全量快照，也不改变既有 Kafka 留存和恢复规则。
 空 RX01 清单仍阻止启动，新增计算能力不会自行配置交易币种、方向、NQ 或 Manager。
 
-`depth_flow_net`、`depth_touch_net` 的净流量分母可能非正，原公式此时返回 NaN。
-现有 15min zscore 要求最近 96 根至少 67 个有限原始值；若不足，这些因子可以持续
-未就绪。计算和预热均保留这个口径，不改用绝对值分母或降低样本门槛。
+`depth_flow_net`、`depth_touch_net` 使用 `(B - A) / (abs(B) + abs(A))`，
+其中 B、A 是该 bar 买侧、卖侧的新增名义额减撤减名义额。双边净流量均为零或
+任一净流量非有限时返回 NaN，其余符号组合均有效，结果在 `[-1, 1]`。
+计算时先按两侧最大绝对值缩放，避免大数相加/相减溢出；数学定义保持上述公式。
+15min zscore 的 96/67 和分位窗口的 192/96 要求保持不变。
 
-验证基准：`tests/fixtures/depth_book_factors.json` 保存原始 Python 的逐行输出和源码
-SHA-256；Rust 测试逐项对照 23 个结果，Python 测试确认基准未偏离原始实现。
+验证基准：`tests/fixtures/depth_book_factors.json` 保存当前 Python 参考实现的逐行输出和源码
+SHA-256；Rust 测试逐项对照 23 个结果，Python 测试确认基准与当前参考实现一致。
 
 ## 公共算子
 
@@ -56,6 +60,7 @@ SHA-256；Rust 测试逐项对照 23 个结果，Python 测试确认基准未偏
 | 算子 | 公式 | 有效值条件 |
 | --- | --- | --- |
 | `I(B, A)`，对应 `_imb` | `(B - A) / (B + A)` | `finite(B) & finite(A) & (B + A > 0)` |
+| `N(B, A)`，对应 `_net_imb` | `(B - A) / (abs(B) + abs(A))` | `finite(B) & finite(A)`，且两侧不同时为零 |
 | `R(N, D)`，对应 `_ratio` | `N / D` | `finite(N) & finite(D) & (D > 0)` |
 | `L(B, A)`，对应 `_log_ba` | `ln(B / A)`，先相除再取自然对数 | `(B > 0) & (A > 0)` |
 
@@ -125,13 +130,14 @@ SHA-256；Rust 测试逐项对照 23 个结果，Python 测试确认基准未偏
 | --- | --- |
 | `depth_flow_add_imb` | `I(B_add, A_add)` |
 | `depth_flow_sub_imb` | `I(B_sub, A_sub)` |
-| `depth_flow_net` | `I(B_add - B_sub, A_add - A_sub)` |
+| `depth_flow_net` | `N(B_add - B_sub, A_add - A_sub)` |
 | `depth_touch_add_imb` | `I(TB_add, TA_add)` |
-| `depth_touch_net` | `I(TB_add - TB_sub, TA_add - TA_sub)` |
+| `depth_touch_net` | `N(TB_add - TB_sub, TA_add - TA_sub)` |
 
-两种 `net` 均先分别计算买侧、卖侧净增量，再调用同一个 `I` 算子。
-其分母为两侧净增量之和，必须严格大于 0，否则输出 `NaN`。
-净增量可以为负，因此通过该条件时结果也可能超出 `[-1, 1]`；分母没有改用绝对值之和。
+两种 `net` 先分别计算买侧、卖侧净增量，再调用有符号净流量算子 `N`。
+例如买侧净增量 `-20`、卖侧 `-10`，输出 `-1/3`；买侧 `10`、卖侧 `-10`，输出 `1`。
+普通深度、add/sub、档位数仍调用原有 `I` 算子。旧版本将净流量复用 `I`，会排除
+净流量总和非正的 bar 并在抵消时放大结果；本次修正仅针对上述两项净流量因子。
 
 ## 档位数不平衡：1 项
 

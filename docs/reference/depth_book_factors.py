@@ -1,7 +1,9 @@
 """Full-depth book factors. Each function reads one finished baseline bar frame.
 
 Inputs are the raw columns written by pipeline.depth_book. Bands are cumulative
-notional within that many basis points of mid. Imbalance is (bid - ask) / (bid + ask).
+notional within that many basis points of mid. Ordinary imbalance is
+(bid - ask) / (bid + ask). Signed net flows use (bid - ask) / (abs(bid) + abs(ask)),
+as corrected by the operator on 2026-10-30.
 """
 from __future__ import annotations
 
@@ -16,6 +18,19 @@ def _imb(df: pd.DataFrame, bid: str, ask: str) -> np.ndarray:
     denom = left + right
     good = np.isfinite(left) & np.isfinite(right) & (denom > 0.0)
     out[good] = (left[good] - right[good]) / denom[good]
+    return out
+
+
+def _net_imb(df: pd.DataFrame, bid: str, ask: str) -> np.ndarray:
+    left = df[bid].to_numpy(dtype=np.float64)
+    right = df[ask].to_numpy(dtype=np.float64)
+    out = np.full(left.shape, np.nan, dtype=np.float64)
+    scale = np.maximum(np.abs(left), np.abs(right))
+    good = np.isfinite(left) & np.isfinite(right) & (scale > 0.0)
+    # Scale both sides to avoid overflow; this is (B - A) / (abs(B) + abs(A)).
+    bid_scaled = left[good] / scale[good]
+    ask_scaled = right[good] / scale[good]
+    out[good] = (bid_scaled - ask_scaled) / (np.abs(bid_scaled) + np.abs(ask_scaled))
     return out
 
 
@@ -138,7 +153,7 @@ def depth_flow_net(df: pd.DataFrame) -> np.ndarray:
     bid = df["depth_bid_add_notional"] - df["depth_bid_sub_notional"]
     ask = df["depth_ask_add_notional"] - df["depth_ask_sub_notional"]
     work = pd.DataFrame({"bid": bid, "ask": ask})
-    return _imb(work, "bid", "ask")
+    return _net_imb(work, "bid", "ask")
 
 
 def depth_touch_add_imb(df: pd.DataFrame) -> np.ndarray:
@@ -149,7 +164,7 @@ def depth_touch_net(df: pd.DataFrame) -> np.ndarray:
     bid = df["depth_touch_bid_add_notional"] - df["depth_touch_bid_sub_notional"]
     ask = df["depth_touch_ask_add_notional"] - df["depth_touch_ask_sub_notional"]
     work = pd.DataFrame({"bid": bid, "ask": ask})
-    return _imb(work, "bid", "ask")
+    return _net_imb(work, "bid", "ask")
 
 
 def depth_level_imb(df: pd.DataFrame) -> np.ndarray:

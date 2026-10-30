@@ -28,3 +28,7 @@ scripts/deploy_cta_perp_rx01.sh
 `depth_pub::OrderBook` 重建全部收到的价格档，再计算累计深度、档位数、目标名义额
 距离及逐条 add/sub/touch 流量。具体口径见 `docs/depth_book_factors.md`。
 新增能力不自动填写本目录的空清单；操作员提供币种、方向和逐组 NQ 后再配置、预热。
+
+`depth_flow_net`、`depth_touch_net` 使用 `(B - A) / (abs(B) + abs(A))`，
+B/A 分别为买/卖侧的新增名义额减撤减名义额；双方均为零或非有限输入返回 NaN。
+净撤单和双边净流量抵消的 bar 均可正常参与原有预热窗口。

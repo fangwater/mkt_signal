@@ -1188,6 +1188,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signed_net_flows_warm_with_production_sample_requirements() {
+        use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_DIM;
+        let plan = SymbolFactorPlan::from_factor_names(
+            "signed-net",
+            vec!["depth_flow_net".into(), "depth_touch_net".into()],
+        )
+        .unwrap();
+        let mut state =
+            SymbolFactorState::new(&normalize_config(96, 67), 2, BarInterval::FifteenMinutes);
+        for bar in 0..195 {
+            let (bid, ask): (f64, f64) = match bar % 4 {
+                0 => (-20.0, -10.0),
+                1 => (10.0, -10.0),
+                2 => (-10.0, 20.0),
+                _ => (20.0, 10.0),
+            };
+            let depth = DepthBookBar {
+                depth_bid_add_notional: bid.max(0.0),
+                depth_bid_sub_notional: (-bid).max(0.0),
+                depth_ask_add_notional: ask.max(0.0),
+                depth_ask_sub_notional: (-ask).max(0.0),
+                depth_touch_bid_add_notional: bid.max(0.0),
+                depth_touch_bid_sub_notional: (-bid).max(0.0),
+                depth_touch_ask_add_notional: ask.max(0.0),
+                depth_touch_ask_sub_notional: (-ask).max(0.0),
+                ..Default::default()
+            };
+            let msg = TradeFlowFeatureMsg::from_indexed_values(
+                "BTCUSDT".into(),
+                1,
+                1_800_000_000_000 + bar * 900_000,
+                &[0.0; TRADE_FLOW_FEATURE_DIM],
+            )
+            .unwrap();
+            let values = state
+                .evaluate_with_depth(msg, &plan, true, Some(&depth))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                values.iter().all(|value| value.score.is_finite()),
+                bar >= 66
+            );
+            assert_eq!(values.iter().all(|value| value.ready), bar >= 161);
+        }
+    }
+
+    #[test]
     fn depth_factors_accept_book_only_bars_and_use_fifteen_minute_rank_windows() {
         use crate::factor_pub::depth_book::DEPTH_FACTOR_NAMES;
         use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_DIM;
@@ -1200,13 +1247,8 @@ mod tests {
             "../../../tests/fixtures/depth_book_factors.json"
         ))
         .unwrap();
-        let mut depth: DepthBookBar =
+        let depth: DepthBookBar =
             serde_json::from_value(fixture["cases"][0]["input"].clone()).unwrap();
-        // Ensure both net-flow denominators are positive, as required by the formula.
-        depth.depth_bid_sub_notional = 1.0;
-        depth.depth_ask_sub_notional = 1.0;
-        depth.depth_touch_bid_sub_notional = 1.0;
-        depth.depth_touch_ask_sub_notional = 1.0;
         for bar in 0..240 {
             let msg = TradeFlowFeatureMsg::from_indexed_values(
                 "BTCUSDT".into(),

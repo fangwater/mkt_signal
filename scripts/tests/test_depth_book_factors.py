@@ -1,4 +1,4 @@
-"""Depth formulas retain the operator reference and accept normal CTA rule input."""
+"""Depth formulas match the current reference and accept normal CTA rule input."""
 import hashlib
 import importlib.util
 import json
@@ -21,7 +21,7 @@ class DepthBookFactorTests(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
-    def test_rust_fixture_matches_original_python(self):
+    def test_rust_fixture_matches_current_python(self):
         import numpy as np
         import pandas as pd
         self.assertEqual(hashlib.sha256(self.reference.read_bytes()).hexdigest(),
@@ -36,6 +36,24 @@ class DepthBookFactorTests(unittest.TestCase):
                         self.assertTrue(np.isnan(actual))
                     else:
                         self.assertEqual(actual, expected)
+
+    def test_signed_net_flow_denominator_handles_withdrawals_and_cancellation(self):
+        import numpy as np
+        import pandas as pd
+        pairs = [(20.0, 10.0), (-20.0, -10.0), (10.0, -10.0),
+                 (-10.0, 20.0), (0.0, -10.0), (0.0, 0.0)]
+        expected = [1/3, -1/3, 1.0, -1.0, 1.0, np.nan]
+        columns = {}
+        for prefix in ("depth_", "depth_touch_"):
+            for side, index in (("bid", 0), ("ask", 1)):
+                columns[f"{prefix}{side}_add_notional"] = [max(pair[index], 0) for pair in pairs]
+                columns[f"{prefix}{side}_sub_notional"] = [max(-pair[index], 0) for pair in pairs]
+        for function in [self.module.depth_flow_net, self.module.depth_touch_net]:
+            np.testing.assert_allclose(function(pd.DataFrame(columns)), expected, equal_nan=True)
+        maximum = np.finfo(np.float64).max
+        actual = self.module._net_imb(pd.DataFrame({"bid": [maximum, np.inf, np.nan],
+                                                  "ask": [-maximum, 1.0, 1.0]}), "bid", "ask")
+        np.testing.assert_allclose(actual, [1.0, np.nan, np.nan], equal_nan=True)
 
     def test_all_twenty_three_factors_accept_signed_rules_and_nq(self):
         rules = [{"标的": "BTC", "因子": name, "符号": -1 if i % 2 else 1,

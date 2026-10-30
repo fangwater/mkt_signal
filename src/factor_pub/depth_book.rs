@@ -127,7 +127,7 @@ mod tests {
     };
 
     #[test]
-    fn formulas_match_the_operator_python_reference() {
+    fn formulas_match_the_current_python_reference() {
         let fixtures: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/depth_book_factors.json"))
                 .unwrap();
@@ -155,6 +155,44 @@ mod tests {
         assert!(far_share(1.0, f64::INFINITY).is_nan());
         assert!(imbalance(f64::INFINITY, 1.0).is_nan());
         assert_eq!(imbalance(-2.0, 6.0), -2.0);
+    }
+
+    #[test]
+    fn net_flows_accept_all_signs_and_stay_bounded() {
+        for (bid, ask, expected) in [
+            (20.0, 10.0, 1.0 / 3.0),
+            (-20.0, -10.0, -1.0 / 3.0),
+            (-10.0, -20.0, 1.0 / 3.0),
+            (20.0, -10.0, 1.0),
+            (-20.0, 10.0, -1.0),
+            (10.0, -10.0, 1.0),
+            (-10.0, 0.0, -1.0),
+            (0.0, -10.0, 1.0),
+            (f64::MAX, -f64::MAX, 1.0),
+            (-f64::MAX, f64::MAX, -1.0),
+            (f64::MIN_POSITIVE, -f64::MIN_POSITIVE, 1.0),
+        ] {
+            let row = DepthBookBar {
+                depth_bid_add_notional: bid.max(0.0),
+                depth_bid_sub_notional: (-bid).max(0.0),
+                depth_ask_add_notional: ask.max(0.0),
+                depth_ask_sub_notional: (-ask).max(0.0),
+                depth_touch_bid_add_notional: bid.max(0.0),
+                depth_touch_bid_sub_notional: (-bid).max(0.0),
+                depth_touch_ask_add_notional: ask.max(0.0),
+                depth_touch_ask_sub_notional: (-ask).max(0.0),
+                ..Default::default()
+            };
+            for id in [DepthFactorId::FlowNet, DepthFactorId::TouchNet] {
+                let actual = row.factor(id);
+                assert!((actual - expected).abs() < 1e-15, "{bid} {ask}: {actual}");
+                assert!((-1.0..=1.0).contains(&actual));
+            }
+            assert_eq!(net_imbalance(bid, ask), -net_imbalance(ask, bid));
+        }
+        for (bid, ask) in [(0.0, 0.0), (f64::NAN, 1.0), (1.0, f64::INFINITY)] {
+            assert!(net_imbalance(bid, ask).is_nan());
+        }
     }
 
     #[test]
@@ -456,6 +494,20 @@ fn imbalance(bid: f64, ask: f64) -> f64 {
         f64::NAN
     }
 }
+/// Signed net flows use absolute magnitudes so withdrawals remain valid.
+fn net_imbalance(bid: f64, ask: f64) -> f64 {
+    if !bid.is_finite() || !ask.is_finite() {
+        return f64::NAN;
+    }
+    let scale = bid.abs().max(ask.abs());
+    if scale == 0.0 {
+        return f64::NAN;
+    }
+    // Equivalent to (bid - ask) / (|bid| + |ask|), without overflow.
+    let bid = bid / scale;
+    let ask = ask / scale;
+    (bid - ask) / (bid.abs() + ask.abs())
+}
 fn ratio(num: f64, den: f64) -> f64 {
     if num.is_finite() && den.is_finite() && den > 0.0 {
         num / den
@@ -536,7 +588,7 @@ impl DepthBookBar {
             DepthFactorId::FlowSubImb => {
                 imbalance(self.depth_bid_sub_notional, self.depth_ask_sub_notional)
             }
-            DepthFactorId::FlowNet => imbalance(
+            DepthFactorId::FlowNet => net_imbalance(
                 self.depth_bid_add_notional - self.depth_bid_sub_notional,
                 self.depth_ask_add_notional - self.depth_ask_sub_notional,
             ),
@@ -544,7 +596,7 @@ impl DepthBookBar {
                 self.depth_touch_bid_add_notional,
                 self.depth_touch_ask_add_notional,
             ),
-            DepthFactorId::TouchNet => imbalance(
+            DepthFactorId::TouchNet => net_imbalance(
                 self.depth_touch_bid_add_notional - self.depth_touch_bid_sub_notional,
                 self.depth_touch_ask_add_notional - self.depth_touch_ask_sub_notional,
             ),
