@@ -23,3 +23,8 @@ scripts/deploy_cta_perp_rx01.sh
 预留 publisher CPU17、Dashboard `127.0.0.1:10195`、Config `127.0.0.1:19185`。
 正式发布仍使用本地 arbmm release 构建、上传 SHA-256 校验和环境本地启停脚本。
 旧 RX01 Spread 的历史与配置归档单独保留，不作为新 Perp 的状态或预热输入。
+
+15min 发布器已支持 23 个 `depth_*` 因子：直接从 Kafka 的盘口消息复用
+`depth_pub::OrderBook` 重建全部收到的价格档，再计算累计深度、档位数、目标名义额
+距离及逐条 add/sub/touch 流量。具体口径见 `docs/depth_book_factors.md`。
+新增能力不自动填写本目录的空清单；操作员提供币种、方向和逐组 NQ 后再配置、预热。

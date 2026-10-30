@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::common::amount_threshold::AmountThreshold;
 use crate::depth_pub::orderbook::OrderBook;
 use crate::factor_pub::cta_factor_universe::{load_enabled_symbols, CtaFactorUniverse};
+use crate::factor_pub::depth_book::{DepthBookBar, DepthFactorId};
 use crate::factor_pub::fusion_factor_pub::app::{
     load_amount_thresholds_from_tlen_server, BaselineReplayState,
 };
@@ -40,6 +41,9 @@ const STATS_LOG_INTERVAL_SECS: u64 = 60;
 // existing strict requirement for real trade-size classification metadata.
 fn requires_amount_thresholds(factors: &[String]) -> bool {
     factors.iter().any(|factor| {
+        if DepthFactorId::from_name(factor).is_some() {
+            return false;
+        }
         !matches!(
             factor.as_str(),
             "baseline_200"
@@ -268,20 +272,51 @@ impl SymbolFactorState {
         }
     }
 
+    #[cfg(test)]
     fn evaluate(
         &mut self,
         msg: TradeFlowFeatureMsg,
         plan: &SymbolFactorPlan,
         record: bool,
     ) -> Result<Option<Vec<FactorObservation>>> {
+        self.evaluate_with_depth(msg, plan, record, None)
+    }
+
+    fn evaluate_with_depth(
+        &mut self,
+        msg: TradeFlowFeatureMsg,
+        plan: &SymbolFactorPlan,
+        record: bool,
+        full_depth: Option<&DepthBookBar>,
+    ) -> Result<Option<Vec<FactorObservation>>> {
         if self.last_ts.is_some_and(|last| msg.ts <= last) {
             return Ok(None);
         }
-        self.evaluator.push(msg.clone())?;
+        // A depth-only bar can precede the first trade. Keep depth factors
+        // available in mixed plans without reusing stale trade-factor values.
+        let baseline_usable = full_depth.is_none()
+            || [0, 1, 2, 3, 23, 24, 25]
+                .iter()
+                .all(|&i| msg.values[i].is_finite() && msg.values[i] > 0.0);
+        if baseline_usable
+            && plan
+                .factor_names()
+                .any(|name| DepthFactorId::from_name(name).is_none())
+        {
+            self.evaluator.push(msg.clone())?;
+        }
         self.last_ts = Some(msg.ts);
-        let raw_values = self
-            .evaluator
-            .factor_values_with_tp_vpi_006_min_periods(plan, self.tp_vpi_006_min_periods);
+        let mut raw_values = if baseline_usable {
+            self.evaluator
+                .factor_values_with_tp_vpi_006_min_periods(plan, self.tp_vpi_006_min_periods)
+        } else {
+            vec![f64::NAN; plan.factor_names().len()]
+        };
+        for (name, value) in plan.factor_names().zip(&mut raw_values) {
+            if let Some(id) = DepthFactorId::from_name(name) {
+                *value = full_depth.map_or(f64::NAN, |depth| depth.factor(id));
+            }
+        }
         if !record {
             return Ok(None);
         }
@@ -750,6 +785,14 @@ impl CtaPerpFactorModelPubApp {
             events.sort_by_key(PeriodEvent::timestamp_ms);
             let bars = {
                 let aggregator = self.aggregators.entry(symbol.clone()).or_default();
+                if self
+                    .universe
+                    .factors
+                    .iter()
+                    .any(|name| DepthFactorId::from_name(name).is_some())
+                {
+                    aggregator.enable_full_depth();
+                }
                 for event in events {
                     match event {
                         PeriodEvent::Book(book) => {
@@ -763,8 +806,9 @@ impl CtaPerpFactorModelPubApp {
                                 .iter()
                                 .map(|value| Level::from_values(value.price, value.amount))
                                 .collect();
-                            aggregator.on_retained_incremental_book(
+                            aggregator.on_retained_book(
                                 timestamp_as_micros(book.timestamp),
+                                book.is_snapshot,
                                 &bids,
                                 &asks,
                             );
@@ -805,7 +849,12 @@ impl CtaPerpFactorModelPubApp {
                 bars
             };
             for mut bar in bars {
-                if !valid_bar(&bar) {
+                let has_depth = self
+                    .universe
+                    .factors
+                    .iter()
+                    .any(|name| DepthFactorId::from_name(name).is_some());
+                if !has_depth && !valid_bar(&bar) {
                     continue;
                 }
                 bar.start_ms = bar.start_ms.saturating_add(self.interval.millis());
@@ -862,8 +911,12 @@ impl CtaPerpFactorModelPubApp {
                     self.interval,
                 )
             })
-            .evaluate(msg, &self.plan, ts >= self.history_start_ms)
-        {
+            .evaluate_with_depth(
+                msg,
+                &self.plan,
+                ts >= self.history_start_ms,
+                bar.full_depth.as_ref(),
+            ) {
             Ok(Some(value)) => value,
             Ok(None) => return,
             Err(err) => {
@@ -1133,6 +1186,89 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn depth_factors_accept_book_only_bars_and_use_fifteen_minute_rank_windows() {
+        use crate::factor_pub::depth_book::DEPTH_FACTOR_NAMES;
+        use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_DIM;
+        let names: Vec<_> = DEPTH_FACTOR_NAMES.iter().map(|s| s.to_string()).collect();
+        assert!(!requires_amount_thresholds(&names));
+        let plan = SymbolFactorPlan::from_factor_names("depth-test", names).unwrap();
+        let mut state =
+            SymbolFactorState::new(&normalize_config(4, 2), 23, BarInterval::FifteenMinutes);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/depth_book_factors.json"
+        ))
+        .unwrap();
+        let mut depth: DepthBookBar =
+            serde_json::from_value(fixture["cases"][0]["input"].clone()).unwrap();
+        // Ensure both net-flow denominators are positive, as required by the formula.
+        depth.depth_bid_sub_notional = 1.0;
+        depth.depth_ask_sub_notional = 1.0;
+        depth.depth_touch_bid_sub_notional = 1.0;
+        depth.depth_touch_ask_sub_notional = 1.0;
+        for bar in 0..240 {
+            let msg = TradeFlowFeatureMsg::from_indexed_values(
+                "BTCUSDT".into(),
+                1,
+                1_800_000_000_000 + bar * 900_000,
+                &[0.0; TRADE_FLOW_FEATURE_DIM],
+            )
+            .unwrap();
+            let observations = state
+                .evaluate_with_depth(msg, &plan, true, Some(&depth))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                observations.iter().all(|o| o.score.is_finite()),
+                bar >= 1,
+                "bar {bar}"
+            );
+            assert_eq!(observations.iter().all(|o| o.ready), bar >= 96);
+        }
+        assert!(state.windows.iter().all(|w| w.len() == 192));
+    }
+
+    #[test]
+    fn mixed_depth_plan_does_not_require_a_trade_before_first_book_bar() {
+        use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_DIM;
+        let plan = SymbolFactorPlan::from_factor_names(
+            "mixed-depth",
+            vec!["depth_imb_all".into(), "avg_price".into()],
+        )
+        .unwrap();
+        let mut state =
+            SymbolFactorState::new(&normalize_config(4, 2), 2, BarInterval::FifteenMinutes);
+        let depth = DepthBookBar {
+            depth_bid_notional_all: 1000.0,
+            depth_ask_notional_all: 3000.0,
+            ..Default::default()
+        };
+        let msg = TradeFlowFeatureMsg::from_indexed_values(
+            "BTCUSDT".into(),
+            1,
+            900_000,
+            &[0.0; TRADE_FLOW_FEATURE_DIM],
+        )
+        .unwrap();
+        state
+            .evaluate_with_depth(msg.clone(), &plan, true, Some(&depth))
+            .unwrap();
+        let observations = state
+            .evaluate_with_depth(
+                TradeFlowFeatureMsg {
+                    ts: 1_800_000,
+                    ..msg
+                },
+                &plan,
+                true,
+                Some(&depth),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(observations[0].score.is_finite());
+        assert!(observations[1].score.is_nan());
+    }
 
     fn nq_book(ts: i64, bid: f64, ask: f64) -> IncrementOrderBookInfo {
         use period_pbs::pb::PriceLevel;

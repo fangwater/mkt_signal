@@ -125,3 +125,6 @@ TD_CI_007, TD_CI_008, TD_CI_010,
 TD_PR_001, TD_PR_002, TD_PR_005, TD_PR_006,
 TD_PR_007, TD_PR_008, TD_PR_010, TD_PR_011, TD_PR_012,
 TD_PR_013, TD_PR_014, TD_PR_015, TD_PR_016, TD_PR_017
+
+# full-depth book
+depth_imb_bps1, depth_imb_bps5, depth_imb_bps10, depth_imb_bps20, depth_imb_bps50, depth_imb_bps100, depth_imb_all, depth_log_ba_bps5, depth_log_ba_bps20, depth_log_ba_bps100, depth_near_far_bid, depth_near_far_ask, depth_far_share_bid, depth_far_share_ask, depth_gap_bps_10k, depth_gap_bps_50k, depth_gap_bps_100k, depth_flow_add_imb, depth_flow_sub_imb, depth_flow_net, depth_touch_add_imb, depth_touch_net, depth_level_imb

@@ -3162,6 +3162,8 @@ impl FusionFactorPubApp {
         extra_factor_id: ExtraFactorId,
     ) -> Option<f64> {
         match extra_factor_id {
+            // Full-book metrics are supplied by the Kafka baseline, not the depth20 IPC tail.
+            ExtraFactorId::DepthBook(_) => return None,
             ExtraFactorId::Bid0Price1 => {
                 return depth.and_then(|value| finite_opt(Some(depth_best_bid(value).0)));
             }
@@ -3227,7 +3229,8 @@ impl FusionFactorPubApp {
             ExtraFactorId::NetBuyPct => finite_opt(series.net_buy_pct.last().copied()),
             ExtraFactorId::NetBuyMedium => finite_opt(series.net_buy_medium.last().copied()),
             ExtraFactorId::NetBuySmall => finite_opt(series.net_buy_small.last().copied()),
-            ExtraFactorId::Bid0Price1
+            ExtraFactorId::DepthBook(_)
+            | ExtraFactorId::Bid0Price1
             | ExtraFactorId::Bid0Volume1
             | ExtraFactorId::Ask0Price1
             | ExtraFactorId::Ask0Volume1 => unreachable!("handled before series lookup"),
