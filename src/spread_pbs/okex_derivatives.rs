@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 
-pub const OKEX_PUBLIC_WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
+pub const OKEX_PUBLIC_WS_URL: &str = "wss://ws.okx.com/ws/v5/public";
 
 pub fn build_okex_derivatives_subscribe_msgs(symbols: &[String], batch_size: usize) -> Vec<Value> {
     let batch_size = batch_size.max(1);

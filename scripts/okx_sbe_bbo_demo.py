@@ -3,8 +3,8 @@
 OKX SBE vs JSON bbo-tbt 对照 demo。
 
 同时连接两条 ws：
-  - wss://ws.okx.com:8443/ws/v5/public          (现有 JSON 通路)
-  - wss://ws.okx.com:8443/ws/v5/public-sbe      (新的 SBE 通路, 二进制)
+  - wss://ws.okx.com/ws/v5/public          (现有 JSON 通路)
+  - wss://ws.okx.com/ws/v5/public-sbe      (新的 SBE 通路, 二进制)
 
 两条都订阅同一批 inst_id 的 bbo-tbt。SBE 帧手写 struct 解码 (templateId=1000)。
 按 (symbol, seqId) 配对后打印字段差异 + 两侧到达时刻的 µs 差。
@@ -33,8 +33,8 @@ import aiohttp
 import websockets
 
 INSTRUMENTS_URL = "https://www.okx.com/api/v5/public/instruments"
-WS_JSON_URL = "wss://ws.okx.com:8443/ws/v5/public"
-WS_SBE_URL = "wss://ws.okx.com:8443/ws/v5/public-sbe"
+WS_JSON_URL = "wss://ws.okx.com/ws/v5/public"
+WS_SBE_URL = "wss://ws.okx.com/ws/v5/public-sbe"
 
 DEFAULT_SYMBOLS = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
 DEFAULT_INST_TYPE = "SWAP"

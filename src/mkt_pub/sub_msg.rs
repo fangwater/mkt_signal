@@ -322,7 +322,7 @@ pub struct OkexPerpsSubscribeMsgs {
 }
 
 impl OkexPerpsSubscribeMsgs {
-    pub const WS_URL: &'static str = "wss://ws.okx.com:8443/ws/v5/public";
+    pub const WS_URL: &'static str = "wss://ws.okx.com/ws/v5/public";
     pub async fn new(cfg: &Config) -> Self {
         let symbols: Vec<String> = cfg.wait_for_symbols().await;
         let batch_size = cfg.get_batch_size();
@@ -816,7 +816,7 @@ impl SubscribeMsgs {
             //Aster：与币安协议同构，但所有流走单一 endpoint
             Exchange::Aster => Self::get_aster_ws_url_with_venue(venue),
             //OKEXu本位期货合约和现货
-            Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/public",
+            Exchange::Okex => "wss://ws.okx.com/ws/v5/public",
             //Bybitu本位期货合约和现货
             Exchange::Bybit => Self::get_bybit_public_ws_url_with_venue(venue),
             //Gate.io: 现货与合约分不同 endpoint
@@ -846,7 +846,7 @@ impl SubscribeMsgs {
             //Aster：单一 endpoint
             Exchange::Aster => Self::get_aster_ws_url_with_venue(venue),
             //OKEXu本位期货合约和现货
-            Exchange::Okex => "wss://ws.okx.com:8443/ws/v5/business",
+            Exchange::Okex => "wss://ws.okx.com/ws/v5/business",
             //Bybitu本位期货合约和现货
             Exchange::Bybit => Self::get_bybit_public_ws_url_with_venue(venue),
             //Gate.io: 现货与合约分不同 endpoint

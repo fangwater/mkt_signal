@@ -40,7 +40,7 @@ impl WsConstants {
     pub const MAX_INFLIGHT: usize = 128;
 
     /// OKX 交易 WebSocket URL（下单/撤单需走 private 频道；business 频道会返回 60012 Illegal request）
-    pub const OKEX_BUSINESS_WS_URL: &'static str = "wss://ws.okx.com:8443/ws/v5/private";
+    pub const OKEX_BUSINESS_WS_URL: &'static str = "wss://ws.okx.com/ws/v5/private";
 
     /// Gate 现货/统一账户交易 WebSocket URL
     pub const GATE_SPOT_WS_URL: &'static str = "wss://api.gateio.ws/ws/v4/";
