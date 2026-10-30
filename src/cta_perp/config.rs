@@ -105,6 +105,17 @@ pub struct FactorNqRule {
 }
 
 impl FactorNqRule {
+    pub fn nq_key(&self) -> String {
+        match self.thresholds().ok().flatten() {
+            None => "off".to_string(),
+            Some((long, short)) => format!(
+                "{:016x}_{:016x}",
+                if long == 0.0 { 0 } else { long.to_bits() },
+                if short == 0.0 { 0 } else { short.to_bits() }
+            ),
+        }
+    }
+
     pub fn venue_symbol(&self) -> String {
         if self.symbol.ends_with("USDT") {
             self.symbol.clone()
@@ -128,6 +139,13 @@ impl FactorNqRule {
         );
         Ok(Some((long, short)))
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PositionFactor {
+    pub strategy: String,
+    pub factor: String,
+    pub weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -192,6 +210,58 @@ impl Default for ExecutionConfig {
 }
 
 impl CtaPerpConfig {
+    /// Repeated symbol/factor rules share a model and own separate position ledgers.
+    pub fn rule_strategy(&self, rule: &FactorNqRule) -> String {
+        let repeated = self
+            .factor_rules
+            .iter()
+            .filter(|other| {
+                other.venue_symbol() == rule.venue_symbol() && other.factor == rule.factor
+            })
+            .take(2)
+            .count()
+            > 1;
+        if repeated {
+            format!(
+                "{}__nq_{}__{}",
+                rule.factor,
+                rule.nq_key(),
+                if rule.sign > 0 { "pos" } else { "neg" }
+            )
+        } else {
+            rule.factor.clone()
+        }
+    }
+
+    pub fn position_factors(
+        &self,
+        symbol: &str,
+        row: &super::factors::SymbolFactors,
+    ) -> Vec<PositionFactor> {
+        if !self.factor_rules.is_empty() {
+            return self
+                .factor_rules
+                .iter()
+                .filter(|r| r.venue_symbol() == symbol)
+                .map(|r| PositionFactor {
+                    strategy: self.rule_strategy(r),
+                    factor: r.factor.clone(),
+                    weight: f64::from(r.sign),
+                })
+                .collect();
+        }
+        row.factors
+            .iter()
+            .zip(&row.weights)
+            .filter(|(_, w)| **w != 0.0)
+            .map(|(factor, weight)| PositionFactor {
+                strategy: factor.clone(),
+                factor: factor.clone(),
+                weight: *weight,
+            })
+            .collect()
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let raw = fs::read_to_string(path)
@@ -247,7 +317,7 @@ impl CtaPerpConfig {
         if let Some(rule) = self
             .factor_rules
             .iter()
-            .find(|r| r.venue_symbol() == symbol && r.factor == factor)
+            .find(|r| r.venue_symbol() == symbol && self.rule_strategy(r) == factor)
         {
             effective.strict_nq = true;
             match rule.thresholds().ok().flatten() {
@@ -272,8 +342,10 @@ impl CtaPerpConfig {
                         factors: vec![],
                         weights: vec![],
                     });
-            row.factors.push(rule.factor.clone());
-            row.weights.push(f64::from(rule.sign));
+            if !row.factors.contains(&rule.factor) {
+                row.factors.push(rule.factor.clone());
+                row.weights.push(f64::from(rule.sign));
+            }
         }
         table
     }
@@ -307,11 +379,16 @@ impl CtaPerpConfig {
                     "invalid rule factor"
                 );
                 anyhow::ensure!(
-                    seen.insert((symbol.clone(), rule.factor.clone())),
-                    "duplicate symbol/factor rule"
+                    seen.insert((
+                        symbol.clone(),
+                        rule.factor.clone(),
+                        rule.sign,
+                        rule.nq_key()
+                    )),
+                    "duplicate symbol/factor/sign/NQ rule"
                 );
                 rule.thresholds()?;
-                self.for_strategy(&symbol, &rule.factor)
+                self.for_strategy(&symbol, &self.rule_strategy(rule))
                     .validate_controls()?;
             }
         }
@@ -388,6 +465,51 @@ impl CtaPerpConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_factor_rules_share_one_model_and_keep_distinct_stable_positions() {
+        let mut config: CtaPerpConfig = serde_json::from_value(serde_json::json!({
+            "execution":{}, "factor_rules":[
+                {"标的":"SKL","因子":"factor_170","符号":-1,"nq":"关闭"},
+                {"标的":"SKLUSDT","因子":"factor_170","符号":-1,"nq":"0.50"}
+            ]
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let table = config.rule_table();
+        assert_eq!(table["SKLUSDT"].factors, ["factor_170"]);
+        let bindings = config.position_factors("SKLUSDT", &table["SKLUSDT"]);
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].strategy, "factor_170__nq_off__neg");
+        assert_eq!(
+            bindings[1].strategy,
+            "factor_170__nq_3fe0000000000000_3fe0000000000000__neg"
+        );
+        assert!(
+            !config
+                .for_strategy("SKLUSDT", &bindings[0].strategy)
+                .entry
+                .nq_change_enabled
+        );
+        assert!(
+            config
+                .for_strategy("SKLUSDT", &bindings[1].strategy)
+                .entry
+                .nq_change_enabled
+        );
+        config.factor_rules.reverse();
+        assert_eq!(
+            config.rule_strategy(&config.factor_rules[0]),
+            bindings[1].strategy
+        );
+        config.factor_rules[0].nq = "0.5/0.5".into();
+        assert_eq!(
+            config.rule_strategy(&config.factor_rules[0]),
+            bindings[1].strategy
+        );
+        config.factor_rules.push(config.factor_rules[0].clone());
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn accepts_independent_factor_exit_contract() {

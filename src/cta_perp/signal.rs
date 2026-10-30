@@ -24,20 +24,15 @@ const SHADOW_PATH: &str = "run/cta_perp_position_flags.json";
 
 fn strategy_scope(
     table: &SymbolFactorTable,
-    algorithm: PositionAlgorithm,
+    config: &CtaPerpConfig,
 ) -> BTreeMap<String, BTreeSet<String>> {
     let mut scope: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (symbol, row) in table {
-        for (factor, _) in row
-            .factors
-            .iter()
-            .zip(&row.weights)
-            .filter(|(_, w)| **w != 0.0)
-        {
-            let name = if algorithm == PositionAlgorithm::V1 {
+        for binding in config.position_factors(symbol, row) {
+            let name = if config.position_algorithm == PositionAlgorithm::V1 {
                 SYMBOL_MEAN_STRATEGY
             } else {
-                factor
+                &binding.strategy
             };
             scope
                 .entry(name.to_string())
@@ -140,13 +135,13 @@ impl CtaPerpSignalApp {
         app.write_status()?;
         info!(
             "CTA perp position strategies ready strategies={} enabled={}",
-            strategy_scope(app.factors.table(), app.config.position_algorithm).len(),
+            strategy_scope(app.factors.table(), &app.config).len(),
             app.config.enabled
         );
         Ok(app)
     }
     fn sync_factor_scope(&mut self) {
-        let scope = strategy_scope(self.factors.table(), self.config.position_algorithm);
+        let scope = strategy_scope(self.factors.table(), &self.config);
         // Keep retired quantities as zero targets so Manager clears their original strategies.
         for (factor, rows) in &mut self.positions {
             for (symbol, position) in rows {
@@ -170,7 +165,7 @@ impl CtaPerpSignalApp {
             "CTA Manager publication URL is required"
         );
         let mut publications = BTreeMap::new();
-        let scope = strategy_scope(self.factors.table(), self.config.position_algorithm);
+        let scope = strategy_scope(self.factors.table(), &self.config);
         let names: BTreeSet<String> = scope
             .keys()
             .cloned()
@@ -443,6 +438,15 @@ impl CtaPerpSignalApp {
     fn write_status(&self) -> Result<()> {
         fs::create_dir_all("run")?;
         let mut strategies = self.observations.clone();
+        let scope = strategy_scope(self.factors.table(), &self.config);
+        strategies.retain(|name, rows| {
+            if let Some(symbols) = scope.get(name) {
+                rows.retain(|symbol, _| symbols.contains(symbol));
+                !rows.is_empty()
+            } else {
+                false
+            }
+        });
         let now = get_timestamp_us();
         for (symbol, row) in self.factors.table() {
             let quote = MktChannel::instance().get_quote(symbol, self.config.venue());
@@ -454,7 +458,7 @@ impl CtaPerpSignalApp {
                 .filter(|p| p.is_finite() && *p > 0.0);
             let names = strategy_scope(
                 &BTreeMap::from([(symbol.clone(), row.clone())]),
-                self.config.position_algorithm,
+                &self.config,
             );
             for factor in names.keys() {
                 let item = strategies.entry(factor.clone()).or_default().entry(symbol.clone())
@@ -463,12 +467,23 @@ impl CtaPerpSignalApp {
                 item["factor_sign"] = if factor == SYMBOL_MEAN_STRATEGY {
                     json!(null)
                 } else {
-                    let weight = row
-                        .factors
-                        .iter()
-                        .position(|f| f == factor)
-                        .map(|i| row.weights[i])
+                    let binding = self
+                        .config
+                        .position_factors(symbol, row)
+                        .into_iter()
+                        .find(|binding| &binding.strategy == factor);
+                    let weight = binding
+                        .as_ref()
+                        .map(|binding| binding.weight)
                         .unwrap_or(0.0);
+                    item["factor"] = json!(binding.as_ref().map(|binding| &binding.factor));
+                    item["nq"] = json!(self
+                        .config
+                        .factor_rules
+                        .iter()
+                        .find(|rule| rule.venue_symbol() == *symbol
+                            && self.config.rule_strategy(rule) == *factor)
+                        .map(|rule| &rule.nq));
                     json!(if weight > 0.0 { "+" } else { "-" })
                 };
                 item["factor_count"] = json!(row.weights.iter().filter(|w| **w != 0.0).count());
@@ -536,10 +551,12 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let independent = strategy_scope(&table, PositionAlgorithm::V0);
+        let mut config: CtaPerpConfig = serde_json::from_value(json!({"execution":{}})).unwrap();
+        let independent = strategy_scope(&table, &config);
         assert_eq!(independent.len(), 2);
         assert_eq!(independent["factor_036"].len(), 1);
-        let mean = strategy_scope(&table, PositionAlgorithm::V1);
+        config.position_algorithm = PositionAlgorithm::V1;
+        let mean = strategy_scope(&table, &config);
         assert_eq!(mean.len(), 1);
         assert_eq!(
             mean[SYMBOL_MEAN_STRATEGY],

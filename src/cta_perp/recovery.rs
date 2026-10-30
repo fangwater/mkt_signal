@@ -256,24 +256,27 @@ impl PositionRecovery {
                 mean_bar(row, &inputs, &effective.entry),
             )]
         } else {
-            row.factors
-                .iter()
-                .zip(&row.weights)
-                .zip(&inputs)
-                .filter(|((_, w), _)| **w != 0.0)
-                .map(|((factor, weight), input)| {
-                    (
-                        factor.clone(),
+            config
+                .position_factors(symbol, row)
+                .into_iter()
+                .filter_map(|binding| {
+                    let input = inputs.get(
+                        row.factors
+                            .iter()
+                            .position(|factor| factor == &binding.factor)?,
+                    )?;
+                    Some((
+                        binding.strategy.clone(),
                         aggregate_bar(
                             &SymbolFactors {
-                                factors: vec![factor.clone()],
-                                weights: vec![*weight],
+                                factors: vec![binding.factor.clone()],
+                                weights: vec![binding.weight],
                             },
                             std::slice::from_ref(input),
-                            &config.for_strategy(symbol, factor).entry,
+                            &config.for_strategy(symbol, &binding.strategy).entry,
                             PositionAlgorithm::V0,
                         ),
-                    )
+                    ))
                 })
                 .collect()
         };
@@ -310,6 +313,39 @@ impl PositionRecovery {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn repeated_nq_rules_recover_independent_quantities_from_one_factor_bar() {
+        let mut c = config();
+        c.position_algorithm = PositionAlgorithm::V0;
+        c.factor_rules = serde_json::from_value(json!([
+            {"标的":"ETH","因子":"factor_036","符号":1,"nq":"关闭"},
+            {"标的":"ETH","因子":"factor_036","符号":1,"nq":"0.50"}
+        ]))
+        .unwrap();
+        c.validate().unwrap();
+        let mut r = recovery(Path::new("unused"), &c);
+        r.table = c.rule_table();
+        let names: Vec<_> = c
+            .factor_rules
+            .iter()
+            .map(|rule| c.rule_strategy(rule))
+            .collect();
+        let mut bar = record("new", 60_000, 0.99, 101.0);
+        bar["nq"]["long_quantile"] = json!(0.4);
+        r.consume(&bar, &c).unwrap();
+        assert_eq!(r.positions[&names[0]]["ETHUSDT"].qty, 300.0 / 101.0);
+        assert_eq!(r.positions[&names[1]]["ETHUSDT"].qty, 0.0);
+        bar["model_ts_ms"] = json!(120_000);
+        bar["nq"]["execution_ts_ms"] = json!(120_005);
+        bar["nq"]["long_quantile"] = json!(0.6);
+        bar["nq"]["execution_ask"] = json!(201.0);
+        r.consume(&bar, &c).unwrap();
+        assert_eq!(r.positions[&names[0]]["ETHUSDT"].qty, 300.0 / 101.0);
+        assert_eq!(r.positions[&names[1]]["ETHUSDT"].qty, 300.0 / 201.0);
+        r.consume(&bar, &c).unwrap();
+        assert_eq!(r.records, 2);
+    }
 
     #[test]
     fn multi_minute_recovery_preserves_nq_thresholds_and_rejects_other_frequencies() {

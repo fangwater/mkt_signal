@@ -57,7 +57,7 @@ def factor_strategies(status_path: Path, config_path: Path) -> dict[str, list[st
     if not isinstance(table, dict):
         return {}
     algorithm = config.get("position_algorithm", "v0") if isinstance(config, dict) else "v0"
-    return {symbol: sorted(position_strategy_factors(row, algorithm))
+    return {symbol: sorted(position_strategy_factors(row, algorithm, config, symbol))
             for symbol, row in table.items() if isinstance(row, dict)}
 
 

@@ -1,9 +1,8 @@
 bar_interval = "15m"
 
 [universe]
-# Waiting for the operator's new RX01 list; no RX03 symbols or factors are copied.
-symbols = []
-factors = []
+symbols = ["1INCHUSDT", "AAVEUSDT", "ADAUSDT", "ALGOUSDT", "ATOMUSDT", "AXSUSDT", "BELUSDT", "BNBUSDT", "CRVUSDT", "DASHUSDT", "DOTUSDT", "EGLDUSDT", "ENJUSDT", "ETCUSDT", "FILUSDT", "IOSTUSDT", "IOTAUSDT", "KAVAUSDT", "KNCUSDT", "KSMUSDT", "LTCUSDT", "NEARUSDT", "ONTUSDT", "QTUMUSDT", "RLCUSDT", "RSRUSDT", "RUNEUSDT", "SKLUSDT", "SNXUSDT", "SOLUSDT", "SUSHIUSDT", "THETAUSDT", "VETUSDT", "XRPUSDT", "YFIUSDT", "ZENUSDT", "ZILUSDT", "ZRXUSDT"]
+factors = ["TD_CI_003", "TD_CI_007", "TD_CI_008", "TD_MT_010", "TD_MT_011", "TD_MT_019", "TD_MT_027", "TD_MT_040", "TD_PR_001", "TD_PR_005", "TD_PR_008", "TD_PR_013", "TD_PT_001", "TD_PT_002", "TD_PT_004", "TD_PT_009", "TD_TI_008", "TD_TI_013", "TD_TI_015", "TD_TI_017", "TD_TI_023", "TD_TI_024", "TD_TI_027", "TD_TI_028", "TD_TI_030", "TD_TI_038", "TD_VI_001", "TD_VI_012", "TD_VI_025", "TP_VPI_001", "TP_VPI_002", "TP_VPI_005", "TP_VPI_009", "TP_VPI_016", "TP_VPI_018", "avg_price", "baseline_004", "baseline_012", "baseline_013", "baseline_016", "baseline_022", "baseline_025", "baseline_035", "baseline_040", "baseline_047", "baseline_051", "baseline_054", "baseline_074", "baseline_076", "baseline_079", "baseline_087", "baseline_090", "baseline_100", "baseline_104", "baseline_105", "baseline_120", "baseline_127", "baseline_138", "baseline_141", "baseline_151", "baseline_159", "baseline_162", "baseline_164", "baseline_170", "baseline_180", "baseline_185", "baseline_189", "depth_imb_all", "depth_level_imb", "depth_touch_net", "factor_020", "factor_032", "factor_045", "factor_048", "factor_049", "factor_051", "factor_052", "factor_093", "factor_094", "factor_114", "factor_125", "factor_134", "factor_170", "factor_171", "factor_trades_038", "factor_trades_042", "factor_trades_043", "factor_trades_050", "sell_avg_price"]
 
 [tlen_server]
 base_url = "http://127.0.0.1:6322"

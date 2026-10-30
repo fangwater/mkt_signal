@@ -17,8 +17,8 @@ def factor_snapshot(factor,weight,observations,config):
     return combined_snapshot({factor: weight}, observations, config)
 
 
-def combined_snapshot(factors, observations, config):
-    config=effective_config(config,observations['symbol'], next(iter(factors)) if len(factors)==1 else None)
+def combined_snapshot(factors, observations, config, strategy=None):
+    config=effective_config(config,observations['symbol'], strategy or (next(iter(factors)) if len(factors)==1 else None))
     entry=config['entry'];votes=[]
     for factor,weight in sorted(factors.items()):
         if weight==0:continue
@@ -65,7 +65,7 @@ def simulate(rows,table,config,settings):
     if not math.isfinite(initial) or initial<=0 or not math.isfinite(fee_rate) or fee_rate<0:raise ValueError('invalid replay equity or fee')
     amount=config['max_pos_u']
     if isinstance(amount,bool) or not isinstance(amount,(int,float)) or not math.isfinite(amount) or amount<=0:raise ValueError('max_pos_u must be a positive finite USDT amount')
-    scopes={symbol:position_strategy_factors(row,config['position_algorithm']) for symbol,row in table.items()}
+    scopes={symbol:position_strategy_factors(row,config['position_algorithm'],config,symbol) for symbol,row in table.items()}
     factors={factor for row in scopes.values() for factor in row}
     revision=hashlib.sha256(json.dumps([table,config,settings],sort_keys=True,separators=(',',':')).encode()).hexdigest()
     positions,marks,records,trades,warmup,earliest={},{},[],[],{},{}
@@ -85,7 +85,7 @@ def simulate(rows,table,config,settings):
             key=(factor,symbol)
             if (*key,bar) in seen:continue
             seen.add((*key,bar));earliest[key]=min(earliest.get(key,bar),bar)
-            signal=combined_snapshot(bindings,observation,config)
+            signal=combined_snapshot(bindings,observation,config,factor)
             if signal is None:warmup[key]=warmup.get(key,0)+1;continue
             position=positions.get(key);actions=[];execution=effective['execution'];q=signal['decision_value']
             record=dict(event_id=f'replay:{revision}:{factor}:{symbol}:{bar}',signal_id=f'replay:{revision}:{factor}:{symbol}:{bar}',

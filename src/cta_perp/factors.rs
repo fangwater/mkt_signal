@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
 
 pub type SymbolFactorTable = BTreeMap<String, SymbolFactors>;
-pub const MAX_FACTOR_SERVICES: usize = 64;
+pub const MAX_FACTOR_SERVICES: usize = 128;
 pub const WEIGHTED_RULE_NAME: &str = "weighted";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,7 +114,7 @@ pub fn parse_factor_table(raw: &str) -> Result<SymbolFactorTable> {
     }
     ensure!(
         table_services(&canonical).len() <= MAX_FACTOR_SERVICES,
-        "CTA factor table requires more than 64 model services"
+        "CTA factor table requires more than {MAX_FACTOR_SERVICES} model services"
     );
     Ok(canonical)
 }
@@ -433,6 +433,25 @@ impl Drop for FactorConfigWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn factor_service_capacity_accepts_128_and_rejects_more() {
+        let names = factor_engine::baseline::SUPPORTED_BASELINES;
+        assert!(names.len() > MAX_FACTOR_SERVICES);
+        let table = |count: usize| {
+            let mut symbols = serde_json::Map::new();
+            for (i, chunk) in names[..count].chunks(32).enumerate() {
+                let row: serde_json::Map<String, serde_json::Value> = chunk
+                    .iter()
+                    .map(|name| ((*name).to_string(), serde_json::json!(1)))
+                    .collect();
+                symbols.insert(format!("COIN{i}USDT"), row.into());
+            }
+            serde_json::Value::Object(symbols).to_string()
+        };
+        assert!(parse_factor_table(&table(MAX_FACTOR_SERVICES)).is_ok());
+        assert!(parse_factor_table(&table(MAX_FACTOR_SERVICES + 1)).is_err());
+    }
 
     fn row(weights: Vec<f64>, signs: Vec<FactorSign>) -> SymbolFactors {
         SymbolFactors {

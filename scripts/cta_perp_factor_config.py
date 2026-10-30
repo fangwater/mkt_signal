@@ -64,8 +64,8 @@ def normalize_table(raw: Any) -> dict[str, Any]:
         if not any(w != 0 for w in normalized.values()):
             raise ValueError(f"{symbol}: absolute weights must have a positive total")
         table[symbol] = dict(sorted(normalized.items()))
-    if len(services) > 64:
-        raise ValueError("factor table requires more than 64 model services")
+    if len(services) > 128:
+        raise ValueError("factor table requires more than 128 model services")
     return dict(sorted(table.items()))
 
 

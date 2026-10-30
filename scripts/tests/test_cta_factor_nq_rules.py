@@ -9,9 +9,9 @@ from http.server import ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from cta_perp_config_server import normalize_config, normalize_factor_rules, effective_config
-from cta_perp_factor_config import available_universe, validate_available
-from cta_perp_position_replay import factor_snapshot
+from cta_perp_config_server import normalize_config, normalize_factor_rules, effective_config, position_strategy_factors, rule_strategy
+from cta_perp_factor_config import available_universe, validate_available, normalize_table
+from cta_perp_position_replay import factor_snapshot, simulate
 from cta_perp_dashboard import factor_strategies
 from cta_perp_signal_history import configured_targets
 import test_cta_perp_servers as fixtures
@@ -19,6 +19,49 @@ from test_cta_perp_servers import FakeFactorRedis, request_json, CONFIG_SERVER
 
 
 class FactorNqRulesTests(unittest.TestCase):
+    def test_same_factor_different_nq_keeps_independent_replay_positions(self):
+        config = self.config()
+        config['bar_interval'] = '15m'
+        config['factor_rules'] = [
+            {'标的':'SKL','因子':'factor_170','符号':-1,'nq':'关闭'},
+            {'标的':'SKL','因子':'factor_170','符号':-1,'nq':'0.50'},
+        ]
+        config = normalize_config(config)
+        rules, table = normalize_factor_rules(config['factor_rules'])
+        names = [rule_strategy(config, r) for r in rules]
+        self.assertEqual(names, ['factor_170__nq_off__neg',
+            'factor_170__nq_3fe0000000000000_3fe0000000000000__neg'])
+        self.assertEqual(table, {'SKLUSDT': {'factor_170': -1}})
+        self.assertEqual(len(position_strategy_factors(table['SKLUSDT'], 'v0', config, 'SKLUSDT')), 2)
+        self.assertFalse(effective_config(config,'SKLUSDT',names[0])['entry']['nq_change_enabled'])
+        self.assertTrue(effective_config(config,'SKLUSDT',names[1])['entry']['nq_change_enabled'])
+        def row(ts, nq, ask):
+            return {'bar_interval':'15m','symbol':'SKLUSDT','model_ts_ms':ts,
+                'inputs':{'factor_170':{'score':-1,'quantile':.01,'ready':True}},
+                'nq':{'ready':True,'long_quantile':nq,'short_quantile':nq,
+                    'execution_ts_ms':ts+5,'execution_bid':ask-1,'execution_ask':ask}}
+        result=simulate([row(900000,.4,101),row(1800000,.6,201)],table,config,
+            {'start_ms':0,'initial_equity_usdt':10000})
+        opened={p['strategy_name']:p for p in result['open_positions']}
+        self.assertEqual(set(opened),set(names))
+        self.assertAlmostEqual(opened[names[0]]['qty'],config['max_pos_u']/101)
+        self.assertAlmostEqual(opened[names[1]]['qty'],config['max_pos_u']/201)
+        reordered={**config,'factor_rules':list(reversed(config['factor_rules']))}
+        self.assertEqual(rule_strategy(reordered,rules[0]),names[0])
+        duplicate={**rules[1],'nq':'0.5/0.5'}
+        with self.assertRaises(ValueError): normalize_factor_rules([*rules,duplicate])
+
+    def test_factor_service_capacity(self):
+        import re
+        text = (ROOT/'scripts/factor_validation_allowlist.txt').read_text()
+        names = sorted(set(re.findall(r'(?:factor_(?:trades_)?\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})', text)))
+        self.assertGreater(len(names), 128)
+        def table(count):
+            return {f'COIN{i//32}USDT': {name: 1 for name in names[i:i+32]}
+                    for i in range(0, count, 32)}
+        self.assertEqual(sum(map(len, normalize_table(table(128)).values())), 128)
+        with self.assertRaises(ValueError): normalize_table(table(129))
+
     def config(self):
         return normalize_config(json.loads((ROOT/'config/cta_perp_rx03/cta_perp.json').read_text()))
 

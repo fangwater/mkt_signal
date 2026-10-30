@@ -141,18 +141,14 @@ impl WeightedFactorChannel {
                 }
                 continue;
             }
-            for (factor, weight) in row
-                .factors
-                .iter()
-                .zip(&row.weights)
-                .filter(|(_, w)| **w != 0.0)
-            {
+            for binding in config.position_factors(&symbol, row) {
+                let factor = &binding.factor;
                 let input = self.hub.cached_score(
                     &model_service_path_for_interval("binance-futures", factor, self.interval),
                     &symbol,
                     TradingVenue::BinanceFutures,
                 );
-                let key = format!("{factor}:{symbol}");
+                let key = format!("{}:{symbol}", binding.strategy);
                 let ts = input.score_ts_ms;
                 if ts <= 0
                     || self.last_ts.get(&key).is_some_and(|old| ts <= *old)
@@ -161,14 +157,14 @@ impl WeightedFactorChannel {
                     continue;
                 }
                 self.last_ts.insert(key, ts);
-                let effective = config.for_strategy(&symbol, factor);
+                let effective = config.for_strategy(&symbol, &binding.strategy);
                 let single = SymbolFactors {
                     factors: vec![factor.clone()],
-                    weights: vec![weight.signum()],
+                    weights: vec![binding.weight.signum()],
                 };
                 updates.push(PositionObservation {
                     symbol: symbol.clone(),
-                    factor: factor.clone(),
+                    factor: binding.strategy,
                     model_ts_ms: ts,
                     bar: aggregate_bar(
                         &single,

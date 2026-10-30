@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 import tempfile
 import threading
@@ -38,10 +39,28 @@ OVERRIDE_FIELDS = {"factor_long_quantile", "factor_short_quantile", "nq_long_qua
 SYMBOL_MEAN_STRATEGY = "symbol_mean"
 
 
-def position_strategy_factors(row: dict, algorithm: str) -> dict:
+def nq_key(value):
+    thresholds = parse_nq(value)
+    return "off" if thresholds is None else "_".join(
+        struct.pack(">d", 0.0 if v == 0 else v).hex() for v in thresholds)
+
+
+def rule_strategy(config: dict, rule: dict) -> str:
+    symbol = rule["标的"] if rule["标的"].endswith("USDT") else rule["标的"] + "USDT"
+    repeated = sum((other["标的"] if other["标的"].endswith("USDT") else other["标的"] + "USDT") == symbol
+                   and other["因子"] == rule["因子"] for other in config.get("factor_rules", [])) > 1
+    if not repeated:
+        return rule["因子"]
+    return f'{rule["因子"]}__nq_{nq_key(rule["nq"])}__{"pos" if rule["符号"] > 0 else "neg"}'
+
+
+def position_strategy_factors(row: dict, algorithm: str, config: dict | None = None, symbol: str | None = None) -> dict:
     active = {factor: weight for factor, weight in row.items() if weight != 0}
     if algorithm == "v1":
         return {SYMBOL_MEAN_STRATEGY: active} if active else {}
+    if config and config.get("factor_rules"):
+        return {rule_strategy(config, rule): {rule["因子"]: rule["符号"]}
+                for rule in config["factor_rules"] if rule["标的"] == symbol}
     return {factor: {factor: weight} for factor, weight in active.items()}
 
 
@@ -87,7 +106,7 @@ def effective_config(config: dict, symbol: str, factor: str | None = None) -> di
         if value is not None:
             result["execution" if field in EXECUTION_FIELDS else "entry"][field] = value
     for rule in config.get("factor_rules", []):
-        if rule["标的"] == symbol and rule["因子"] == factor:
+        if rule["标的"] == symbol and rule_strategy(config, rule) == factor:
             thresholds = parse_nq(rule["nq"])
             result["strict_nq"] = True
             result["entry"]["nq_change_enabled"] = thresholds is not None
@@ -108,7 +127,7 @@ def parse_nq(value):
 
 def normalize_factor_rules(raw):
     if not isinstance(raw, list) or len(raw) > 8192: raise ValueError("factor_rules 必须是 JSON 数组，最多8192行")
-    table, result = {}, []
+    table, result, seen = {}, [], set()
     for index, row in enumerate(raw):
         if not isinstance(row, dict) or set(row) != {"标的", "nq", "符号", "因子"}: raise ValueError(f"第{index+1}行需要标的、nq、符号、因子")
         symbol, factor, sign = row["标的"], row["因子"], row["符号"]
@@ -117,9 +136,10 @@ def normalize_factor_rules(raw):
         if not isinstance(factor, str) or isinstance(sign, bool) or sign not in (-1, 1): raise ValueError("因子须为字符串，符号须为+1或-1")
         normalized = normalize_table({symbol: {factor: sign}})[symbol]
         factor = next(iter(normalized))
-        if factor in table.setdefault(symbol, {}): raise ValueError(f"重复标的×因子：{symbol}/{factor}")
-        parse_nq(row["nq"])
-        table[symbol][factor] = sign
+        key = (symbol, factor, sign, nq_key(row["nq"]))
+        if key in seen: raise ValueError(f"重复标的×因子×符号×NQ：{symbol}/{factor}")
+        seen.add(key)
+        table.setdefault(symbol, {}).setdefault(factor, sign)
         result.append({"标的": symbol, "nq": row["nq"], "符号": int(sign), "因子": factor})
     normalize_table(table)
     return result, table
@@ -222,7 +242,7 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         raise ValueError("factor_rules 仅支持1m或15m v0独立因子模式")
     result["factor_rules"] = rules
     for rule in rules:
-        validate_position_thresholds(effective_config(result, rule["标的"], rule["因子"]))
+        validate_position_thresholds(effective_config(result, rule["标的"], rule_strategy(result, rule)))
     return result
 
 

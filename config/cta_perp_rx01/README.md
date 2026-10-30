@@ -1,34 +1,26 @@
-# RX01 CTA Perp 15min 框架
+# RX01 CTA Perp 15min
 
-新环境名为 `binance-cta-perp-rx01`，复用 Perp 的 15min 发布器、仓位信号和页面，
-按 RX03 的独立因子模式支持标的 × 因子的方向及 NQ 规则。
+环境 `binance-cta-perp-rx01` 使用 Perp 15min 发布器、独立因子仓位信号和页面。
+2026-10-30 操作员清单包含38币、89个计算因子、145个币种×因子组合、
+146条独立仓位规则。原始154行清单及经操作员确认排除的ICX/STORJ八行保存在
+`artifacts/rx01_new_factor_readiness_20261030/`；两币当前不在RapidX市场及在线行情阈值中。
 
-本目录等待操作员提供新清单：`factor_rules=[]`、币种因子表 `{}`，发布器
-`universe.symbols/factors=[]`。未复制 RX03 清单，也未配置 Manager 跟随或开启交易。
-空 universe 会阻止因子发布器启动。提供清单后，需要同步填写这三处配置并校验
-因子支持情况，再进行历史预热；清单不得通过启动时回退到 RX03 或其他环境补齐。
+`factor_rules.json` 保留组合输入格式，`cta_perp.json` 保存规范化逐组规则，
+`cta_perp_symbol_factors.json` 和发布器universe只列去重后的计算依赖。
+SKL/factor_170的NQ关闭和0.50两条规则共用计算结果，各自维护开平、入场数量、
+恢复进度和Manager目标。重复币种×因子以规范化NQ及方向区分策略名，调换输入顺序
+不改变身份；完全相同的规则被拒绝。单份金额200 USDT分别作用于两条规则，
+同时持仓时按两条规则累加。因子订阅上限为128。
 
-窗口：NQ 固定 120 根、至少 60 个有效样本，连续 15min 数据对应 30 小时；
-因子分位 192 根、至少 96 根，完整窗口两天；zscore 96/67，完整窗口一天。
-每组 NQ 配置与 RX03 一致：`0.50`、`0.2/0.8` 使用严格分位比较，`关闭`
-跳过该组 NQ 过滤。没有每组规则时保留既有 15min 线性 Q50 规则。
+NQ固定120根、至少60个有效样本；因子分位192根、至少96根，完整窗口两天；
+zscore96/67，完整窗口一天。逐组NQ使用严格分位比较，关闭跳过过滤。
+仓库配置默认 `enabled=false`；上线先确认历史追平和仓位表，再配置Manager发布与跟随。
+运行状态、Redis、IPC、历史与旧Spread独立，旧仓位和归档不作为新策略状态。
 
-准备命令（默认 dry-run，安装也不启动进程）：
+publisher CPU17，Dashboard `127.0.0.1:10195`，Config `127.0.0.1:19185`。
+构建使用本地arbmm release，上传核验SHA-256并原子安装，进程使用环境本地脚本启停。
 
-```bash
-scripts/deploy_cta_perp_rx01.sh
-```
-
-运行环境、Redis 前缀、IPC scope、状态和历史与旧 Spread 及其他 RX 环境独立。
-预留 publisher CPU17、Dashboard `127.0.0.1:10195`、Config `127.0.0.1:19185`。
-正式发布仍使用本地 arbmm release 构建、上传 SHA-256 校验和环境本地启停脚本。
-旧 RX01 Spread 的历史与配置归档单独保留，不作为新 Perp 的状态或预热输入。
-
-15min 发布器已支持 23 个 `depth_*` 因子：直接从 Kafka 的盘口消息复用
-`depth_pub::OrderBook` 重建全部收到的价格档，再计算累计深度、档位数、目标名义额
-距离及逐条 add/sub/touch 流量。具体口径见 `docs/depth_book_factors.md`。
-新增能力不自动填写本目录的空清单；操作员提供币种、方向和逐组 NQ 后再配置、预热。
-
-`depth_flow_net`、`depth_touch_net` 使用 `(B - A) / (abs(B) + abs(A))`，
-B/A 分别为买/卖侧的新增名义额减撤减名义额；双方均为零或非有限输入返回 NaN。
-净撤单和双边净流量抵消的 bar 均可正常参与原有预热窗口。
+发布器已注册全部23个depth因子，按清单启用ENJ/depth_imb_all、
+IOTA/depth_touch_net及IOTA/depth_level_imb。全部盘口档由Kafka消息复用
+`depth_pub::OrderBook`重建；口径见 `docs/depth_book_factors.md`。
+两个net保持 `(B-A)/(abs(B)+abs(A))`，双方均为零或非有限输入返回NaN。

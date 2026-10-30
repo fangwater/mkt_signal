@@ -1,4 +1,4 @@
-# RX01 deployment framework. No Manager endpoint/token until the new list is supplied.
+# RX01 15m deployment. Manager endpoint/token are configured only in the runtime env.
 export IPC_NAMESPACE='binance-cta-perp-rx01'
 export CTA_POSITION_STRATEGY_PREFIX='binance_cta_perp_rx01_'
 export CTA_VIRTUAL_ACCOUNT_NAME='binance_cta_perp_rx01'

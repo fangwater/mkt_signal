@@ -1,1 +1,223 @@
-{}
+{
+  "1INCHUSDT": {
+    "TP_VPI_005": -1,
+    "baseline_100": 1
+  },
+  "AAVEUSDT": {
+    "baseline_079": -1,
+    "baseline_076": 1,
+    "baseline_162": -1,
+    "TD_CI_007": 1
+  },
+  "ADAUSDT": {
+    "TP_VPI_018": 1,
+    "TD_CI_007": -1
+  },
+  "ALGOUSDT": {
+    "TD_TI_024": -1,
+    "TD_VI_012": -1
+  },
+  "ATOMUSDT": {
+    "TD_MT_027": -1,
+    "factor_170": -1,
+    "TD_CI_003": 1
+  },
+  "AXSUSDT": {
+    "baseline_104": 1,
+    "baseline_151": 1
+  },
+  "BELUSDT": {
+    "factor_093": -1,
+    "TD_TI_028": -1,
+    "baseline_040": -1,
+    "baseline_074": -1
+  },
+  "BNBUSDT": {
+    "baseline_013": -1,
+    "baseline_104": 1,
+    "TD_TI_017": -1
+  },
+  "CRVUSDT": {
+    "baseline_004": -1,
+    "factor_134": 1,
+    "baseline_100": 1
+  },
+  "DASHUSDT": {
+    "TD_TI_027": -1,
+    "baseline_051": -1,
+    "TD_MT_040": 1,
+    "TD_TI_030": 1,
+    "baseline_185": -1,
+    "TD_PT_001": -1,
+    "factor_trades_050": -1,
+    "baseline_141": 1,
+    "TD_MT_010": 1
+  },
+  "DOTUSDT": {
+    "TD_PT_002": 1,
+    "TD_VI_001": 1
+  },
+  "EGLDUSDT": {
+    "baseline_104": 1,
+    "TD_TI_027": -1,
+    "baseline_040": -1,
+    "TD_MT_011": -1
+  },
+  "ENJUSDT": {
+    "factor_114": -1,
+    "TD_TI_008": 1,
+    "baseline_051": -1,
+    "baseline_164": 1,
+    "baseline_138": 1,
+    "baseline_127": -1,
+    "depth_imb_all": 1,
+    "TD_TI_027": -1,
+    "TD_PR_005": -1
+  },
+  "ETCUSDT": {
+    "TD_MT_027": -1,
+    "baseline_104": 1,
+    "TD_TI_023": 1,
+    "baseline_164": 1,
+    "baseline_016": 1,
+    "factor_125": -1,
+    "TD_PT_009": -1
+  },
+  "FILUSDT": {
+    "baseline_025": 1,
+    "baseline_035": -1,
+    "TD_PR_001": 1
+  },
+  "IOSTUSDT": {
+    "factor_170": -1,
+    "baseline_159": -1,
+    "baseline_180": -1,
+    "TD_PT_002": 1,
+    "baseline_040": -1
+  },
+  "IOTAUSDT": {
+    "baseline_138": 1,
+    "baseline_040": -1,
+    "factor_052": 1,
+    "factor_171": -1,
+    "baseline_104": 1,
+    "depth_touch_net": -1,
+    "TD_TI_015": 1,
+    "depth_level_imb": -1,
+    "factor_032": -1
+  },
+  "KAVAUSDT": {
+    "factor_170": -1,
+    "factor_051": -1
+  },
+  "KNCUSDT": {
+    "factor_049": 1,
+    "baseline_076": 1,
+    "baseline_013": -1,
+    "TP_VPI_001": -1
+  },
+  "KSMUSDT": {
+    "sell_avg_price": 1,
+    "TD_PR_013": -1
+  },
+  "LTCUSDT": {
+    "baseline_013": -1,
+    "baseline_105": -1
+  },
+  "NEARUSDT": {
+    "baseline_090": -1,
+    "baseline_051": -1,
+    "factor_trades_050": -1
+  },
+  "ONTUSDT": {
+    "TD_VI_025": -1,
+    "factor_048": 1,
+    "baseline_040": -1
+  },
+  "QTUMUSDT": {
+    "avg_price": 1,
+    "TD_VI_025": -1,
+    "TP_VPI_018": 1,
+    "TD_CI_008": 1
+  },
+  "RLCUSDT": {
+    "TD_PT_002": 1,
+    "baseline_087": -1
+  },
+  "RSRUSDT": {
+    "baseline_012": -1,
+    "factor_048": -1
+  },
+  "RUNEUSDT": {
+    "baseline_100": 1,
+    "TP_VPI_009": -1,
+    "factor_trades_042": 1,
+    "TP_VPI_016": 1
+  },
+  "SKLUSDT": {
+    "factor_170": -1,
+    "factor_051": -1
+  },
+  "SNXUSDT": {
+    "baseline_047": -1,
+    "TP_VPI_002": -1
+  },
+  "SOLUSDT": {
+    "TD_MT_040": 1,
+    "factor_125": -1,
+    "baseline_104": 1,
+    "baseline_189": 1,
+    "TD_PR_008": -1,
+    "baseline_022": -1,
+    "TP_VPI_005": -1,
+    "factor_trades_043": 1
+  },
+  "SUSHIUSDT": {
+    "sell_avg_price": 1,
+    "baseline_040": -1,
+    "baseline_120": -1
+  },
+  "THETAUSDT": {
+    "TD_TI_027": -1,
+    "TP_VPI_018": 1,
+    "baseline_090": -1,
+    "TD_PT_004": 1
+  },
+  "VETUSDT": {
+    "TD_VI_001": 1,
+    "baseline_104": 1,
+    "baseline_170": -1
+  },
+  "XRPUSDT": {
+    "factor_020": -1,
+    "TD_TI_027": -1,
+    "factor_trades_042": 1
+  },
+  "YFIUSDT": {
+    "factor_170": -1,
+    "baseline_104": 1,
+    "TD_VI_001": 1,
+    "factor_045": -1,
+    "factor_171": -1,
+    "TD_MT_040": 1
+  },
+  "ZENUSDT": {
+    "TD_TI_027": -1,
+    "TD_MT_040": 1,
+    "TD_MT_019": -1,
+    "TD_TI_013": 1,
+    "factor_trades_038": -1,
+    "baseline_090": -1
+  },
+  "ZILUSDT": {
+    "factor_094": -1,
+    "baseline_013": -1
+  },
+  "ZRXUSDT": {
+    "baseline_054": -1,
+    "TD_TI_038": -1,
+    "TD_MT_019": -1,
+    "TD_VI_025": -1,
+    "baseline_040": -1
+  }
+}

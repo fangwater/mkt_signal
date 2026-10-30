@@ -20,15 +20,19 @@ START = 1800000000000
 
 
 class FifteenMinuteTests(unittest.TestCase):
-    def test_rx01_framework_waits_for_a_new_operator_list(self):
+    def test_rx01_operator_list_preserves_all_rules_and_model_coverage(self):
         root = ROOT / "config/cta_perp_rx01"
         config = normalize_config(json.loads((root / "cta_perp.json").read_text()))
         self.assertFalse(config["enabled"])
         self.assertEqual(config["bar_interval"], "15m")
-        self.assertEqual(config["factor_rules"], [])
-        self.assertEqual(json.loads((root / "cta_perp_symbol_factors.json").read_text()), {})
+        self.assertEqual(len(config["factor_rules"]), 146)
+        table = json.loads((root / "cta_perp_symbol_factors.json").read_text())
+        self.assertEqual(len(table), 38)
+        self.assertEqual(sum(map(len,table.values())), 145)
         universe = available_universe(root / "cta_perp_factor_model_15m_pub.toml")
-        self.assertEqual(universe, {"symbols": [], "factors": []})
+        self.assertEqual(len(universe["symbols"]),38)
+        self.assertEqual(len(universe["factors"]),89)
+        validate_available(table, universe)
         result = subprocess.run(["bash", str(ROOT / "scripts/deploy_cta_perp_rx01.sh")],
                                 check=True, capture_output=True, text=True)
         self.assertIn("binance-cta-perp-rx01", result.stdout)
