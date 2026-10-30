@@ -1,6 +1,10 @@
 # Exec Grid
 
-最后更新：2026-10-22 UTC
+最后更新：2026-10-30 03:47 UTC
+
+2026-10-30，执行Vol已迁至独立 `~/exec_volatility_binance` / `exec_volatility_pub`（CPU20），
+原RX01 Spread环境退役。计算算法、两条IPC名称、4096容量及Exec订阅保持；
+交接前先完成旁路预热及数值核对，其他Exec无需重启。详情见CTA信号文档及退役回执。
 
 2026-10-21 08:14–08:15 UTC 修复 jp-meta RX01 仓位状态停更：现有
 `exec_pre_trade_state` 通道容量从 64 KiB 扩为 1 MiB，历史保留 2 条，订阅缓存
@@ -84,7 +88,7 @@ Grid 的拆单数与挂单时长仅从对应市场的嵌套字段读取，顶层
 
 ## Vol 与价格
 
-CTA Spread 的 Kafka factor publisher 对两路行情中的全部 symbol 分别维护现货、合约 5s close，
+独立 `exec_volatility_pub` 对两路 Kafka 行情中的全部 symbol 分别维护现货、合约 5s close，
 不再用 Spread 的 `universe.symbols` 过滤执行 Vol，也不维护额外的执行币种白名单。
 新出现的 symbol 自动建立窗口；现货与合约、USDT 与 USDC 合约分别保留自己的行情。
 计算 `r[t] = close[t] / close[t-24] - 1`，对最近 720 个收益率计算样本标准差，不乘 1.3。

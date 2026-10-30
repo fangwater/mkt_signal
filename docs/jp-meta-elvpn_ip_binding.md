@@ -1,6 +1,19 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-29 07:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-30 03:47 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-30 03:47 UTC，旧 `binance-cta-spread-rx01` 已按要求退役：环境本地脚本停止
+signal/publisher/dashboard/config，残留三个常驻进程及 supervisor 登记已移除，
+10186/19174 监听关闭，旧别名和 Spread 网页入口均返回410，Manager旧配置链接移除。
+原环境及历史整体同盘重命名至 `/home/ubuntu/retired_data/rx01_spread_20261030T033029Z/binance-cta-spread-rx01`，
+364个文件的inode、大小及mtime逐项保持，历史数据未删除。
+共享 Binance 执行 Vol 已迁入 `~/exec_volatility_binance`，
+`exec_volatility_pub` PID2865016固定CPU20，保留原两条IPC服务和算法；
+先旁路预热及BTC/ETH两市场数值核对，再交接发布权。
+80个受保护交易/行情进程的PID及启动时间保持。
+新 `~/binance-cta-perp-rx01` 已准备独立15min框架，空币种/因子/逐组NQ清单、
+`enabled=false`、无Manager绑定，四个进程均未启动；CPU17及loopback10195/19185预留。
+未改动ENI/EIP、source IP或路由。证据：`artifacts/rx01_spread_retirement_20261030/`。
 
 2026-10-29 07:34 UTC，Bybit退役账户进一步从CTA/NAV管理移除：SG删除
 `bybit_exec_trade01`的source配置、零份额绑定及权限；JP移除`sg-cta`
@@ -507,10 +520,12 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 
 ```text
 binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
-binance-cta-spread-rx01      172.31.35.228                  因子及页面辅助进程运行；signal停止、发布关闭，Exec06已退役；Kafka 默认出口
+binance-cta-spread-rx01      已退役                         全环境归档；旧10186/19174监听及网页入口移除
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       16币/45组合实盘，单份200 USDT；loopback10197/19187，关联Exec07
+binance-cta-perp-rx01        默认出口 / 172.31.35.228       15min框架待新清单；交易关闭、无进程，预留10195/19185
+exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       5min实盘信号，loopback10198/19188；关联virtual05/RX04 5min，单份100 USDT
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228

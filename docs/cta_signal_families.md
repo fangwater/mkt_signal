@@ -1,6 +1,19 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-10-30 UTC（各频段 NQ 固定 120 根，因子分位 rolling 保持两天；本次未部署）
+最后更新：2026-10-30 03:47 UTC（RX01 Spread退役，15min框架等待新清单）
+
+2026-10-30 03:47 UTC，旧 `binance-cta-spread-rx01` 已按要求退役：环境本地脚本停止
+signal/publisher/dashboard/config，残留三个常驻进程及 supervisor 登记已移除，
+10186/19174 监听关闭，旧别名和 Spread 网页入口均返回410，Manager旧配置链接移除。
+原环境及历史整体同盘重命名至 `/home/ubuntu/retired_data/rx01_spread_20261030T033029Z/binance-cta-spread-rx01`，
+364个文件的inode、大小及mtime逐项保持，历史数据未删除。
+共享 Binance 执行 Vol 已迁入 `~/exec_volatility_binance`，
+`exec_volatility_pub` PID2865016固定CPU20，保留原两条IPC服务和算法；
+先旁路预热及BTC/ETH两市场数值核对，再交接发布权。
+80个受保护交易/行情进程的PID及启动时间保持。
+新 `~/binance-cta-perp-rx01` 已准备独立15min框架，空币种/因子/逐组NQ清单、
+`enabled=false`、无Manager绑定，四个进程均未启动；CPU17及loopback10195/19185预留。
+未改动ENI/EIP、source IP或路由。证据：`artifacts/rx01_spread_retirement_20261030/`。
 
 当前源码中，Perp 和 Spread 的 NQ 极值及变化分位窗口均固定为 120 根，
 至少 60 个有效变化样本就绪，不随频段压缩；实际时间跨度随 bar 周期增加。
@@ -602,11 +615,11 @@ Perp 的 NQ 开仓过滤、原退出规则和历史回放保留。
 新 Spread 没有复制旧 lot 仓位，也没有配置 Manager 发布连接或账户绑定。
 未来启用前仍须核对现有挂单、持仓承接、因子绑定及 Manager 份数；当前发布保持关闭。
 
-## Spread 5s vol 因子
+## 共享执行 5s vol 因子
 
-`cta_spread_factor_model_1m_pub` 同时维护独立的 `vol` 因子。它复用现有 Kafka
-`binance-futures` / `binance-spot` 消费及历史预热，只计算同一配置
-`universe.symbols` 指定的币对。现货和永续分别保存价格、窗口及就绪状态；
+`exec_volatility_pub` 独立维护执行 `vol` 因子，消费 Kafka
+`binance-futures` / `binance-spot` 并从历史预热，自动覆盖两路行情中的全部币对，
+不受策略的 `universe.symbols` 限制。现货和永续分别保存价格、窗口及就绪状态；
 不依赖成交金额分类阈值、分钟因子的就绪状态或两市场的价差配对。
 
 以成交价形成闭合 5 秒 bar 的最后价格 `C_t`：

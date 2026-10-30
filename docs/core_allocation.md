@@ -1,7 +1,20 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-29 07:36 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-30 03:47 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-30 03:47 UTC，旧 `binance-cta-spread-rx01` 已按要求退役：环境本地脚本停止
+signal/publisher/dashboard/config，残留三个常驻进程及 supervisor 登记已移除，
+10186/19174 监听关闭，旧别名和 Spread 网页入口均返回410，Manager旧配置链接移除。
+原环境及历史整体同盘重命名至 `/home/ubuntu/retired_data/rx01_spread_20261030T033029Z/binance-cta-spread-rx01`，
+364个文件的inode、大小及mtime逐项保持，历史数据未删除。
+共享 Binance 执行 Vol 已迁入 `~/exec_volatility_binance`，
+`exec_volatility_pub` PID2865016固定CPU20，保留原两条IPC服务和算法；
+先旁路预热及BTC/ETH两市场数值核对，再交接发布权。
+80个受保护交易/行情进程的PID及启动时间保持。
+新 `~/binance-cta-perp-rx01` 已准备独立15min框架，空币种/因子/逐组NQ清单、
+`enabled=false`、无Manager绑定，四个进程均未启动；CPU17及loopback10195/19185预留。
+未改动ENI/EIP、source IP或路由。证据：`artifacts/rx01_spread_retirement_20261030/`。
 
 2026-10-29 07:34 UTC，按补充要求将已退役的Bybit CTA/MM从管理移除。
 SG CTA配置删除`bybit_exec_trade01`，残留10条零份额绑定及账户权限移除；
@@ -756,10 +769,10 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-26 因子17币/7组/55组合全就绪，PID3173585；全市场Vol继续发布，既有release二进制复用 |
+| 17 | RX01 Perp 15min 预留（未启动） | 旧Spread publisher已退役；新清单待提供，15m框架交易关闭 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-22 新版23币/22因子/69组合，PID160373，双Manager推送；68/69就绪，RLC继续预热 |
 | 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 16币/26因子，PID2307925；2026-10-29恢复45组合交易，单份200 USDT；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
-| 20 | (空) | 原 okex_mm_alpha account_monitor 已停止，配置保留 |
+| 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
 | 21 | (空) | 原 okex_mm_alpha trade_signal 已停止，配置保留 |
 | 22 | (空) | 原 okex_mm_alpha pre_trade 已停止，配置保留 |
 | 23 | (空) | 原 okex_mm_alpha trade_engine 已停止，配置保留 |

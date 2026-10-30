@@ -1,0 +1,82 @@
+{
+  "ports_listening": {
+    "10186": false,
+    "19174": false,
+    "10195": false,
+    "19185": false
+  },
+  "rx01_framework": {
+    "path": "/home/ubuntu/binance-cta-perp-rx01",
+    "bar_interval": "15m",
+    "enabled": false,
+    "symbols": 0,
+    "factors": 0,
+    "factor_rules": 0,
+    "manager_binding": false,
+    "processes": [],
+    "sha256_files_verified": 43
+  },
+  "volatility": {
+    "caught_up": true,
+    "decode_errors": 0,
+    "fresh_ready": [
+      522,
+      360
+    ],
+    "pid": 2865016,
+    "publish_failed": 0,
+    "published": 7056,
+    "publishing": true,
+    "records": 127227,
+    "samples": [
+      {
+        "cash": false,
+        "symbol": "ETHUSDT",
+        "ts_ms": 1793331985000,
+        "value": 0.0009296730751347668
+      },
+      {
+        "cash": false,
+        "symbol": "BTCUSDT",
+        "ts_ms": 1793331985000,
+        "value": 0.0008407354881786744
+      },
+      {
+        "cash": true,
+        "symbol": "BTCUSDT",
+        "ts_ms": 1793331985000,
+        "value": 0.0008310730868130576
+      },
+      {
+        "cash": true,
+        "symbol": "ETHUSDT",
+        "ts_ms": 1793331985000,
+        "value": 0.0009245906271516393
+      }
+    ],
+    "symbols": [
+      522,
+      360
+    ],
+    "updated_ms": 1793331991489
+  },
+  "protected_processes_unchanged": 80,
+  "manager_pid_unchanged": true,
+  "verified_at_ms": 1793331992520,
+  "ipc_probes": {
+    "futures": {
+      "state": "ALL_READY",
+      "observed": 522,
+      "ready": 522,
+      "received": 4096,
+      "decode_errors": 0
+    },
+    "cash": {
+      "state": "ALL_READY",
+      "observed": 360,
+      "ready": 360,
+      "received": 3600,
+      "decode_errors": 0
+    }
+  }
+}
