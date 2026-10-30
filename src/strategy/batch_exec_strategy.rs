@@ -1598,6 +1598,54 @@ impl BatchExecStrategy {
         }
     }
 
+    fn settle_idle_execution(&mut self, reference_price: f64, minimum_base_qty: f64) -> bool {
+        if !self.position_allocation_ready()
+            || self.pending_target.is_some()
+            || self.config_transition_in_progress
+            || !self.child_orders.is_empty()
+            || !self.orphaned_child_orders.is_empty()
+            || self
+                .batches
+                .values()
+                .any(|batch| !batch.child_order_ids.is_empty())
+            || !reference_price.is_finite()
+            || reference_price <= 0.0
+            || !minimum_base_qty.is_finite()
+            || minimum_base_qty < 0.0
+        {
+            return false;
+        }
+        let Some(target) = self.active_target.as_ref() else {
+            return false;
+        };
+        let Some(position_qty) = self.virtual_position_qty() else {
+            return false;
+        };
+        // Reservations in unsent/cancelling batches are not fills. Check the
+        // whole target gap before releasing them, never just unallocated_qty.
+        let residual = (target.target.qty - position_qty).abs();
+        let reason = if residual <= QTY_EPS {
+            BatchExecCompletionReason::TargetReached
+        } else if residual * reference_price <= self.effective_config().target_tolerance_usdt {
+            BatchExecCompletionReason::TargetTolerance
+        } else if residual + QTY_EPS < minimum_base_qty {
+            BatchExecCompletionReason::ExchangeMinimum
+        } else {
+            return false;
+        };
+        self.batches.clear();
+        self.post_only_retry_levels.clear();
+        self.completion_reason = Some(reason);
+        self.next_batch_at_us = if reason == BatchExecCompletionReason::ExchangeMinimum {
+            i64::MAX
+        } else {
+            // A previous exchange-minimum completion may have parked the
+            // scheduler. Tolerance must remain recheckable as prices change.
+            0
+        };
+        true
+    }
+
     fn settled_completion_reason(&self, position_qty: f64) -> Option<BatchExecCompletionReason> {
         if !self.position_allocation_ready()
             || self.pending_target.is_some()
@@ -2086,6 +2134,39 @@ impl BatchExecStrategy {
         };
         if self.config.algorithm == ExecAlgorithm::Grid && !self.grid_can_submit(now_ts, quote.ts) {
             return;
+        }
+        // Settlement must not wait for a batch/retry deadline, or depend on
+        // reservations left by batches with no exchange orders.
+        if self.child_orders.is_empty() && self.orphaned_child_orders.is_empty() {
+            let Some(position_qty) = self.virtual_position_qty() else {
+                return;
+            };
+            let residual = target_qty - position_qty;
+            let side = if residual > 0.0 {
+                Side::Buy
+            } else {
+                Side::Sell
+            };
+            let reference_price = self.inverse_reference_price.unwrap_or(match side {
+                Side::Buy => quote.bid,
+                Side::Sell => quote.ask,
+            });
+            if let Ok(minimum) = self.load_order_limits(reference_price).and_then(|limits| {
+                // Lot-size dust is independent of maker levels and taker
+                // fallback prices. Keep price-dependent min-notional checks
+                // in the normal batch planning path below.
+                minimum_executable_base_qty(
+                    reference_price,
+                    BatchOrderLimits {
+                        min_notional: 0.0,
+                        ..limits
+                    },
+                )
+            }) {
+                if self.settle_idle_execution(reference_price, minimum) {
+                    return;
+                }
+            }
         }
         let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
             (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
@@ -2759,6 +2840,20 @@ impl BatchExecStrategy {
         };
         for client_order_id in order_ids {
             self.request_cancel(client_order_id);
+        }
+        // An unsent batch will never receive a terminal order callback. Release
+        // target-cancelled reservations now, but preserve unresolved orphans.
+        if self.batches.get(&batch_seq).is_some_and(|batch| {
+            batch.phase == BatchPhase::CancellingForTarget && batch.child_order_ids.is_empty()
+        }) && !self
+            .child_orders
+            .values()
+            .chain(self.orphaned_child_orders.values())
+            .any(|meta| meta.batch_seq == batch_seq)
+        {
+            self.batches.remove(&batch_seq);
+            self.post_only_retry_levels
+                .retain(|(seq, _)| *seq != batch_seq);
         }
     }
 
@@ -5110,6 +5205,223 @@ mod tests {
             strategy.settled_completion_reason(1.0),
             Some(BatchExecCompletionReason::TargetReached)
         );
+    }
+
+    fn idle_residual_strategy(residual: f64) -> BatchExecStrategy {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 0.001, 0.0)]);
+        strategy.orphaned_child_orders.clear();
+        strategy.virtual_position_qty = Some(1.0 - residual);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        strategy.batches.insert(2, strategy.batches[&1].clone());
+        strategy.next_batch_at_us = i64::MAX;
+        strategy
+    }
+
+    #[test]
+    fn idle_dust_settles_all_batches_below_exchange_minimum() {
+        let price = 100_000.0;
+        let limits = BatchOrderLimits {
+            price_tick: 0.1,
+            qty_step: 0.001,
+            min_qty: 0.001,
+            min_notional: 20.0,
+            qty_multiplier: 1.0,
+            inverse_contract_size: None,
+        };
+        let minimum = minimum_executable_base_qty(price, limits).unwrap();
+        for residual in [0.000799, -0.000799] {
+            for phase in [
+                BatchPhase::ReadyToSubmit,
+                BatchPhase::Live,
+                BatchPhase::CancellingForRequote,
+                BatchPhase::CancellingForTarget,
+            ] {
+                let mut strategy = idle_residual_strategy(residual);
+                for batch in strategy.batches.values_mut() {
+                    batch.phase = phase;
+                }
+                strategy.post_only_retry_levels.insert((1, 0));
+                let position = strategy.virtual_position_qty().unwrap();
+                assert_eq!(
+                    executable_pending_base_qty(residual, price, limits),
+                    Ok(0.0)
+                );
+                assert_eq!(strategy.batches.len(), 2);
+                assert_eq!(strategy.settled_completion_reason(position), None);
+
+                assert!(strategy.settle_idle_execution(price, minimum));
+                assert!(strategy.batches.is_empty());
+                assert!(strategy.post_only_retry_levels.is_empty());
+                assert!(!strategy.has_execution_in_flight());
+                assert_eq!(strategy.virtual_position_qty(), Some(position));
+                assert_eq!(strategy.target_qty(), Some(1.0));
+                assert_eq!(
+                    strategy.settled_completion_reason(position),
+                    Some(BatchExecCompletionReason::ExchangeMinimum)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn idle_residual_uses_existing_target_tolerance_and_clear_policy() {
+        let mut strategy = idle_residual_strategy(0.0012);
+        // Executable quantity, but within the existing 10 USDT target tolerance.
+        assert!(strategy.settle_idle_execution(5_000.0, 0.001));
+        assert!(strategy.batches.is_empty());
+        assert_eq!(
+            strategy.settled_completion_reason(0.9988),
+            Some(BatchExecCompletionReason::TargetTolerance)
+        );
+        assert!(!should_defer_batch_start(
+            1,
+            strategy.next_batch_at_us,
+            false
+        ));
+
+        let mut ctaker = idle_residual_strategy(0.0012);
+        ctaker.config.algorithm = ExecAlgorithm::Ctaker;
+        assert!(!ctaker.settle_idle_execution(5_000.0, 0.001));
+        assert_eq!(ctaker.settled_completion_reason(0.9988), None);
+
+        let mut clear = idle_residual_strategy(0.0012);
+        clear.active_target.as_mut().unwrap().target = BatchExecTarget::clear(0).unwrap();
+        clear.virtual_position_qty = Some(-0.0012);
+        assert!(!clear.settle_idle_execution(5_000.0, 0.001));
+        assert_eq!(clear.settled_completion_reason(-0.0012), None);
+
+        let mut reached = idle_residual_strategy(0.0);
+        assert!(reached.settle_idle_execution(100_000.0, 0.001));
+        assert!(!reached.has_execution_in_flight());
+        assert_eq!(
+            reached.settled_completion_reason(1.0),
+            Some(BatchExecCompletionReason::TargetReached)
+        );
+    }
+
+    #[test]
+    fn idle_settlement_keeps_executable_total_even_when_unallocated_is_dust() {
+        for residual in [0.001, -0.001, 0.0012, -0.0012, 0.002799, -0.002799] {
+            let mut strategy = idle_residual_strategy(residual);
+            for batch in strategy.batches.values_mut() {
+                batch.side = if residual > 0.0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                };
+                batch.remaining_base_qty = residual.abs().min(0.002) / 2.0;
+            }
+            assert!(strategy.unallocated_qty_for_target(1.0).abs() < 0.001);
+            assert!(!strategy.settle_idle_execution(100_000.0, 0.001));
+            assert_eq!(strategy.batches.len(), 2);
+            assert!(strategy.has_execution_in_flight());
+            assert_eq!(strategy.settled_completion_reason(1.0 - residual), None);
+        }
+    }
+
+    #[test]
+    fn idle_settlement_waits_for_children_orphans_and_batch_order_ids() {
+        for accounted_fill in [0.0, 0.001] {
+            // Even a fully accounted fill must wait for its terminal acknowledgement.
+            let meta = strategy_with_orphan_batch(&[(101, 0, 0.001, accounted_fill)])
+                .orphaned_child_orders
+                .remove(&101)
+                .unwrap();
+            for tracker in 0..3 {
+                let mut strategy = idle_residual_strategy(0.000799);
+                match tracker {
+                    0 => {
+                        strategy.child_orders.insert(101, meta.clone());
+                    }
+                    1 => {
+                        strategy.orphaned_child_orders.insert(101, meta.clone());
+                    }
+                    _ => {
+                        strategy
+                            .batches
+                            .get_mut(&1)
+                            .unwrap()
+                            .child_order_ids
+                            .insert(101);
+                    }
+                }
+                if tracker < 2 {
+                    assert_eq!(strategy.live_order_signed_qty(), 0.001 - accounted_fill);
+                }
+                assert!(!strategy.settle_idle_execution(100_000.0, 0.001));
+                assert_eq!(strategy.batches.len(), 2);
+                assert_eq!(strategy.completion_reason, None);
+                assert_eq!(strategy.settled_completion_reason(0.999201), None);
+            }
+        }
+    }
+
+    #[test]
+    fn idle_settlement_requires_current_allocation_target_and_valid_limits() {
+        for gate in 0..4 {
+            let mut strategy = idle_residual_strategy(0.000799);
+            match gate {
+                0 => strategy.position_allocation_ready = false,
+                1 => strategy.active_target = None,
+                2 => strategy.config_transition_in_progress = true,
+                _ => {
+                    strategy.pending_target = Some(PendingTarget {
+                        target: BatchExecTarget::new(2.0, 0).unwrap(),
+                        generation_time: 2,
+                        from_key: b"cta_alpha".to_vec(),
+                    })
+                }
+            }
+            assert!(!strategy.settle_idle_execution(100_000.0, 0.001));
+            assert_eq!(strategy.batches.len(), 2);
+            assert_eq!(strategy.completion_reason, None);
+        }
+        for (price, minimum) in [
+            (0.0, 0.001),
+            (f64::NAN, 0.001),
+            (100_000.0, f64::NAN),
+            (100_000.0, f64::INFINITY),
+            (100_000.0, -0.001),
+        ] {
+            let mut strategy = idle_residual_strategy(0.000799);
+            assert!(!strategy.settle_idle_execution(price, minimum));
+            assert_eq!(strategy.batches.len(), 2);
+        }
+    }
+
+    #[test]
+    fn target_cancel_releases_unsent_batches_without_terminal_callback() {
+        let mut strategy = idle_residual_strategy(0.000799);
+        for batch in strategy.batches.values_mut() {
+            batch.phase = BatchPhase::ReadyToSubmit;
+        }
+        strategy.post_only_retry_levels.insert((1, 0));
+        // The 0.002 reservation exceeds the factual gap, triggering target cancel.
+        strategy.cancel_batches_when_target_no_longer_needs_them();
+        assert!(strategy.batches.is_empty());
+        assert!(strategy.post_only_retry_levels.is_empty());
+        assert!(strategy.settle_idle_execution(100_000.0, 0.001));
+        assert_eq!(
+            strategy.settled_completion_reason(0.999201),
+            Some(BatchExecCompletionReason::ExchangeMinimum)
+        );
+    }
+
+    #[test]
+    fn target_cancel_preserves_orphan_reservation_until_terminal() {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 0.001, 0.0)]);
+        strategy.begin_cancel_batch(1, BatchPhase::CancellingForTarget);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert!(strategy.has_execution_in_flight());
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.0002)));
+        assert!(strategy.batches.is_empty());
+        assert!(strategy.orphaned_child_orders.is_empty());
+        assert!((strategy.virtual_position_qty().unwrap() - 0.0002).abs() < QTY_EPS);
     }
 
     #[test]
