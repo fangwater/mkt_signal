@@ -1,4 +1,4 @@
-use super::nq_5m::FiveMinuteNq;
+use super::nq_multi_minute::MultiMinuteNq;
 use crate::cta_perp::interval::BarInterval;
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
@@ -300,7 +300,7 @@ impl SymbolFactorState {
 
 struct NqState {
     interval: BarInterval,
-    five_minute: FiveMinuteNq,
+    multi_minute: MultiMinuteNq,
     last_valid_book_ms: Option<i64>,
     orderbook: OrderBook,
     next_update_id: i64,
@@ -321,7 +321,7 @@ impl NqState {
     fn new(interval: BarInterval) -> Self {
         Self {
             interval,
-            five_minute: FiveMinuteNq::default(),
+            multi_minute: MultiMinuteNq::new(interval),
             last_valid_book_ms: None,
             orderbook: OrderBook::new(),
             next_update_id: 1,
@@ -389,7 +389,7 @@ impl NqState {
             } else {
                 f64::NAN
             };
-            return self.five_minute.observe(mid);
+            return self.multi_minute.observe(mid);
         }
         observe_nq(
             self.current_close,

@@ -1,4 +1,4 @@
-//! Causal 120-minute NQ calculation shared by CTA Perp and Spread.
+//! Causal 120-bar NQ calculation shared by 1m CTA Perp and Spread.
 use rolling_common::exact_rolling_window::ExactRollingWindow;
 use std::collections::VecDeque;
 
