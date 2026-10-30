@@ -1,6 +1,19 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-30 09:41 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-30 10:24 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-30 10:24 UTC，新RX01 Perp 15min按操作员清单进入观察预热：38币、89因子、
+145个计算组合、146条独立仓位规则，SKL/factor_170的NQ关闭和0.50分别维护。
+经确认排除ICX/STORJ八条；原始清单保留。源提交`31a7e358`，本地release上传校验
+SHA-256并原子安装；CPU17 publisher PID3646786，Config PID3647069（19185）、
+Dashboard PID3648167（10195）、signal PID3648834；`enabled=false`，未向Manager发布目标。
+完整BTC/ETH Kafka验收各194根15m bar，23/23深度因子于第162根全部就绪，末bar10:00 UTC。
+6币完整2026-09 Tardis成交补算P50/P90阈值，用于2026-10；合约金额表43→49，
+已有值、现货表及公共factor-plan均保持。Exec06仅发布当前程序，进程仍停止；
+账户永续、借贷及普通/算法挂单为零，55笔现货尾差约3.58 USDT，全部数量向下取整为零。
+旧Exec Redis账本仍待归档重置，不能恢复为新策略仓位；旧Spread归档保持。
+本次安装57个受保护进程保持；source IP、ENI/EIP和路由未改。
+证据：`artifacts/rx01_new_factor_readiness_20261030/`。
 
 2026-10-30 09:41 UTC，按操作员确认修正RX01两个净流量因子分母为
 `abs(bid_net)+abs(ask_net)`，源提交`dc8d82f6`。本地release构建后仅更新

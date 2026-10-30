@@ -1,0 +1,39 @@
+{
+  "execute": true,
+  "mode": "backfill",
+  "source_month": "2026-09",
+  "apply_month": "2026-10",
+  "csv_sha256": "7179881e9a8fdb0270f984ac0f3d4ddbeea2f3e9cb220a95518719f3ea5e1b7d",
+  "changes": {
+    "binance-futures:amount-thresholds": {
+      "before": 43,
+      "after": 49,
+      "added": [
+        "BNBUSDT",
+        "CRVUSDT",
+        "FILUSDT",
+        "THETAUSDT",
+        "XRPUSDT",
+        "ZILUSDT"
+      ],
+      "removed": [],
+      "updated": []
+    },
+    "binance-futures:factor-plan": {
+      "before": 20,
+      "after": 20,
+      "added": [],
+      "removed": [],
+      "updated": []
+    },
+    "binance-futures:factor-plan-1m": {
+      "before": 13,
+      "after": 13,
+      "added": [],
+      "removed": [],
+      "updated": []
+    }
+  },
+  "verified": true,
+  "backup": "run/rx01_order_size_202609_20261030/before.json"
+}

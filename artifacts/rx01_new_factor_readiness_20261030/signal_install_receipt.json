@@ -1,0 +1,27 @@
+{
+  "installed_at": "2026-10-30T10:16:35.067502+00:00",
+  "source_commit": "31a7e3581f2700e0e58df428a7e5da313e41f7fb",
+  "environment": "binance-cta-perp-rx01",
+  "symbols": 38,
+  "factors": 89,
+  "position_rules": 146,
+  "model_pairs": 145,
+  "protected_processes_unchanged": 57,
+  "env_unchanged": true,
+  "enabled": false,
+  "services_started_by_installer": false,
+  "sha256": {
+    "cta_perp_factor_model_15m_pub": "38ce92f7e704765f98d7e9a4b7d2e75cf0ca21b109afed81f803ff69a6947cf1",
+    "cta_perp_15m_signal": "bbddde127ce3d357204226c0cada956675f58bfbb1beb963f7859ae2bb9111c4",
+    "web/cta_perp/index.html": "6a8a2bba8b54ed19a8aa8824302c546e8e74af5e30d8a3dcf31d30b9e7b8371a",
+    "config/cta_perp.json": "9981c85e8eea4fc5b01cc4ff3cfc88eaa3fb70cf2dae8a5bda4a7b4db0497319",
+    "config/cta_perp_symbol_factors.json": "0917ca861ae6f352384df6d2cea4cf408429f86aa3360750044a92a0f20a7479",
+    "config/cta_perp_factor_model_15m_pub.toml": "c8b159665f6368d5e662ac132f39e54e8196f91752fb645e56cd46b8e3a889c3",
+    "config/factor_rules.json": "46e009c1a2a74672f948da3eec577136ed5f9d02afe47666a3cae3d78105674b",
+    "config/README.md": "143f83f32bc62b2d0c9a896f2dfdb12883dac27e444d60bcac0992e34136ec5f",
+    "scripts/cta_perp_config_server.py": "7a086b6e2a6d6e95d8bcf8f1fe3153051fc2a45aa4dd6b6e727ad66b02d0f321",
+    "scripts/cta_perp_dashboard.py": "d153d0470313ba38abe4c032434a93642ef641fe5ffbbfb4b31a0cb3381b372e",
+    "scripts/cta_perp_factor_config.py": "513cec9967c5cc726bb1bff90d278a2250e8ded9ac151613696408e6e707edd7",
+    "scripts/cta_perp_position_replay.py": "d0ca34c67a40958f974c2a54f860435d66537c9b25fe57f1f4613e381727da6a"
+  }
+}

@@ -1,7 +1,20 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-30 09:41 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-30 10:24 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-30 10:24 UTC，新RX01 Perp 15min按操作员清单进入观察预热：38币、89因子、
+145个计算组合、146条独立仓位规则，SKL/factor_170的NQ关闭和0.50分别维护。
+经确认排除ICX/STORJ八条；原始清单保留。源提交`31a7e358`，本地release上传校验
+SHA-256并原子安装；CPU17 publisher PID3646786，Config PID3647069（19185）、
+Dashboard PID3648167（10195）、signal PID3648834；`enabled=false`，未向Manager发布目标。
+完整BTC/ETH Kafka验收各194根15m bar，23/23深度因子于第162根全部就绪，末bar10:00 UTC。
+6币完整2026-09 Tardis成交补算P50/P90阈值，用于2026-10；合约金额表43→49，
+已有值、现货表及公共factor-plan均保持。Exec06仅发布当前程序，进程仍停止；
+账户永续、借贷及普通/算法挂单为零，55笔现货尾差约3.58 USDT，全部数量向下取整为零。
+旧Exec Redis账本仍待归档重置，不能恢复为新策略仓位；旧Spread归档保持。
+本次安装57个受保护进程保持；source IP、ENI/EIP和路由未改。
+证据：`artifacts/rx01_new_factor_readiness_20261030/`。
 
 2026-10-30 09:41 UTC，按操作员确认修正RX01两个净流量因子分母为
 `abs(bid_net)+abs(ask_net)`，源提交`dc8d82f6`。本地release构建后仅更新
@@ -787,7 +800,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | RX01 Perp 15min 预留（未启动） | 旧Spread publisher已退役；新清单待提供，15m框架交易关闭 |
+| 17 | cta_perp_factor_model_15m_pub(binance-cta-perp-rx01) | PID3646786；38币/89因子/146仓位规则；2026-10-30观察预热，enabled=false |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-22 新版23币/22因子/69组合，PID160373，双Manager推送；68/69就绪，RLC继续预热 |
 | 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 16币/26因子，PID2307925；2026-10-29恢复45组合交易，单份200 USDT；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |

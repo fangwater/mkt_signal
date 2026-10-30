@@ -251,6 +251,7 @@ struct SymbolFactorState {
     windows: Vec<ExactRollingWindow>,
     normalize: Vec<NormalizeState>,
     last_ts: Option<i64>,
+    seed_end: Option<(i64, i64)>,
 }
 
 impl SymbolFactorState {
@@ -269,6 +270,7 @@ impl SymbolFactorState {
                 .map(|_| NormalizeState::new(normalize))
                 .collect(),
             last_ts: None,
+            seed_end: None,
         }
     }
 
@@ -290,7 +292,19 @@ impl SymbolFactorState {
         full_depth: Option<&DepthBookBar>,
     ) -> Result<Option<Vec<FactorObservation>>> {
         if self.last_ts.is_some_and(|last| msg.ts <= last) {
+            if self.seed_end.is_some_and(|(end, _)| end == msg.ts) {
+                self.seed_end = None; // Retained Kafka overlaps the completed seed edge.
+            }
             return Ok(None);
+        }
+        if let Some((end, interval)) = self.seed_end {
+            anyhow::ensure!(
+                msg.ts == end + interval,
+                "Kafka baseline does not continue the historical seed: expected={} actual={}",
+                end + interval,
+                msg.ts
+            );
+            self.seed_end = None;
         }
         // A depth-only bar can precede the first trade. Keep depth factors
         // available in mixed plans without reusing stale trade-factor values.
@@ -482,6 +496,7 @@ pub struct CtaPerpFactorModelPubApp {
     allowed_symbols: HashSet<String>,
     aggregators: HashMap<String, LocalBaselineAggregator>,
     factor_states: HashMap<String, SymbolFactorState>,
+    baseline_seeds: HashMap<String, (PathBuf, super::seed::BaselineSeed)>,
     normalize: NormalizeConfig,
     nq_states: HashMap<String, NqState>,
     pending_factors: HashMap<(String, i64), Vec<FactorObservation>>,
@@ -676,6 +691,7 @@ impl CtaPerpFactorModelPubApp {
             allowed_symbols,
             aggregators: HashMap::new(),
             factor_states: HashMap::new(),
+            baseline_seeds: HashMap::new(),
             normalize: config.normalize.clone(),
             nq_states: HashMap::new(),
             pending_factors: HashMap::new(),
@@ -689,7 +705,51 @@ impl CtaPerpFactorModelPubApp {
             stats: Stats::default(),
             history: FactorHistoryWriter::new(history_path, interval)?,
         };
+        if let Some(path) = &config.baseline_seed_path {
+            for symbol in &app.allowed_symbols {
+                let seed = super::seed::BaselineSeed::read(
+                    &path.join(format!("{symbol}.seed")),
+                    interval,
+                    symbol,
+                    venue.to_u8(),
+                    startup_ms,
+                )?;
+                let state = app.factor_states.entry(symbol.clone()).or_insert_with(|| {
+                    SymbolFactorState::new(&app.normalize, app.plan.factor_names().len(), interval)
+                });
+                for row in &seed.rows {
+                    state.evaluate_with_depth(
+                        TradeFlowFeatureMsg::from_bytes(&row.payload)?,
+                        &app.plan,
+                        true,
+                        row.depth.as_ref(),
+                    )?;
+                }
+                info!(
+                    "CTA baseline seed loaded symbol={} bars={} last_ts={:?}",
+                    symbol,
+                    seed.rows.len(),
+                    state.last_ts
+                );
+                state.seed_end = state.last_ts.map(|end| (end, interval.millis()));
+                app.baseline_seeds
+                    .insert(symbol.clone(), (path.join(format!("{symbol}.seed")), seed));
+            }
+        }
         app.catch_up(&config.kafka)?;
+        if config.baseline_seed_path.is_some() {
+            anyhow::ensure!(
+                app.stats.evaluation_errors == 0
+                    && app
+                        .factor_states
+                        .values()
+                        .all(|state| state.seed_end.is_none()),
+                "historical baseline seed did not join contiguous retained Kafka bars"
+            );
+            for (path, seed) in app.baseline_seeds.values() {
+                seed.replace(path).context("persist warmed baseline seed")?;
+            }
+        }
         if replay_only {
             anyhow::ensure!(
                 app.stats.decode_errors == 0 && app.stats.evaluation_errors == 0,
@@ -925,6 +985,22 @@ impl CtaPerpFactorModelPubApp {
                 return;
             }
         };
+        if let Some((path, seed)) = self.baseline_seeds.get_mut(symbol) {
+            seed.rows.push(super::seed::BaselineSeedRow {
+                payload: payload.to_vec(),
+                depth: bar.full_depth.clone(),
+            });
+            if seed.rows.len() > 2048 {
+                seed.rows.remove(0);
+            }
+            if self.publish_enabled {
+                if let Err(err) = seed.replace(path) {
+                    self.stats.evaluation_errors = self.stats.evaluation_errors.saturating_add(1);
+                    warn!("CTA baseline seed persist failed symbol={symbol}: {err:#}");
+                    return;
+                }
+            }
+        }
         self.pending_factors
             .insert((symbol.to_string(), ts), observations);
         self.publish_if_complete(symbol, ts);
@@ -1186,6 +1262,81 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_seed_and_overlapping_kafka_equal_continuous_evaluation() {
+        let interval = BarInterval::FifteenMinutes;
+        let plan = SymbolFactorPlan::from_factor_names(
+            "seed",
+            vec![
+                "baseline_040".into(),
+                "factor_170".into(),
+                "depth_imb_all".into(),
+            ],
+        )
+        .unwrap();
+        let mut continuous = SymbolFactorState::new(&normalize_config(96, 67), 3, interval);
+        let mut seeded = SymbolFactorState::new(&normalize_config(96, 67), 3, interval);
+        let mut messages = Vec::new();
+        for bar in 1..=700 {
+            let mid = 100.0 + (bar as f64 * 0.17).sin();
+            let mut values = vec![1.0; 32];
+            for i in [0, 1, 2, 3, 23, 24, 25] {
+                values[i] = mid;
+            }
+            for side in [-1.0, 1.0] {
+                for level in 0..20 {
+                    values.extend([mid + side * (level as f64 + 1.0) * 0.01, 10.0]);
+                }
+            }
+            messages.push((
+                TradeFlowFeatureMsg::from_indexed_values(
+                    "BTCUSDT".into(),
+                    1,
+                    bar * interval.millis(),
+                    &values,
+                )
+                .unwrap(),
+                DepthBookBar {
+                    depth_bid_notional_all: mid,
+                    depth_ask_notional_all: 100.0,
+                    ..Default::default()
+                },
+            ));
+        }
+        for (i, (msg, depth)) in messages.iter().enumerate() {
+            let expected = continuous
+                .evaluate_with_depth(msg.clone(), &plan, true, Some(depth))
+                .unwrap()
+                .unwrap();
+            if i == 600 {
+                seeded.seed_end = Some((messages[599].0.ts, interval.millis()));
+                let mut gap = msg.clone();
+                gap.ts += interval.millis();
+                assert!(seeded
+                    .evaluate_with_depth(gap, &plan, true, Some(depth))
+                    .is_err());
+                for (old, d) in &messages[300..600] {
+                    assert!(seeded
+                        .evaluate_with_depth(old.clone(), &plan, true, Some(d))
+                        .unwrap()
+                        .is_none());
+                }
+            }
+            let actual = seeded
+                .evaluate_with_depth(msg.clone(), &plan, true, Some(depth))
+                .unwrap()
+                .unwrap();
+            if i >= 600 {
+                for (a, e) in actual.iter().zip(expected) {
+                    assert!(a.ready && e.ready);
+                    assert_eq!(a.score, e.score);
+                    assert_eq!(a.quantile, e.quantile);
+                }
+            }
+        }
+        assert!(seeded.seed_end.is_none());
+    }
 
     #[test]
     fn signed_net_flows_warm_with_production_sample_requirements() {

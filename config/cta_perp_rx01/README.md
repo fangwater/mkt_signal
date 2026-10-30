@@ -17,10 +17,29 @@ zscore96/67，完整窗口一天。逐组NQ使用严格分位比较，关闭跳�
 仓库配置默认 `enabled=false`；上线先确认历史追平和仓位表，再配置Manager发布与跟随。
 运行状态、Redis、IPC、历史与旧Spread独立，旧仓位和归档不作为新策略状态。
 
-publisher CPU17，Dashboard `127.0.0.1:10195`，Config `127.0.0.1:19185`。
+publisher CPU17，Dashboard `127.0.0.1:10195`，Config `127.0.0.1:19195`。
 构建使用本地arbmm release，上传核验SHA-256并原子安装，进程使用环境本地脚本启停。
 
 发布器已注册全部23个depth因子，按清单启用ENJ/depth_imb_all、
 IOTA/depth_touch_net及IOTA/depth_level_imb。全部盘口档由Kafka消息复用
 `depth_pub::OrderBook`重建；口径见 `docs/depth_book_factors.md`。
 两个net保持 `(B-A)/(abs(B)+abs(A))`，双方均为零或非有限输入返回NaN。
+# 历史预热
+
+长周期原始公式保留其原有窗口；NQ 固定 120 根，因子分位数保留两天。
+Kafka 留存不足时，先用 `cta_baseline_seed` 从连续日期的 Tardis 原始
+`trades` / `incremental_book_L2` 生成闭合 baseline，再加载到
+`baseline_seed_path`。工具复用线上 `LocalBaselineAggregator` 和
+`MultiMinuteBaseline`，使用与线上相同的真实月度成交额阈值和毫秒事件时间。
+重叠的 Kafka bar 不重复计算，首个新 bar 必须与 seed 连续或包含 seed 末端。
+运行时持续原子保存最近 2048 根 baseline，供之后重启恢复长窗口。
+
+示例（默认仅检查输入，确认清单后加 `--execute`）：
+
+```bash
+target/release/cta_baseline_seed \
+  --config config/cta_perp_rx01/cta_perp_factor_model_15m_pub.toml \
+  --thresholds /path/to/current_amount_thresholds.json \
+  --source-root /path/to/TardisSource --start 2026-10-22 --end 2026-10-28 \
+  --output /path/to/baseline_seed --workers 8
+```

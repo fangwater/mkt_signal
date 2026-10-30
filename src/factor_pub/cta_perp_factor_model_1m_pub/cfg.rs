@@ -15,6 +15,9 @@ pub struct CtaPerpFactorPubConfig {
     pub tlen_server: TlenServerConfig,
     pub normalize: NormalizeConfig,
     pub kafka: KafkaInputConfig,
+    /// Completed native baseline bars preceding the retained Kafka stream.
+    #[serde(default)]
+    pub baseline_seed_path: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]

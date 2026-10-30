@@ -1,10 +1,19 @@
 # Binance 月度大小单阈值发布
 
-最后更新：2026-10-23 04:33 UTC（JP 已统一为每市场一份阈值）
+最后更新：2026-10-30 10:24 UTC（JP 合约49币，现货43币）
 
 权威输入是 `tardis_order_size` 输出的 `thresholds.csv`。2026-09 样本用于
 2026-10：43 币 × 合约/现货，共 86 组，P50/P90 单位为 USDT。现货与合约
 分别统计，不以合约值乘系数生成现货值。缺项必须保持缺失，不填默认值。
+
+2026-10-30为RX01新清单补齐BNBUSDT、CRVUSDT、FILUSDT、THETAUSDT、XRPUSDT、
+ZILUSDT六个合约币种。复用tardis_order_size扫描各自完整2026-09的720小时原始成交，
+六项均完成；68.1秒处理，单市场独立P50/P90用于2026-10。CSV SHA-256为
+`7179881e9a8fdb0270f984ac0f3d4ddbeea2f3e9cb220a95518719f3ea5e1b7d`。
+预演确认合约表43→49、零更新/零删除，随后backfill原子写入并读回验证；现货表和
+公共factor-plan的20/13项保持。远端备份及回执位于
+`~/tlen_config_shared/run/rx01_order_size_202609_20261030/`；本地证据在
+`artifacts/rx01_new_factor_readiness_20261030/order_size_*`。下文43币记录属于10月23日整批发布。
 
 ## 线上数据源
 

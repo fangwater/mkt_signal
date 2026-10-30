@@ -63,6 +63,10 @@ name = "crypto_tradfi_baseline"
 path = "src/bin/crypto_tradfi_baseline.rs"
 
 [[bin]]
+name = "cta_baseline_seed"
+path = "src/bin/cta_baseline_seed.rs"
+
+[[bin]]
 name = "dat_pbs"
 path = "src/bin/dat_pbs.rs"
 
