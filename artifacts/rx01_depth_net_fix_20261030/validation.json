@@ -1,0 +1,28 @@
+{
+  "rust": {
+    "passed": 7,
+    "failed": 0,
+    "tests": [
+      "depth_book::tests (5)",
+      "signed_net_flows_warm_with_production_sample_requirements",
+      "depth_factors_accept_book_only_bars_and_use_fifteen_minute_rank_windows"
+    ]
+  },
+  "python": {
+    "passed": 3,
+    "failed": 0,
+    "reference_cases": 17,
+    "factors_per_case": 23
+  },
+  "unchanged_existing_other_factor_results": 21,
+  "synthetic_15m_warmup": {
+    "bars": 195,
+    "normalization_window": 96,
+    "normalization_min_samples": 67,
+    "percentile_window": 192,
+    "percentile_min_samples": 96,
+    "first_finite_score_bar": 67,
+    "first_ready_bar": 162
+  },
+  "full_kafka_replay_repeated": false
+}

@@ -1,6 +1,14 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-30 09:05 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-30 09:41 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-30 09:41 UTC，按操作员确认修正RX01两个净流量因子分母为
+`abs(bid_net)+abs(ask_net)`，源提交`dc8d82f6`。本地release构建后仅更新
+`~/binance-cta-perp-rx01/cta_perp_factor_model_15m_pub`及说明，SHA-256核验并原子替换。
+7项Rust及3项Python针对性测试通过；195根合成回放中两项按原96/67、192/96门槛就绪。
+本次未重复完整Kafka回放，下方09:05的22/23结果属于修复前版本。
+57个受保护进程保持，env、空清单、`enabled=false`及关闭端口保持；CPU/IP分配不变。
+空universe启动保护通过，未开启常驻进程或交易。证据：`artifacts/rx01_depth_net_fix_20261030/`。
 
 2026-10-30 08:46 UTC，更新 `~/binance-cta-perp-rx01` 的15min待清单框架，
 本地arbmm release产物及因子校验文件经SHA-256核验后原子安装，新增23个
