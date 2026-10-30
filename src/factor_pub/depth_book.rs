@@ -169,6 +169,8 @@ mod tests {
         assert!((row.depth_bid_notional_all - 249675.0).abs() < 1e-6);
         assert!((row.depth_ask_notional_all - 150232.5).abs() < 1e-6);
         assert_eq!(row.depth_bid_notional_bps100, row.depth_bid_notional_all);
+        assert_eq!(row.depth_bid_notional_bps1, 9999.0);
+        assert_eq!(row.depth_ask_notional_bps1, 5000.5);
         assert!((row.depth_bid_bps_to_10k - 2.0).abs() < 1e-9);
         assert!((row.depth_ask_bps_to_10k - 2.0).abs() < 1e-9);
         assert!((row.depth_bid_bps_to_100k - 11.0).abs() < 1e-9);
@@ -259,7 +261,14 @@ fn side_metrics(
         total += notional;
         count += 1;
         for (i, width) in [1.0, 5.0, 10.0, 20.0, 50.0, 100.0].into_iter().enumerate() {
-            if distance <= width {
+            // Compare prices at the band edge: subtracting nearby prices then
+            // dividing can round an exact 1bp tick just outside the band.
+            let inside = if bid {
+                price >= mid * (1.0 - width / 10_000.0)
+            } else {
+                price <= mid * (1.0 + width / 10_000.0)
+            };
+            if inside {
                 bands[i] += notional;
             }
         }
