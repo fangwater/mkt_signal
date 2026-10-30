@@ -383,5 +383,138 @@ class StartupOrdering(unittest.TestCase):
             self.assertIn("mutation", marker.read_text())
 
 
+class FakeWatchError(Exception):
+    pass
+
+
+class TransactionRedis:
+    def __init__(self, initial):
+        self.values = dict(initial)
+        self.events = []
+
+    def pipeline(self):
+        owner = self
+
+        class Pipeline:
+            def __enter__(self):
+                self.pending = {}
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def watch(self, *keys):
+                self.snapshot = {k: owner.values.get(k) for k in keys}
+                owner.events.append("watch")
+
+            def mget(self, keys):
+                return [owner.values.get(k) for k in keys]
+
+            def multi(self):
+                owner.events.append("multi")
+
+            def set(self, key, value):
+                self.pending[key] = value
+
+            def execute(self):
+                if any(owner.values.get(k) != v for k, v in self.snapshot.items()):
+                    raise FakeWatchError("lists changed")
+                owner.values.update(self.pending)
+                owner.events.append("commit")
+
+        return Pipeline()
+
+
+class SymbolPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.env_dir = Path(self.temp.name) / "bybit_fr_test"
+        self.env_dir.mkdir()
+        (self.env_dir / "env.sh").write_text("")
+        (self.env_dir / "trade_engine.toml").write_text('local_ips=["127.0.0.1"]')
+        self.rds = TransactionRedis({self.key("fwd_trade_symbols"): '["OLDUSDT"]'})
+
+    def key(self, name):
+        return f"bybit_fr_test:fr_{name}:bybit-margin_bybit-futures"
+
+    def publish(self, updates):
+        return check.publish_symbol_lists(self.rds, self.env_dir, "bybit", "bybit-margin", "bybit-futures", updates)
+
+    def test_new_coin_is_enabled_and_read_back_before_any_publication(self):
+        state = {"USDT": True, "OLD": True, "NEW": False}
+        client = Mock(exchange="bybit")
+
+        def get(path, params=None):
+            self.assertEqual(self.rds.values[self.key("fwd_trade_symbols")], '["OLDUSDT"]')
+            self.rds.events.append("exchange-read")
+            if path.endswith("/info"):
+                return {"marginMode": "PORTFOLIO_MARGIN", "unifiedMarginStatus": 6, "spotHedgingStatus": "ON"}
+            return {"list": [{"currency": coin, "marginCollateral": True, "collateralSwitch": enabled}
+                             for coin, enabled in state.items()]}
+
+        def post(path, body):
+            self.assertNotIn("multi", self.rds.events)
+            state[body["coin"]] = True
+            self.rds.events.append("enabled")
+            return {}
+
+        client.get.side_effect, client.post.side_effect = get, post
+        with patch.object(check, "Client", return_value=client):
+            report = self.publish({"fwd_trade_symbols": ["OLDUSDT", "NEWUSDT"]})
+        self.assertEqual(report.enabled, ["NEW"])
+        self.assertEqual(json.loads(self.rds.values[self.key("fwd_trade_symbols")]), ["OLDUSDT", "NEWUSDT"])
+        self.assertEqual(self.rds.events[-3:], ["exchange-read", "multi", "commit"])
+
+    def test_exchange_error_or_unverified_off_never_publishes(self):
+        original = dict(self.rds.values)
+        for raises in (True, False):
+            def fail(client, report, execute):
+                if raises:
+                    raise check.PreflightError("exchange unavailable")
+                report.disabled.append("NEW")
+            with patch.object(check, "ensure_collateral", side_effect=fail), self.assertRaises(check.PreflightError):
+                self.publish({"fwd_trade_symbols": ["NEWUSDT"]})
+            self.assertEqual(self.rds.values, original)
+            self.assertNotIn("multi", self.rds.events)
+
+    def test_proposed_union_retains_legacy_and_position_dump_and_skips_absent_fields(self):
+        self.rds.values[self.key("trade_symbols")] = '["LEGACYUSDT"]'
+        self.rds.values[self.key("pos_dump_symbols")] = '["HELDUSDT"]'
+        self.rds.values[self.key("bwd_trade_symbols")] = '["SHORTUSDT"]'
+        seen = []
+        def verify(client, report, execute):
+            seen.extend(report.assets)
+        with patch.object(check, "ensure_collateral", side_effect=verify):
+            self.publish({"fwd_trade_symbols": ["NEWUSDT"]})
+        self.assertEqual(seen, ["HELD", "LEGACY", "NEW", "SHORT", "USDT"])
+        self.assertEqual(self.rds.values[self.key("bwd_trade_symbols")], '["SHORTUSDT"]')
+        self.assertEqual(self.rds.values[self.key("pos_dump_symbols")], '["HELDUSDT"]')
+
+    def test_explicit_clear_and_multiple_updates_are_committed_together(self):
+        with patch.object(check, "ensure_collateral"):
+            self.publish({"fwd_trade_symbols": [], "bwd_trade_symbols": ["NEWUSDT"]})
+        self.assertEqual(json.loads(self.rds.values[self.key("fwd_trade_symbols")]), [])
+        self.assertEqual(json.loads(self.rds.values[self.key("bwd_trade_symbols")]), ["NEWUSDT"])
+        self.assertEqual(self.rds.events.count("commit"), 1)
+
+    def test_concurrent_change_aborts_instead_of_overwriting_a_newer_list(self):
+        def concurrent_change(client, report, execute):
+            self.rds.values[self.key("bwd_trade_symbols")] = '["OPERATORUSDT"]'
+        with patch.object(check, "ensure_collateral", side_effect=concurrent_change), self.assertRaises(FakeWatchError):
+            self.publish({"fwd_trade_symbols": ["NEWUSDT"], "bwd_trade_symbols": ["NEWUSDT"]})
+        self.assertEqual(self.rds.values[self.key("fwd_trade_symbols")], '["OLDUSDT"]')
+        self.assertEqual(self.rds.values[self.key("bwd_trade_symbols")], '["OPERATORUSDT"]')
+
+    def test_bad_existing_json_and_unrecognized_update_fail_without_api_or_writes(self):
+        self.rds.values[self.key("pos_dump_symbols")] = "corrupt"
+        with patch.object(check, "ensure_collateral") as verify:
+            for updates in ({"fwd_trade_symbols": ["NEWUSDT"]}, {"not_a_list": []}, {"fwd_trade_symbols": [None]}):
+                with self.assertRaises(check.PreflightError):
+                    self.publish(updates)
+            verify.assert_not_called()
+        self.assertEqual(self.rds.values[self.key("fwd_trade_symbols")], '["OLDUSDT"]')
+
+
 if __name__ == "__main__":
     unittest.main()

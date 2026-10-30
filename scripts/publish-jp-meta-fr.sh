@@ -205,6 +205,7 @@ LOCAL_RELATIVE=(
   "scripts/start_trade_signal.sh"
   "scripts/start_fr_pre_trade.sh"
   "scripts/check_fr_collateral.py"
+  "scripts/sync_fr_symbol_lists.py"
   "scripts/lib/exchange_signing.py"
   "scripts/lib/intra_symbols.py"
 )
@@ -222,6 +223,7 @@ UPLOAD_NAMES=(
   "start_trade_signal.sh"
   "start_fr_pre_trade.sh"
   "check_fr_collateral.py"
+  "sync_fr_symbol_lists.py"
   "exchange_signing.py"
   "intra_symbols.py"
 )
@@ -331,6 +333,7 @@ mkdir -p "$target/scripts/lib"
 publish_file exchange_signing.py scripts/lib/exchange_signing.py
 publish_file intra_symbols.py scripts/lib/intra_symbols.py
 publish_file check_fr_collateral.py scripts/check_fr_collateral.py
+publish_file sync_fr_symbol_lists.py scripts/sync_fr_symbol_lists.py
 publish_file start_trade_signal.sh scripts/start_trade_signal.sh
 publish_file start_fr_pre_trade.sh scripts/start_fr_pre_trade.sh
 

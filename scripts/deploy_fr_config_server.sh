@@ -259,6 +259,7 @@ mkdir -p "$TARGET_DIR/config"
 
 FILES=(
   "scripts/fr_config_server.py"
+  "scripts/check_fr_collateral.py"
   "scripts/arb_per_symbol_overrides.py"
   "scripts/start_fr_config_server.sh"
   "scripts/stop_fr_config_server.sh"
@@ -271,6 +272,9 @@ FILES=(
   "scripts/set_online_futures_leverage.py"
   "scripts/set_bybit_online_collateral.py"
 )
+
+mkdir -p "$DEST_SCRIPT_DIR/lib"
+rsync -a "$ROOT_DIR/scripts/lib/exchange_signing.py" "$ROOT_DIR/scripts/lib/intra_symbols.py" "$DEST_SCRIPT_DIR/lib/"
 
 for file in "${FILES[@]}"; do
   src="$ROOT_DIR/$file"

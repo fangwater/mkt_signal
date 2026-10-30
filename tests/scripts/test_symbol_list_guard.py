@@ -19,6 +19,7 @@ import json
 import sys
 import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +80,14 @@ def make_post_handler(handler_cls, *, path: str, payload: dict, context):
     return handler
 
 
+def publish_with_verified_collateral(rds, env_dir, exchange, open_venue, hedge_venue, updates):
+    """Controller/list-semantics fixture; collateral/transaction tests live separately."""
+    from check_fr_collateral import Report
+    for name, values in updates.items():
+        rds.set(f"{env_dir.name}:fr_{name}:{open_venue}_{hedge_venue}", json.dumps(values))
+    return Report(env_dir.name, exchange, ["USDT"])
+
+
 # ---------- sync 脚本 ----------
 
 
@@ -86,6 +95,11 @@ class SyncFrSymbolListsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.mod = load_script(SCRIPTS / "sync_fr_symbol_lists.py", "sync_fr_symbol_lists")
+
+    def setUp(self):
+        patcher = patch.object(self.mod.collateral, "publish_symbol_lists", side_effect=publish_with_verified_collateral)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_empty_builtin_lists_do_not_clobber_existing_keys(self) -> None:
         mod = self.mod
@@ -123,11 +137,9 @@ class SyncFrSymbolListsTests(unittest.TestCase):
     def test_nonempty_builtin_list_still_writes(self) -> None:
         mod = self.mod
         rds = FakeRedis()
-        written = mod.write_or_keep_symbol_list(
-            rds, "k", ["BTCUSDT"], "测试"
-        )
+        written = mod.sync_symbol_lists(rds, "binance_fr_test", "binance-margin_binance-futures", ["BTCUSDT"], [])
         self.assertEqual(written, 1)
-        self.assertEqual(json.loads(rds.values["k"]), ["BTCUSDT"])
+        self.assertEqual(json.loads(rds.values["binance_fr_test:fr_fwd_trade_symbols:binance-margin_binance-futures"]), ["BTCUSDT"])
 
 
 class SyncCrossSymbolListsTests(unittest.TestCase):
@@ -199,6 +211,11 @@ class FrConfigServerSymbolListsTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = load_script(SCRIPTS / "fr_config_server.py", "fr_config_server")
 
+    def setUp(self):
+        patcher = patch.object(self.mod.collateral, "publish_symbol_lists", side_effect=publish_with_verified_collateral)
+        self.publisher = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _context(self, rds):
         return types.SimpleNamespace(redis_client=rds, default_exchange="binance")
 
@@ -262,6 +279,14 @@ class FrConfigServerSymbolListsTests(unittest.TestCase):
         status, _ = self._post({"dump_symbols": 123}, rds)
         self.assertEqual(status, 400)
         self.assertEqual(rds.values, {})
+
+    def test_collateral_failure_rejects_save_and_retains_lists(self):
+        rds = FakeRedis({"existing": "untouched"})
+        self.publisher.side_effect = self.mod.collateral.PreflightError("NEW collateral is OFF")
+        status, body = self._post({"fwd_trade_symbols": ["NEWUSDT"]}, rds)
+        self.assertEqual(status, 503)
+        self.assertIn("名单未更新", body["error"])
+        self.assertEqual(rds.values, {"existing": "untouched"})
 
 
 class CrossConfigServerSymbolListsTests(unittest.TestCase):

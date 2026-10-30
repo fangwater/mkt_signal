@@ -33,6 +33,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_fr_collateral as collateral
+
 # 支持的交易所
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 
@@ -241,31 +244,6 @@ def resolve_symbol_lists(exchange: str) -> tuple[List[str], List[str], str]:
     return FWD_SYMBOLS, BWD_SYMBOLS, ex or "default"
 
 
-def write_or_keep_symbol_list(
-    rds, key: str, symbols: List[str], label: str
-) -> int:
-    """内置列表非空才写入；为空时跳过，保留 Redis 线上现有值。
-
-    dump/unimmr_close 等运行时管理列表由 config server 维护，脚本内置
-    为空时无条件写 [] 会把线上配置清掉（key 缺失对消费端等价空列表）。
-    返回写入的条目数（跳过时为 0）。
-    """
-    if not symbols:
-        existing = rds.get(key)
-        print(
-            f"⏭️  内置{label}为空，跳过写入 '{key}'"
-            + (
-                "（保留线上现有值；如需清空请走 config server 显式保存 []）"
-                if existing
-                else "（key 不存在，等价空列表）"
-            )
-        )
-        return 0
-    rds.set(key, json.dumps(symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(symbols)} 个交易对到 '{key}'（{label}）")
-    return len(symbols)
-
-
 def sync_symbol_lists(
     rds,
     env_name: str,
@@ -273,42 +251,28 @@ def sync_symbol_lists(
     fwd_symbols: List[str],
     bwd_symbols: List[str],
 ) -> int:
-    """同步交易对列表到 Redis（内置列表为空的 key 跳过，保留线上值）"""
-    total = 0
+    """Verify the proposed union before publishing; empty built-ins retain live keys."""
+    env_dir = resolve_env_dir(env_name)
+    open_venue, hedge_venue = key_suffix.split("_", 1)
+    exchange = open_venue.split("-", 1)[0]
+    candidates = {"dump_symbols": DUMP_SYMBOLS, "unimmr_close_symbols": UNIMMR_CLOSE_SYMBOLS,
+                  "fwd_trade_symbols": fwd_symbols, "bwd_trade_symbols": bwd_symbols}
+    updates = {name: symbols for name, symbols in candidates.items() if symbols}
+    for name, symbols in candidates.items():
+        if not symbols:
+            print(f"⏭️  内置 {name} 为空，保留线上现有值")
+    if not updates:
+        return 0
+    report = collateral.publish_symbol_lists(rds, env_dir, exchange, open_venue, hedge_venue, updates)
+    print(json.dumps({"collateral": report.__dict__}, ensure_ascii=False))
+    return sum(len(symbols) for symbols in updates.values())
 
-    # 1. 平仓列表（运行时管理，内置为空则跳过）
-    total += write_or_keep_symbol_list(
-        rds,
-        symbol_list_key(env_name, "dump_symbols", key_suffix),
-        DUMP_SYMBOLS,
-        "平仓列表",
-    )
 
-    # 2. UniMMR 算法平仓候选列表（运行时管理，内置为空则跳过）
-    total += write_or_keep_symbol_list(
-        rds,
-        symbol_list_key(env_name, "unimmr_close_symbols", key_suffix),
-        UNIMMR_CLOSE_SYMBOLS,
-        "UniMMR 平仓候选",
-    )
-
-    # 3. 正套建仓列表
-    total += write_or_keep_symbol_list(
-        rds,
-        symbol_list_key(env_name, "fwd_trade_symbols", key_suffix),
-        fwd_symbols,
-        "正套",
-    )
-
-    # 4. 反套建仓列表
-    total += write_or_keep_symbol_list(
-        rds,
-        symbol_list_key(env_name, "bwd_trade_symbols", key_suffix),
-        bwd_symbols,
-        "反套",
-    )
-
-    return total
+def resolve_env_dir(env_name: str) -> Path:
+    collateral.require(bool(re.fullmatch(r"(binance|okex|bybit|bitget|gate)_fr_[a-z0-9][a-z0-9_-]*", env_name)),
+                       "invalid target FR environment name")
+    cwd = Path.cwd()
+    return cwd if cwd.name.lower() == env_name else Path.home() / env_name
 
 
 def print_three_line_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -424,15 +388,27 @@ def main() -> int:
         print(f"[INFO] 未提供 env-name，基于目录推断: {env_name}", file=sys.stderr)
     warn_if_env_name_mismatched(env_name, exchange)
 
-    rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
+    try:
+        env = collateral.source_env(resolve_env_dir(env_name))
+        rds = collateral.redis_client(env)
+    except Exception as exc:
+        print(f"❌ 无法加载目标环境（{type(exc).__name__}）", file=sys.stderr)
+        return 1
 
     print(f"🔄 开始同步 Funding Rate 交易对列表 (env={env_name}, key_suffix={key_suffix})...")
-    print("📍 Redis: 127.0.0.1:6379/0")
+    print("📍 Redis: deployment env.sh")
     print(f"📋 Symbol source: {source}")
     print()
 
     # 同步列表
-    total = sync_symbol_lists(rds, env_name, key_suffix, fwd_symbols, bwd_symbols)
+    try:
+        total = sync_symbol_lists(rds, env_name, key_suffix, fwd_symbols, bwd_symbols)
+    except collateral.PreflightError as exc:
+        print(f"❌ 抵押检查未通过，名单未更新: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"❌ 币对保存未完成（{type(exc).__name__}），请重新读取名单后重试", file=sys.stderr)
+        return 1
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
     # 打印结果

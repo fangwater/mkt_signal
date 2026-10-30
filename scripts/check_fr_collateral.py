@@ -10,6 +10,8 @@ Requires Python >= 3.11 and the existing redis Python package.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import http.client
 import ipaddress
 import json
@@ -128,17 +130,21 @@ def source_ip(env_dir: Path) -> str:
     return str(address)
 
 
-def load_assets(env_name: str, open_venue: str, hedge_venue: str, env: dict, rds=None) -> list[str]:
-    if rds is None:
-        import redis
-        rds = redis.Redis(host=env.get("REDIS_HOST", "127.0.0.1"),
-                          port=int(env.get("REDIS_PORT", "6379")),
-                          db=int(env.get("REDIS_DB", "0")),
-                          username=env.get("REDIS_USERNAME") or None,
-                          password=env.get("REDIS_PASSWORD") or None,
-                          socket_timeout=5, socket_connect_timeout=5)
-    keys = [f"{env_name}:fr_{name}:{open_venue}_{hedge_venue}" for name in LIST_NAMES]
-    raw_lists = rds.mget(keys)
+def redis_client(env: dict):
+    import redis
+    return redis.Redis(host=env.get("REDIS_HOST", "127.0.0.1"),
+                       port=int(env.get("REDIS_PORT", "6379")),
+                       db=int(env.get("REDIS_DB", "0")),
+                       username=env.get("REDIS_USERNAME") or None,
+                       password=env.get("REDIS_PASSWORD") or None,
+                       socket_timeout=5, socket_connect_timeout=5)
+
+
+def symbol_list_keys(env_name: str, open_venue: str, hedge_venue: str) -> list[str]:
+    return [f"{env_name}:fr_{name}:{open_venue}_{hedge_venue}" for name in LIST_NAMES]
+
+
+def assets_from_lists(keys: list[str], raw_lists: list) -> list[str]:
     require(len(raw_lists) == len(keys), "incomplete Redis symbol-list response")
     require(any(raw is not None for raw in raw_lists), "FR symbol-list configuration is missing")
     assets = {"USDT"}  # Quote collateral matters even with empty trade lists.
@@ -156,6 +162,41 @@ def load_assets(env_name: str, open_venue: str, hedge_venue: str, env: dict, rds
             require(bool(re.fullmatch(r"[A-Z0-9]+", asset)), f"invalid symbol in {key}")
             assets.add(asset)
     return sorted(assets)
+
+
+def load_assets(env_name: str, open_venue: str, hedge_venue: str, env: dict, rds=None) -> list[str]:
+    rds = rds if rds is not None else redis_client(env)
+    keys = symbol_list_keys(env_name, open_venue, hedge_venue)
+    return assets_from_lists(keys, rds.mget(keys))
+
+
+def deployment_context(env_dir: Path, exchange=None, open_venue=None, hedge_venue=None):
+    env_dir = env_dir.resolve()
+    match = re.fullmatch(r"(bybit|gate|bitget|okex|binance)[-_]fr[-_][a-z0-9][a-z0-9_-]*", env_dir.name)
+    require(match is not None, "expected an exchange FR deployment directory")
+    actual_exchange = match.group(1)
+    require(exchange in {None, actual_exchange}, "exchange/deployment mismatch")
+    env = source_env(env_dir)
+    require(bool(open_venue) == bool(hedge_venue), "both venues must be provided together")
+    open_venue = (open_venue or env.get("OPEN_VENUE") or f"{actual_exchange}-margin").strip().lower()
+    hedge_venue = (hedge_venue or env.get("HEDGE_VENUE") or f"{actual_exchange}-futures").strip().lower()
+    require({open_venue, hedge_venue} == {f"{actual_exchange}-margin", f"{actual_exchange}-futures"},
+            "collateral preflight supports same-exchange spot/futures FR only")
+    return env_dir, env, actual_exchange, open_venue, hedge_venue
+
+
+@contextmanager
+def collateral_lock(env_dir: Path):
+    # Serialize startup and config-server/CLI writes for this account. Bitget's
+    # custom-collateral endpoint replaces its list and must not race our writers.
+    run_dir = env_dir / "run"
+    run_dir.mkdir(exist_ok=True)
+    with (run_dir / "fr_collateral.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 class Client:
@@ -446,6 +487,37 @@ def ensure_collateral(client: Client, report: Report, execute: bool = False) -> 
         report.notes.append("write outcome uncertain; subsequent read verified collateral enabled")
 
 
+def publish_symbol_lists(rds, env_dir: Path, exchange: str, open_venue: str,
+                         hedge_venue: str, updates: dict[str, list[str]]) -> Report:
+    """Enable collateral for the proposed union before atomically publishing it.
+
+    WATCH protects all six lists while the exchange calls run. A concurrent
+    Redis change aborts the publication; it never causes an unverified merge.
+    Missing fields are retained and explicit [] remains a valid clear.
+    """
+    require(bool(updates) and set(updates) <= set(LIST_NAMES), "invalid FR symbol-list update fields")
+    for name, values in updates.items():
+        require(isinstance(values, list) and all(isinstance(v, str) and v.strip() for v in values),
+                f"invalid FR symbol list: {name}")
+    env_dir, env, exchange, open_venue, hedge_venue = deployment_context(
+        env_dir, exchange, open_venue, hedge_venue)
+    keys = symbol_list_keys(env_dir.name, open_venue, hedge_venue)
+    with collateral_lock(env_dir), rds.pipeline() as pipe:
+        pipe.watch(*keys)
+        proposed = list(pipe.mget(keys))
+        require(len(proposed) == len(keys), "incomplete Redis symbol-list response")
+        for name, values in updates.items():
+            proposed[LIST_NAMES.index(name)] = json.dumps(values, ensure_ascii=False)
+        report = Report(env_dir.name, exchange, assets_from_lists(keys, proposed))
+        ensure_collateral(Client(exchange, env, source_ip(env_dir), execute=True), report, execute=True)
+        require(report.ok, "collateral verification failed for: " + ",".join(report.disabled))
+        pipe.multi()
+        for name, values in updates.items():
+            pipe.set(keys[LIST_NAMES.index(name)], json.dumps(values, ensure_ascii=False))
+        pipe.execute()
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-dir", type=Path, default=Path.cwd())
@@ -456,20 +528,12 @@ def main() -> int:
     args = parser.parse_args()
     report = Report(args.env_dir.name, args.exchange or "", [])
     try:
-        env_dir = args.env_dir.resolve()
-        match = re.fullmatch(r"(bybit|gate|bitget|okex|binance)[-_]fr[-_][a-z0-9][a-z0-9_-]*", env_dir.name)
-        require(match is not None, "expected an exchange FR deployment directory")
-        exchange = match.group(1)
-        require(args.exchange in {None, exchange}, "exchange/deployment mismatch")
+        env_dir, env, exchange, open_venue, hedge_venue = deployment_context(
+            args.env_dir, args.exchange, args.open_venue, args.hedge_venue)
         report.env, report.exchange = env_dir.name, exchange
-        env = source_env(env_dir)
-        require(bool(args.open_venue) == bool(args.hedge_venue), "both venues must be provided together")
-        open_venue = (args.open_venue or env.get("OPEN_VENUE") or f"{exchange}-margin").strip().lower()
-        hedge_venue = (args.hedge_venue or env.get("HEDGE_VENUE") or f"{exchange}-futures").strip().lower()
-        require({open_venue, hedge_venue} == {f"{exchange}-margin", f"{exchange}-futures"},
-                "collateral preflight supports same-exchange spot/futures FR only")
-        report.assets = load_assets(report.env, open_venue, hedge_venue, env)
-        ensure_collateral(Client(exchange, env, source_ip(env_dir), execute=args.execute), report, args.execute)
+        with collateral_lock(env_dir):
+            report.assets = load_assets(report.env, open_venue, hedge_venue, env)
+            ensure_collateral(Client(exchange, env, source_ip(env_dir), execute=args.execute), report, args.execute)
     except PreflightError as exc:
         report.errors.append(str(exc))
     except Exception as exc:

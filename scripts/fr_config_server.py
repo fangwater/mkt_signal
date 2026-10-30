@@ -20,8 +20,9 @@ import math
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -40,6 +41,7 @@ EXCHANGE_DEFAULTS = {
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 import arb_per_symbol_overrides as ps_overrides  # noqa: E402
+import check_fr_collateral as collateral  # noqa: E402
 
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -645,7 +647,7 @@ __PER_SYMBOL_PANELS_HTML__
     }
 
     async function saveSymbolLists() {
-      setStatus('sym-status', '保存中...');
+      setStatus('sym-status', '正在检查抵押并保存...');
       try {
         const payload = {
           exchange: normalizeExchange(exchangeSelect.value),
@@ -656,12 +658,16 @@ __PER_SYMBOL_PANELS_HTML__
           fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
           bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
         };
-        await fetchJson(apiUrl('symbol-lists'), {
+        const saved = await fetchJson(apiUrl('symbol-lists'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        setStatus('sym-status', '保存成功');
+        const enabled = (saved.collateral || {}).enabled || [];
+        const unsupported = (saved.collateral || {}).unsupported || [];
+        setStatus('sym-status', '保存成功，抵押检查已通过'
+          + (enabled.length ? `；已开启抵押：${enabled.join(', ')}` : '')
+          + (unsupported.length ? `；交易所不支持抵押：${unsupported.join(', ')}` : ''));
       } catch (err) {
         setStatus('sym-status', `保存失败: ${err}`, false);
       }
@@ -2046,19 +2052,20 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             rds = self.server.context.redis_client
             try:
-                for name, symbols in normalized_lists.items():
-                    rds.set(
-                        build_symbol_list_key(name, key_suffix),
-                        json.dumps(symbols, ensure_ascii=False),
-                    )
+                collateral_report = collateral.publish_symbol_lists(
+                    rds, Path.cwd(), exchange, open_v, hedge_v, normalized_lists)
+            except collateral.PreflightError as exc:
+                self._send_error(503, f"抵押检查未通过，名单未更新: {exc}")
+                return
             except Exception as exc:
-                self._send_error(500, f"redis write failed: {exc}")
+                self._send_error(503, f"币对保存未完成（{type(exc).__name__}），请重新读取名单后重试")
                 return
 
             response: Dict[str, Any] = {
                 "exchange": exchange,
                 "key_suffix": key_suffix,
                 "skipped_fields": skipped_fields,
+                "collateral": asdict(collateral_report),
             }
             for name, label in field_specs:
                 if name in normalized_lists:
