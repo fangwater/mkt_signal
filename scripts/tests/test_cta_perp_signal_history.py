@@ -363,7 +363,7 @@ class HistoryTests(unittest.TestCase):
         self.addCleanup(venue.shutdown)
         env=self.root/"binance-cta-perp-test"
         for name in ["scripts/cta_perp_dashboard.py","scripts/cta_perp_signal_history.py","scripts/cta_perp_position_replay.py",
-                     "scripts/cta_perp_config_server.py",
+                     "scripts/cta_perp_config_server.py", "scripts/cta_perp_interval.py",
                      "scripts/cta_perp_factor_config.py","scripts/factor_validation_allowlist.txt",
                      "config/cta_perp.json","config/cta_perp_symbol_factors.json",
                      "web/cta_perp/index.html","web/cta_perp_signals/index.html",

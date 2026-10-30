@@ -21,14 +21,14 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from cta_perp_factor_config import read_factor_table, save_factor_table, available_universe, reject_duplicate_keys  # noqa: E402
+from cta_perp_factor_config import read_factor_table, save_factor_table, available_universe, reject_duplicate_keys, normalize_table, validate_available  # noqa: E402
 
 OPEN_VENUE = "binance-futures"
 HEDGE_VENUE = "binance-futures"
 
 MAX_BODY_BYTES = 64 * 1024
 
-TOP_FIELDS = {"bar_interval", "enabled", "max_pos_u", "entry", "execution", "position_algorithm", "symbol_overrides"}
+TOP_FIELDS = {"bar_interval", "enabled", "max_pos_u", "entry", "execution", "position_algorithm", "symbol_overrides", "factor_rules"}
 ENTRY_FIELDS = {
     "factor_long_quantile", "factor_short_quantile", "nq_change_enabled",
     "nq_long_quantile", "nq_short_quantile",
@@ -80,13 +80,49 @@ def position_decision_value(x: float, algorithm: str) -> float:
     raise ValueError("position_algorithm must be v0 or v1")
 
 
-def effective_config(config: dict, symbol: str) -> dict:
+def effective_config(config: dict, symbol: str, factor: str | None = None) -> dict:
     result = {**config, "entry": dict(config["entry"]),
-              "execution": dict(config["execution"]), "symbol_overrides": {}}
+              "execution": dict(config["execution"]), "symbol_overrides": {}, "factor_rules": []}
     for field, value in config.get("symbol_overrides", {}).get(symbol, {}).items():
         if value is not None:
             result["execution" if field in EXECUTION_FIELDS else "entry"][field] = value
+    for rule in config.get("factor_rules", []):
+        if rule["标的"] == symbol and rule["因子"] == factor:
+            thresholds = parse_nq(rule["nq"])
+            result["strict_nq"] = True
+            result["entry"]["nq_change_enabled"] = thresholds is not None
+            if thresholds is not None:
+                result["entry"]["nq_long_quantile"], result["entry"]["nq_short_quantile"] = thresholds
     return result
+
+
+def parse_nq(value):
+    if value == "关闭": return None
+    if not isinstance(value, str): raise ValueError("nq 必须是分位数字符串、long/short 或关闭")
+    parts = value.split("/")
+    if len(parts) not in (1, 2): raise ValueError("nq 格式必须为 0.50、0.2/0.8 或关闭")
+    values = [float(part.strip()) for part in parts]
+    if not all(math.isfinite(v) and 0 <= v <= 1 for v in values): raise ValueError("nq 分位必须在 [0,1]")
+    return values[0], values[-1]
+
+
+def normalize_factor_rules(raw):
+    if not isinstance(raw, list) or len(raw) > 8192: raise ValueError("factor_rules 必须是 JSON 数组，最多8192行")
+    table, result = {}, []
+    for index, row in enumerate(raw):
+        if not isinstance(row, dict) or set(row) != {"标的", "nq", "符号", "因子"}: raise ValueError(f"第{index+1}行需要标的、nq、符号、因子")
+        symbol, factor, sign = row["标的"], row["因子"], row["符号"]
+        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9]{1,28}", symbol): raise ValueError("标的必须是大写资产或USDT合约")
+        symbol = symbol if symbol.endswith("USDT") else symbol + "USDT"
+        if not isinstance(factor, str) or isinstance(sign, bool) or sign not in (-1, 1): raise ValueError("因子须为字符串，符号须为+1或-1")
+        normalized = normalize_table({symbol: {factor: sign}})[symbol]
+        factor = next(iter(normalized))
+        if factor in table.setdefault(symbol, {}): raise ValueError(f"重复标的×因子：{symbol}/{factor}")
+        parse_nq(row["nq"])
+        table[symbol][factor] = sign
+        result.append({"标的": symbol, "nq": row["nq"], "符号": int(sign), "因子": factor})
+    normalize_table(table)
+    return result, table
 
 
 def validate_position_thresholds(config: dict) -> None:
@@ -94,8 +130,8 @@ def validate_position_thresholds(config: dict) -> None:
     entry, execution = config["entry"], config["execution"]
     if not all(0 <= entry[field] <= 1 for field in ("nq_long_quantile", "nq_short_quantile")):
         raise ValueError("entry NQ quantiles must be in [0, 1]")
-    if config["bar_interval"] == "5m" and any(entry[field] != 0.5 for field in ("nq_long_quantile", "nq_short_quantile")):
-        raise ValueError("5m NQ uses fixed 0.50 linear quantile thresholds")
+    if config["bar_interval"] in ("5m", "15m") and any(entry[field] != 0.5 for field in ("nq_long_quantile", "nq_short_quantile")):
+        raise ValueError(f"{config['bar_interval']} NQ uses fixed 0.50 linear quantile thresholds")
     long, short = entry["factor_long_quantile"], entry["factor_short_quantile"]
     if not minimum <= short < long <= 1.0:
         raise ValueError(f"entry factor thresholds must satisfy {minimum} <= short < long <= 1")
@@ -111,8 +147,8 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     if "execution" not in root:
         raise ValueError("config.execution is required")
     interval = root.get("bar_interval", "1m")
-    if interval not in ("1m", "5m"):
-        raise ValueError("bar_interval must be 1m or 5m")
+    if interval not in ("1m", "5m", "15m"):
+        raise ValueError("bar_interval must be 1m, 5m or 15m")
     algorithm = root.get("position_algorithm", "v0")
     if algorithm not in ("v0", "v1"):
         raise ValueError("position_algorithm must be v0 or v1")
@@ -130,8 +166,8 @@ def normalize_config(raw: Any) -> dict[str, Any]:
     if not (0.0 <= nq_long <= 1.0 and 0.0 <= nq_short <= 1.0):
         raise ValueError("entry NQ quantiles must be in [0, 1]")
 
-    if interval == "5m" and (nq_long != 0.5 or nq_short != 0.5):
-        raise ValueError("5m NQ uses fixed 0.50 linear quantile thresholds")
+    if interval in ("5m", "15m") and (nq_long != 0.5 or nq_short != 0.5):
+        raise ValueError(f"{interval} NQ uses fixed 0.50 linear quantile thresholds")
 
     execution = _object(root["execution"], "execution")
     _reject_unknown(execution, EXECUTION_FIELDS, "execution")
@@ -149,6 +185,7 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         "max_pos_u": amount,
         "position_algorithm": algorithm,
         "symbol_overrides": {},
+        "factor_rules": [],
         "entry": {
             "factor_long_quantile": factor_long,
             "factor_short_quantile": factor_short,
@@ -180,6 +217,12 @@ def normalize_config(raw: Any) -> dict[str, Any]:
             validate_position_thresholds(effective_config(result, symbol))
         except ValueError as error:
             raise ValueError(f"{field}: {error}") from error
+    rules, table = normalize_factor_rules(root.get("factor_rules", []))
+    if rules and (algorithm != "v0" or interval != "1m"):
+        raise ValueError("factor_rules 仅支持1m v0独立因子模式")
+    result["factor_rules"] = rules
+    for rule in rules:
+        validate_position_thresholds(effective_config(result, rule["标的"], rule["因子"]))
     return result
 
 
@@ -207,6 +250,9 @@ class ConfigStore:
 
     def save(self, raw: Any, expected_revision: str) -> tuple[dict[str, Any], str]:
         config = normalize_config(raw)
+        if config["factor_rules"]:
+            validate_available(normalize_factor_rules(config["factor_rules"])[1],
+                available_universe(self.path.parent / f"cta_perp_factor_model_{config['bar_interval']}_pub.toml"))
         with self._lock:
             current, current_revision = self._load_unlocked()
             if not expected_revision or expected_revision != current_revision:
@@ -293,7 +339,15 @@ def make_handler(
                     if redis_client is None or not env_name:
                         self._json(503, {"error": "Redis factor configuration is unavailable"})
                         return
-                    self._json(200, {**read_factor_table(redis_client, env_name), "available": available_universe(store.path.parent / f"cta_perp_factor_model_{store.load()[0]['bar_interval']}_pub.toml")})
+                    config, config_revision = store.load()
+                    if config["factor_rules"]:
+                        table = normalize_factor_rules(config["factor_rules"])[1]
+                        body = {"key": f"{env_name}:cta_symbol_factors", "exists": True,
+                            "symbol_factors": table, "revision": store._revision(table)}
+                    else:
+                        body = read_factor_table(redis_client, env_name)
+                    self._json(200, {**body, "factor_rules": config["factor_rules"], "config_revision": config_revision,
+                        "available": available_universe(store.path.parent / f"cta_perp_factor_model_{config['bar_interval']}_pub.toml")})
                     return
                 if path in {"/", "/index.html"}:
                     self._send(200, index_path.read_bytes(), "text/html; charset=utf-8")
@@ -312,8 +366,19 @@ def make_handler(
                     if length <= 0 or length > MAX_BODY_BYTES:
                         raise ValueError("invalid request body size")
                     request = _object(json.loads(self.rfile.read(length), object_pairs_hook=reject_duplicate_keys), "request")
-                    _reject_unknown(request, {"symbol_factors", "expected_revision"}, "request")
+                    _reject_unknown(request, {"symbol_factors", "expected_revision", "expected_config_revision"}, "request")
                     universe = available_universe(store.path.parent / f"cta_perp_factor_model_{store.load()[0]['bar_interval']}_pub.toml")
+                    current_config, _ = store.load()
+                    if isinstance(request.get("symbol_factors"), list):
+                        rules, table = normalize_factor_rules(request["symbol_factors"])
+                        if not rules: raise ValueError("规则数组不能为空，请使用币种对象配置清空组合")
+                        validate_available(table, universe)
+                        config, config_revision = store.save({**current_config, "factor_rules": rules}, request.get("expected_config_revision", ""))
+                        self._json(200, {"key": f"{env_name}:cta_symbol_factors", "exists": True, "revision": store._revision(table), "symbol_factors": table,
+                            "factor_rules": rules, "config_revision": config_revision, "available": universe})
+                        return
+                    if current_config["factor_rules"]:
+                        raise ValueError("当前使用标的×因子规则，请用JSON数组编辑；如需切回币种对象，先清空config.factor_rules")
                     saved = save_factor_table(
                         redis_client, env_name,
                         request.get("symbol_factors"), request.get("expected_revision", ""),

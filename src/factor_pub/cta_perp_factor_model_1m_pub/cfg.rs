@@ -23,6 +23,32 @@ mod tests {
     use crate::cta_perp::factors::{parse_factor_table, table_services_for_interval};
 
     #[test]
+    fn fifteen_minute_template_keeps_day_windows_and_validates_every_binding() {
+        let mut config: CtaPerpFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_perp_15m/cta_perp_factor_model_15m_pub.toml"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.bar_interval, BarInterval::FifteenMinutes);
+        assert_eq!(config.normalize.window_bars, 96);
+        assert_eq!(config.normalize.min_periods, 67);
+        assert_eq!(config.bar_interval.factor_quantile_window(), 192);
+        assert_eq!(config.bar_interval.factor_min_samples(), 96);
+        let table = parse_factor_table(include_str!(
+            "../../../config/cta_perp_15m/cta_perp_symbol_factors.json"
+        ))
+        .unwrap();
+        for (symbol, row) in table {
+            assert!(config.universe.symbols.contains(&symbol));
+            for factor in row.factors {
+                assert!(config.universe.factors.contains(&factor));
+            }
+        }
+        config.kafka.lookback_secs = 172799;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn rx04_universe_accepts_all_requested_bindings_and_requires_5m_warmup() {
         let mut config: CtaPerpFactorPubConfig = toml::from_str(include_str!(
             "../../../config/cta_perp_rx04/cta_perp_factor_model_5m_pub.toml"

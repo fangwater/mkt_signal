@@ -96,7 +96,7 @@ impl CtaPerpSignalApp {
             .strip_suffix(":cta_symbol_factors")
             .context("invalid CTA factor key")?
             .to_string();
-        let factors =
+        let mut factors =
             WeightedFactorChannel::new(factor_key, "cta_perp_model_input", false, interval).await?;
         MktChannel::init_bbo_singleton_readonly(config.venue(), config.venue())
             .context("initialize CTA sizing BBO")?;
@@ -111,6 +111,7 @@ impl CtaPerpSignalApp {
         } else {
             Positions::new()
         };
+        factors.apply_config_table(&config);
         let recovery = PositionRecovery::load(&config, factors.table(), &positions)?;
         if recovery.is_none() {
             validate_position_scope(&positions, config.position_algorithm)?;
@@ -295,7 +296,7 @@ impl CtaPerpSignalApp {
         for (factor, rows) in recovered.bars {
             for (symbol, bar) in rows {
                 let p = &self.positions[&factor][&symbol];
-                let effective = self.config.for_symbol(&symbol);
+                let effective = self.config.for_strategy(&symbol, &factor);
                 self.recovered_ts
                     .insert((factor.clone(), symbol.clone()), bar.model_ts_ms);
                 self.observations.entry(factor.clone()).or_default().insert(symbol.clone(), json!({
@@ -350,6 +351,7 @@ impl CtaPerpSignalApp {
                     return;
                 }
                 self.configuration_error = None;
+                self.factors.apply_config_table(&next);
                 self.config = next;
                 self.config_modified = modified;
                 self.entry_live_after_ms = get_timestamp_us() / 1000;
@@ -372,7 +374,7 @@ impl CtaPerpSignalApp {
             return Ok(());
         }
         let now = get_timestamp_us();
-        let effective = self.config.for_symbol(&symbol);
+        let effective = self.config.for_strategy(&symbol, &factor);
         let mut position = self
             .positions
             .get(&factor)
@@ -480,7 +482,7 @@ impl CtaPerpSignalApp {
             }
         }
         let status = json!({"bar_interval":self.config.bar_interval,"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_PERP_VENUE_NAME,
-            "position_algorithm":self.config.position_algorithm,"symbol_overrides":self.config.symbol_overrides,
+            "position_algorithm":self.config.position_algorithm,"symbol_overrides":self.config.symbol_overrides,"factor_rules":self.config.factor_rules,
             "recovering":self.recovery.is_some(),"recovery_records":self.recovery.as_ref().map(|r|r.records),"recovery_error":self.recovery_error,
             "configuration_error":self.configuration_error,"publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),

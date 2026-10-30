@@ -9,7 +9,8 @@ const CtaPanel = (() => {
     Number.isFinite(record.snapshot?.signal?.score)
       ? Math.sign(record.snapshot.signal.score)
       : 0;
-  const barMillis = (interval) => interval === "5m" ? 300000 : MINUTE;
+  const barMillis = (interval) => ({"1m": MINUTE, "5m": 5 * MINUTE, "15m": 15 * MINUTE})[interval || "1m"];
+  const usesLinearNq = (interval) => ["5m", "15m"].includes(interval);
   const modelBucket = (record, barMs = barMillis(record.snapshot?.bar_interval)) => record.model_ts_ms - barMs;
   const executionBucket = (record, barMs = barMillis(record.snapshot?.bar_interval)) =>
     Math.floor(record.event_ts_us / 1000 / barMs) * barMs;
@@ -50,11 +51,11 @@ const CtaPanel = (() => {
       enabled = entry.nq_change_enabled,
       ready = signal.filter_ready;
     const valid = (q) => Number.isFinite(q) && q >= 0 && q <= 1;
-    const fiveMinute = record.snapshot?.bar_interval === "5m";
+    const linearNq = usesLinearNq(record.snapshot?.bar_interval);
     const branch = (name, compare) => {
       const quantile = signal[`nq_${name}_quantile`],
-        threshold = fiveMinute ? signal[`nq_${name}_threshold`] : entry[`nq_${name}_quantile`];
-      const tested = fiveMinute ? signal[`nq_${name}_value`] : quantile;
+        threshold = linearNq ? signal[`nq_${name}_threshold`] : entry[`nq_${name}_quantile`];
+      const tested = linearNq ? signal[`nq_${name}_value`] : quantile;
       return {
         value: signal[`nq_${name}_value`],
         quantile,
@@ -62,7 +63,7 @@ const CtaPanel = (() => {
         passed:
           enabled === true &&
           ready === true &&
-          (fiveMinute ? Number.isFinite(tested) && Number.isFinite(threshold) : valid(quantile) && valid(threshold))
+          (linearNq ? Number.isFinite(tested) && Number.isFinite(threshold) : valid(quantile) && valid(threshold))
             ? compare(tested, threshold)
             : null,
       };
@@ -104,7 +105,7 @@ const CtaPanel = (() => {
     const records = strategy
       ? data.signals.filter((r) => strategyOf(r) === strategy)
       : [];
-    const barMs = barMillis(data.interval), fiveMinute = data.interval === "5m";
+    const barMs = barMillis(data.interval), linearNq = usesLinearNq(data.interval);
     const candles = new Map(data.klines.map((row) => [row.open_time_ms, row]));
     const observations = new Map(),
       states = new Map(),
@@ -223,15 +224,15 @@ const CtaPanel = (() => {
       trades,
       byId,
       position,
-      nqLong: times.map((ts) => quantile(ts, fiveMinute ? "nq_long_value" : "nq_long_quantile")),
-      nqShort: times.map((ts) => quantile(ts, fiveMinute ? "nq_short_value" : "nq_short_quantile")),
+      nqLong: times.map((ts) => quantile(ts, linearNq ? "nq_long_value" : "nq_long_quantile")),
+      nqShort: times.map((ts) => quantile(ts, linearNq ? "nq_short_value" : "nq_short_quantile")),
       nqLongThreshold: times.map(
         (ts) =>
-          (fiveMinute ? quantile(ts, "nq_long_threshold") : preferred(observations.get(ts) || [])?.snapshot.entry?.nq_long_quantile) ?? "-",
+          (linearNq ? quantile(ts, "nq_long_threshold") : preferred(observations.get(ts) || [])?.snapshot.entry?.nq_long_quantile) ?? "-",
       ),
       nqShortThreshold: times.map(
         (ts) =>
-          (fiveMinute ? quantile(ts, "nq_short_threshold") : preferred(observations.get(ts) || [])?.snapshot.entry?.nq_short_quantile) ?? "-",
+          (linearNq ? quantile(ts, "nq_short_threshold") : preferred(observations.get(ts) || [])?.snapshot.entry?.nq_short_quantile) ?? "-",
       ),
       ohlc: times.map((ts) => {
         const row = candles.get(ts);
@@ -588,9 +589,9 @@ if (typeof document !== "undefined")
             },
             {
               gridIndex: 2,
-              min: state.data.interval === "5m" ? undefined : 0,
-              max: state.data.interval === "5m" ? undefined : 1,
-              interval: state.data.interval === "5m" ? undefined : 0.5,
+              min: usesLinearNq(state.data.interval) ? undefined : 0,
+              max: usesLinearNq(state.data.interval) ? undefined : 1,
+              interval: usesLinearNq(state.data.interval) ? undefined : 0.5,
               axisLabel: {
                 color: "#8496af",
                 fontSize: 9,
@@ -647,8 +648,8 @@ if (typeof document !== "undefined")
               lineStyle: { color: "#8aaeff", width: 1.6 },
               areaStyle: { color: "#8aaeff20" },
             },
-            nqLine(state.data.interval === "5m" ? "BUY_NQ 变化" : "BUY_NQ 分位", series.nqLong, "#4ad6ab"),
-            nqLine(state.data.interval === "5m" ? "SELL_NQ 变化" : "SELL_NQ 分位", series.nqShort, "#f48792"),
+            nqLine(usesLinearNq(state.data.interval) ? "BUY_NQ 变化" : "BUY_NQ 分位", series.nqLong, "#4ad6ab"),
+            nqLine(usesLinearNq(state.data.interval) ? "SELL_NQ 变化" : "SELL_NQ 分位", series.nqShort, "#f48792"),
             nqLine("多头 NQ 阈值", series.nqLongThreshold, "#9dcbb9", true),
             nqLine("空头 NQ 阈值", series.nqShortThreshold, "#c49da8", true),
           ],
@@ -669,11 +670,11 @@ if (typeof document !== "undefined")
                   : data.passed
                     ? "通过"
                     : "拦截";
-          return `<div class="nq-row ${gate.side === side ? "selected" : ""}" data-side="${side > 0 ? "long" : "short"}"><div><b>${name}${gate.side === side ? " · 本次方向" : ""}</b><span>${pct(data.value)}</span></div><small>${record.snapshot?.bar_interval === "5m" ? "变化 " + pct(data.value) : "分位 " + pct(data.quantile)} ${operator} 阈值 ${pct(data.threshold)}</small><strong class="${data.passed === true ? "positive" : data.passed === false ? "negative" : "neutral"}">${result}</strong></div>`;
+          return `<div class="nq-row ${gate.side === side ? "selected" : ""}" data-side="${side > 0 ? "long" : "short"}"><div><b>${name}${gate.side === side ? " · 本次方向" : ""}</b><span>${pct(data.value)}</span></div><small>${usesLinearNq(record.snapshot?.bar_interval) ? "变化 " + pct(data.value) : "分位 " + pct(data.quantile)} ${operator} 阈值 ${pct(data.threshold)}</small><strong class="${data.passed === true ? "positive" : data.passed === false ? "negative" : "neutral"}">${result}</strong></div>`;
         };
       return `<section class="nq-section"><div class="section-heading"><b>NQ change</b><span class="nq-state ${gate.mode === "passed" ? "positive" : gate.mode === "blocked" ? "negative" : "neutral"}" data-mode="${gate.mode}">${gate.text}</span></div>
       <p class="hint">只过滤开仓 · 使用当时的阈值</p>${row("BUY_NQ", gate.long, 1, "≥")}${row("SELL_NQ", gate.short, -1, "≤")}
-      <details class="nq-method"><summary>计算方式</summary><p>BUY_NQ = (P − 2h 最低 mid) / 最低 mid<br>SELL_NQ = (P − 2h 最高 mid) / 最高 mid</p><p>${record.snapshot?.bar_interval === "5m" ? "P 是本合约 5min 区间最后一分钟的盘口 mid，收盘后才可使用。极值和变化窗口均为 24 个有效样本，缺口不占位；至少 12 个变化值后使用线性插值中位数作为门槛。" : "P 是本合约分钟最后一个有效盘口 mid。极值和分位窗口均为 120 个分钟槽位，至少 60 个有效 NQ 样本后就绪。分位采用相同值的中间排名。"}</p><p>50% 指变化序列的历史中位位置。NQ 放行开仓，因子退出不受 NQ 限制。</p></details></section>`;
+      <details class="nq-method"><summary>计算方式</summary><p>BUY_NQ = (P − 最近 120 根最低 mid) / 最低 mid<br>SELL_NQ = (P − 最近 120 根最高 mid) / 最高 mid</p><p>${usesLinearNq(record.snapshot?.bar_interval) ? `P 是本合约 ${record.snapshot.bar_interval.replace("m", "min")} 区间最后一分钟的盘口 mid，收盘后才可使用。极值和变化窗口均为 120 个有效样本，缺口不占位；至少 60 个变化值后使用线性插值中位数作为门槛。` : "P 是本合约分钟最后一个有效盘口 mid。极值和分位窗口均为 120 个分钟槽位，至少 60 个有效 NQ 样本后就绪。分位采用相同值的中间排名。"}</p><p>50% 指变化序列的历史中位位置。NQ 放行开仓，因子退出不受 NQ 限制。</p></details></section>`;
     }
     function inspector(record, action = null) {
       if (!record) {

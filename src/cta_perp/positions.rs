@@ -45,9 +45,7 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig
     if flag == 0 {
         return 0;
     }
-    if config.entry.nq_change_enabled
-        && config.bar_interval == super::interval::BarInterval::FiveMinutes
-    {
+    if config.entry.nq_change_enabled && config.bar_interval.uses_linear_nq() {
         let (value, threshold) = if flag > 0 {
             (bar.nq.filter_long_value, bar.nq.filter_long_threshold)
         } else {
@@ -76,9 +74,17 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig
                 q.is_finite()
                     && (0.0..=1.0).contains(&q)
                     && if flag > 0 {
-                        q >= config.entry.nq_long_quantile
+                        if config.strict_nq {
+                            q > config.entry.nq_long_quantile
+                        } else {
+                            q >= config.entry.nq_long_quantile
+                        }
                     } else {
-                        q <= config.entry.nq_short_quantile
+                        if config.strict_nq {
+                            q < config.entry.nq_short_quantile
+                        } else {
+                            q <= config.entry.nq_short_quantile
+                        }
                     }
             });
         if !valid {
@@ -94,31 +100,64 @@ mod tests {
     use crate::cta_perp::factors::{aggregate_bar, SymbolFactors};
     use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
     #[test]
-    fn five_minute_nq_compares_values_inclusively_and_never_forces_exits() {
-        let mut c = config();
-        c.bar_interval = super::super::interval::BarInterval::FiveMinutes;
-        // A low percentile rank caused by ties must not reject equality to Q50.
-        let mut long = bar(0.99, true);
-        long.nq.filter_long_value = Some(0.0);
-        long.nq.filter_long_threshold = Some(0.0);
-        long.nq.filter_long_quantile = Some(0.1);
-        assert_eq!(next_position_flag(0, &long, &c), 1);
-        long.nq.filter_long_threshold = Some(0.01);
-        assert_eq!(next_position_flag(0, &long, &c), 0);
-        assert_eq!(next_position_flag(1, &long, &c), 1);
-        let mut short = bar(0.01, true);
-        short.nq.filter_short_value = Some(-0.05);
-        short.nq.filter_short_threshold = Some(-0.05);
-        short.nq.filter_short_quantile = Some(0.9);
-        assert_eq!(next_position_flag(0, &short, &c), -1);
-        short.nq.filter_short_threshold = Some(-0.06);
-        assert_eq!(next_position_flag(0, &short, &c), 0);
-        short.nq.filter_ready = false;
-        assert_eq!(next_position_flag(-1, &short, &c), -1);
-        assert_eq!(next_position_flag(1, &short, &c), 0); // factor exit still works
-        c.entry.nq_change_enabled = false;
-        assert_eq!(next_position_flag(0, &short, &c), -1);
+    fn multi_minute_nq_compares_values_inclusively_and_never_forces_exits() {
+        for interval in [
+            super::super::interval::BarInterval::FiveMinutes,
+            super::super::interval::BarInterval::FifteenMinutes,
+        ] {
+            let mut c = config();
+            c.bar_interval = interval;
+            // A low percentile rank caused by ties must not reject equality to Q50.
+            let mut long = bar(0.99, true);
+            long.nq.filter_long_value = Some(0.0);
+            long.nq.filter_long_threshold = Some(0.0);
+            long.nq.filter_long_quantile = Some(0.1);
+            assert_eq!(next_position_flag(0, &long, &c), 1);
+            long.nq.filter_long_threshold = Some(0.01);
+            assert_eq!(next_position_flag(0, &long, &c), 0);
+            assert_eq!(next_position_flag(1, &long, &c), 1);
+            let mut short = bar(0.01, true);
+            short.nq.filter_short_value = Some(-0.05);
+            short.nq.filter_short_threshold = Some(-0.05);
+            short.nq.filter_short_quantile = Some(0.9);
+            assert_eq!(next_position_flag(0, &short, &c), -1);
+            short.nq.filter_short_threshold = Some(-0.06);
+            assert_eq!(next_position_flag(0, &short, &c), 0);
+            short.nq.filter_ready = false;
+            assert_eq!(next_position_flag(-1, &short, &c), -1);
+            assert_eq!(next_position_flag(1, &short, &c), 0); // factor exit still works
+            c.entry.nq_change_enabled = false;
+            assert_eq!(next_position_flag(0, &short, &c), -1);
+        }
     }
+    #[test]
+    fn rx03_rules_keep_factor_gates_directions_and_nq_disable_independent() {
+        let config = CtaPerpConfig::load("config/cta_perp_rx03/cta_perp.json").unwrap();
+        assert_eq!(config.factor_rules.len(), 45);
+        assert_eq!(config.rule_table().len(), 16);
+        let rule = config.for_strategy("NEARUSDT", "TD_TI_024");
+        let mut long = bar_for(0.01, true, &rule, -1.0);
+        long.nq.filter_long_quantile = Some(0.2);
+        assert_eq!(next_position_flag(0, &long, &rule), 0);
+        long.nq.filter_long_quantile = Some(0.21);
+        assert_eq!(next_position_flag(0, &long, &rule), 1);
+        let mut short = bar_for(0.99, true, &rule, -1.0);
+        short.nq.filter_short_quantile = Some(0.8);
+        assert_eq!(next_position_flag(0, &short, &rule), 0);
+        short.nq.filter_short_quantile = Some(0.79);
+        assert_eq!(next_position_flag(0, &short, &rule), -1);
+        let disabled = config.for_strategy("NEARUSDT", "factor_051");
+        let long = bar_for(0.01, false, &disabled, -1.0);
+        assert_eq!(next_position_flag(0, &long, &disabled), 1);
+        assert!(
+            config
+                .for_strategy("DOGEUSDT", "baseline_164")
+                .entry
+                .nq_change_enabled
+        );
+        assert_eq!(next_position_flag(-1, &long, &disabled), 0);
+    }
+
     fn config() -> CtaPerpConfig {
         serde_json::from_str(include_str!("../../config/cta_perp.json")).unwrap()
     }

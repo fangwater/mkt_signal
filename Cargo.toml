@@ -292,6 +292,14 @@ name = "cta_perp_5m_signal"
 path = "src/bin/cta_perp_5m_signal.rs"
 
 [[bin]]
+name = "cta_perp_factor_model_15m_pub"
+path = "src/bin/cta_perp_factor_model_15m_pub.rs"
+
+[[bin]]
+name = "cta_perp_15m_signal"
+path = "src/bin/cta_perp_15m_signal.rs"
+
+[[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
 

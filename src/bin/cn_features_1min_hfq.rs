@@ -22,6 +22,7 @@ use polars::prelude::{
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -56,6 +57,10 @@ struct Args {
     bar_minutes: u32,
     #[arg(long)]
     bar_segments_root: Option<PathBuf>,
+    /// Offline 1h/1day only: unchanged windows over all observed bars,
+    /// including sessions, day changes, weekends and absent source days.
+    #[arg(long)]
+    continuous_bars: bool,
 }
 
 struct DayFile {
@@ -65,6 +70,7 @@ struct DayFile {
 
 struct InputRow {
     ts: i64,
+    end_ts: i64,
     trading_day: u32,
     quality_flags: u32,
     trade: [f64; FUTURES_TRADE_FIELD_COUNT],
@@ -84,6 +90,9 @@ fn main() -> Result<()> {
     }
     if args.bar_minutes != 1 && args.bar_segments_root.is_none() {
         bail!("coarse bars require --bar-segments-root; timestamp-gap heuristics are minute-only");
+    }
+    if args.continuous_bars && !matches!(args.bar_minutes, 60 | 1440) {
+        bail!("--continuous-bars is restricted to explicit 1h/1day metadata");
     }
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.workers)
@@ -253,10 +262,20 @@ fn replay_product(
     let mut by_day: BTreeMap<NaiveDate, Vec<(i64, Vec<Option<f64>>)>> = BTreeMap::new();
     let mut prev_ts: Option<i64> = None;
     let mut prev_trading_day: Option<u32> = None;
+    let mut previous_end: Option<i64> = None;
     // The output row at t deliberately carries factors evaluated through t-1.
     // Keeping the evaluated vector also preserves stateful-factor semantics.
     let mut pending_values: Option<Vec<Option<f64>>> = None;
     for mut row in series {
+        if args.continuous_bars {
+            if previous_end.is_some_and(|end| end > row.ts) {
+                bail!("previous bar is not complete at current start {}", row.ts);
+            }
+            previous_end = Some(row.end_ts);
+            // Source segment boundaries describe aggregation, not resets in
+            // this explicitly requested continuously rolling factor stream.
+            row.quality_flags &= !QUALITY_SEGMENT_BREAK;
+        }
         if let Some(prev) = prev_ts {
             if args.bar_segments_root.is_none() && is_session_break(prev, row.ts) {
                 row.quality_flags |= QUALITY_SEGMENT_BREAK;
@@ -266,10 +285,11 @@ fn replay_product(
         let ts = row.ts;
         let trading_day = row.trading_day;
         let segment_break = row.quality_flags & QUALITY_SEGMENT_BREAK != 0
-            || prev_trading_day.is_some_and(|previous| previous != trading_day);
+            || (!args.continuous_bars
+                && prev_trading_day.is_some_and(|previous| previous != trading_day));
         prev_trading_day = Some(trading_day);
         let values = take_shifted_values(&mut pending_values, segment_break, factor_names.len());
-        state.push_additive_hfq(FuturesFusionInput {
+        let input = FuturesFusionInput {
             ts_ms: ts * 1000,
             symbol: product.to_string(),
             trading_day,
@@ -278,7 +298,12 @@ fn replay_product(
             quality_flags: row.quality_flags,
             volume_multiple: 1.0,
             volume_multiple_verified: true,
-        })?;
+        };
+        if args.continuous_bars {
+            state.push_additive_hfq_continuous(input)?;
+        } else {
+            state.push_additive_hfq(input)?;
+        }
         pending_values = Some(state.factor_values(plan)?);
         let day = if args.bar_segments_root.is_some() {
             NaiveDate::parse_from_str(&trading_day.to_string(), "%Y%m%d")?
@@ -348,8 +373,9 @@ fn apply_bar_segments(
     let starts: HashSet<i64> = record.segment_start_ts.iter().copied().collect();
     validate_bar_segments(&record, &starts)
         .with_context(|| format!("invalid bar segments {}", path.display()))?;
-    for row in rows {
+    for (i, row) in rows.iter_mut().enumerate() {
         row.trading_day = record.trading_day;
+        row.end_ts = record.end_ts[i];
         if starts.contains(&row.ts) {
             row.quality_flags |= QUALITY_SEGMENT_BREAK;
         }
@@ -358,6 +384,9 @@ fn apply_bar_segments(
 }
 
 fn validate_bar_segments(record: &BarSegments, starts: &HashSet<i64>) -> Result<()> {
+    if record.bar_minutes == 1440 && record.ts.len() != 1 {
+        bail!("daily metadata requires one complete official trading-day bar");
+    }
     if record.ts.first().is_some_and(|ts| !starts.contains(ts))
         || starts.len() != record.segment_start_ts.len()
         || !starts.iter().all(|ts| record.ts.binary_search(ts).is_ok())
@@ -366,8 +395,12 @@ fn validate_bar_segments(record: &BarSegments, starts: &HashSet<i64>) -> Result<
     }
     for i in 0..record.ts.len() {
         if record.source_minutes[i] == 0
-            || record.source_minutes[i] > record.bar_minutes
-            || record.end_ts[i] != record.ts[i] + i64::from(record.source_minutes[i]) * 60
+            || (record.bar_minutes != 1440 && record.source_minutes[i] > record.bar_minutes)
+            || if record.bar_minutes == 1440 {
+                record.end_ts[i] < record.ts[i] + i64::from(record.source_minutes[i]) * 60
+            } else {
+                record.end_ts[i] != record.ts[i] + i64::from(record.source_minutes[i]) * 60
+            }
         {
             bail!("invalid bar duration at row {i}");
         }
@@ -460,6 +493,7 @@ fn read_day(path: &Path, product: &str) -> Result<(Vec<InputRow>, u64)> {
         let trading_day = trad_day_u32(ts_sec);
         out.push(InputRow {
             ts: ts_sec,
+            end_ts: ts_sec + 60,
             trading_day,
             quality_flags: 0,
             trade,
@@ -505,9 +539,12 @@ fn write_day(
     let temporary = path.with_extension("parquet.tmp");
     let file =
         File::create(&temporary).with_context(|| format!("create {}", temporary.display()))?;
-    ParquetWriter::new(file)
+    let mut writer = BufWriter::with_capacity(1024 * 1024, file);
+    ParquetWriter::new(&mut writer)
         .finish(&mut dataframe)
         .with_context(|| format!("write {}", temporary.display()))?;
+    writer.flush()?;
+    drop(writer);
     fs::rename(&temporary, path)
         .with_context(|| format!("rename {} -> {}", temporary.display(), path.display()))?;
     Ok(())
@@ -597,6 +634,21 @@ fn is_session_break(prev: i64, next: i64) -> bool {
 mod tests {
     use super::{take_shifted_values, validate_bar_segments, BarSegments};
     use std::collections::HashSet;
+
+    #[test]
+    fn official_daily_metadata_allows_session_breaks_in_wall_clock() {
+        let mut r = BarSegments {
+            bar_minutes: 1440,
+            trading_day: 20210104,
+            ts: vec![0],
+            segment_start_ts: vec![0],
+            source_minutes: vec![300],
+            end_ts: vec![86_400],
+        };
+        assert!(validate_bar_segments(&r, &HashSet::from([0])).is_ok());
+        r.end_ts[0] = 17_999;
+        assert!(validate_bar_segments(&r, &HashSet::from([0])).is_err());
+    }
 
     #[test]
     fn coarse_segments_keep_partial_tails_and_explicit_breaks() {

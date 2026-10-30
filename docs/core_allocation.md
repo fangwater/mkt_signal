@@ -1,7 +1,76 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-10-29 07:36 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-10-29 07:34 UTC，按补充要求将已退役的Bybit CTA/MM从管理移除。
+SG CTA配置删除`bybit_exec_trade01`，残留10条零份额绑定及账户权限移除；
+JP CTA删除`sg-cta`汇总provider、停用对应Exec与MM外部目录项。
+NAV停用`bybit_mm_alpha`和旧CTA登记`bybit-intra-arb02`（别名`bybit cta`），
+关闭自动对齐；重载两地主机CTA及JP NAV管理服务使采集范围生效。
+NAV其他登记逐项保持，`bybit_fr_arb01`仍启用；SG原14个FR/共享行情PID保持。
+CPU和交易IP分配不变，原历史schema、不可变快照及订单归档保留。
+两地主机备份均位于
+`~/crypto_cta_manager/maintenance-backups/bybit_management_remove_20261029T073240Z/`。
+
+2026-10-29 07:13–07:24 UTC，按要求退役 SG `bybit_exec_trade01`（CTA）及
+`bybit_mm_alpha`。通过环境本地脚本停止两套下单链路，撤销MM的7笔挂单；
+CTA 10个、MM 3个永续仓位以13笔reduce-only市价单全部平仓，交易所核验
+分别70/11条成交均为taker，逐单累计成交量等于请求量。最终现货、永续、
+各类挂单、借款及利息均为0，仅保留USDT余额19750.40950714/21624.6611539。
+两套账户监控、持久化、Viz及Config全部停止，原部署目录删除；专用CTA
+`spp_bb_fu_bybit_exec_trade01`（原PID3818626、CPU6）同时停止，CPU6不再占用。
+Manager已解除virtual01跟随，10条历史绑定份额归零，source/overview export禁用，
+历史目录指向归档库；Manager服务恢复正常运行。MM页面返回410，6352同步监听移除。
+两份订单tar.gz含原RocksDB及清仓回执，逐文件SHA-256与原数据核验一致，
+SG归档目录 `~/retired_data/bybit_cta_mm_20261029T071314Z/`；本地副本位于
+`data/order_archives/bybit_cta_mm_20261029T071314Z/`，整包SHA-256复核通过。
+FR与共享spread/depth/TFF/rolling共14个PID保持，CPU8–15、ENI/EIP/路由不变。
+
+2026-10-29 07:12 UTC 按要求停止 JP `okex_mm_alpha`：通过环境本地脚本先停
+trade_engine，撤销其停止后剩余的53笔OKX SWAP挂单并复核为0，再停止signal、
+pre_trade、account_monitor、Config、persist_manager及Viz；7个进程全部退出，
+10212/18112/50055监听关闭。CPU20–23已无该环境进程，CPU15不再运行其
+persist_manager；原绑核配置保留。另89个已记录的交易及行情进程PID未变。
+停机时只读查询有14个币种的永续持仓，当时未平仓；后续已按要求清仓，见下文。
+部署目录、配置、原订单库及
+源IP预留保留，订单归档及停机核验目录为
+JP `~/retired_data/okex_mm_alpha_20261029T071005Z/`。
+07:15 UTC 完成 `okex_mm_alpha_orders_rocksdb.tar.zst` 归档：664个文件，原始
+9,440,184,779字节，压缩后1,507,597,216字节；完整文件清单、大小和逐文件
+SHA-256均与原库一致，归档期间原库未变化。归档仅含订单RocksDB，不含配置或
+凭据；归档、清单及核验记录权限0600。详情及归档SHA-256见IP绑定文档。
+07:25 UTC 按追加要求完成全部仓位清理：14笔SWAP市价平仓单全部成交，18笔
+成交逐币数量与原持仓一致；ETH/DOGE借款偿清，8个币种的现货尾差全部兑换为
+USDT（含还款后新增尾差）。最终交易账户仅USDT，全部品种持仓、普通挂单、
+止盈止损/触发/移动止损挂单及借款均为0。交易进程始终停止，CPU/IP及配置未变。
+清仓成交、还款、兑换及复核记录已补充至同目录
+`okex_mm_alpha_flatten_evidence.tar.zst`（10,557字节、10文件、逐文件校验通过）；
+原订单RocksDB归档保持不变，清仓后的交易所事实另存于该补充归档。
+
+2026-10-29 02:21 UTC 按要求恢复 RX03 / `binance_exec_trade07`：先以关闭发布
+启动 signal（PID4181089），核对45/45组合就绪，再补齐Manager的23个新因子，
+保留2个退出范围的旧因子及原策略名用于显式`clear`，共28份绑定。
+保留现场每组合200 USDT、`lgq_grid_prep`、shares1和virtual04跟随倍率1；
+启用发布并核对旧28项组合均为clear后，通过环境本地脚本启动pre-trade
+（PID4183206）。因子publisher PID2307925仍在CPU19；原Exec其他5个进程、
+Config/dashboard、Manager、交易IP与隔离核配置均未改。
+恢复前BTC/ETH/SOL/ADA/UNI/XLM有配置外持仓，均已获得零目标，执行按交易所
+最小下单量处理尾差。备份及验证在RX03 `run/resume_20261029/`，本地证据
+`artifacts/rx03_resume_20261029/`。
+02:25 UTC复核45组合就绪、Manager无待发布、账户恢复就绪且持久化队列为零；
+ADA已清零，BTC/SOL/UNI尚有grid退出挂单，ETH/XLM尾差受最小下单限制，
+不能将显式clear发布完成记作账户已经全部清零。
+
+2026-10-28 RX03 `binance-cta-perp-rx03` 按要求暂停交易后更新标的×因子NQ：
+signal及Exec07 pre-trade停止、发布关闭；撤销10笔遗留挂单，复核普通/算法挂单
+均为零，保留仓位。Config Server PID2288047；因子publisher PID2307925，
+仍绑CPU19，16币/26因子已追到实时，45项组合保留线上300 USDT和全局开平参数。
+10:15 UTC核对43/45因子组合及16/16 NQ就绪；ALGO/ZRX的buy_avg_price仍需预热。
+signal二进制已安装但不启动。只读dashboard同步加载新JSON组合并重启为
+PID2326926，4191接口核对16币/45组合且发布关闭。Exec07 trade_engine、账户
+监控、持久化、Viz和Config保持原进程；未改Manager绑定、CPU和交易IP。
+备份在环境 `run/nq_backup_20261028T094509Z`，证据 `artifacts/rx03_nq_20261028/`。
 
 2026-10-28 按操作员要求退役 JP RX01 / `binance_exec_trade06`：Spread signal
 已停止并关闭发布，Exec pre-trade、trade_engine、账户监控、持久化、Viz 和 Config
@@ -685,15 +754,15 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 12 | spread_pbs okex-both | |
 | 13 | depth_pub_general | 本机 8 路 depth25（BN/OKX/Bitget/Gate × margin+futures）；**不含 Bybit**（Bybit 在 sg）。pm2 `dp_general` |
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
-| 15 | persist_manager ×N | okex_mm_alpha、fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠 |
+| 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta_spread_factor_model_1m_pub(binance-cta-spread-rx01) | 2026-10-26 因子17币/7组/55组合全就绪，PID3173585；全市场Vol继续发布，既有release二进制复用 |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-22 新版23币/22因子/69组合，PID160373，双Manager推送；68/69就绪，RLC继续预热 |
-| 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 2026-10-14 独立RX03实盘信号publisher，PID2038356/5线程；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
-| 20 | account_monitor(okex_mm_alpha) | okex MM 从 20 起 |
-| 21 | trade_signal(okex_mm_alpha) | |
-| 22 | pre_trade(okex_mm_alpha) | |
-| 23 | trade_engine(okex_mm_alpha) | 单线程 |
+| 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 16币/26因子，PID2307925；2026-10-29恢复45组合交易，单份200 USDT；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
+| 20 | (空) | 原 okex_mm_alpha account_monitor 已停止，配置保留 |
+| 21 | (空) | 原 okex_mm_alpha trade_signal 已停止，配置保留 |
+| 22 | (空) | 原 okex_mm_alpha pre_trade 已停止，配置保留 |
+| 23 | (空) | 原 okex_mm_alpha trade_engine 已停止，配置保留 |
 | 24 | crypto_cta_manager / cta_web | Manager 网页服务，2026-10-22 实测仍固定 CPU24 |
 | 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
 | 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；2026-10-23开启5min实盘，仓位重算保留publisher |
@@ -723,7 +792,7 @@ okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `binance_exec_trade08` 的engine、executor、监控、持久化、Viz/Config均有效CPU0–5；
 已通过virtual02跟随RX02，Grid实盘执行，独立trade_signal保持停止。
-`okex_mm_alpha` 的 persist_manager 与其它 persist 一起堆叠在 15。
+`okex_mm_alpha` 已于2026-10-29停止，其 persist_manager 原绑核15，配置保留。
 `binance-cta-rx01` 的 persist_manager 同样堆叠在 15。
 `bitget_fr_arb03` 已启动；其 persist_manager 绑核 15，其余进程未绑核。
 2026-10-04 15:11 UTC 重新发布 `gate_fr_arb03`（`322c482c`，Gate WS 保证金恢复解锁），
@@ -923,8 +992,9 @@ NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp
 | 15 | trade_engine(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603071；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
 
 未绑核、跑在 housekeeping 0-7 的热路径进程(截至本次盘点):
-mm_bybit_alpha 全套(trade_engine/trade_signal/pre_trade/account_monitor/persist_manager)、
-depth_pub、若干 persist_manager。bybit-intra-arb02 原有全套进程使用 0-7，2026-10-16 已全部停止。
+depth_pub、trade_flow_feature_pub、rolling_metrics及若干 persist_manager。
+原MM alpha及CTA Exec全套已于2026-10-29停止并删除部署，CTA专用CPU6 publisher停止；
+bybit-intra-arb02 原有全套进程使用 0-7，2026-10-16 已全部停止。
 这些与 housekeeping/系统中断同核竞争;隔离段 IRQ 已迁到 10/11。
 
 2026-10-21 01:04–01:15 UTC，按操作者要求先中性对齐，再恢复 `bybit-intra-arb01`

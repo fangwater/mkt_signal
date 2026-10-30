@@ -1,64 +1,79 @@
 {
-  "AAVEUSDT": {
-    "baseline_085": -1.0,
-    "baseline_164": 1.0,
-    "baseline_200": -1.0
-  },
-  "ADAUSDT": {
-    "baseline_085": -1.0,
-    "baseline_164": 1.0
-  },
-  "AVAXUSDT": {
-    "baseline_141": 1.0
-  },
-  "BTCUSDT": {
-    "baseline_085": -1.0,
-    "baseline_200": -1.0
-  },
-  "DASHUSDT": {
-    "TD_MT_029": -1.0,
-    "baseline_085": -1.0,
-    "baseline_141": 1.0,
-    "baseline_164": 1.0,
-    "baseline_200": -1.0
+  "ZECUSDT": {
+    "TD_MT_019": -1,
+    "baseline_146": -1,
+    "baseline_028": -1,
+    "baseline_164": 1
   },
   "DOGEUSDT": {
-    "baseline_085": -1.0,
-    "baseline_164": 1.0,
-    "baseline_200": -1.0
-  },
-  "DOTUSDT": {
-    "baseline_141": 1.0,
-    "baseline_164": 1.0
-  },
-  "ETHUSDT": {
-    "baseline_085": -1.0,
-    "baseline_200": -1.0
-  },
-  "LTCUSDT": {
-    "baseline_141": 1.0
+    "baseline_164": 1,
+    "factor_170": -1,
+    "TD_TI_008": 1
   },
   "NEARUSDT": {
-    "baseline_085": -1.0,
-    "baseline_141": 1.0,
-    "baseline_164": 1.0,
-    "baseline_200": -1.0
+    "baseline_005": -1,
+    "baseline_141": 1,
+    "TD_TI_024": -1,
+    "factor_051": -1
   },
-  "SOLUSDT": {
-    "baseline_141": 1.0,
-    "baseline_164": 1.0
+  "FILUSDT": {
+    "baseline_141": 1,
+    "factor_036": -1
   },
-  "UNIUSDT": {
-    "baseline_164": 1.0
+  "LINKUSDT": {
+    "baseline_141": 1,
+    "TD_TI_013": 1
   },
-  "XLMUSDT": {
-    "baseline_164": 1.0,
-    "baseline_200": -1.0
+  "DOTUSDT": {
+    "baseline_141": 1,
+    "TD_CI_008": 1
   },
-  "ZECUSDT": {
-    "TD_MT_029": -1.0,
-    "baseline_085": -1.0,
-    "baseline_164": 1.0,
-    "baseline_200": -1.0
+  "DASHUSDT": {
+    "baseline_141": 1,
+    "baseline_200": -1
+  },
+  "ALGOUSDT": {
+    "baseline_140": 1,
+    "factor_051": -1,
+    "buy_avg_price": -1
+  },
+  "BELUSDT": {
+    "baseline_200": -1,
+    "sell_avg_price": -1
+  },
+  "RLCUSDT": {
+    "TD_TI_043": -1,
+    "TD_PT_002": 1
+  },
+  "SKLUSDT": {
+    "factor_113": -1,
+    "factor_trades_040": -1
+  },
+  "TRBUSDT": {
+    "TD_TI_024": -1,
+    "baseline_040": -1,
+    "factor_170": -1,
+    "TP_VPI_002": -1
+  },
+  "VETUSDT": {
+    "TD_TI_024": -1,
+    "baseline_141": 1
+  },
+  "XTZUSDT": {
+    "TD_PT_002": 1,
+    "factor_051": -1,
+    "baseline_091": -1
+  },
+  "ZENUSDT": {
+    "TD_TI_043": -1,
+    "baseline_141": 1,
+    "baseline_151": -1,
+    "factor_036": -1
+  },
+  "ZRXUSDT": {
+    "buy_avg_price": -1,
+    "factor_051": -1,
+    "factor_128": -1,
+    "baseline_040": -1
   }
 }

@@ -21,7 +21,7 @@ from cta_perp_signal_history import (  # noqa: E402
     BinanceMinuteClient, SignalHistoryStore, SignalPanelCollector, configured_targets,
 )
 from cta_perp_position_replay import PositionReplay
-from cta_perp_config_server import position_strategy_factors
+from cta_perp_config_server import normalize_factor_rules, position_strategy_factors
 
 MAX_HEALTHY_STATUS_AGE_MS = 90_000
 
@@ -46,13 +46,16 @@ def _feed_state(value: Any, error: str | None, age_ms: int | None) -> str:
 
 
 def factor_strategies(status_path: Path, config_path: Path) -> dict[str, list[str]]:
+    config, _ = _read_json(config_path)
     status, _ = _read_json(status_path)
-    table = status.get("symbol_factors") if isinstance(status, dict) else None
+    if isinstance(config, dict) and config.get("factor_rules"):
+        table = normalize_factor_rules(config["factor_rules"])[1]
+    else:
+        table = status.get("symbol_factors") if isinstance(status, dict) else None
     if not isinstance(table, dict):
         table, _ = _read_json(config_path.with_name("cta_perp_symbol_factors.json"))
     if not isinstance(table, dict):
         return {}
-    config, _ = _read_json(config_path)
     algorithm = config.get("position_algorithm", "v0") if isinstance(config, dict) else "v0"
     return {symbol: sorted(position_strategy_factors(row, algorithm))
             for symbol, row in table.items() if isinstance(row, dict)}
@@ -258,10 +261,10 @@ def main() -> None:
         parser.error("--kline-poll-seconds must be at least 10")
     interval = json.loads(args.config.read_text()).get("bar_interval", "1m")
     if args.factor_history is None:
-        args.factor_history = Path('data/cta_perp_5m/factor_history' if interval == '5m' else 'data/cta_perp/factor_history')
+        args.factor_history = Path(f'data/cta_perp_{interval}/factor_history' if interval != '1m' else 'data/cta_perp/factor_history')
     history = SignalHistoryStore(args.history_db, interval)
     replay = PositionReplay(history,args.config,args.status,args.replay_settings)
-    targets = lambda: configured_targets(args.status, args.symbols_config)
+    targets = lambda: configured_targets(args.status, args.symbols_config, args.config)
     collector = None
     if not args.no_collector:
         collector = SignalPanelCollector(history, BinanceMinuteClient(interval=interval), targets, args.signal_journal, args.kline_poll_seconds,args.factor_history,replay)

@@ -26,7 +26,7 @@ use crate::factor_pub::fusion_factor_pub::cfg::TlenServerConfig;
 use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
-    BaselineBar, FiveMinuteBaseline, LocalBaselineAggregator,
+    BaselineBar, LocalBaselineAggregator, MultiMinuteBaseline,
 };
 
 use super::cfg::{CtaPerpFactorPubConfig, KafkaInputConfig, NormalizeConfig};
@@ -101,6 +101,13 @@ fn requires_amount_thresholds(factors: &[String]) -> bool {
                 | "TD_PR_013"
                 | "TD_TI_013"
                 | "TD_TI_018"
+                | "baseline_151"
+                | "TD_CI_008"
+                | "TD_PT_002"
+                | "TD_TI_024"
+                | "TD_TI_043"
+                | "TP_VPI_002"
+                | "factor_trades_040"
         )
     })
 }
@@ -248,7 +255,7 @@ impl SymbolFactorState {
             min_samples: interval.factor_min_samples(),
             tp_vpi_006_min_periods: match interval {
                 BarInterval::OneMinute => 360,
-                BarInterval::FiveMinutes => 280,
+                BarInterval::FiveMinutes | BarInterval::FifteenMinutes => 280,
             },
             evaluator: BaselineReplayState::default(),
             windows: (0..factor_count)
@@ -379,7 +386,7 @@ impl NqState {
     }
 
     fn close_bar(&mut self) -> NqObservation {
-        if self.interval == BarInterval::FiveMinutes {
+        if self.interval.uses_linear_nq() {
             let end = self.current_start_ms.unwrap_or(0) + self.interval.millis();
             let mid = if self
                 .last_valid_book_ms
@@ -425,7 +432,7 @@ impl PeriodEvent<'_> {
 
 pub struct CtaPerpFactorModelPubApp {
     interval: BarInterval,
-    five_minute_bars: HashMap<String, FiveMinuteBaseline>,
+    multi_minute_bars: HashMap<String, MultiMinuteBaseline>,
     venue: TradingVenue,
     venue_slug: String,
     tlen_server: TlenServerConfig,
@@ -618,7 +625,7 @@ impl CtaPerpFactorModelPubApp {
             .context("create CTA perp factor Kafka consumer")?;
         let mut app = Self {
             interval,
-            five_minute_bars: HashMap::new(),
+            multi_minute_bars: HashMap::new(),
             venue,
             venue_slug,
             tlen_server: config.tlen_server.clone(),
@@ -683,7 +690,10 @@ impl CtaPerpFactorModelPubApp {
             "CTA perp shared factor publisher ready venue={} symbols={} outputs={:?} zscore={}/{}/clip{} percentile={}/{} interval={}",
             app.venue_slug,
             app.allowed_symbols.len(),
-            app.outputs.iter().map(|output| output.service.as_str()).collect::<Vec<_>>(),
+            app.outputs
+                .iter()
+                .map(|output| output.service.as_str())
+                .collect::<Vec<_>>(),
             app.normalize.window_bars,
             app.normalize.min_periods,
             app.normalize.clip_zscore,
@@ -781,12 +791,15 @@ impl CtaPerpFactorModelPubApp {
                         }
                     }
                 }
-                // This consumer only uses 1m/5m output; do not retain unused 10s bars.
+                // This consumer only uses configured minute output; do not retain unused 10s bars.
                 aggregator.drain_ten_second_bars();
                 aggregator.drain_sixty_second_bars()
             };
-            let bars = if self.interval == BarInterval::FiveMinutes {
-                let resampler = self.five_minute_bars.entry(symbol.clone()).or_default();
+            let bars = if self.interval.uses_linear_nq() {
+                let resampler = self
+                    .multi_minute_bars
+                    .entry(symbol.clone())
+                    .or_insert_with(|| MultiMinuteBaseline::new(self.interval.millis()));
                 bars.iter().flat_map(|bar| resampler.push(bar)).collect()
             } else {
                 bars
@@ -1138,34 +1151,37 @@ mod tests {
     }
 
     #[test]
-    fn five_minute_nq_uses_own_last_minute_book_only_after_close() {
-        let start = 1_800_000_000_000_i64; // UTC 5m boundary
-        let mut state = NqState::new(BarInterval::FiveMinutes);
-        let mut other_symbol = NqState::new(BarInterval::FiveMinutes);
-        assert!(state.on_book(&nq_book(start, 99.0, 101.0)).is_empty());
-        assert!(other_symbol
-            .on_book(&nq_book(start + 299_999, 9.0, 11.0))
-            .is_empty());
-        assert!(state
-            .on_book(&nq_book(start + 299_999, 109.0, 111.0))
-            .is_empty());
-        // The 5m close uses the old 110 mid, not the new 210 execution quote.
-        let rows = state.on_book(&nq_book(start + 300_000, 209.0, 211.0));
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, start + 300_000);
-        assert_eq!(rows[0].1.long_value, Some(0.0));
-        assert_eq!(rows[0].1.execution_ask, Some(211.0));
-        assert!(state
-            .on_book(&nq_book(start + 599_999, 219.0, 221.0))
-            .is_empty());
-        let next = state.on_book(&nq_book(start + 600_000, 219.0, 221.0));
-        assert_eq!(next[0].1.long_value, Some(1.0)); // (220 - 110) / 110
-                                                     // No book in the last minute of the third bucket: no valid NQ sample.
-        let gap = state.on_book(&nq_book(start + 900_000, 219.0, 221.0));
-        assert_eq!(gap[0].1.long_value, None);
-        assert!(!gap[0].1.ready);
-        let other = other_symbol.on_book(&nq_book(start + 300_000, 9.0, 11.0));
-        assert_eq!(other[0].1.long_value, Some(0.0));
+    fn multi_minute_nq_uses_own_last_minute_book_only_after_close() {
+        for interval in [BarInterval::FiveMinutes, BarInterval::FifteenMinutes] {
+            let bar_ms = interval.millis();
+            let start = 1_800_000_000_000_i64; // UTC 5m boundary
+            let mut state = NqState::new(interval);
+            let mut other_symbol = NqState::new(interval);
+            assert!(state.on_book(&nq_book(start, 99.0, 101.0)).is_empty());
+            assert!(other_symbol
+                .on_book(&nq_book(start + (bar_ms - 1), 9.0, 11.0))
+                .is_empty());
+            assert!(state
+                .on_book(&nq_book(start + (bar_ms - 1), 109.0, 111.0))
+                .is_empty());
+            // The 5m close uses the old 110 mid, not the new 210 execution quote.
+            let rows = state.on_book(&nq_book(start + bar_ms, 209.0, 211.0));
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, start + bar_ms);
+            assert_eq!(rows[0].1.long_value, Some(0.0));
+            assert_eq!(rows[0].1.execution_ask, Some(211.0));
+            assert!(state
+                .on_book(&nq_book(start + (2 * bar_ms - 1), 219.0, 221.0))
+                .is_empty());
+            let next = state.on_book(&nq_book(start + (2 * bar_ms), 219.0, 221.0));
+            assert_eq!(next[0].1.long_value, Some(1.0)); // (220 - 110) / 110
+                                                         // No book in the last minute of the third bucket: no valid NQ sample.
+            let gap = state.on_book(&nq_book(start + (3 * bar_ms), 219.0, 221.0));
+            assert_eq!(gap[0].1.long_value, None);
+            assert!(!gap[0].1.ready);
+            let other = other_symbol.on_book(&nq_book(start + bar_ms, 9.0, 11.0));
+            assert_eq!(other[0].1.long_value, Some(0.0));
+        }
     }
 
     fn normalize_config(window_bars: usize, min_periods: usize) -> NormalizeConfig {
@@ -1253,69 +1269,75 @@ mod tests {
     }
 
     #[test]
-    fn five_minute_factor_readiness_and_signed_ranks_use_two_day_window() {
+    fn multi_minute_factor_readiness_and_signed_ranks_use_two_day_window() {
         use mkt_parsers::msg::trade_flow_feature_msg::{
             TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
         };
-        let plan = SymbolFactorPlan::from_factor_names("test", vec!["factor_001".into()]).unwrap();
-        let mut state =
-            SymbolFactorState::new(&normalize_config(288, 200), 1, BarInterval::FiveMinutes);
-        let mut scores = VecDeque::new();
-        let mut saw_ready = false;
-        for bar in 0..1000 {
-            let mid = 100.0 + ((bar * 17) % 31) as f64;
-            let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
-            for name in [
-                "open",
-                "high",
-                "low",
-                "close",
-                "vwap",
-                "buy_vwap",
-                "sell_vwap",
-            ] {
-                values[TRADE_FLOW_FEATURE_FIELD_NAMES
-                    .iter()
-                    .position(|field| *field == name)
-                    .unwrap()] = mid;
-            }
-            for side in [-1.0, 1.0] {
-                for level in 0..20 {
-                    values.extend([mid + side * (level as f64 + 1.0), 10.0 + (bar % 7) as f64]);
+        for (interval, norm_window, norm_min, rank_window, rank_min) in [
+            (BarInterval::FiveMinutes, 288, 200, 576, 288),
+            (BarInterval::FifteenMinutes, 96, 67, 192, 96),
+        ] {
+            let plan =
+                SymbolFactorPlan::from_factor_names("test", vec!["factor_001".into()]).unwrap();
+            let mut state =
+                SymbolFactorState::new(&normalize_config(norm_window, norm_min), 1, interval);
+            let mut scores = VecDeque::new();
+            let mut saw_ready = false;
+            for bar in 0..1000 {
+                let mid = 100.0 + ((bar * 17) % 31) as f64;
+                let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
+                for name in [
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "vwap",
+                    "buy_vwap",
+                    "sell_vwap",
+                ] {
+                    values[TRADE_FLOW_FEATURE_FIELD_NAMES
+                        .iter()
+                        .position(|field| *field == name)
+                        .unwrap()] = mid;
                 }
+                for side in [-1.0, 1.0] {
+                    for level in 0..20 {
+                        values.extend([mid + side * (level as f64 + 1.0), 10.0 + (bar % 7) as f64]);
+                    }
+                }
+                let msg = TradeFlowFeatureMsg::from_indexed_values(
+                    "BELUSDT".into(),
+                    TradingVenue::BinanceFutures.to_u8(),
+                    1_800_000_000_000 + bar * interval.millis(),
+                    &values,
+                )
+                .unwrap();
+                let observed = state.evaluate(msg, &plan, true).unwrap().unwrap()[0];
+                scores.push_back(observed.score);
+                if scores.len() > rank_window {
+                    scores.pop_front();
+                }
+                let valid: Vec<_> = scores
+                    .iter()
+                    .copied()
+                    .filter(|value| value.is_finite())
+                    .collect();
+                assert_eq!(
+                    observed.ready,
+                    observed.score.is_finite() && valid.len() >= rank_min
+                );
+                if let Some(q) = observed.quantile {
+                    let negative_rank = (valid.iter().filter(|x| **x > observed.score).count()
+                        as f64
+                        + 0.5 * valid.iter().filter(|x| **x == observed.score).count() as f64)
+                        / valid.len() as f64;
+                    assert!((1.0 - q - negative_rank).abs() < 1e-12);
+                }
+                saw_ready |= observed.ready;
             }
-            let msg = TradeFlowFeatureMsg::from_indexed_values(
-                "BELUSDT".into(),
-                TradingVenue::BinanceFutures.to_u8(),
-                1_800_000_000_000 + bar * 300_000,
-                &values,
-            )
-            .unwrap();
-            let observed = state.evaluate(msg, &plan, true).unwrap().unwrap()[0];
-            scores.push_back(observed.score);
-            if scores.len() > 576 {
-                scores.pop_front();
-            }
-            let valid: Vec<_> = scores
-                .iter()
-                .copied()
-                .filter(|value| value.is_finite())
-                .collect();
-            assert_eq!(
-                observed.ready,
-                observed.score.is_finite() && valid.len() >= 288
-            );
-            if let Some(q) = observed.quantile {
-                let negative_rank = (valid.iter().filter(|x| **x > observed.score).count() as f64
-                    + 0.5 * valid.iter().filter(|x| **x == observed.score).count() as f64)
-                    / valid.len() as f64;
-                assert!((1.0 - q - negative_rank).abs() < 1e-12);
-            }
-            saw_ready |= observed.ready;
+            assert!(saw_ready);
         }
-        assert!(saw_ready);
     }
-
     #[test]
     fn reviewed_ohlcv_depth_factors_ignore_trade_size_buckets() {
         use mkt_parsers::msg::trade_flow_feature_msg::{
@@ -1353,6 +1375,11 @@ mod tests {
         ))
         .unwrap();
         names.extend(rx02.universe.factors);
+        let rx03: super::CtaPerpFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_perp_rx03/cta_perp_factor_model_1m_pub.toml"
+        ))
+        .unwrap();
+        names.extend(rx03.universe.factors);
         names.sort();
         names.dedup();
         assert!(!requires_amount_thresholds(&names));

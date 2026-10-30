@@ -351,17 +351,25 @@ pub struct FuturesFusionState {
 impl FuturesFusionState {
     pub fn push(&mut self, input: FuturesFusionInput) -> Result<()> {
         input.validate()?;
-        self.push_validated(input)
+        self.push_validated(input, true)
     }
 
     /// Push an additive-HFQ row while retaining the normal replay state and
     /// formulas. This is not a raw/live quote input path.
     pub fn push_additive_hfq(&mut self, input: FuturesFusionInput) -> Result<()> {
         input.validate_additive_hfq()?;
-        self.push_validated(input)
+        self.push_validated(input, true)
     }
 
-    fn push_validated(&mut self, input: FuturesFusionInput) -> Result<()> {
+    /// Explicit offline coarse-bar path. Preserve real trading-day metadata,
+    /// but advance original formula windows across day changes. An explicit
+    /// quality break still resets; raw/live and existing HFQ paths are unchanged.
+    pub fn push_additive_hfq_continuous(&mut self, input: FuturesFusionInput) -> Result<()> {
+        input.validate_additive_hfq()?;
+        self.push_validated(input, false)
+    }
+
+    fn push_validated(&mut self, input: FuturesFusionInput, reset_on_day: bool) -> Result<()> {
         if let Some(symbol) = self.symbol.as_deref() {
             if symbol != input.symbol {
                 bail!(
@@ -382,9 +390,10 @@ impl FuturesFusionState {
         }
 
         let reset = input.quality_flags & QUALITY_SEGMENT_BREAK != 0
-            || self
-                .trading_day
-                .is_some_and(|trading_day| trading_day != input.trading_day);
+            || (reset_on_day
+                && self
+                    .trading_day
+                    .is_some_and(|trading_day| trading_day != input.trading_day));
         if reset {
             self.history.clear();
             self.formula_state = CnReplayState::default();
@@ -467,6 +476,36 @@ fn nonnegative_finite(value: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_hfq_preserves_500_bar_warmup_across_days_and_absences() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_031".into(),
+            "cn_features_baseline_097".into(),
+        ])
+        .unwrap();
+        let mut state = FuturesFusionState::default();
+        for i in 0..520 {
+            let mut row = varied_input(i);
+            row.ts_ms += if i >= 250 { 7 * 86_400_000 } else { 0 };
+            row.trading_day = if i < 250 { 20251103 } else { 20251114 };
+            state.push_additive_hfq_continuous(row).unwrap();
+            let v = state.factor_values(&plan).unwrap();
+            assert_eq!(v[0].is_some(), i >= 499, "i={i}");
+            assert_eq!(v[1].is_some(), i >= 44, "i={i}");
+        }
+        assert_eq!(state.history_len(), 520);
+        let mut next = varied_input(520);
+        next.ts_ms += 7 * 86_400_000;
+        next.quality_flags = QUALITY_SEGMENT_BREAK;
+        state.push_additive_hfq_continuous(next).unwrap();
+        assert_eq!(state.history_len(), 1);
+        assert!(state
+            .factor_values(&plan)
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+    }
 
     fn depth() -> FuturesDepth5 {
         FuturesDepth5::from_slices(

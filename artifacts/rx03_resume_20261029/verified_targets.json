@@ -1,0 +1,445 @@
+{
+  "checked_at": "2026-10-29T02:20:57.201614+00:00",
+  "strategies": 28,
+  "targets": [
+    {
+      "factor": "TD_CI_008",
+      "symbol": "DOTUSDT",
+      "qty": 205.35989321285552,
+      "active": true
+    },
+    {
+      "factor": "TD_MT_019",
+      "symbol": "ZECUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_MT_029",
+      "symbol": "DASHUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "TD_MT_029",
+      "symbol": "ZECUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "TD_PT_002",
+      "symbol": "RLCUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_PT_002",
+      "symbol": "XTZUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_TI_008",
+      "symbol": "DOGEUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_TI_013",
+      "symbol": "LINKUSDT",
+      "qty": 17.536168347216133,
+      "active": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "NEARUSDT",
+      "qty": 44.873233116446045,
+      "active": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "TRBUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "VETUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_TI_043",
+      "symbol": "RLCUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TD_TI_043",
+      "symbol": "ZENUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "TP_VPI_002",
+      "symbol": "TRBUSDT",
+      "qty": 12.049644535486204,
+      "active": true
+    },
+    {
+      "factor": "baseline_005",
+      "symbol": "NEARUSDT",
+      "qty": 44.873233116446045,
+      "active": true
+    },
+    {
+      "factor": "baseline_028",
+      "symbol": "ZECUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_040",
+      "symbol": "TRBUSDT",
+      "qty": 12.049644535486204,
+      "active": true
+    },
+    {
+      "factor": "baseline_040",
+      "symbol": "ZRXUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "AAVEUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "ADAUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "BTCUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "DASHUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "DOGEUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "ETHUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "NEARUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "ZECUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_091",
+      "symbol": "XTZUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_140",
+      "symbol": "ALGOUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "AVAXUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DASHUSDT",
+      "qty": 3.8350910834132312,
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DOTUSDT",
+      "qty": 205.35989321285552,
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "FILUSDT",
+      "qty": 227.99817601459188,
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LINKUSDT",
+      "qty": 17.536168347216133,
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LTCUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "NEARUSDT",
+      "qty": 44.873233116446045,
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "SOLUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "VETUSDT",
+      "qty": 32351.989647363313,
+      "active": true
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ZENUSDT",
+      "qty": 34.958923265163435,
+      "active": true
+    },
+    {
+      "factor": "baseline_146",
+      "symbol": "ZECUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_151",
+      "symbol": "ZENUSDT",
+      "qty": 34.958923265163435,
+      "active": true
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AAVEUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ADAUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DASHUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOGEUSDT",
+      "qty": 2570.3637064644645,
+      "active": true
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOTUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "NEARUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "SOLUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "UNIUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "XLMUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ZECUSDT",
+      "qty": 0.1598848828843233,
+      "active": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "AAVEUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "BELUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "BTCUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "DASHUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "DOGEUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "ETHUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "NEARUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "XLMUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "ZECUSDT",
+      "qty": "clear",
+      "active": false
+    },
+    {
+      "factor": "buy_avg_price",
+      "symbol": "ALGOUSDT",
+      "qty": 2004.208838560978,
+      "active": true
+    },
+    {
+      "factor": "buy_avg_price",
+      "symbol": "ZRXUSDT",
+      "qty": 2006.0180541624875,
+      "active": true
+    },
+    {
+      "factor": "factor_036",
+      "symbol": "FILUSDT",
+      "qty": 227.99817601459188,
+      "active": true
+    },
+    {
+      "factor": "factor_036",
+      "symbol": "ZENUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "ALGOUSDT",
+      "qty": 2004.208838560978,
+      "active": true
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "NEARUSDT",
+      "qty": 44.873233116446045,
+      "active": true
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "XTZUSDT",
+      "qty": 727.802037845706,
+      "active": true
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "ZRXUSDT",
+      "qty": 2006.0180541624875,
+      "active": true
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "SKLUSDT",
+      "qty": 50981.39179199592,
+      "active": true
+    },
+    {
+      "factor": "factor_128",
+      "symbol": "ZRXUSDT",
+      "qty": "clear",
+      "active": true
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "DOGEUSDT",
+      "qty": 2570.3637064644645,
+      "active": true
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "TRBUSDT",
+      "qty": 12.049644535486204,
+      "active": true
+    },
+    {
+      "factor": "factor_trades_040",
+      "symbol": "SKLUSDT",
+      "qty": 50981.39179199592,
+      "active": true
+    },
+    {
+      "factor": "sell_avg_price",
+      "symbol": "BELUSDT",
+      "qty": "clear",
+      "active": true
+    }
+  ],
+  "publication_error": null
+}

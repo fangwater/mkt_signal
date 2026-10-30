@@ -689,8 +689,8 @@ mod tests {
             ),
             (
                 include_str!("../../config/cta_perp_rx03/cta_perp_symbol_factors.json"),
-                14,
-                34,
+                16,
+                45,
             ),
         ] {
             let table = parse_factor_table(raw).unwrap();

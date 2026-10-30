@@ -63,6 +63,24 @@ impl WeightedFactorChannel {
         })
     }
 
+    pub fn apply_config_table(&mut self, config: &CtaPerpConfig) -> bool {
+        let table = if config.factor_rules.is_empty() {
+            self.watcher.current().as_ref().clone()
+        } else {
+            config.rule_table()
+        };
+        if table == self.table {
+            return false;
+        }
+        self.table = table;
+        self.hub.update_services(
+            &self.node,
+            table_services_for_interval(&self.table, self.interval),
+        );
+        self.last_subscribe = Instant::now();
+        true
+    }
+
     pub fn key(&self) -> &str {
         &self.watcher.key
     }
@@ -72,17 +90,9 @@ impl WeightedFactorChannel {
 
     /// v0 consumes each factor independently; v1 waits for an aligned symbol bar.
     pub fn poll_positions(&mut self, config: &CtaPerpConfig) -> (bool, Vec<PositionObservation>) {
-        let changed = if let Some(next) = self.watcher.take_change() {
-            self.table = next.as_ref().clone();
-            self.hub.update_services(
-                &self.node,
-                table_services_for_interval(&self.table, self.interval),
-            );
-            self.last_subscribe = Instant::now();
-            true
-        } else {
-            false
-        };
+        // Consume Redis notifications, but choose exactly one combination source.
+        self.watcher.take_change();
+        let changed = self.apply_config_table(config);
         if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
             self.hub.update_services(
                 &self.node,
@@ -151,6 +161,7 @@ impl WeightedFactorChannel {
                     continue;
                 }
                 self.last_ts.insert(key, ts);
+                let effective = config.for_strategy(&symbol, factor);
                 let single = SymbolFactors {
                     factors: vec![factor.clone()],
                     weights: vec![weight.signum()],

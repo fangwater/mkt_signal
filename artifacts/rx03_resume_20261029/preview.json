@@ -1,0 +1,574 @@
+{
+  "checked_at": "2026-10-29T02:19:44.625248+00:00",
+  "enabled": false,
+  "max_pos_u": 200.0,
+  "status_age_seconds": 0.297703,
+  "configuration_error": null,
+  "publication_error": null,
+  "recovery_error": null,
+  "recovering": false,
+  "active_pairs": [
+    {
+      "factor": "TD_CI_008",
+      "symbol": "DOTUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_MT_019",
+      "symbol": "ZECUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_PT_002",
+      "symbol": "RLCUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_PT_002",
+      "symbol": "XTZUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_008",
+      "symbol": "DOGEUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_013",
+      "symbol": "LINKUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "NEARUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "TRBUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_024",
+      "symbol": "VETUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_043",
+      "symbol": "RLCUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TD_TI_043",
+      "symbol": "ZENUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "TP_VPI_002",
+      "symbol": "TRBUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_005",
+      "symbol": "NEARUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_028",
+      "symbol": "ZECUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_040",
+      "symbol": "TRBUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_040",
+      "symbol": "ZRXUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_091",
+      "symbol": "XTZUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_140",
+      "symbol": "ALGOUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DASHUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "DOTUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "FILUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LINKUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "NEARUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "VETUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "ZENUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_146",
+      "symbol": "ZECUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_151",
+      "symbol": "ZENUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOGEUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ZECUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "BELUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "DASHUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "buy_avg_price",
+      "symbol": "ALGOUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "buy_avg_price",
+      "symbol": "ZRXUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_036",
+      "symbol": "FILUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_036",
+      "symbol": "ZENUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "ALGOUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "NEARUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "XTZUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_051",
+      "symbol": "ZRXUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_113",
+      "symbol": "SKLUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_128",
+      "symbol": "ZRXUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "DOGEUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_170",
+      "symbol": "TRBUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "factor_trades_040",
+      "symbol": "SKLUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    },
+    {
+      "factor": "sell_avg_price",
+      "symbol": "BELUSDT",
+      "qty": 0.0,
+      "ready": false,
+      "model_ts_ms": null,
+      "nq_ready": null
+    }
+  ],
+  "retired_pairs": [
+    {
+      "factor": "TD_MT_029",
+      "symbol": "DASHUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "TD_MT_029",
+      "symbol": "ZECUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "AAVEUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "ADAUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "BTCUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "DASHUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "DOGEUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "ETHUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "NEARUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_085",
+      "symbol": "ZECUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "AVAXUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "LTCUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_141",
+      "symbol": "SOLUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "AAVEUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "ADAUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DASHUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "DOTUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "NEARUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "SOLUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "UNIUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_164",
+      "symbol": "XLMUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "AAVEUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "BTCUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "DOGEUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "ETHUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "NEARUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "XLMUSDT",
+      "qty": 0.0
+    },
+    {
+      "factor": "baseline_200",
+      "symbol": "ZECUSDT",
+      "qty": 0.0
+    }
+  ],
+  "account": {
+    "received_us": 1793240379015762,
+    "positions": [
+      {
+        "symbol": "DOGEUSDT",
+        "qty": "1",
+        "value_usdt": "0.07788227"
+      },
+      {
+        "symbol": "XLMUSDT",
+        "qty": "2",
+        "value_usdt": "0.33583156"
+      },
+      {
+        "symbol": "NEARUSDT",
+        "qty": "43",
+        "value_usdt": "192.0221545"
+      },
+      {
+        "symbol": "ZECUSDT",
+        "qty": "0.158",
+        "value_usdt": "197.83707061298"
+      },
+      {
+        "symbol": "BTCUSDT",
+        "qty": "0.003",
+        "value_usdt": "239.93268409296"
+      },
+      {
+        "symbol": "DOTUSDT",
+        "qty": "-102.8",
+        "value_usdt": "100.306545908"
+      },
+      {
+        "symbol": "DASHUSDT",
+        "qty": "-16.616",
+        "value_usdt": "867.34680293824"
+      },
+      {
+        "symbol": "ADAUSDT",
+        "qty": "-478",
+        "value_usdt": "94.35264466"
+      },
+      {
+        "symbol": "SOLUSDT",
+        "qty": "2.89",
+        "value_usdt": "288.1135092909"
+      },
+      {
+        "symbol": "ETHUSDT",
+        "qty": "0.043",
+        "value_usdt": "99.20135982744"
+      },
+      {
+        "symbol": "UNIUSDT",
+        "qty": "-41",
+        "value_usdt": "287.656"
+      }
+    ]
+  }
+}

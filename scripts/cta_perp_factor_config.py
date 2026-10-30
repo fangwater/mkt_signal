@@ -31,7 +31,7 @@ def normalize_table(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or len(raw) > 256:
         raise ValueError("symbol_factors must be an object with at most 256 symbols")
     allowlist = Path(__file__).with_name("factor_validation_allowlist.txt").read_text(encoding="utf-8")
-    allowed = set(re.findall(r"(?:factor_\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium", "avg_price", "buy_avg_price", "sell_avg_price"}
+    allowed = set(re.findall(r"(?:factor_(?:trades_)?\d{3}|baseline_\d{3}|T[DP]_[A-Z]+_\d{3})", allowlist)) | {"net_buy_medium", "avg_price", "buy_avg_price", "sell_avg_price"}
     table, services = {}, set()
     for raw_symbol, row in raw.items():
         if not isinstance(raw_symbol, str):
@@ -80,7 +80,7 @@ def publisher_config_for(table_path: Path) -> Path:
     if not strategy_path.exists():
         strategy_path = Path("config/cta_perp.json")
     interval = json.loads(strategy_path.read_text()).get("bar_interval", "1m") if strategy_path.exists() else "1m"
-    if interval not in ("1m", "5m"):
+    if interval not in ("1m", "5m", "15m"):
         raise ValueError(f"unsupported bar_interval: {interval}")
     return strategy_path.with_name(f"cta_perp_factor_model_{interval}_pub.toml")
 

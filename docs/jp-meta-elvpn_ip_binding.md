@@ -1,6 +1,82 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-29 07:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-29 07:34 UTC，Bybit退役账户进一步从CTA/NAV管理移除：SG删除
+`bybit_exec_trade01`的source配置、零份额绑定及权限；JP移除`sg-cta`
+汇总provider并停用Exec/MM两项外部目录。NAV停用`bybit_mm_alpha`及
+旧CTA登记`bybit-intra-arb02`，关闭自动对齐，管理服务已重载。
+历史schema、不可变快照及订单归档保留；Bybit FR和其他NAV登记保持。
+本次只改变管理目录及服务，未变更ENI/EIP、source IP、路由或交易进程。
+管理备份在两地主机
+`~/crypto_cta_manager/maintenance-backups/bybit_management_remove_20261029T073240Z/`。
+
+2026-10-29 07:13–07:24 UTC，SG `bybit_exec_trade01`（CTA）及
+`bybit_mm_alpha` 已按要求停止全部环境进程、归档订单并删除部署目录。
+撤销MM 7笔挂单，13个永续仓位使用reduce-only市价单完全平仓；70/11条成交
+均为taker，最终现货、永续、各类挂单、借款及利息均为0，仅保留USDT余额。
+私有查询、撤单及清仓全部绑定原下单地址 `172.31.7.124`；两个目录内的
+`trade_engine.toml local_ips` 随部署删除，该地址继续由FR等环境共享，
+未删除网卡地址、释放EIP或修改路由。专用CTA行情publisher停止，FR及共享行情
+14个PID保持。CTA Manager的virtual01跟随解除、10条绑定份额归零，source及
+overview export禁用，历史库路径改指归档；Manager服务正常运行。
+MM网关返回410，移除 `172.31.10.217:6352 -> 127.0.0.1:50052` 同步监听，
+其余6351/6353映射保留；Exec/MM的Viz、Config及persist监听均已关闭。
+订单RocksDB与清仓请求/成交/快照保存在SG
+`~/retired_data/bybit_cta_mm_20261029T071314Z/`，原订单库移入归档目录，
+两个tar.gz不含env.sh或凭据，目录0700、文件0600；逐文件清单、大小及SHA-256
+均核验通过。本地副本在 `data/order_archives/bybit_cta_mm_20261029T071314Z/`：
+
+- `bybit_exec_trade01_orders_20261029T071314Z.tar.gz`：742058字节，
+  SHA-256 `08e55261434693f4e21d809ef427afef4f069786cd1d29cb736675d925fad8c7`。
+- `bybit_mm_alpha_orders_20261029T071314Z.tar.gz`：479564135字节，
+  SHA-256 `48befec252667f5d9a4653de897941bcaa68a21ff184d37ead0dbaece1842102`。
+
+两份本地压缩包与SG整包校验一致；详情见归档目录内
+`archive_verification.json`、`final_account_verification.json`及`retirement_result.json`。
+
+2026-10-29 07:12 UTC 按要求停止 JP `okex_mm_alpha` 全部7个进程，并撤销
+引擎停止后剩余的53笔OKX SWAP挂单，复核挂单为0。停机时账户14个币种的
+永续持仓曾保留，随后已按追加要求清仓，见下文。`trade_engine.toml local_ips` 仍为
+`172.31.35.229, 172.31.35.230`，两个地址继续预留给该停机环境；
+未释放EIP、删除网卡地址或修改路由，env.sh及配置校验一致。
+Viz/Config/persist sync监听10212/18112/50055均已关闭；原映射及中心采集
+配置保留，未重启其他环境。订单归档及核验目录为
+JP `~/retired_data/okex_mm_alpha_20261029T071005Z/`，原订单库保留。
+07:15 UTC 完成该目录内 `okex_mm_alpha_orders_rocksdb.tar.zst` 归档，664个
+文件共9,440,184,779字节，压缩后1,507,597,216字节，SHA-256为
+`9dd57df7b26a963da3b5be4f60acb61fb2907e94991cfdf39135d03939946288`。
+解压流逐文件校验清单、大小及SHA-256全部通过，且原库在归档期间未变化。
+归档只含 `okex_mm_alpha/data/persist_manager`，不含env.sh、配置或凭据；
+归档、`.sha256`、`file_manifest.json`、`files.sha256`及账户/停机核验记录
+权限0600，目录0700。
+07:25 UTC 完成追加清仓：14笔SWAP市价平仓单均已成交，18笔成交数量与
+原持仓逐币相符；ETH/DOGE借款已偿清，现货尾差（含还款后尾差）已全部兑换
+USDT。最终交易账户只有USDT，全部品种持仓、普通挂单及查询的conditional/
+oco/trigger/move_order_stop挂单均为0，非USDT余额和借款均为0。
+环境全部进程继续停止，配置和两个预留source IP保持不变。
+同目录新增 `okex_mm_alpha_flatten_evidence.tar.zst`，10个核验文件共10,557字节，
+SHA-256为`e3b513b3df56783b358f0c9d68efd1b21930eaafd3c03f52276aee3666209718`；
+逐文件清单、大小及SHA-256校验通过，权限0600，不含凭据。
+此补充归档保留清仓成交、还款、兑换及最终账户事实；原RocksDB及其归档未改写，
+原归档为07:12停机时快照，不能将其单独视为包含后续清仓成交。
+
+2026-10-29 02:21 UTC 恢复RX03 / `binance_exec_trade07`交易：16币/26因子/
+45组合就绪，保留现场200 USDT、`lgq_grid_prep`和virtual04倍率1；
+补齐23个新因子，保留2个退役因子发送clear，共28份Manager绑定。
+启动signal发布，核对旧组合显式clear已到Exec配置后再启动Exec pre-trade；
+BTC/ETH/SOL/ADA/UNI/XLM配置外持仓获得零目标，按现有执行参数退出。
+继续使用原交易IP `172.31.35.228`，未改TOML、env.sh、ENI/EIP、路由或网关。
+因子publisher仍绑CPU19，原Exec其余进程未重启；证据在RX03
+`run/resume_20261029/`及本地`artifacts/rx03_resume_20261029/`。
+
+2026-10-28，RX03 `binance-cta-perp-rx03` / `binance_exec_trade07` 暂停交易，
+signal和pre-trade停止、发布关闭，使用原交易IP `172.31.35.228` 显式绑定
+查询并撤销10笔遗留挂单，复核普通/算法挂单为零，未提交平仓单。
+更新45条标的×因子NQ配置并重启Config Server及CPU19的独立因子publisher；
+保留300 USDT和全局开平参数，不改Manager绑定、交易TOML、env.sh、ENI/EIP、
+路由、共享阈值或网关。既有持仓保留；signal和pre-trade继续停止。
+备份在RX03环境 `run/nq_backup_20261028T094509Z`。
 
 2026-10-28，JP RX01 / `binance_exec_trade06` 交易及 Exec 进程已停止，Spread
 signal 已停止并关闭发布；账户已市价清仓，订单归档并移出原数据目录。
@@ -349,7 +425,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 `ens41`（主网卡，metric 100）上的 `172.31.35.228/20`–`.234/20` 对应 7 个公网 IPv4：
 
 - `.228` / `13.115.227.29`：主 IP、默认出口、SSH/管理入口；**套利**固定 IP。
-- `.229` / `52.193.90.33` 与 `.230` / `54.238.72.43`：MM 使用（当前 `okex_mm_alpha`；原共用的 `binance_mm_alpha` 已下线退役）。
+- `.229` / `52.193.90.33` 与 `.230` / `54.238.72.43`：保留给已停机的 `okex_mm_alpha`，原 `local_ips` 配置保留；原共用的 `binance_mm_alpha` 已下线退役。
 - `.231` / `52.69.78.134`：资金费率固定 IP。
 - `.232` / `54.238.97.67` 与 `.233` / `54.64.165.84`：`gate_fr_arb02`。
 - `.234` / `54.64.228.233`：Exec `trade02`、`trade03`、`trade04` 的第二个 source IP 配置。
@@ -368,8 +444,8 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01 Spread 接 Exec `trade06`，RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]`；新 `trade08` 原生STANDARD USD-M Grid执行RX02。RX02新版双Manager推送；`trade05` 已停机归档 |
-| `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_mm_alpha` `local_ips[0]`（原 `binance_mm_alpha` 已退役） |
-| `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_mm_alpha` `local_ips[1]`（原 `binance_mm_alpha` 已退役） |
+| `172.31.35.229` | `52.193.90.33` | 已预留 / 停机 | `okex_mm_alpha` `local_ips[0]` 配置保留，2026-10-29全栈停止（原 `binance_mm_alpha` 已退役） |
+| `172.31.35.230` | `54.238.72.43` | 已预留 / 停机 | `okex_mm_alpha` `local_ips[1]` 配置保留，2026-10-29全栈停止（原 `binance_mm_alpha` 已退役） |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 仅只读监控，05 停止）、`bitget_fr_arb01`/`02`/`03` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
@@ -434,11 +510,11 @@ binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账�
 binance-cta-spread-rx01      172.31.35.228                  因子及页面辅助进程运行；signal停止、发布关闭，Exec06已退役；Kafka 默认出口
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
-binance-cta-perp-rx03        默认出口 / 172.31.35.228       独立Perp实盘信号，loopback10197/19187，发布到Exec07
+binance-cta-perp-rx03        默认出口 / 172.31.35.228       16币/45组合实盘，单份200 USDT；loopback10197/19187，关联Exec07
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       5min实盘信号，loopback10198/19188；关联virtual05/RX04 5min，单份100 USDT
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
-okex_mm_alpha                172.31.35.229, 172.31.35.230
+okex_mm_alpha                172.31.35.229, 172.31.35.230   全部停止；全部持仓/挂单/借款0，仅USDT；原配置及IP预留保留
 binance_fr_arb01             172.31.35.231, 172.31.35.231
 binance_fr_arb02             172.31.35.231, 172.31.35.231
 binance_fr_arb03             172.31.35.231, 172.31.35.231
@@ -459,7 +535,7 @@ binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
 binance_exec_rx04_5m05       172.31.35.228                  RX04 5min，复用05页面/端口，follow virtual05倍率1，lgq_grid_prep；六个Exec进程在线
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，交易与Exec进程已停止；清仓并归档，Manager已移除
-binance_exec_trade07         172.31.35.228                  RX03 RapidX，永续在线，follow virtual04/cta_perp_rx03，ctaker
+binance_exec_trade07         172.31.35.228                  RX03 RapidX，六个Exec进程在线；follow virtual04/cta_perp_rx03倍率1、lgq_grid_prep，旧组合显式clear
 binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生STANDARD USD-M多资产/单向，在线Grid，follow virtual02/RX02，倍率1
 ```
 
@@ -493,7 +569,7 @@ binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原�
 1. 改 `local_ips`、给环境分配新 EIP、或下线占用 IP 的环境后，立刻改本文件的日期、表格和引用列表。
 2. `.228` 不要改作他用。
 3. `ens42` 的四个地址在写入任何 `trade_engine.toml` 之前先占表；`.234` 已由 Exec 环境共用配置。
-4. `okex_mm_alpha` 现独占 `.229/.230`（原共用的 `binance_mm_alpha` 已下线退役）。
+4. `.229/.230` 继续预留给已停机的 `okex_mm_alpha`，未释放或改作他用（原共用的 `binance_mm_alpha` 已下线退役）。
 
 2026-10-10 06:42 UTC 有符号权重与 rx02 Kafka 仓位回放发布沿用现有本机服务和 Nginx
 4191 网关，未更改 source IP、ENI、local_ips 或路由。rx02/rx03 均继续关闭真实交易。

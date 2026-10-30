@@ -305,7 +305,7 @@
         <div class="kv-table" id="signal-table"></div>
         <p class="hint">百分位用法：v0 直接使用 x，范围 [0, 1]；v1 使用 2x − 1，范围 [−1, 1]，例如 80% → 60%。四个开平阈值直接比较该算法的结果，切换算法不会自动换算阈值。v1 等待全部启用因子到齐同一根分钟后取等权算术平均，再比较开平阈值；NQ 使用原分位数。切换算法需先关闭现有仓位。</p>
         <h3>币种阈值 JSON</h3>
-        <p class="hint">按 symbol 单独配置因子开仓、平仓阈值和 NQ 开仓过滤阈值。省略字段或填 null 继承全局值，删除币种恢复全局设置；与上方参数一起保存，下一根新闭合 bar 生效。NQ 分位范围 [0, 1]。5m NQ 仍固定使用 Q50，不支持修改 NQ 分位阈值。</p>
+        <p class="hint">按 symbol 单独配置因子开仓、平仓阈值和 NQ 开仓过滤阈值。省略字段或填 null 继承全局值，删除币种恢复全局设置；与上方参数一起保存，下一根新闭合 bar 生效。NQ 分位范围 [0, 1]。5m / 15m NQ 固定使用 Q50，不支持修改 NQ 分位阈值。</p>
         <textarea id="overrides-json" class="mono" aria-label="币种阈值 JSON" spellcheck="false"
           style="width:100%;min-height:250px;resize:vertical;box-sizing:border-box">{}</textarea>
         <details class="hint"><summary>JSON 示例（字段可按需省略）</summary><pre style="overflow-x:auto">{
@@ -333,8 +333,7 @@
           </div>
         </div>
         <div class="hint">
-          整份 JSON 配置 symbol → factor →
-          方向。负数反转因子方向，正数保持方向，0
+          支持直接粘贴 [{"标的":"ZEC","nq":"0.2/0.8","符号":-1,"因子":"TD_MT_019"}] 数组，或使用 symbol → factor → 方向对象。NQ 前值是多头下限（严格大于），后值是空头上限（严格小于）；单值同时用于两边，“关闭”跳过 NQ。数组一次保存组合方向与每个 symbol × factor 的 NQ，并作为唯一组合配置；仅支持 1m v0。负数反转因子方向，正数保持方向，0
           停用。每个因子独立形成满多、满空、空仓三种状态；数值幅度不参与仓位分配。保存时检查币种、因子和数值；不通过不会覆盖配置。交易开关关闭时只计算和观察信号。
         </div>
         <p class="hint" id="available-factors"></p>
@@ -357,6 +356,7 @@
     </main>
     <script>
       let revision = "";
+      let factorRules = [];
       let factorRevision = "";
       let factorLoaded = false;
       const byId = (id) => document.getElementById(id);
@@ -468,6 +468,7 @@
       }
       function populate(config, nextRevision) {
         revision = nextRevision;
+        factorRules = config.factor_rules || [];
         byId("revision").textContent = revision.slice(0, 12);
         byId("enabled").value = config.enabled ? "true" : "false";
         byId("max_pos_u").value = config.max_pos_u ?? "";
@@ -523,6 +524,7 @@
           max_pos_u: amount,
           position_algorithm: byId("position_algorithm").value,
           symbol_overrides: collectOverrides(),
+          factor_rules: factorRules,
           entry,
           execution,
         };
@@ -572,7 +574,9 @@
         factorLoaded = true;
         byId("factor-key").value = body.key;
         const table = body.symbol_factors || {};
-        byId("factor-json").value = JSON.stringify(table, null, 2);
+        factorRules = body.factor_rules || [];
+        if (body.config_revision) revision = body.config_revision;
+        byId("factor-json").value = JSON.stringify(factorRules.length ? factorRules : table, null, 2);
         availableFactors = new Set(body.available?.factors || []);
         availableSymbols = new Set(body.available?.symbols || []);
         byId("available-factors").textContent =
@@ -582,7 +586,11 @@
       }
       function collectFactors() {
         const table = JSON.parse(byId("factor-json").value);
-        if (!table || Array.isArray(table) || typeof table !== "object")
+        if (Array.isArray(table)) {
+          if (!table.length) throw new Error("规则数组不能为空");
+          return table;
+        }
+        if (!table || typeof table !== "object")
           throw new Error("根节点必须是 symbol 对象");
         const normalizedSymbols = new Set();
         for (const [rawSymbol, row] of Object.entries(table)) {
@@ -647,7 +655,7 @@
               byId("factor-json").value +
               ',"expected_revision":' +
               JSON.stringify(factorRevision) +
-              "}",
+              ',"expected_config_revision":' + JSON.stringify(revision) + "}",
           });
           const body = await response.json();
           if (!response.ok)
@@ -675,7 +683,7 @@
           collectFactors();
           setStatus(
             "sym-status",
-            "JSON 格式、因子和权重校验通过；保存时服务端再次检查",
+            "JSON 语法校验通过；保存时服务端校验字段、组合、NQ 和可用范围",
             "ok",
           );
         } catch (error) {

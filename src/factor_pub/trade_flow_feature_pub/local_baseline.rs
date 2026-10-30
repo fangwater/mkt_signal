@@ -406,30 +406,37 @@ impl BaselineBar {
     }
 }
 
-/// CTA 5m aggregation reuses the exact volume/notional/depth merge contract.
-/// Only completed minute bars enter; the first partial 5m bucket is discarded.
-pub struct FiveMinuteBaseline {
+/// Aggregate completed minute bars with the same volume/notional/depth contract.
+/// Discard the first bucket if input begins partway through it.
+pub struct MultiMinuteBaseline {
     state: BarState,
     first_complete_start: Option<i64>,
 }
 
-impl Default for FiveMinuteBaseline {
+impl Default for MultiMinuteBaseline {
     fn default() -> Self {
+        Self::new(300_000)
+    }
+}
+
+impl MultiMinuteBaseline {
+    pub fn new(bar_ms: i64) -> Self {
+        assert!(bar_ms >= 60_000 && bar_ms % 60_000 == 0);
         Self {
-            state: BarState::new(300_000),
+            state: BarState::new(bar_ms),
             first_complete_start: None,
         }
     }
 }
 
-impl FiveMinuteBaseline {
+impl MultiMinuteBaseline {
     pub fn push(&mut self, minute: &BaselineBar) -> Vec<BaselineBar> {
         let first = *self.first_complete_start.get_or_insert_with(|| {
-            let start = align(minute.start_ms, 300_000);
+            let start = align(minute.start_ms, self.state.bar_ms);
             if start == minute.start_ms {
                 start
             } else {
-                start + 300_000
+                start + self.state.bar_ms
             }
         });
         consume_sub_bar(&mut self.state, minute, 60_000)
@@ -823,7 +830,7 @@ mod tests {
 
     #[test]
     fn five_minute_bars_merge_notional_and_final_depth_without_future_data() {
-        let mut resampler = super::FiveMinuteBaseline::default();
+        let mut resampler = super::MultiMinuteBaseline::default();
         for minute in 0..5 {
             let mut bar = super::BaselineBar::new(minute * 60_000);
             bar.update_trade(true, 100.0 + minute as f64, 1.0, None);
@@ -849,11 +856,43 @@ mod tests {
             assert_eq!(closed.sell_vwap, 112.0);
             assert_eq!(closed.depth20.bids[0], (103.0, 3.0));
         }
-        let mut partial = super::FiveMinuteBaseline::default();
+        let mut partial = super::MultiMinuteBaseline::default();
         for minute in 2..5 {
             assert!(partial
                 .push(&super::BaselineBar::new(minute * 60_000))
                 .is_empty());
+        }
+    }
+
+    #[test]
+    fn fifteen_minute_bars_use_all_fifteen_minutes_and_discard_partial_start() {
+        let mut resampler = super::MultiMinuteBaseline::new(900_000);
+        // Start in the middle of the first bucket; it must never be published.
+        for minute in 2..30 {
+            let offset = minute % 15;
+            let mut bar = super::BaselineBar::new(minute * 60_000);
+            bar.update_trade(true, 100.0 + offset as f64, 1.0, None);
+            bar.update_trade(false, 110.0 + offset as f64, 2.0, None);
+            bar.depth20.bids[0] = (99.0 + offset as f64, 3.0);
+            let rows = resampler.push(&bar);
+            if minute != 29 {
+                assert!(rows.is_empty());
+                continue;
+            }
+            assert_eq!(rows.len(), 1);
+            let closed = &rows[0];
+            assert_eq!(closed.start_ms, 900_000);
+            assert_eq!(
+                (closed.open, closed.high, closed.low, closed.close),
+                (100.0, 124.0, 100.0, 124.0)
+            );
+            assert_eq!(closed.count, 30);
+            assert_eq!(closed.volume, 45.0);
+            assert_eq!(closed.amount, 5115.0);
+            assert_eq!(closed.vwap, 5115.0 / 45.0);
+            assert_eq!(closed.buy_vwap, 107.0);
+            assert_eq!(closed.sell_vwap, 117.0);
+            assert_eq!(closed.depth20.bids[0], (113.0, 3.0));
         }
     }
 

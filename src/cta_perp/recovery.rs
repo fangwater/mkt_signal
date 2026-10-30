@@ -270,7 +270,7 @@ impl PositionRecovery {
                                 weights: vec![*weight],
                             },
                             std::slice::from_ref(input),
-                            &effective.entry,
+                            &config.for_strategy(symbol, factor).entry,
                             PositionAlgorithm::V0,
                         ),
                     )
@@ -294,7 +294,7 @@ impl PositionRecovery {
                 .or_default()
                 .entry(symbol.to_string())
                 .or_default();
-            advance_position(p, &bar, &effective, bid, ask)?;
+            advance_position(p, &bar, &config.for_strategy(symbol, &name), bid, ask)?;
             self.bars
                 .entry(name)
                 .or_default()
@@ -312,19 +312,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn five_minute_recovery_preserves_nq_thresholds_and_rejects_other_frequencies() {
-        let mut c = config();
-        c.bar_interval = super::super::interval::BarInterval::FiveMinutes;
-        c.entry.nq_change_enabled = true;
-        let mut recovery = recovery(Path::new("unused"), &c);
-        let mut row = record("new", 300_000, 0.99, 101.0);
-        assert!(recovery.consume(&row, &c).is_err());
-        row["bar_interval"] = json!("5m");
-        row["nq"]["long_value"] = json!(0.0);
-        row["nq"]["long_threshold"] = json!(0.0);
-        row["nq"]["long_quantile"] = json!(0.1);
-        recovery.consume(&row, &c).unwrap();
-        assert_eq!(recovery.positions[SYMBOL_MEAN_STRATEGY]["ETHUSDT"].flag, 1);
+    fn multi_minute_recovery_preserves_nq_thresholds_and_rejects_other_frequencies() {
+        for interval in [
+            super::super::interval::BarInterval::FiveMinutes,
+            super::super::interval::BarInterval::FifteenMinutes,
+        ] {
+            let mut c = config();
+            c.bar_interval = interval;
+            c.entry.nq_change_enabled = true;
+            let mut recovery = recovery(Path::new("unused"), &c);
+            let mut row = record("new", interval.millis(), 0.99, 101.0);
+            assert!(recovery.consume(&row, &c).is_err());
+            row["bar_interval"] = json!(interval.as_str());
+            row["nq"]["long_value"] = json!(0.0);
+            row["nq"]["long_threshold"] = json!(0.0);
+            row["nq"]["long_quantile"] = json!(0.1);
+            recovery.consume(&row, &c).unwrap();
+            assert_eq!(recovery.positions[SYMBOL_MEAN_STRATEGY]["ETHUSDT"].flag, 1);
+        }
     }
     fn config() -> CtaPerpConfig {
         let mut c = CtaPerpConfig::load("config/cta_perp.json").unwrap();

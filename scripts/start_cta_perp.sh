@@ -32,9 +32,9 @@ fi
 
 cd "$BASE_DIR"
 bar_interval="$(python3 -c 'import json; print(json.load(open("config/cta_perp.json")).get("bar_interval", "1m"))')"
-[[ "$bar_interval" == 1m || "$bar_interval" == 5m ]] || { echo "[ERROR] invalid bar_interval" >&2; exit 1; }
+[[ "$bar_interval" == 1m || "$bar_interval" == 5m || "$bar_interval" == 15m ]] || { echo "[ERROR] invalid bar_interval" >&2; exit 1; }
 signal_suffix=""
-[[ "$bar_interval" == 5m ]] && signal_suffix="_5m"
+if [[ "$bar_interval" != 1m ]]; then signal_suffix="_${bar_interval}"; fi
 "${PYTHON_BIN:-python3}" "${BASE_DIR}/scripts/cta_perp_factor_config.py" \
   --env-name "$ENV_NAME" --check >/dev/null
 if [[ "$config_enabled" == "true" ]]; then

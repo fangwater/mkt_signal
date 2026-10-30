@@ -1,0 +1,15 @@
+{
+  "utc": "2026-10-29T07:15:30.066171+00:00",
+  "source": "/home/ubuntu/okex_mm_alpha/data/persist_manager",
+  "source_retained": true,
+  "archive": "/home/ubuntu/retired_data/okex_mm_alpha_20261029T071005Z/okex_mm_alpha_orders_rocksdb.tar.zst",
+  "archive_bytes": 1507597216,
+  "archive_sha256": "9dd57df7b26a963da3b5be4f60acb61fb2907e94991cfdf39135d03939946288",
+  "file_count": 664,
+  "source_bytes": 9440184779,
+  "verified_file_list": true,
+  "verified_sizes": true,
+  "verified_file_sha256": true,
+  "verified_source_unchanged": true,
+  "credentials_included": false
+}

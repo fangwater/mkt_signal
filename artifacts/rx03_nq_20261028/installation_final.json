@@ -1,0 +1,18 @@
+{
+  "manifest": {
+    "cta_perp_signal": "4f11245f61650699e1a9899b92b318503c8e25671df2f806e93482abd2318ffa",
+    "cta_perp_factor_model_1m_pub": "8da1ef5ae3a6e9c817c7c77e869578cdb22e11a737a99170c21fdd63462dd697",
+    "scripts/cta_perp_config_server.py": "36df521edad5130e0d1c4775028cf06e0b2d6f9c4a0fe926e99bcb46eebb7698",
+    "scripts/cta_perp_factor_config.py": "1c20e5fd0b6862bbdeab81ac1d5ae03c976fe9d4214468170e065898331f4c44",
+    "scripts/cta_perp_position_replay.py": "3404541f9e680caa1e7f85610867ae89e344a98cf8e950195824d8323c806a9d",
+    "web/cta_perp_config/index.html": "549a481e088c87fb0f5921ef1d804a153c1756e51091eb9174f2cf0eecd4732a",
+    "scripts/cta_perp_dashboard.py": "acbdec42aa3e1da4702909b04ab6e7ecbb46dbad2f74e2e7db0566e46892c8fc",
+    "scripts/cta_perp_signal_history.py": "44e6d456d21624b5763434bc0137c7c134116781ac7f4e6b017eb2379ef94657"
+  },
+  "config_revision": "c44611f341f0b40a561bf1d39d05e4079d30546113c7320ba6d204f7ba5f8508",
+  "rules": 45,
+  "symbols": 16,
+  "factors": 26,
+  "enabled": false,
+  "max_pos_u": 300.0
+}

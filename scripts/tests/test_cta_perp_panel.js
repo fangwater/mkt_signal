@@ -305,3 +305,51 @@ const fiveSeries = panel.buildSeries({
 assert.deepEqual(fiveSeries.times, [start, start + 300000, start + 600000]);
 assert.equal(fiveSeries.nqLong[0], 0.02);
 assert.equal(fiveSeries.nqLongThreshold[0], 0.02);
+
+// 15m uses its own candle boundaries and linear NQ values, including equality.
+const fifteen = record(15, 1);
+fifteen.snapshot.bar_interval = '15m';
+fifteen.snapshot.signal.nq_long_quantile = 0.1;
+fifteen.snapshot.signal.nq_long_value = 0.02;
+fifteen.snapshot.signal.nq_long_threshold = 0.02;
+assert.equal(panel.nqGate(fifteen).mode, 'passed');
+assert.equal(panel.modelBucket(fifteen), start);
+assert.equal(panel.executionBucket(fifteen), start + 900000);
+const fifteenSeries = panel.buildSeries({
+  symbol: 'FILUSDT', interval: '15m', start_ms: start, end_ms: start + 1800000,
+  klines: [0, 1, 2].map(i => ({open_time_ms: start + i * 900000, open: 100, high: 101, low: 99, close: 100})),
+  signals: [fifteen],
+}, 'A');
+assert.deepEqual(fifteenSeries.times, [start, start + 900000, start + 1800000]);
+assert.equal(fifteenSeries.nqLong[0], 0.02);
+assert.equal(fifteenSeries.nqLongThreshold[0], 0.02);
+fifteen.snapshot.signal.nq_long_value = 0.01;
+assert.equal(panel.nqGate(fifteen).mode, 'blocked');
+console.log('15m candle boundaries and linear NQ gates passed');
+
+// Render the actual position page for each interval, including its date column.
+const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+const pageScript = fs.readFileSync(path.join(__dirname, '../../web/cta_perp/index.html'), 'utf8')
+  .match(/<script>([\s\S]*?)<\/script>/)[1];
+for (const [interval, duration] of [['1m', 60000], ['5m', 300000], ['15m', 900000]]) {
+  const elements = new Map();
+  const context = vm.createContext({
+    document: {getElementById(id) {
+      if (!elements.has(id)) elements.set(id, {value: '', style: {}, addEventListener() {}});
+      return elements.get(id);
+    }},
+    fetch: () => new Promise(() => {}), setInterval() {},
+  });
+  vm.runInContext(pageScript, context);
+  const snapshot = {
+    config: {bar_interval: interval, max_pos_u: 200, entry: {nq_change_enabled: true}},
+    signal_state: 'online',
+    status: {bar_interval: interval, symbol_factors: {ETHUSDT: {avg_price: 1}},
+      strategies: {avg_price: {ETHUSDT: {position_flag: 1, model_ts_ms: start + duration}}}},
+  };
+  vm.runInContext(`snapshot = ${JSON.stringify(snapshot)}; render();`, context);
+  assert.ok(elements.get('identity').textContent.includes(interval.replace('m', 'min')));
+  const label = new Date(interval === '1m' ? start + duration : start).toISOString().slice(0, 19).replace('T', ' ');
+  assert.ok(elements.get('rows').innerHTML.includes(label));
+}
+console.log('1m/5m/15m position pages render with the correct interval and timestamps');

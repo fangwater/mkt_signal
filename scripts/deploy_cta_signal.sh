@@ -11,17 +11,20 @@ while [[ $# -gt 0 ]]; do
     --skip-build) SKIP_BUILD=1; shift ;;
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
-    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
+    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m|15m] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
   esac
 done
 [[ "$FAMILY" == perp || "$FAMILY" == spread ]] || { echo '[ERROR] invalid CTA family' >&2; exit 1; }
 [[ "$ENV_NAME" =~ ^binance-cta-${FAMILY}-[a-z0-9][a-z0-9_-]*$ ]] || { echo '[ERROR] invalid environment name' >&2; exit 1; }
-[[ "$BAR_INTERVAL" == 1m || ( "$BAR_INTERVAL" == 5m && "$FAMILY" == perp ) ]] || { echo '[ERROR] 5m is supported only for CTA perp' >&2; exit 1; }
+[[ "$BAR_INTERVAL" == 1m || ( ( "$BAR_INTERVAL" == 5m || "$BAR_INTERVAL" == 15m ) && "$FAMILY" == perp ) ]] || { echo '[ERROR] 5m/15m are supported only for CTA perp' >&2; exit 1; }
 SIGNAL_BIN="cta_${FAMILY}_signal"
 CONFIG_ROOT="$ROOT_DIR/config"
 if [[ "$BAR_INTERVAL" == 5m ]]; then
   SIGNAL_BIN="cta_perp_5m_signal"
   CONFIG_ROOT="$ROOT_DIR/config/cta_perp_rx04"
+elif [[ "$BAR_INTERVAL" == 15m ]]; then
+  SIGNAL_BIN="cta_perp_15m_signal"
+  CONFIG_ROOT="$ROOT_DIR/config/cta_perp_15m"
 fi
 PUB_BIN="cta_${FAMILY}_factor_model_${BAR_INTERVAL}_pub"
 TARGET_DIR="${HOME}/${ENV_NAME}"
@@ -83,6 +86,10 @@ mkdir -p "$TARGET_DIR/web/vendor"
 cp -a web/vendor/. "$TARGET_DIR/web/vendor/"
 if [[ ! -f "$TARGET_DIR/env.sh" ]]; then
   umask 077
+  CTA_DEFAULT_VIRTUAL_ACCOUNT="cta_${FAMILY}"
+  if [[ "$BAR_INTERVAL" == 15m ]]; then
+    CTA_DEFAULT_VIRTUAL_ACCOUNT="${ENV_NAME//-/_}"
+  fi
   cat > "$TARGET_DIR/env.sh" <<ENV
 export IPC_NAMESPACE='$ENV_NAME'
 # Configure the host's Manager gateway before enabling position publication.
@@ -92,12 +99,12 @@ export IPC_NAMESPACE='$ENV_NAME'
 # CTA_PUBLISH_TOKEN applies to all URLs; optional CTA_PUBLISH_TOKENS is a
 # JSON object of URL -> token overrides. Keep token values in this file only.
 export CTA_POSITION_STRATEGY_PREFIX='${ENV_NAME//-/_}_'
-export CTA_VIRTUAL_ACCOUNT_NAME='cta_${FAMILY}'
+export CTA_VIRTUAL_ACCOUNT_NAME='${CTA_DEFAULT_VIRTUAL_ACCOUNT}'
 ENV
-  if [[ "$BAR_INTERVAL" == 5m ]]; then
+  if [[ "$BAR_INTERVAL" != 1m ]]; then
     cat >> "$TARGET_DIR/env.sh" <<ENV
 export CTA_PERP_MODEL_SCOPE='${ENV_NAME//-/_}'
-export CTA_PERP_FACTOR_PROCESS_NAME='cta_perp_factor_5m_${ENV_NAME//-/_}'
+export CTA_PERP_FACTOR_PROCESS_NAME='cta_perp_factor_${BAR_INTERVAL}_${ENV_NAME//-/_}'
 ENV
   fi
 fi

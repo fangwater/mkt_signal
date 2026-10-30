@@ -1,6 +1,6 @@
 [universe]
-symbols = ["AAVEUSDT", "ADAUSDT", "AVAXUSDT", "BTCUSDT", "DASHUSDT", "DOGEUSDT", "DOTUSDT", "ETHUSDT", "LTCUSDT", "NEARUSDT", "SOLUSDT", "UNIUSDT", "XLMUSDT", "ZECUSDT"]
-factors = ["baseline_164", "baseline_200", "baseline_085", "baseline_141", "TD_MT_029"]
+symbols = ["ALGOUSDT", "BELUSDT", "DASHUSDT", "DOGEUSDT", "DOTUSDT", "FILUSDT", "LINKUSDT", "NEARUSDT", "RLCUSDT", "SKLUSDT", "TRBUSDT", "VETUSDT", "XTZUSDT", "ZECUSDT", "ZENUSDT", "ZRXUSDT"]
+factors = ["TD_CI_008", "TD_MT_019", "TD_PT_002", "TD_TI_008", "TD_TI_013", "TD_TI_024", "TD_TI_043", "TP_VPI_002", "baseline_005", "baseline_028", "baseline_040", "baseline_091", "baseline_140", "baseline_141", "baseline_146", "baseline_151", "baseline_164", "baseline_200", "buy_avg_price", "factor_036", "factor_051", "factor_113", "factor_128", "factor_170", "factor_trades_040", "sell_avg_price"]
 
 [tlen_server]
 base_url = "http://127.0.0.1:6322"

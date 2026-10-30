@@ -1,0 +1,8 @@
+{
+  "cta_perp_signal": "4f11245f61650699e1a9899b92b318503c8e25671df2f806e93482abd2318ffa",
+  "cta_perp_factor_model_1m_pub": "d193983000b66d2f0e32719f666d15a9f54f23ccc292ff56f472eac69d4c9850",
+  "scripts/cta_perp_config_server.py": "36df521edad5130e0d1c4775028cf06e0b2d6f9c4a0fe926e99bcb46eebb7698",
+  "scripts/cta_perp_factor_config.py": "1c20e5fd0b6862bbdeab81ac1d5ae03c976fe9d4214468170e065898331f4c44",
+  "scripts/cta_perp_position_replay.py": "e0803428606ec556ce3044660bee25ce3c0c4255ba4a169dca5a18197a7ec209",
+  "web/cta_perp_config/index.html": "549a481e088c87fb0f5921ef1d804a153c1756e51091eb9174f2cf0eecd4732a"
+}

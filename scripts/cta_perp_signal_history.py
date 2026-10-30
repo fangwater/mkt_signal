@@ -19,6 +19,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from cta_perp_interval import BAR_MINUTES, bar_millis
+
 MINUTE_MS = 60_000
 DAY_MS = 24 * 60 * MINUTE_MS
 RETENTION_MS = 2 * DAY_MS
@@ -58,7 +60,7 @@ def normalize_kline(row: Any, current_ms: int, bar_ms: int = MINUTE_MS) -> dict[
 class SignalHistoryStore:
     def __init__(self, path: Path, interval: str = "1m"):
         self.interval = interval
-        self.bar_ms = {"1m": MINUTE_MS, "5m": 5 * MINUTE_MS}[interval]
+        self.bar_ms = bar_millis(interval)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=10)
@@ -300,8 +302,8 @@ class SignalHistoryStore:
 
 class BinanceMinuteClient:
     def __init__(self, base_url: str | None = None, opener: Callable = urllib.request.urlopen, interval: str = "1m"):
-        if interval not in ("1m", "5m"):
-            raise ValueError("interval must be 1m or 5m")
+        if interval not in BAR_MINUTES:
+            raise ValueError("interval must be 1m, 5m or 15m")
         self.interval = interval
         self.base_url = (base_url or os.getenv("BINANCE_FUTURES_PUBLIC_API_BASE", "https://fapi.binance.com")).rstrip("/")
         parsed = urllib.parse.urlparse(self.base_url)
@@ -420,7 +422,12 @@ class SignalPanelCollector:
                 self.stop.wait(self.poll_seconds)
 
 
-def configured_targets(status_path: Path, factors_path: Path) -> list[str]:
+def configured_targets(status_path: Path, factors_path: Path, config_path: Path | None = None) -> list[str]:
+    if config_path is not None:
+        config = json.loads(config_path.read_text())
+        if config.get("factor_rules"):
+            from cta_perp_config_server import normalize_factor_rules
+            return sorted(normalize_factor_rules(config["factor_rules"])[1])
     try:
         status = json.loads(status_path.read_text())
         table = status.get("symbol_factors") if isinstance(status, dict) else None
@@ -439,12 +446,13 @@ def main() -> None:
     parser.add_argument("--journal", type=Path, default=Path("data/cta_perp/signal_events"))
     parser.add_argument("--status", type=Path, default=Path("run/cta_perp_status.json"))
     parser.add_argument("--symbols-config", type=Path, default=Path("config/cta_perp_symbol_factors.json"))
+    parser.add_argument("--config", type=Path, default=Path("config/cta_perp.json"))
     parser.add_argument("--once", action="store_true", help="collect one 24h snapshot and exit")
-    parser.add_argument("--interval", choices=["1m", "5m"], default="1m")
+    parser.add_argument("--interval", choices=list(BAR_MINUTES), default="1m")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     store = SignalHistoryStore(args.db, args.interval)
-    targets = lambda: configured_targets(args.status, args.symbols_config)
+    targets = lambda: configured_targets(args.status, args.symbols_config, args.config)
     client = BinanceMinuteClient(interval=args.interval)
     if args.once:
         store.import_journal(args.journal)

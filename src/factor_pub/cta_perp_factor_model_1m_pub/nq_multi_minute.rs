@@ -73,9 +73,14 @@ mod tests {
 
     #[test]
     fn valid_sample_windows_match_linear_medians_and_skip_gaps() {
-        for (interval, window, min_periods) in
-            [(crate::cta_perp::interval::BarInterval::FiveMinutes, 120, 60)]
-        {
+        for (interval, window, min_periods) in [
+            (crate::cta_perp::interval::BarInterval::FiveMinutes, 120, 60),
+            (
+                crate::cta_perp::interval::BarInterval::FifteenMinutes,
+                120,
+                60,
+            ),
+        ] {
             let mut state = MultiMinuteNq::new(interval);
             let mut prices = Vec::new();
             let mut buys = Vec::new();
@@ -119,7 +124,10 @@ mod tests {
 
     #[test]
     fn extrema_and_change_ranks_expire_after_120_valid_bars_at_every_frequency() {
-        for interval in [crate::cta_perp::interval::BarInterval::FiveMinutes] {
+        for interval in [
+            crate::cta_perp::interval::BarInterval::FiveMinutes,
+            crate::cta_perp::interval::BarInterval::FifteenMinutes,
+        ] {
             let mut state = MultiMinuteNq::new(interval);
             state.observe(50.0);
             state.observe(200.0);

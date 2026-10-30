@@ -6,7 +6,9 @@ import json
 import math
 import threading
 from pathlib import Path
-from cta_perp_config_server import effective_config, normalize_config, position_decision_value, position_strategy_factors
+from cta_perp_config_server import effective_config, normalize_config, normalize_factor_rules, position_decision_value, position_strategy_factors
+
+from cta_perp_interval import BAR_MINUTES, bar_millis, uses_linear_nq
 
 EPS=4*2.220446049250313e-16
 
@@ -16,7 +18,7 @@ def factor_snapshot(factor,weight,observations,config):
 
 
 def combined_snapshot(factors, observations, config):
-    config=effective_config(config,observations['symbol'])
+    config=effective_config(config,observations['symbol'], next(iter(factors)) if len(factors)==1 else None)
     entry=config['entry'];votes=[]
     for factor,weight in sorted(factors.items()):
         if weight==0:continue
@@ -37,7 +39,7 @@ def combined_snapshot(factors, observations, config):
     decision_value=math.fsum(v['decision_value'] for v in votes)/len(votes)
     side=1 if decision_value-entry['factor_long_quantile']>EPS else -1 if entry['factor_short_quantile']-decision_value>EPS else 0
     nq=observations['nq'];allowed=side!=0
-    if entry['nq_change_enabled'] and config.get('bar_interval', '1m') == '5m':
+    if entry['nq_change_enabled'] and uses_linear_nq(config.get('bar_interval', '1m')):
         branch = 'long' if side > 0 else 'short'
         value, threshold = nq.get(branch + '_value'), nq.get(branch + '_threshold')
         allowed = allowed and nq.get('ready') is True and all(
@@ -46,7 +48,8 @@ def combined_snapshot(factors, observations, config):
     elif entry['nq_change_enabled']:
         nq_q=nq.get('long_quantile') if side>0 else nq.get('short_quantile')
         allowed=allowed and nq.get('ready') is True and isinstance(nq_q,(int,float)) and math.isfinite(nq_q) and 0<=nq_q<=1
-        if allowed:allowed=nq_q>=entry['nq_long_quantile'] if side>0 else nq_q<=entry['nq_short_quantile']
+        if allowed:
+            allowed = (nq_q > entry['nq_long_quantile'] if side>0 else nq_q < entry['nq_short_quantile']) if config.get('strict_nq') else (nq_q>=entry['nq_long_quantile'] if side>0 else nq_q<=entry['nq_short_quantile'])
     return dict(model_ts_ms=observations['model_ts_ms'],score=side,quantile=corrected,decision_value=decision_value,score_ready=True,execution_coefficient=1.0,
         factor_votes=votes,nq_long_threshold=nq.get('long_threshold'),nq_short_threshold=nq.get('short_threshold'),nq_long_value=nq.get('long_value'),nq_short_value=nq.get('short_value'),nq_long_quantile=nq.get('long_quantile'),
         nq_short_quantile=nq.get('short_quantile'),filter_ready=nq.get('ready'),decision='long' if allowed and side>0 else 'short' if allowed else 'flat')
@@ -54,6 +57,10 @@ def combined_snapshot(factors, observations, config):
 
 def simulate(rows,table,config,settings):
     config=normalize_config(config)
+    bar_ms=bar_millis(config['bar_interval'])
+    if config.get('factor_rules'):
+        from cta_perp_config_server import normalize_factor_rules
+        table = normalize_factor_rules(config['factor_rules'])[1]
     start=settings['start_ms'];initial=float(settings['initial_equity_usdt']);fee_rate=float(settings.get('taker_fee_rate',0))
     if not math.isfinite(initial) or initial<=0 or not math.isfinite(fee_rate) or fee_rate<0:raise ValueError('invalid replay equity or fee')
     amount=config['max_pos_u']
@@ -69,21 +76,21 @@ def simulate(rows,table,config,settings):
             raise ValueError('factor history bar_interval mismatch')
         symbol,bar=observation['symbol'],observation['model_ts_ms']
         if symbol not in table or bar<start:continue
-        effective=effective_config(config,symbol)
         nq=observation['nq'];ts=nq.get('execution_ts_ms',0);bid=nq.get('execution_bid');ask=nq.get('execution_ask')
-        if not isinstance(bid,(float,int)) or not isinstance(ask,(float,int)) or not math.isfinite(bid) or not math.isfinite(ask) or bid<=0 or ask<bid or not bar<=ts<=bar+(600000 if config['bar_interval']=='5m' else 120000):
+        if not isinstance(bid,(float,int)) or not isinstance(ask,(float,int)) or not math.isfinite(bid) or not math.isfinite(ask) or bid<=0 or ask<bid or not bar<=ts<=bar+2*bar_ms:
             invalid_prices+=1;continue
         marks[symbol]=(bid+ask)/2;last_bar_ms=max(last_bar_ms or bar,bar)
         for factor,bindings in sorted(scopes[symbol].items()):
+            effective=effective_config(config,symbol,factor)
             key=(factor,symbol)
             if (*key,bar) in seen:continue
             seen.add((*key,bar));earliest[key]=min(earliest.get(key,bar),bar)
-            signal=combined_snapshot(bindings,observation,effective)
+            signal=combined_snapshot(bindings,observation,config)
             if signal is None:warmup[key]=warmup.get(key,0)+1;continue
             position=positions.get(key);actions=[];execution=effective['execution'];q=signal['decision_value']
             record=dict(event_id=f'replay:{revision}:{factor}:{symbol}:{bar}',signal_id=f'replay:{revision}:{factor}:{symbol}:{bar}',
                 strategy_name=factor,symbol=symbol,model_ts_ms=bar,event_ts_us=ts*1000,state='observed',reason='hold',
-                snapshot=dict(bar_interval=config['bar_interval'],bar_start_ms=bar-(300000 if config['bar_interval']=='5m' else 60000),enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],entry=effective['entry'],execution=execution,
+                snapshot=dict(bar_interval=config['bar_interval'],bar_start_ms=bar-bar_ms,enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],entry=effective['entry'],execution=execution,
                               max_pos_u=amount,symbol_factors=bindings,signal=signal),publication=dict(levels=[],error=None),simulation=dict(actions=actions))
             exit_ready=position and (execution['factor_exit_quantile_long']-q>EPS if position['side']>0 else q-execution['factor_exit_quantile_short']>EPS)
             if exit_ready:
@@ -114,7 +121,7 @@ def simulate(rows,table,config,settings):
             breakeven=sum(abs(t['pnl'])<=1e-12 for t in closed),win_rate=wins/len(closed) if closed else None,
             realized_pnl=math.fsum(t['pnl'] for t in closed),unrealized_pnl=upnl,position_flag=p['side'] if p else 0,
             position_qty=p['side']*p['qty'] if p else 0,position_notional=p['qty']*marks[symbol] if p else 0,
-            warmup_minutes=warmup.get(key,0)*(5 if config['bar_interval']=='5m' else 1),first_observation_ms=earliest.get(key),
+            warmup_minutes=warmup.get(key,0)*BAR_MINUTES[config['bar_interval']],first_observation_ms=earliest.get(key),
             entry_actions=sum(a['kind']=='open' for r in records if r['strategy_name']==factor and r['symbol']==symbol for a in r['simulation']['actions']))
     def combine(items):
         count=sum(s['closed_trades'] for s in items);wins=sum(s['wins'] for s in items)
@@ -148,8 +155,8 @@ class PositionReplay:
     def refresh(self):
         if not self.settings_path.exists():return
         try:
-            settings=json.loads(self.settings_path.read_text());config=json.loads(self.config_path.read_text());status=json.loads(self.status_path.read_text())
-            table=status['symbol_factors']
+            settings=json.loads(self.settings_path.read_text());config=json.loads(self.config_path.read_text())
+            table=normalize_factor_rules(config['factor_rules'])[1] if config.get('factor_rules') else json.loads(self.status_path.read_text())['symbol_factors']
             with self.store.lock:raw=[row[0] for row in self.store.db.execute('SELECT payload FROM factor_observations WHERE model_ts_ms>=? ORDER BY model_ts_ms,symbol',(settings['start_ms'],))]
             key=hashlib.sha256(json.dumps([settings,config,table,raw],sort_keys=True).encode()).hexdigest()
             with self.lock:

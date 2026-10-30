@@ -94,6 +94,44 @@ pub struct SymbolThresholdOverrides {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct FactorNqRule {
+    #[serde(rename = "标的")]
+    pub symbol: String,
+    pub nq: String,
+    #[serde(rename = "符号")]
+    pub sign: i8,
+    #[serde(rename = "因子")]
+    pub factor: String,
+}
+
+impl FactorNqRule {
+    pub fn venue_symbol(&self) -> String {
+        if self.symbol.ends_with("USDT") {
+            self.symbol.clone()
+        } else {
+            format!("{}USDT", self.symbol)
+        }
+    }
+    pub fn thresholds(&self) -> Result<Option<(f64, f64)>> {
+        if self.nq == "关闭" {
+            return Ok(None);
+        }
+        let parts: Vec<_> = self.nq.split('/').collect();
+        anyhow::ensure!(parts.len() == 1 || parts.len() == 2, "invalid nq format");
+        let long: f64 = parts[0].trim().parse()?;
+        let short: f64 = parts.last().unwrap().trim().parse()?;
+        anyhow::ensure!(
+            [long, short]
+                .iter()
+                .all(|x| x.is_finite() && (0.0..=1.0).contains(x)),
+            "NQ thresholds must be in [0,1]"
+        );
+        Ok(Some((long, short)))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CtaPerpConfig {
     #[serde(default)]
     pub bar_interval: BarInterval,
@@ -106,6 +144,10 @@ pub struct CtaPerpConfig {
     pub position_algorithm: PositionAlgorithm,
     #[serde(default)]
     pub symbol_overrides: BTreeMap<String, SymbolThresholdOverrides>,
+    #[serde(default)]
+    pub factor_rules: Vec<FactorNqRule>,
+    #[serde(skip)]
+    pub strict_nq: bool,
     #[serde(default)]
     pub entry: EntryConfig,
     pub execution: ExecutionConfig,
@@ -172,6 +214,8 @@ impl CtaPerpConfig {
             max_pos_u: self.max_pos_u,
             position_algorithm: self.position_algorithm,
             symbol_overrides: BTreeMap::new(),
+            factor_rules: Vec::new(),
+            strict_nq: false,
             entry: self.entry.clone(),
             execution: self.execution.clone(),
         };
@@ -198,7 +242,83 @@ impl CtaPerpConfig {
         effective
     }
 
+    pub fn for_strategy(&self, symbol: &str, factor: &str) -> Self {
+        let mut effective = self.for_symbol(symbol);
+        if let Some(rule) = self
+            .factor_rules
+            .iter()
+            .find(|r| r.venue_symbol() == symbol && r.factor == factor)
+        {
+            effective.strict_nq = true;
+            match rule.thresholds().ok().flatten() {
+                Some((long, short)) => {
+                    effective.entry.nq_change_enabled = true;
+                    effective.entry.nq_long_quantile = long;
+                    effective.entry.nq_short_quantile = short;
+                }
+                None => effective.entry.nq_change_enabled = false,
+            }
+        }
+        effective
+    }
+
+    pub fn rule_table(&self) -> super::factors::SymbolFactorTable {
+        let mut table = super::factors::SymbolFactorTable::new();
+        for rule in &self.factor_rules {
+            let row =
+                table
+                    .entry(rule.venue_symbol())
+                    .or_insert_with(|| super::factors::SymbolFactors {
+                        factors: vec![],
+                        weights: vec![],
+                    });
+            row.factors.push(rule.factor.clone());
+            row.weights.push(f64::from(rule.sign));
+        }
+        table
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if !self.factor_rules.is_empty() {
+            anyhow::ensure!(
+                self.position_algorithm == PositionAlgorithm::V0
+                    && self.bar_interval == BarInterval::OneMinute,
+                "factor_rules requires v0 and 1m"
+            );
+            anyhow::ensure!(self.factor_rules.len() <= 8192, "too many factor rules");
+            let mut seen = std::collections::BTreeSet::new();
+            for rule in &self.factor_rules {
+                let symbol = rule.venue_symbol();
+                anyhow::ensure!(
+                    !rule.symbol.is_empty()
+                        && symbol.len() <= 32
+                        && symbol
+                            .bytes()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+                    "invalid rule symbol"
+                );
+                anyhow::ensure!(rule.sign == 1 || rule.sign == -1, "rule sign must be +/-1");
+                anyhow::ensure!(
+                    !rule.factor.is_empty()
+                        && rule
+                            .factor
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || c == b'_'),
+                    "invalid rule factor"
+                );
+                anyhow::ensure!(
+                    seen.insert((symbol.clone(), rule.factor.clone())),
+                    "duplicate symbol/factor rule"
+                );
+                rule.thresholds()?;
+                self.for_strategy(&symbol, &rule.factor)
+                    .validate_controls()?;
+            }
+        }
+
+        if !self.factor_rules.is_empty() {
+            super::factors::parse_factor_table(&serde_json::to_string(&self.rule_table())?)?;
+        }
         self.validate_controls()?;
         if self.symbol_overrides.len() > 256 {
             bail!("symbol_overrides supports at most 256 symbols");
@@ -220,10 +340,13 @@ impl CtaPerpConfig {
     }
 
     fn validate_controls(&self) -> Result<()> {
-        if self.bar_interval == BarInterval::FiveMinutes
+        if self.bar_interval.uses_linear_nq()
             && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
         {
-            bail!("5m NQ uses fixed 0.50 linear quantile thresholds");
+            bail!(
+                "{} NQ uses fixed 0.50 linear quantile thresholds",
+                self.bar_interval.as_str()
+            );
         }
         let minimum = self.position_algorithm.minimum();
         if !self.max_pos_u.is_finite() || self.max_pos_u <= 0.0 {

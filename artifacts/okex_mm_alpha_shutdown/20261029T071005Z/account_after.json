@@ -1,0 +1,121 @@
+{
+  "utc": "2026-10-29T07:12:35.444371+00:00",
+  "env": "okex_mm_alpha",
+  "swap_open_orders": 0,
+  "positions": [
+    {
+      "instId": "ETH-USDT-SWAP",
+      "posSide": "net",
+      "pos": "2.57",
+      "mgnMode": "cross",
+      "notionalUsd": "592.5457968045",
+      "upl": "-0.6741099999999797"
+    },
+    {
+      "instId": "SOL-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-3",
+      "mgnMode": "cross",
+      "notionalUsd": "299.0976681",
+      "upl": "0.4066000000000258"
+    },
+    {
+      "instId": "BTC-USDT-SWAP",
+      "posSide": "net",
+      "pos": "2.89",
+      "mgnMode": "cross",
+      "notionalUsd": "2305.1557049598005",
+      "upl": "-2.586859502762197"
+    },
+    {
+      "instId": "FIL-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-51",
+      "mgnMode": "cross",
+      "notionalUsd": "4.4271128748",
+      "upl": "-1.0463158100558652"
+    },
+    {
+      "instId": "WLD-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-58",
+      "mgnMode": "cross",
+      "notionalUsd": "23.812564622",
+      "upl": "-2.5102339762611265"
+    },
+    {
+      "instId": "HBAR-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-0.5",
+      "mgnMode": "cross",
+      "notionalUsd": "3.66718968",
+      "upl": "-0.4299000000000004"
+    },
+    {
+      "instId": "ARB-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-1.8",
+      "mgnMode": "cross",
+      "notionalUsd": "2.9422006614",
+      "upl": "-1.6090199464843136"
+    },
+    {
+      "instId": "TRUMP-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-12",
+      "mgnMode": "cross",
+      "notionalUsd": "2.000176332",
+      "upl": "-0.3148804054054052"
+    },
+    {
+      "instId": "XRP-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-0.05",
+      "mgnMode": "cross",
+      "notionalUsd": "6.450039365",
+      "upl": "-1.4594999999999998"
+    },
+    {
+      "instId": "ETC-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-0.07",
+      "mgnMode": "cross",
+      "notionalUsd": "5.1487462950000005",
+      "upl": "-0.8150353522867737"
+    },
+    {
+      "instId": "XLM-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-0.5",
+      "mgnMode": "cross",
+      "notionalUsd": "8.362031369999999",
+      "upl": "-0.5074687499999953"
+    },
+    {
+      "instId": "ADA-USDT-SWAP",
+      "posSide": "net",
+      "pos": "0.5",
+      "mgnMode": "cross",
+      "notionalUsd": "9.847083399999999",
+      "upl": "1.0490965709785889"
+    },
+    {
+      "instId": "BNB-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-1",
+      "mgnMode": "cross",
+      "notionalUsd": "7.500261769000001",
+      "upl": "-1.4825885553281943"
+    },
+    {
+      "instId": "DOT-USDT-SWAP",
+      "posSide": "net",
+      "pos": "-1",
+      "mgnMode": "cross",
+      "notionalUsd": "0.971525632",
+      "upl": "-0.0432003421727953"
+    }
+  ],
+  "position_count": 14,
+  "flatten_executed": false
+}

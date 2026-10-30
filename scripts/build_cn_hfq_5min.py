@@ -95,6 +95,26 @@ def aggregate_minutes(frame: pd.DataFrame, bar_minutes: int = BAR_MINUTES) -> tu
     bucket_start = segment_start | ((indices - segment_anchor) % bar_minutes == 0)
     starts = np.flatnonzero(bucket_start)
     ends = np.r_[starts[1:], len(frame)]
+    result, metadata = aggregate_groups(frame, starts, ends)
+    return result, {
+        "bar_minutes": bar_minutes,
+        "ts": result.ts.astype(int).tolist(),
+        "segment_start_ts": ts[segment_start].astype(int).tolist(),
+        **metadata,
+    }
+
+
+def aggregate_groups(frame: pd.DataFrame, starts: np.ndarray, ends: np.ndarray) -> tuple[pd.DataFrame, dict]:
+    """Same HFQ arithmetic for explicit complete, disjoint source slices."""
+    if set(frame.columns) != EXPECTED_COLUMNS or frame.empty:
+        raise ValueError("expected nonempty 56-column HFQ source")
+    ts = frame.ts.to_numpy(dtype=np.int64)
+    if np.any(np.diff(ts) <= 0) or np.any(ts % 60):
+        raise ValueError("timestamps must be strictly increasing UTC minutes")
+    if (not len(starts) or starts[0] != 0 or ends[-1] != len(frame)
+            or np.any(ends <= starts) or not np.array_equal(starts[1:], ends[:-1])):
+        raise ValueError("groups must partition the source without overlap or omission")
+    indices = np.arange(len(frame))
     last = ends - 1
     sizes = ends - starts
     result = frame.iloc[last].reset_index(drop=True).copy()
@@ -143,14 +163,10 @@ def aggregate_minutes(frame: pd.DataFrame, bar_minutes: int = BAR_MINUTES) -> tu
     result["twap"] = np.add.reduceat(frame.twap.to_numpy(dtype=float), starts) / sizes
     if np.isinf(result.drop(columns=KEYS).to_numpy(dtype=float)).any():
         raise ValueError("nonfinite aggregate result")
-    metadata = {
-        "bar_minutes": bar_minutes,
-        "ts": result.ts.astype(int).tolist(),
-        "segment_start_ts": ts[segment_start].astype(int).tolist(),
+    return result[frame.columns], {
         "source_minutes": sizes.astype(int).tolist(),
         "end_ts": (ts[last] + 60).astype(int).tolist(),
     }
-    return result[frame.columns], metadata
 
 
 def write_verified(table: pa.Table, destination: Path) -> dict:
