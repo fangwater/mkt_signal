@@ -1,6 +1,16 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-30 03:47 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-10-30 09:05 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-10-30 08:46 UTC，更新 `~/binance-cta-perp-rx01` 的15min待清单框架，
+本地arbmm release产物及因子校验文件经SHA-256核验后原子安装，新增23个
+`depth_*` 因子，Kafka消息直接复用`depth_pub::OrderBook`维护全部收到的档位。
+源提交`36ce1491`，边界精度修正`6f49c3e9`。操作员的env、空universe、空币种因子表和交易配置哈希保持，
+`enabled=false`、无Manager绑定、四个常驻服务均未启动，10195/19185继续关闭。
+CPU17仅用于BTC/ETH独立`--replay-only`验收，不创建IPC发布器或交易信号；
+正式CPU/IP分配不变，未改动source IP、ENI、路由或其他RX/Exec。
+BTC/ETH各195根15min回放追至09:00，22/23项就绪；`depth_flow_net`按原公式因有效样本不足未就绪。
+验收时57个受保护进程PID和启动时间保持，临时上传目录已清理。证据：`artifacts/rx01_depth_factors_20261030/`。
 
 2026-10-30 03:47 UTC，旧 `binance-cta-spread-rx01` 已按要求退役：环境本地脚本停止
 signal/publisher/dashboard/config，残留三个常驻进程及 supervisor 登记已移除，

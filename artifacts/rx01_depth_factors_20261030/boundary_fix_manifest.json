@@ -1,0 +1,22 @@
+{
+  "source_commit": "6f49c3e96df522fba18452c09ded34245a7c83aa",
+  "environment": "binance-cta-perp-rx01",
+  "protected_hashes": {
+    "config/cta_perp.json": "975696bf0d009dc5ce483a2f88e2d9e2a3d908edf0873f71a59b85f0336b9931",
+    "config/cta_perp_symbol_factors.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "config/cta_perp_factor_model_15m_pub.toml": "1cb66cf29507ac9a838d54555059c54bb432a789794b249c31525f0ff9da82db",
+    "env.sh": "65979643607f0ba717d6f95911a0c3cd658d6d3c8d1f2730fdc15c5558cd0acd"
+  },
+  "files": {
+    "cta_perp_factor_model_15m_pub": {
+      "source": "target/release/cta_perp_factor_model_15m_pub",
+      "sha256": "b051379d82734a0354d912a0e37a80cdc372ebabdea6e768ad436427cd54eda3",
+      "expected_previous_sha256": "cd292e883331f4b059aacb2ee17de0ae7c85e81c8c304aeb1fc0a91ee9189259"
+    },
+    "cta_perp_15m_signal": {
+      "source": "target/release/cta_perp_15m_signal",
+      "sha256": "8e844bb5c0df82170c1085305afe833eb7ae236da92221d78140b292f4598f77",
+      "expected_previous_sha256": "74ded7e8bff2d332e7198cc60f941206f5673683cf53c375768b5f5f8db91b6d"
+    }
+  }
+}

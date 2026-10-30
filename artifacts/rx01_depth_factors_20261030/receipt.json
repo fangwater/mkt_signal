@@ -1,0 +1,16 @@
+{
+  "source_commit": "36ce149121cad0346532ea50979f73528768538a",
+  "environment": "binance-cta-perp-rx01",
+  "installed_sha256": {
+    "cta_perp_factor_model_15m_pub": "cd292e883331f4b059aacb2ee17de0ae7c85e81c8c304aeb1fc0a91ee9189259",
+    "cta_perp_15m_signal": "74ded7e8bff2d332e7198cc60f941206f5673683cf53c375768b5f5f8db91b6d",
+    "scripts/cta_perp_factor_config.py": "42b4415446faf7953e27dcac8fa873c8c33adaa79dc1e9ba94bca33dc8dc4202",
+    "scripts/factor_validation_allowlist.txt": "f48f5bc48c64a112b5397865e1eb9a49d44da2eaf0e794d716b7fefb501e4dc0",
+    "config/README.md": "c2cfccd4520692c67bf7c79d8b314085b207508627a2d6340c0647de7d277fbf"
+  },
+  "protected_config_unchanged": true,
+  "protected_processes_unchanged": 57,
+  "enabled": false,
+  "runtime_services_started": false,
+  "operator_list_empty": true
+}
