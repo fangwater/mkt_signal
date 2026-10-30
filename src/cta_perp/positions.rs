@@ -45,7 +45,7 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig
     if flag == 0 {
         return 0;
     }
-    if config.entry.nq_change_enabled && config.bar_interval.uses_linear_nq() {
+    if config.entry.nq_change_enabled && config.bar_interval.uses_linear_nq() && !config.strict_nq {
         let (value, threshold) = if flag > 0 {
             (bar.nq.filter_long_value, bar.nq.filter_long_threshold)
         } else {
@@ -130,6 +130,39 @@ mod tests {
             assert_eq!(next_position_flag(0, &short, &c), -1);
         }
     }
+    #[test]
+    fn fifteen_minute_factor_rules_use_strict_ranks_instead_of_linear_medians() {
+        let mut config = config();
+        config.bar_interval = super::super::interval::BarInterval::FifteenMinutes;
+        config.factor_rules = serde_json::from_value(serde_json::json!([
+            {"标的":"ETH","因子":"factor_036","符号":1,"nq":"0.2/0.8"},
+            {"标的":"ETH","因子":"factor_051","符号":-1,"nq":"关闭"}
+        ]))
+        .unwrap();
+        config.validate().unwrap();
+        let effective = config.for_strategy("ETHUSDT", "factor_036");
+        let mut long = bar(0.99, true);
+        long.nq.filter_long_value = Some(0.0);
+        long.nq.filter_long_threshold = Some(0.01); // Linear Q50 would reject it.
+        long.nq.filter_long_quantile = Some(0.21);
+        assert_eq!(next_position_flag(0, &long, &effective), 1);
+        long.nq.filter_long_quantile = Some(0.2);
+        assert_eq!(next_position_flag(0, &long, &effective), 0);
+        let mut short = bar(0.01, true);
+        short.nq.filter_short_value = Some(0.0);
+        short.nq.filter_short_threshold = Some(-0.01);
+        short.nq.filter_short_quantile = Some(0.79);
+        assert_eq!(next_position_flag(0, &short, &effective), -1);
+        short.nq.filter_short_quantile = Some(0.8);
+        assert_eq!(next_position_flag(0, &short, &effective), 0);
+        short.nq.filter_ready = false;
+        assert_eq!(next_position_flag(1, &short, &effective), 0);
+        let disabled = config.for_strategy("ETHUSDT", "factor_051");
+        assert_eq!(next_position_flag(0, &short, &disabled), -1);
+        config.bar_interval = super::super::interval::BarInterval::FiveMinutes;
+        assert!(config.validate().is_err());
+    }
+
     #[test]
     fn rx03_rules_keep_factor_gates_directions_and_nq_disable_independent() {
         let config = CtaPerpConfig::load("config/cta_perp_rx03/cta_perp.json").unwrap();

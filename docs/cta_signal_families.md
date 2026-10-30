@@ -633,9 +633,12 @@ period 内成交按时间排序。历史追赶期间只更新状态，不发布 
 未就绪时 `score=NaN`。`ts_in_ms=t` 表示闭合区间 `[t-5s,t)` 的右端点；
 `ts_out_ms` 为实际发布时刻。消费者必须检查就绪状态和数据时间的新鲜度。
 该因子不做 zscore 或分位归一化，不加入原有 `universe.factors` 的分钟入场列表。
-`warmup.json` 和运行统计包含独立的 `vol_published` / `vol_publish_failed` 计数。
+共享发布器入口为 `exec_volatility_pub`，配置为 `config/exec_volatility_pub.toml`，
+独立于 Spread 策略生命周期。`run/exec_volatility_status.json` 记录追赶、
+发布权、两市场就绪数量及发布计数；使用环境内 `start_exec_volatility_pub.sh` /
+`stop_exec_volatility_pub.sh` 管理。旧 IPC 名称保留，消费者无需改配置。
 旧 MM 的 `factor_pub/<venue>/rl_vol` 继续使用原有 12/30/1.3 口径。
-本次仅完成本地实现，未部署。Exec 已增加同市场 vol 订阅和 Grid 下单接入，详见 [Exec Grid](exec_grid.md)。
+Exec 已增加同市场 vol 订阅和 Grid 下单接入，详见 [Exec Grid](exec_grid.md)。
 
 ## Spread 规则
 
@@ -744,7 +747,7 @@ Perp Config Server 的“币种与因子”JSON 编辑器可直接粘贴研究�
 数组保存为 `cta_perp.json.factor_rules`，同时定义组合方向和每个组合的 NQ。
 实时订阅、状态、恢复与离线回放从同一份配置取值；数组模式不写 Redis 权重。
 保存要求当前配置 revision，并拒绝重复组合、无效符号/NQ、未知或未计算的因子。
-该模式限定 1m v0，不能切到 5m 或 v1。规则为空或缺省时保持原有 Redis
+该模式支持 1m / 15m v0，不能切到 5m 或 v1。规则为空或缺省时保持原有 Redis
 组合配置及全局 NQ 语义。完整 RX03 45 条示例和本地计算范围见
 `config/cta_perp_rx03/README.md`。
 

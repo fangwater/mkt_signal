@@ -282,8 +282,8 @@ impl CtaPerpConfig {
         if !self.factor_rules.is_empty() {
             anyhow::ensure!(
                 self.position_algorithm == PositionAlgorithm::V0
-                    && self.bar_interval == BarInterval::OneMinute,
-                "factor_rules requires v0 and 1m"
+                    && self.bar_interval != BarInterval::FiveMinutes,
+                "factor_rules requires v0 and 1m or 15m"
             );
             anyhow::ensure!(self.factor_rules.len() <= 8192, "too many factor rules");
             let mut seen = std::collections::BTreeSet::new();
@@ -341,6 +341,7 @@ impl CtaPerpConfig {
 
     fn validate_controls(&self) -> Result<()> {
         if self.bar_interval.uses_linear_nq()
+            && !self.strict_nq
             && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
         {
             bail!(

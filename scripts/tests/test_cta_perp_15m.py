@@ -20,6 +20,42 @@ START = 1800000000000
 
 
 class FifteenMinuteTests(unittest.TestCase):
+    def test_rx01_framework_waits_for_a_new_operator_list(self):
+        root = ROOT / "config/cta_perp_rx01"
+        config = normalize_config(json.loads((root / "cta_perp.json").read_text()))
+        self.assertFalse(config["enabled"])
+        self.assertEqual(config["bar_interval"], "15m")
+        self.assertEqual(config["factor_rules"], [])
+        self.assertEqual(json.loads((root / "cta_perp_symbol_factors.json").read_text()), {})
+        universe = available_universe(root / "cta_perp_factor_model_15m_pub.toml")
+        self.assertEqual(universe, {"symbols": [], "factors": []})
+        result = subprocess.run(["bash", str(ROOT / "scripts/deploy_cta_perp_rx01.sh")],
+                                check=True, capture_output=True, text=True)
+        self.assertIn("binance-cta-perp-rx01", result.stdout)
+        self.assertIn("config/cta_perp_rx01", result.stdout)
+        self.assertIn("DRY-RUN", result.stdout)
+
+    def test_fifteen_minute_pair_rules_preserve_rx03_strict_nq_semantics(self):
+        config = json.loads((CONFIG / "cta_perp.json").read_text())
+        config["factor_rules"] = [
+            {"标的": "BEL", "因子": "factor_094", "符号": -1, "nq": "0.2/0.8"},
+            {"标的": "BEL", "因子": "factor_051", "符号": 1, "nq": "关闭"},
+        ]
+        config = normalize_config(config)
+        row = dict(bar_interval="15m", symbol="BELUSDT", model_ts_ms=START + 900000,
+                   inputs={"factor_094": dict(score=1, quantile=.01, ready=True)},
+                   nq=dict(long_value=0, long_threshold=.01, long_quantile=.21,
+                           short_value=0, short_threshold=-.01, short_quantile=.79,
+                           ready=True, execution_ts_ms=START + 900001,
+                           execution_bid=100, execution_ask=100))
+        settings = dict(start_ms=START, initial_equity_usdt=10000)
+        result = simulate([row], {}, config, settings)
+        self.assertEqual(result["records"][0]["snapshot"]["position_flag"], 1)
+        self.assertTrue(result["records"][0]["snapshot"]["strict_nq"])
+        row["nq"]["long_quantile"] = .2
+        result = simulate([row], {}, config, settings)
+        self.assertEqual(result["records"][0]["snapshot"]["position_flag"], 0)
+
     def test_lifecycle_uses_fifteen_minute_signal_and_publisher(self):
         with tempfile.TemporaryDirectory() as directory:
             env = Path(directory) / "binance-cta-perp-15m-test"

@@ -10,7 +10,7 @@ const CtaPanel = (() => {
       ? Math.sign(record.snapshot.signal.score)
       : 0;
   const barMillis = (interval) => ({"1m": MINUTE, "5m": 5 * MINUTE, "15m": 15 * MINUTE})[interval || "1m"];
-  const usesLinearNq = (interval) => ["5m", "15m"].includes(interval);
+  const usesLinearNq = (interval, strict = false) => ["5m", "15m"].includes(interval) && !strict;
   const modelBucket = (record, barMs = barMillis(record.snapshot?.bar_interval)) => record.model_ts_ms - barMs;
   const executionBucket = (record, barMs = barMillis(record.snapshot?.bar_interval)) =>
     Math.floor(record.event_ts_us / 1000 / barMs) * barMs;
@@ -51,7 +51,8 @@ const CtaPanel = (() => {
       enabled = entry.nq_change_enabled,
       ready = signal.filter_ready;
     const valid = (q) => Number.isFinite(q) && q >= 0 && q <= 1;
-    const linearNq = usesLinearNq(record.snapshot?.bar_interval);
+    const strict = record.snapshot?.strict_nq === true;
+    const linearNq = usesLinearNq(record.snapshot?.bar_interval, strict);
     const branch = (name, compare) => {
       const quantile = signal[`nq_${name}_quantile`],
         threshold = linearNq ? signal[`nq_${name}_threshold`] : entry[`nq_${name}_quantile`];
@@ -68,8 +69,8 @@ const CtaPanel = (() => {
             : null,
       };
     };
-    const long = branch("long", (q, t) => q >= t),
-      short = branch("short", (q, t) => q <= t);
+    const long = branch("long", (q, t) => strict ? q > t : q >= t),
+      short = branch("short", (q, t) => strict ? q < t : q <= t);
     let mode = "unknown",
       text = "数据不完整";
     if (actions(record).some((a) => a.kind === "close")) {
@@ -92,7 +93,7 @@ const CtaPanel = (() => {
       mode = (side > 0 ? long : short).passed ? "passed" : "blocked";
       text = mode === "passed" ? "通过" : "拦截";
     }
-    return { enabled, ready, side, mode, text, long, short };
+    return { enabled, ready, side, mode, text, long, short, strict, linearNq };
   }
   function preferred(records) {
     return (
@@ -105,7 +106,7 @@ const CtaPanel = (() => {
     const records = strategy
       ? data.signals.filter((r) => strategyOf(r) === strategy)
       : [];
-    const barMs = barMillis(data.interval), linearNq = usesLinearNq(data.interval);
+    const barMs = barMillis(data.interval), linearNq = usesLinearNq(data.interval, records.some((r) => r.snapshot?.strict_nq === true));
     const candles = new Map(data.klines.map((row) => [row.open_time_ms, row]));
     const observations = new Map(),
       states = new Map(),
@@ -211,6 +212,7 @@ const CtaPanel = (() => {
     };
     return {
       strategy,
+      linearNq,
       times,
       candles,
       observations,
@@ -589,9 +591,9 @@ if (typeof document !== "undefined")
             },
             {
               gridIndex: 2,
-              min: usesLinearNq(state.data.interval) ? undefined : 0,
-              max: usesLinearNq(state.data.interval) ? undefined : 1,
-              interval: usesLinearNq(state.data.interval) ? undefined : 0.5,
+              min: series.linearNq ? undefined : 0,
+              max: series.linearNq ? undefined : 1,
+              interval: series.linearNq ? undefined : 0.5,
               axisLabel: {
                 color: "#8496af",
                 fontSize: 9,
@@ -648,8 +650,8 @@ if (typeof document !== "undefined")
               lineStyle: { color: "#8aaeff", width: 1.6 },
               areaStyle: { color: "#8aaeff20" },
             },
-            nqLine(usesLinearNq(state.data.interval) ? "BUY_NQ 变化" : "BUY_NQ 分位", series.nqLong, "#4ad6ab"),
-            nqLine(usesLinearNq(state.data.interval) ? "SELL_NQ 变化" : "SELL_NQ 分位", series.nqShort, "#f48792"),
+            nqLine(series.linearNq ? "BUY_NQ 变化" : "BUY_NQ 分位", series.nqLong, "#4ad6ab"),
+            nqLine(series.linearNq ? "SELL_NQ 变化" : "SELL_NQ 分位", series.nqShort, "#f48792"),
             nqLine("多头 NQ 阈值", series.nqLongThreshold, "#9dcbb9", true),
             nqLine("空头 NQ 阈值", series.nqShortThreshold, "#c49da8", true),
           ],
@@ -670,11 +672,11 @@ if (typeof document !== "undefined")
                   : data.passed
                     ? "通过"
                     : "拦截";
-          return `<div class="nq-row ${gate.side === side ? "selected" : ""}" data-side="${side > 0 ? "long" : "short"}"><div><b>${name}${gate.side === side ? " · 本次方向" : ""}</b><span>${pct(data.value)}</span></div><small>${usesLinearNq(record.snapshot?.bar_interval) ? "变化 " + pct(data.value) : "分位 " + pct(data.quantile)} ${operator} 阈值 ${pct(data.threshold)}</small><strong class="${data.passed === true ? "positive" : data.passed === false ? "negative" : "neutral"}">${result}</strong></div>`;
+          return `<div class="nq-row ${gate.side === side ? "selected" : ""}" data-side="${side > 0 ? "long" : "short"}"><div><b>${name}${gate.side === side ? " · 本次方向" : ""}</b><span>${pct(data.value)}</span></div><small>${gate.linearNq ? "变化 " + pct(data.value) : "分位 " + pct(data.quantile)} ${operator} 阈值 ${pct(data.threshold)}</small><strong class="${data.passed === true ? "positive" : data.passed === false ? "negative" : "neutral"}">${result}</strong></div>`;
         };
       return `<section class="nq-section"><div class="section-heading"><b>NQ change</b><span class="nq-state ${gate.mode === "passed" ? "positive" : gate.mode === "blocked" ? "negative" : "neutral"}" data-mode="${gate.mode}">${gate.text}</span></div>
-      <p class="hint">只过滤开仓 · 使用当时的阈值</p>${row("BUY_NQ", gate.long, 1, "≥")}${row("SELL_NQ", gate.short, -1, "≤")}
-      <details class="nq-method"><summary>计算方式</summary><p>BUY_NQ = (P − 最近 120 根最低 mid) / 最低 mid<br>SELL_NQ = (P − 最近 120 根最高 mid) / 最高 mid</p><p>${usesLinearNq(record.snapshot?.bar_interval) ? `P 是本合约 ${record.snapshot.bar_interval.replace("m", "min")} 区间最后一分钟的盘口 mid，收盘后才可使用。极值和变化窗口均为 120 个有效样本，缺口不占位；至少 60 个变化值后使用线性插值中位数作为门槛。` : "P 是本合约分钟最后一个有效盘口 mid。极值和分位窗口均为 120 个分钟槽位，至少 60 个有效 NQ 样本后就绪。分位采用相同值的中间排名。"}</p><p>50% 指变化序列的历史中位位置。NQ 放行开仓，因子退出不受 NQ 限制。</p></details></section>`;
+      <p class="hint">只过滤开仓 · 使用当时的阈值</p>${row("BUY_NQ", gate.long, 1, gate.strict ? ">" : "≥")}${row("SELL_NQ", gate.short, -1, gate.strict ? "<" : "≤")}
+      <details class="nq-method"><summary>计算方式</summary><p>BUY_NQ = (P − 最近 120 根最低 mid) / 最低 mid<br>SELL_NQ = (P − 最近 120 根最高 mid) / 最高 mid</p><p>${["5m", "15m"].includes(record.snapshot?.bar_interval) ? `P 是本合约 ${record.snapshot.bar_interval.replace("m", "min")} 区间最后一分钟的盘口 mid，收盘后才可使用。极值和变化窗口均为 120 个有效样本，缺口不占位；至少 60 个变化值后就绪。` : "P 是本合约分钟最后一个有效盘口 mid。极值和分位窗口均为 120 个分钟槽位，至少 60 个有效 NQ 样本后就绪。"}${gate.linearNq ? "使用线性插值中位数作为门槛。" : "分位采用相同值的中间排名。"}</p><p>${gate.strict ? "使用该标的×因子的 NQ 分位阈值，严格比较。" : "50% 指变化序列的历史中位位置。"}NQ 放行开仓，因子退出不受 NQ 限制。</p></details></section>`;
     }
     function inspector(record, action = null) {
       if (!record) {

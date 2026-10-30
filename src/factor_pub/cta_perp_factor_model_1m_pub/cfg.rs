@@ -23,6 +23,18 @@ mod tests {
     use crate::cta_perp::factors::{parse_factor_table, table_services_for_interval};
 
     #[test]
+    fn rx01_framework_cannot_start_before_the_operator_supplies_a_universe() {
+        let config: CtaPerpFactorPubConfig = toml::from_str(include_str!(
+            "../../../config/cta_perp_rx01/cta_perp_factor_model_15m_pub.toml"
+        ))
+        .unwrap();
+        assert_eq!(config.bar_interval, BarInterval::FifteenMinutes);
+        assert!(config.universe.symbols.is_empty());
+        assert!(config.universe.factors.is_empty());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn fifteen_minute_template_keeps_day_windows_and_validates_every_binding() {
         let mut config: CtaPerpFactorPubConfig = toml::from_str(include_str!(
             "../../../config/cta_perp_15m/cta_perp_factor_model_15m_pub.toml"

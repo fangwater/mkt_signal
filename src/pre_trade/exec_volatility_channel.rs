@@ -1,4 +1,4 @@
-//! Raw CTA Spread volatility, keyed by execution market and symbol.
+//! Shared execution volatility, keyed by execution market and symbol.
 use anyhow::Result;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
@@ -12,9 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::factor_pub::cta_spread_factor_model_1m_pub::volatility::{
-    output_service_path, VOLATILITY_BUFFER_SIZE,
-};
+use crate::factor_pub::exec_volatility_pub::state::{output_service_path, VOLATILITY_BUFFER_SIZE};
 
 #[derive(Default)]
 struct VolatilityCache {

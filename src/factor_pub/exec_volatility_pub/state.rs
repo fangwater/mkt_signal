@@ -9,7 +9,6 @@ use period_pbs::period::normalize_timestamp_ms;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 use std::collections::HashMap;
 
-use super::app::timestamp_as_micros;
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use crate::factor_pub::trade_flow_feature_pub::vol_state::VolState;
 
@@ -25,7 +24,7 @@ pub fn output_service_path(venue: TradingVenue) -> String {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct VolatilityObservation {
+pub(crate) struct VolatilityObservation {
     pub symbol: String,
     pub cash: bool,
     /// Close of the completed [ts_ms - 5s, ts_ms) bar, in event time.
@@ -67,7 +66,7 @@ impl Default for SymbolState {
 }
 
 #[derive(Default)]
-pub(super) struct VolatilityFactors {
+pub(crate) struct VolatilityFactors {
     // Futures and cash have separate event clocks, prices and readiness.
     markets: [HashMap<String, SymbolState>; 2],
 }
@@ -159,7 +158,7 @@ impl VolatilityFactors {
     }
 }
 
-pub(super) struct VolatilityOutputs {
+pub(crate) struct VolatilityOutputs {
     publishers: [ModelPublisher; 2],
     seq_no: [u64; 2],
 }
@@ -167,13 +166,13 @@ pub(super) struct VolatilityOutputs {
 impl VolatilityOutputs {
     pub fn new() -> Result<Self> {
         let futures = ModelPublisher::with_capacity(
-            "cta_spread_binance_futures_vol",
+            "exec_binance_futures_vol",
             &output_service_path(TradingVenue::BinanceFutures),
             VOLATILITY_BUFFER_SIZE,
             VOLATILITY_BUFFER_SIZE,
         )?;
         let cash = ModelPublisher::with_capacity(
-            "cta_spread_binance_cash_vol",
+            "exec_binance_cash_vol",
             &output_service_path(TradingVenue::BinanceMargin),
             VOLATILITY_BUFFER_SIZE,
             VOLATILITY_BUFFER_SIZE,
@@ -202,6 +201,14 @@ impl VolatilityOutputs {
             }
         }
         (published, failed)
+    }
+}
+
+fn timestamp_as_micros(value: i64) -> i64 {
+    if value >= 10_000_000_000_000 {
+        value
+    } else {
+        value.saturating_mul(1_000)
     }
 }
 

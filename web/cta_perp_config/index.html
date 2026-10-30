@@ -285,12 +285,11 @@
             2。
           </p>
           <p>
-            BUY_NQ = (P − 最近 2h 最低 mid) / 最低 mid；SELL_NQ = (P − 最近 2h
-            最高 mid) / 最高 mid。
+            BUY_NQ = (P − 最近 120 根最低 mid) / 最低 mid；SELL_NQ = (P − 最近 120 根最高 mid) / 最高 mid。
           </p>
           <p>
             价格极值和 NQ 分位均使用 120
-            个分钟槽位，包含当前值；缺失值不参与统计，NQ 至少 60
+            根，包含当前值；1m 缺失分钟占槽位，多分钟仅推进有效样本。NQ 至少 60
             个有效样本才就绪。分位采用相同值的中间排名。
           </p>
           <p>
@@ -305,7 +304,7 @@
         <div class="kv-table" id="signal-table"></div>
         <p class="hint">百分位用法：v0 直接使用 x，范围 [0, 1]；v1 使用 2x − 1，范围 [−1, 1]，例如 80% → 60%。四个开平阈值直接比较该算法的结果，切换算法不会自动换算阈值。v1 等待全部启用因子到齐同一根分钟后取等权算术平均，再比较开平阈值；NQ 使用原分位数。切换算法需先关闭现有仓位。</p>
         <h3>币种阈值 JSON</h3>
-        <p class="hint">按 symbol 单独配置因子开仓、平仓阈值和 NQ 开仓过滤阈值。省略字段或填 null 继承全局值，删除币种恢复全局设置；与上方参数一起保存，下一根新闭合 bar 生效。NQ 分位范围 [0, 1]。5m / 15m NQ 固定使用 Q50，不支持修改 NQ 分位阈值。</p>
+        <p class="hint">按 symbol 单独配置因子开仓、平仓阈值和 NQ 开仓过滤阈值。省略字段或填 null 继承全局值，删除币种恢复全局设置；与上方参数一起保存，下一根新闭合 bar 生效。NQ 分位范围 [0, 1]。普通 5m / 15m 配置固定使用线性 Q50；15m 标的×因子规则模式支持独立 NQ 分位及关闭。</p>
         <textarea id="overrides-json" class="mono" aria-label="币种阈值 JSON" spellcheck="false"
           style="width:100%;min-height:250px;resize:vertical;box-sizing:border-box">{}</textarea>
         <details class="hint"><summary>JSON 示例（字段可按需省略）</summary><pre style="overflow-x:auto">{
@@ -333,7 +332,7 @@
           </div>
         </div>
         <div class="hint">
-          支持直接粘贴 [{"标的":"ZEC","nq":"0.2/0.8","符号":-1,"因子":"TD_MT_019"}] 数组，或使用 symbol → factor → 方向对象。NQ 前值是多头下限（严格大于），后值是空头上限（严格小于）；单值同时用于两边，“关闭”跳过 NQ。数组一次保存组合方向与每个 symbol × factor 的 NQ，并作为唯一组合配置；仅支持 1m v0。负数反转因子方向，正数保持方向，0
+          支持直接粘贴 [{"标的":"ZEC","nq":"0.2/0.8","符号":-1,"因子":"TD_MT_019"}] 数组，或使用 symbol → factor → 方向对象。NQ 前值是多头下限（严格大于），后值是空头上限（严格小于）；单值同时用于两边，“关闭”跳过 NQ。数组一次保存组合方向与每个 symbol × factor 的 NQ，并作为唯一组合配置；支持 1m / 15m v0。负数反转因子方向，正数保持方向，0
           停用。每个因子独立形成满多、满空、空仓三种状态；数值幅度不参与仓位分配。保存时检查币种、因子和数值；不通过不会覆盖配置。交易开关关闭时只计算和观察信号。
         </div>
         <p class="hint" id="available-factors"></p>

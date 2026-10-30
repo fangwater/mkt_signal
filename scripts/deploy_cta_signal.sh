@@ -2,7 +2,7 @@
 # Install a signal-only suite. Never starts processes or creates an Exec companion.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FAMILY="" ENV_NAME="" ARTIFACT_DIR="" SKIP_BUILD=0 EXECUTE=0 BAR_INTERVAL=1m
+FAMILY="" ENV_NAME="" ARTIFACT_DIR="" SKIP_BUILD=0 EXECUTE=0 BAR_INTERVAL=1m CONFIG_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --family) FAMILY="$2"; shift 2 ;;
@@ -10,8 +10,9 @@ while [[ $# -gt 0 ]]; do
     --env-name) ENV_NAME="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2 ;;
+    --config-dir) CONFIG_OVERRIDE="$2"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
-    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m|15m] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
+    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m|15m] [--config-dir <directory>] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
   esac
 done
 [[ "$FAMILY" == perp || "$FAMILY" == spread ]] || { echo '[ERROR] invalid CTA family' >&2; exit 1; }
@@ -26,9 +27,12 @@ elif [[ "$BAR_INTERVAL" == 15m ]]; then
   SIGNAL_BIN="cta_perp_15m_signal"
   CONFIG_ROOT="$ROOT_DIR/config/cta_perp_15m"
 fi
+if [[ -n "$CONFIG_OVERRIDE" ]]; then
+  CONFIG_ROOT="$(cd "$CONFIG_OVERRIDE" && pwd)"
+fi
 PUB_BIN="cta_${FAMILY}_factor_model_${BAR_INTERVAL}_pub"
 TARGET_DIR="${HOME}/${ENV_NAME}"
-echo "[PLAN] env=$TARGET_DIR exchange=binance symbol_scope=config/cta_${FAMILY}_symbol_factors.json interval=$BAR_INTERVAL mutation=install-signal-files-only"
+echo "[PLAN] env=$TARGET_DIR exchange=binance symbol_scope=config/cta_${FAMILY}_symbol_factors.json interval=$BAR_INTERVAL config=$CONFIG_ROOT mutation=install-signal-files-only"
 [[ "$EXECUTE" == 1 ]] || { echo '[DRY-RUN] pass --execute to install; processes remain stopped'; exit 0; }
 cd "$ROOT_DIR"
 [[ "$(git branch --show-current)" == arbmm && -z "$(git status --porcelain)" ]] || { echo '[ERROR] require a clean arbmm worktree' >&2; exit 1; }
@@ -84,6 +88,9 @@ for directory in web/"cta_${FAMILY}"*; do
 done
 mkdir -p "$TARGET_DIR/web/vendor"
 cp -a web/vendor/. "$TARGET_DIR/web/vendor/"
+if [[ ! -f "$TARGET_DIR/env.sh" && -f "$CONFIG_ROOT/env.sh" ]]; then
+  install -m 600 "$CONFIG_ROOT/env.sh" "$TARGET_DIR/env.sh"
+fi
 if [[ ! -f "$TARGET_DIR/env.sh" ]]; then
   umask 077
   CTA_DEFAULT_VIRTUAL_ACCOUNT="cta_${FAMILY}"

@@ -76,7 +76,7 @@ impl ModelPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::factor_pub::cta_spread_factor_model_1m_pub::volatility::VOLATILITY_BUFFER_SIZE;
+    use crate::factor_pub::exec_volatility_pub::state::VOLATILITY_BUFFER_SIZE;
     use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
     use std::collections::HashSet;
 

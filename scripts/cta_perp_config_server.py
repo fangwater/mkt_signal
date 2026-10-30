@@ -130,7 +130,7 @@ def validate_position_thresholds(config: dict) -> None:
     entry, execution = config["entry"], config["execution"]
     if not all(0 <= entry[field] <= 1 for field in ("nq_long_quantile", "nq_short_quantile")):
         raise ValueError("entry NQ quantiles must be in [0, 1]")
-    if config["bar_interval"] in ("5m", "15m") and any(entry[field] != 0.5 for field in ("nq_long_quantile", "nq_short_quantile")):
+    if config["bar_interval"] in ("5m", "15m") and not config.get("strict_nq") and any(entry[field] != 0.5 for field in ("nq_long_quantile", "nq_short_quantile")):
         raise ValueError(f"{config['bar_interval']} NQ uses fixed 0.50 linear quantile thresholds")
     long, short = entry["factor_long_quantile"], entry["factor_short_quantile"]
     if not minimum <= short < long <= 1.0:
@@ -218,8 +218,8 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         except ValueError as error:
             raise ValueError(f"{field}: {error}") from error
     rules, table = normalize_factor_rules(root.get("factor_rules", []))
-    if rules and (algorithm != "v0" or interval != "1m"):
-        raise ValueError("factor_rules 仅支持1m v0独立因子模式")
+    if rules and (algorithm != "v0" or interval == "5m"):
+        raise ValueError("factor_rules 仅支持1m或15m v0独立因子模式")
     result["factor_rules"] = rules
     for rule in rules:
         validate_position_thresholds(effective_config(result, rule["标的"], rule["因子"]))

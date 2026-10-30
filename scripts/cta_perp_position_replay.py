@@ -39,7 +39,7 @@ def combined_snapshot(factors, observations, config):
     decision_value=math.fsum(v['decision_value'] for v in votes)/len(votes)
     side=1 if decision_value-entry['factor_long_quantile']>EPS else -1 if entry['factor_short_quantile']-decision_value>EPS else 0
     nq=observations['nq'];allowed=side!=0
-    if entry['nq_change_enabled'] and uses_linear_nq(config.get('bar_interval', '1m')):
+    if entry['nq_change_enabled'] and uses_linear_nq(config.get('bar_interval', '1m')) and not config.get('strict_nq'):
         branch = 'long' if side > 0 else 'short'
         value, threshold = nq.get(branch + '_value'), nq.get(branch + '_threshold')
         allowed = allowed and nq.get('ready') is True and all(
@@ -90,7 +90,7 @@ def simulate(rows,table,config,settings):
             position=positions.get(key);actions=[];execution=effective['execution'];q=signal['decision_value']
             record=dict(event_id=f'replay:{revision}:{factor}:{symbol}:{bar}',signal_id=f'replay:{revision}:{factor}:{symbol}:{bar}',
                 strategy_name=factor,symbol=symbol,model_ts_ms=bar,event_ts_us=ts*1000,state='observed',reason='hold',
-                snapshot=dict(bar_interval=config['bar_interval'],bar_start_ms=bar-bar_ms,enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],entry=effective['entry'],execution=execution,
+                snapshot=dict(bar_interval=config['bar_interval'],bar_start_ms=bar-bar_ms,enabled=False,source='symbol_mean_replay' if config['position_algorithm']=='v1' else 'independent_factor_replay',strategy_name=factor,position_algorithm=config['position_algorithm'],strict_nq=effective.get('strict_nq',False),entry=effective['entry'],execution=execution,
                               max_pos_u=amount,symbol_factors=bindings,signal=signal),publication=dict(levels=[],error=None),simulation=dict(actions=actions))
             exit_ready=position and (execution['factor_exit_quantile_long']-q>EPS if position['side']>0 else q-execution['factor_exit_quantile_short']>EPS)
             if exit_ready:

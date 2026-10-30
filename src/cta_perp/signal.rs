@@ -419,11 +419,11 @@ impl CtaPerpSignalApp {
         }
         let signal = bar.as_ref().map(|bar| signal_snapshot(bar, position.flag));
         let snapshot = json!({"bar_interval":self.config.bar_interval,"bar_start_ms":model_ts_ms - self.config.bar_interval.millis(),"enabled":self.config.enabled,"source":if effective.position_algorithm == PositionAlgorithm::V1 { "symbol_mean_strategy" } else { "independent_factor_strategy" },"strategy_name":factor,
-            "position_algorithm":effective.position_algorithm,
+            "position_algorithm":effective.position_algorithm,"strict_nq":effective.strict_nq,
             "entry":effective.entry,"execution":effective.execution,"max_pos_u":self.config.max_pos_u,"signal":signal,
             "position_flag":position.flag,"position_qty":position.qty});
         self.observations.entry(factor.clone()).or_default().insert(symbol.clone(), json!({"model_ts_ms":model_ts_ms,
-            "position_algorithm":effective.position_algorithm,"entry":effective.entry,"execution":effective.execution,"max_pos_u":self.config.max_pos_u,
+            "position_algorithm":effective.position_algorithm,"strict_nq":effective.strict_nq,"entry":effective.entry,"execution":effective.execution,"max_pos_u":self.config.max_pos_u,
             "score_ready":bar.is_some(),"position_flag":position.flag,"position_qty":position.qty,"entry_notional":position.entry_notional,"signal":signal,"updated_ts_us":now}));
         self.positions
             .entry(factor)

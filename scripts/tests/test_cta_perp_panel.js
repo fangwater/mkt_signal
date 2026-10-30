@@ -353,3 +353,15 @@ for (const [interval, duration] of [['1m', 60000], ['5m', 300000], ['15m', 90000
   assert.ok(elements.get('rows').innerHTML.includes(label));
 }
 console.log('1m/5m/15m position pages render with the correct interval and timestamps');
+
+const strictFifteen = structuredClone(rows[1]);
+strictFifteen.snapshot.bar_interval = '15m';
+strictFifteen.snapshot.strict_nq = true;
+strictFifteen.snapshot.entry.nq_long_quantile = .2;
+strictFifteen.snapshot.signal.nq_long_quantile = .21;
+strictFifteen.snapshot.signal.nq_long_value = 0;
+strictFifteen.snapshot.signal.nq_long_threshold = .01;
+assert.equal(panel.nqGate(strictFifteen).mode, 'passed');
+assert.equal(panel.nqGate(strictFifteen).linearNq, false);
+strictFifteen.snapshot.signal.nq_long_quantile = .2;
+assert.equal(panel.nqGate(strictFifteen).mode, 'blocked');
