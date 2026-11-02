@@ -12,11 +12,13 @@ while [[ $# -gt 0 ]]; do
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2 ;;
     --config-dir) CONFIG_OVERRIDE="$2"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
-    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m|15m] [--config-dir <directory>] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
+    *) echo 'Usage: deploy_cta_signal.sh --family perp|spread|cross_spread --env-name binance-cta-<family>-<tag> [--bar-interval 1m|5m|15m] [--config-dir <directory>] [--skip-build --artifact-dir <release-dir>] [--execute]' >&2; exit 1 ;;
   esac
 done
-[[ "$FAMILY" == perp || "$FAMILY" == spread ]] || { echo '[ERROR] invalid CTA family' >&2; exit 1; }
-[[ "$ENV_NAME" =~ ^binance-cta-${FAMILY}-[a-z0-9][a-z0-9_-]*$ ]] || { echo '[ERROR] invalid environment name' >&2; exit 1; }
+[[ "$FAMILY" == perp || "$FAMILY" == spread || "$FAMILY" == cross_spread ]] || { echo '[ERROR] invalid CTA family' >&2; exit 1; }
+ENV_PREFIX="binance-cta-${FAMILY}"
+[[ "$FAMILY" != cross_spread ]] || ENV_PREFIX="okex-binance-cta-spread"
+[[ "$ENV_NAME" =~ ^${ENV_PREFIX}-[a-z0-9][a-z0-9_-]*$ ]] || { echo '[ERROR] invalid environment name' >&2; exit 1; }
 [[ "$BAR_INTERVAL" == 1m || ( ( "$BAR_INTERVAL" == 5m || "$BAR_INTERVAL" == 15m ) && "$FAMILY" == perp ) ]] || { echo '[ERROR] 5m/15m are supported only for CTA perp' >&2; exit 1; }
 SIGNAL_BIN="cta_${FAMILY}_signal"
 CONFIG_ROOT="$ROOT_DIR/config"
@@ -32,7 +34,9 @@ if [[ -n "$CONFIG_OVERRIDE" ]]; then
 fi
 PUB_BIN="cta_${FAMILY}_factor_model_${BAR_INTERVAL}_pub"
 TARGET_DIR="${HOME}/${ENV_NAME}"
-echo "[PLAN] env=$TARGET_DIR exchange=binance symbol_scope=config/cta_${FAMILY}_symbol_factors.json interval=$BAR_INTERVAL config=$CONFIG_ROOT mutation=install-signal-files-only"
+EXCHANGES=binance
+[[ "$FAMILY" != cross_spread ]] || EXCHANGES=okex+binance
+echo "[PLAN] env=$TARGET_DIR exchange=$EXCHANGES symbol_scope=config/cta_${FAMILY}_symbol_factors.json interval=$BAR_INTERVAL config=$CONFIG_ROOT mutation=install-signal-files-only"
 [[ "$EXECUTE" == 1 ]] || { echo '[DRY-RUN] pass --execute to install; processes remain stopped'; exit 0; }
 cd "$ROOT_DIR"
 [[ "$(git branch --show-current)" == arbmm && -z "$(git status --porcelain)" ]] || { echo '[ERROR] require a clean arbmm worktree' >&2; exit 1; }
@@ -53,7 +57,9 @@ for name in "$SIGNAL_BIN" "$PUB_BIN"; do
   [[ -x "$RELEASE_DIR/$name" ]] || { echo "[ERROR] missing artifact $name" >&2; exit 1; }
 done
 if [[ -f "$TARGET_DIR/config/cta_${FAMILY}.json" ]]; then
-  python3 "scripts/cta_${FAMILY}_config_server.py" --config "$TARGET_DIR/config/cta_${FAMILY}.json" --check
+  CONFIG_SERVER="scripts/cta_${FAMILY}_config_server.py"
+  [[ "$FAMILY" != cross_spread ]] || CONFIG_SERVER="scripts/cta_spread_config_server.py"
+  python3 "$CONFIG_SERVER" --config "$TARGET_DIR/config/cta_${FAMILY}.json" --check
   python3 - "$TARGET_DIR/config/cta_${FAMILY}.json" "$BAR_INTERVAL" <<'PY_CHECK'
 import json, sys
 if json.load(open(sys.argv[1])).get('bar_interval', '1m') != sys.argv[2]:
@@ -71,6 +77,7 @@ for name in "$SIGNAL_BIN" "$PUB_BIN"; do
   fi
   mv -f "$artifact_tmp" "$TARGET_DIR/$name"
 done
+shopt -s nullglob
 for file in scripts/start_"cta_${FAMILY}"*.sh scripts/stop_"cta_${FAMILY}"*.sh scripts/"cta_${FAMILY}"*.py scripts/process_match_lib.sh scripts/factor_validation_allowlist.txt; do
   install -m 755 "$file" "$TARGET_DIR/scripts/$(basename "$file")"
 done
@@ -78,6 +85,13 @@ for suffix in .json _symbol_factors.json "_factor_model_${BAR_INTERVAL}_pub.toml
   file="config/cta_${FAMILY}${suffix}"
   [[ -f "$TARGET_DIR/$file" ]] || install -m 644 "$CONFIG_ROOT/$(basename "$file")" "$TARGET_DIR/$file"
 done
+if [[ "$FAMILY" == cross_spread ]]; then
+  for file in scripts/cta_spread*.py; do
+    install -m 755 "$file" "$TARGET_DIR/scripts/$(basename "$file")"
+  done
+  mkdir -p "$TARGET_DIR/web/cta_spread_config"
+  cp -a web/cta_spread_config/. "$TARGET_DIR/web/cta_spread_config/"
+fi
 if [[ "$FAMILY" == perp && ! -f "$TARGET_DIR/config/cta_perp_replay.json" ]]; then
   install -m 644 config/cta_perp_replay.json "$TARGET_DIR/config/cta_perp_replay.json"
 fi

@@ -1,15 +1,14 @@
 use crate::cta_position_publisher::{PositionPublisher, Publication};
 use crate::cta_spread::config::{
     CtaSpreadConfig, CTA_SPREAD_MAX_QUOTE_AGE_MS, CTA_SPREAD_SIGNAL_POLL_INTERVAL_MS,
-    CTA_SPREAD_STATUS_PATH, CTA_SPREAD_VENUE_NAME,
+    CTA_SPREAD_VENUE_NAME,
 };
 use crate::cta_spread::factor_channel::{IndependentFactorObservation, WeightedFactorChannel};
 use crate::cta_spread::factors::{runtime_factor_config_key, SymbolFactorTable, WeightedBar};
-use crate::cta_spread::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
+use crate::cta_spread::journal::{GridPublication, SignalJournal};
 use crate::cta_spread::positions::{next_position_flag, StrategyPosition};
 use anyhow::{ensure, Context, Result};
 use log::{info, warn};
-use order_common::TradingVenue;
 use quote_plan::Quote;
 use runtime_common::time_util::get_timestamp_us;
 use serde::Serialize;
@@ -21,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use trade_signal::MktChannel;
 
-const SHADOW_PATH: &str = "run/cta_spread_position_flags.json";
 type Positions = BTreeMap<String, BTreeMap<String, StrategyPosition>>;
 
 pub struct CtaSpreadSignalApp {
@@ -47,17 +45,28 @@ impl CtaSpreadSignalApp {
             .strip_suffix(":cta_symbol_factors")
             .context("invalid CTA factor key")?
             .to_string();
-        let factors =
-            WeightedFactorChannel::new(factor_key, "cta_spread_model_input", false).await?;
-        MktChannel::init_bbo_singleton_readonly(TradingVenue::BinanceMargin, config.venue())
+        ensure!(
+            env.starts_with("okex-binance-cta-spread-")
+                == (config.mode == super::config::SpreadMode::OkexBinance),
+            "CTA spread environment name and market mode disagree"
+        );
+        let factors = WeightedFactorChannel::new_for_mode(
+            factor_key,
+            config.mode.family(),
+            false,
+            config.mode,
+        )
+        .await?;
+        MktChannel::init_bbo_singleton_readonly(config.mode.direction_venue(), config.venue())
             .context("initialize CTA sizing BBO")?;
         let publisher = PositionPublisher::from_env()?;
         ensure!(
             !config.enabled || !publisher.is_empty(),
             "CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required when publishing positions"
         );
-        let positions: Positions = if Path::new(SHADOW_PATH).exists() {
-            serde_json::from_slice(&fs::read(SHADOW_PATH)?)
+        let state_path = format!("run/{}_position_flags.json", config.mode.family());
+        let positions: Positions = if Path::new(&state_path).exists() {
+            serde_json::from_slice(&fs::read(&state_path)?)
                 .context("read CTA observation positions")?
         } else {
             Positions::new()
@@ -70,6 +79,7 @@ impl CtaSpreadSignalApp {
                     .with_context(|| format!("invalid persisted CTA spread position {symbol}"))?;
             }
         }
+        let journal_dir = format!("data/{}/signal_events", config.mode.family());
         let config_modified = fs::metadata(&config_path).and_then(|m| m.modified()).ok();
         let mut app = Self {
             config_path,
@@ -82,7 +92,7 @@ impl CtaSpreadSignalApp {
             publication_error: None,
             positions,
             observations: BTreeMap::new(),
-            journal: SignalJournal::new(SIGNAL_JOURNAL_DIR)?,
+            journal: SignalJournal::new(journal_dir)?,
             last_reload_check_us: 0,
             entry_live_after_ms: get_timestamp_us() / 1000,
         };
@@ -137,7 +147,12 @@ impl CtaSpreadSignalApp {
                 .into_iter()
                 .flat_map(|rows| rows.iter())
                 .flat_map(|(symbol, p)| {
-                    market_targets(symbol, p, !self.factors.table().contains_key(symbol))
+                    market_targets_for_mode(
+                        symbol,
+                        p,
+                        !self.factors.table().contains_key(symbol),
+                        self.config.mode,
+                    )
                 })
                 .collect();
             for (symbol, row) in self.factors.table() {
@@ -148,10 +163,10 @@ impl CtaSpreadSignalApp {
                     .any(|(f, w)| f == &factor && *w != 0.0)
                 {
                     targets
-                        .entry(symbol.clone())
+                        .entry(self.config.mode.target_symbols(symbol).1)
                         .or_insert_with(|| json!({"qty":0.0,"signal":0}));
                     targets
-                        .entry(cash_symbol(symbol)?.to_string())
+                        .entry(self.config.mode.target_symbols(symbol).0)
                         .or_insert_with(|| json!({"qty":0.0,"signal":0}));
                 }
             }
@@ -177,12 +192,13 @@ impl CtaSpreadSignalApp {
             };
             let now = delivery.published_ts_us;
             for (symbol, target) in targets {
-                if let Some(row) = context["observations"].get(symbol) {
-                    self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
+                let raw_symbol = symbol.strip_prefix("binance-futures:").unwrap_or(symbol);
+                if let Some(row) = context["observations"].get(raw_symbol) {
+                    self.journal.record(raw_symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
                         "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
                             "signal":row["signal"],"entry":row["entry"],"execution":row["execution"],"max_pos_u":row["max_pos_u"]}),
-                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[cash_symbol(symbol)?]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[&self.config.mode.target_symbols(raw_symbol).0]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
                 }
             }
         }
@@ -234,6 +250,10 @@ impl CtaSpreadSignalApp {
         }
         match CtaSpreadConfig::load(&self.config_path) {
             Ok(next) => {
+                if next.mode != self.config.mode {
+                    warn!("CTA market mode cannot change during a running process");
+                    return;
+                }
                 if next.enabled && !self.config.enabled {
                     self.publisher.reset();
                     self.entry_live_after_ms = get_timestamp_us() / 1000;
@@ -274,7 +294,7 @@ impl CtaSpreadSignalApp {
             model_ts_ms,
             self.entry_live_after_ms,
             now,
-            MktChannel::instance().get_quote(&symbol, TradingVenue::BinanceMargin),
+            MktChannel::instance().get_quote(&symbol, self.config.mode.direction_venue()),
         )?;
         let signal = bar.as_ref().map(|bar| signal_snapshot(bar, position.flag));
         let snapshot = json!({"enabled":self.config.enabled,"source":"independent_factor_strategy","strategy_name":factor,
@@ -303,7 +323,8 @@ impl CtaSpreadSignalApp {
         let mut strategies = self.observations.clone();
         let now = get_timestamp_us();
         for (symbol, row) in self.factors.table() {
-            let quote = MktChannel::instance().get_quote(symbol, self.config.venue());
+            let quote =
+                MktChannel::instance().get_quote(symbol, self.config.mode.direction_venue());
             let mark = quote
                 .filter(|q| {
                     q.ts > 0
@@ -350,13 +371,22 @@ impl CtaSpreadSignalApp {
                 item["entry_notional"] = json!(position.entry_notional);
             }
         }
-        let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_SPREAD_VENUE_NAME,
+        let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_SPREAD_VENUE_NAME,"mode":self.config.mode,"direction_venue":self.config.mode.direction_venue().data_pub_slug(),
             "publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
             "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
             "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":"per_symbol_factor","strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
-        atomic_json(Path::new(CTA_SPREAD_STATUS_PATH), &status)?;
-        atomic_json(Path::new(SHADOW_PATH), &self.positions)
+        atomic_json(
+            Path::new(&format!("run/{}_status.json", self.config.mode.family())),
+            &status,
+        )?;
+        atomic_json(
+            Path::new(&format!(
+                "run/{}_position_flags.json",
+                self.config.mode.family()
+            )),
+            &self.positions,
+        )
     }
 }
 /// Compute one absolute target transition; no exchange calls or partial updates.
@@ -478,7 +508,16 @@ fn sync_position_scope(positions: &mut Positions, table: &SymbolFactorTable) {
     }
 }
 
+#[cfg(test)]
 fn market_targets(symbol: &str, p: &StrategyPosition, removed: bool) -> [(String, Value); 2] {
+    market_targets_for_mode(symbol, p, removed, super::config::SpreadMode::default())
+}
+fn market_targets_for_mode(
+    symbol: &str,
+    p: &StrategyPosition,
+    removed: bool,
+    mode: super::config::SpreadMode,
+) -> [(String, Value); 2] {
     // Factor scope and persisted state are validated before publication.
     // Explicit clear bypasses notional tolerance; signal 1 requests taker execution.
     let target = |qty| {
@@ -488,12 +527,10 @@ fn market_targets(symbol: &str, p: &StrategyPosition, removed: bool) -> [(String
             json!({"qty":qty,"signal":0})
         }
     };
+    let (direction, hedge) = mode.target_symbols(symbol);
     [
-        (
-            symbol.strip_suffix("USDT").unwrap_or(symbol).to_string(),
-            target(p.cash_qty),
-        ),
-        (symbol.to_string(), target(p.perpetual_qty)),
+        (direction, target(p.cash_qty)),
+        (hedge, target(p.perpetual_qty)),
     ]
 }
 fn position_payload(strategy_name: String, targets: &BTreeMap<String, Value>) -> Value {
@@ -505,6 +542,32 @@ mod tests {
     use super::*;
     use crate::cta_spread::factors::{aggregate_bar, SymbolFactors};
     use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
+
+    #[test]
+    fn cross_spread_direction_exit_and_reverse_keep_venue_qualified_absolute_targets() {
+        let mode = super::super::config::SpreadMode::OkexBinance;
+        let mut p = StrategyPosition::default();
+        p.enter_cash(1, 200.0, 100.0).unwrap();
+        let read = |p: &StrategyPosition| {
+            market_targets_for_mode("ETHUSDT", p, false, mode)
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()
+        };
+        let targets = read(&p);
+        assert_eq!(targets["okex-futures:ETHUSDT"]["qty"], 2.0);
+        assert_eq!(targets["binance-futures:ETHUSDT"]["qty"], 0.0);
+        p.exit();
+        let targets = read(&p);
+        assert_eq!(targets["okex-futures:ETHUSDT"]["qty"], 2.0);
+        assert_eq!(targets["binance-futures:ETHUSDT"]["qty"], -2.0);
+        p.enter_cash(-1, 300.0, 100.0).unwrap();
+        let targets = read(&p);
+        assert_eq!(targets["okex-futures:ETHUSDT"]["qty"], -3.0);
+        assert_eq!(targets["binance-futures:ETHUSDT"]["qty"], 0.0);
+        assert!(market_targets_for_mode("ETHUSDT", &p, true, mode)
+            .iter()
+            .all(|(_, t)| t["qty"] == "clear" && t["signal"] == 1));
+    }
     fn config() -> CtaSpreadConfig {
         {
             let mut config: CtaSpreadConfig =

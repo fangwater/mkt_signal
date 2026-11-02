@@ -342,6 +342,7 @@
     </main>
     <script>
       let revision = "";
+      let marketMode;
       let factorRevision = "";
       let factorLoaded = false;
       const byId = (id) => document.getElementById(id);
@@ -440,6 +441,7 @@
       }
       function populate(config, nextRevision) {
         revision = nextRevision;
+        marketMode = config.mode;
         byId("revision").textContent = revision.slice(0, 12);
         byId("enabled").value = config.enabled ? "true" : "false";
         byId("max_pos_u").value = config.max_pos_u ?? "";
@@ -486,6 +488,7 @@
         if (!amountText || !Number.isFinite(amount) || amount <= 0)
           throw new Error("单份 USDT 必须是大于 0 的有限数字");
         return {
+          ...(marketMode ? {mode: marketMode} : {}),
           enabled: byId("enabled").value === "true",
           max_pos_u: amount,
           symbol_overrides: collectOverrides(),

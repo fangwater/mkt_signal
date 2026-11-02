@@ -8,6 +8,8 @@ use std::fs;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CtaSpreadFactorPubConfig {
+    #[serde(default)]
+    pub mode: crate::cta_spread::config::SpreadMode,
     pub universe: CtaFactorUniverse,
     pub tlen_server: TlenServerConfig,
     pub normalize: NormalizeConfig,
@@ -71,6 +73,9 @@ impl CtaSpreadFactorPubConfig {
             bail!("kafka catchup_timeout_secs and topic must be set");
         }
         self.kafka.consumer.validate()?;
+        if self.mode == crate::cta_spread::config::SpreadMode::OkexBinance {
+            anyhow::ensure!(self.kafka.topic == "binance-futures" && self.kafka.cash_topic == "okex-swap", "OKX/Binance spread requires binance-futures factors and okex-swap direction prices");
+        }
         if self.kafka.cash_topic.is_empty()
             || self.kafka.cash_topic == self.kafka.topic
             || self.kafka.consumer.topics.len() != 2

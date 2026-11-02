@@ -1,6 +1,19 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-10-30 03:47 UTC（RX01 Spread退役，15min框架等待新清单）
+最后更新：2026-11-02 UTC（独立因子计算核心与 Perp/Spread 计算进程，本地源码未部署）
+
+当前新增的因子计算入口是 `cta-prep-binance-futures` / `cta-factor-spread`，共用
+`cta_factor_calc` 核心。前者合并 `rx01_binance-futures_15min`、
+`rx03_binance-futures_1min`、`rx04_binance-futures_5min` 的 Binance 永续因子需求；
+后者仍可组合普通单市场因子、NQ 与跨市场价差。输入按完整因子 ID 去重，
+计算进程独立于策略信号及账户执行。统一 ID 和配置操作见 [独立因子计算](cta_factor_calc.md)。
+下面现有信号与历史部署的命名仍描述旧入口，尚未切换线上信号消费。
+
+新增独立 `cta_cross_spread` 1min 策略族：OKX 统一账户的永续作为方向腿，
+Binance 永续作为退出对冲腿；复用 Spread 的因子/NQ/价差门槛和仓位状态机。
+Manager 按交易所投影同一份策略的两腿目标，行情缓存和 Funding 按市场隔离。
+配置样例关闭发布，详情见 [跨所 Spread](cta_cross_spread.md)。下文旧 RX01
+退役记录继续作为历史事实保留。
 
 2026-10-30 03:47 UTC，旧 `binance-cta-spread-rx01` 已按要求退役：环境本地脚本停止
 signal/publisher/dashboard/config，残留三个常驻进程及 supervisor 登记已移除，

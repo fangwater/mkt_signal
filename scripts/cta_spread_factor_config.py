@@ -27,8 +27,8 @@ def canonical_strategy(raw: str) -> str:
 
 
 def factor_key(env: str) -> str:
-    if not re.fullmatch(r"binance-cta-spread-[a-z0-9][a-z0-9_-]*", env):
-        raise ValueError("env must be binance-cta-spread-<tag>")
+    if not re.fullmatch(r"(?:binance|okex-binance)-cta-spread-[a-z0-9][a-z0-9_-]*", env):
+        raise ValueError("env must be binance-cta-spread-<tag> or okex-binance-cta-spread-<tag>")
     return f"{env}:cta_symbol_factors"
 
 
@@ -89,6 +89,11 @@ def available_universe(path: Path = Path("config/cta_spread_factor_model_1m_pub.
     return {"factors": config["universe"]["factors"], "symbols": config["universe"]["symbols"]}
 
 
+def publisher_config_path(env: str) -> Path:
+    family = "cta_cross_spread" if env.startswith("okex-binance-cta-spread-") else "cta_spread"
+    return Path("config") / f"{family}_factor_model_1m_pub.toml"
+
+
 def validate_available(table: dict, universe: dict) -> None:
     factors, symbols = set(universe['factors']), set(universe['symbols'])
     for symbol, row in table.items():
@@ -114,7 +119,7 @@ def read_factor_table(client: Any, env: str) -> dict:
 
 def save_factor_table(client: Any, env: str, raw: Any, expected_revision: str, universe: dict | None = None) -> dict:
     table = normalize_table(raw)
-    validate_available(table, universe if universe is not None else available_universe())
+    validate_available(table, universe if universe is not None else available_universe(publisher_config_path(env)))
     key = factor_key(env)
     current = client.get(key)
     if isinstance(current, bytes):
@@ -145,7 +150,7 @@ def main() -> None:
     factor_key(args.env_name)
     table = normalize_table(json.loads(args.config.read_text(), object_pairs_hook=reject_duplicate_keys)) if args.config else None
     if table is not None:
-        validate_available(table, available_universe())
+        validate_available(table, available_universe(publisher_config_path(args.env_name)))
     if table is not None and not args.execute:
         print(json.dumps({"key": factor_key(args.env_name), "execute": False, "symbol_factors": table}, indent=2))
         return

@@ -1,0 +1,8 @@
+{
+  "name": "example",
+  "factors": {
+    "binance-futures-btcusdt-1min-factor_036": 1,
+    "binance-futures-btcusdt-1min-nq": 1,
+    "okex-futures-binance-futures-btcusdt-1min-spread": 1
+  }
+}

@@ -276,6 +276,22 @@ name = "cta_spread_signal"
 path = "src/bin/cta_spread_signal.rs"
 
 [[bin]]
+name = "cta-prep-binance-futures"
+path = "src/bin/cta_prep_binance_futures.rs"
+
+[[bin]]
+name = "cta-factor-spread"
+path = "src/bin/cta_factor_spread.rs"
+
+[[bin]]
+name = "cta_cross_spread_signal"
+path = "src/bin/cta_cross_spread_signal.rs"
+
+[[bin]]
+name = "cta_cross_spread_factor_model_1m_pub"
+path = "src/bin/cta_cross_spread_factor_model_1m_pub.rs"
+
+[[bin]]
 name = "cta_spread_factor_model_1m_pub"
 path = "src/bin/cta_spread_factor_model_1m_pub.rs"
 

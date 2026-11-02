@@ -64,8 +64,8 @@ pub fn runtime_factor_config_key() -> Result<String> {
     let cwd = std::env::current_dir().context("resolve CTA environment directory")?;
     let env = cwd.file_name().and_then(|name| name.to_str()).unwrap_or("");
     ensure!(
-        env.starts_with("binance-cta-spread-"),
-        "CTA spread requires a binance-cta-spread-<tag> working directory"
+        env.starts_with("binance-cta-spread-") || env.starts_with("okex-binance-cta-spread-"),
+        "CTA spread requires a binance-cta-spread-<tag> or okex-binance-cta-spread-<tag> working directory"
     );
     Ok(factor_config_key(env))
 }

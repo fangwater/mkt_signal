@@ -1,6 +1,14 @@
 # Exchange Public API Cache
 
-最后更新：2026-10-30 UTC
+最后更新：2026-11-02 UTC
+
+2026-11-02 审核 CTA Manager 的 OKX 公开估值接入：历史成交 K 线使用
+`GET /api/v5/market/history-candles`，公开已结算 Funding 使用
+`GET /api/v5/public/funding-rate-history`，估算所需的历史标记价格分钟使用
+`GET /api/v5/market/history-mark-price-candles`。全部直连官方 HTTPS，
+无鉴权，不新增 Nginx 共享缓存端口或白名单。K 线沿用 Manager 已校验的专用
+出口、交易 IP 排除和滚动请求预算；Funding 走原有公开费率客户端与全局退避，
+不调用账户收入或私有接口。本次为源码变更，尚未部署。
 
 2026-10-30 审核 FR 启动抵押检查 `scripts/check_fr_collateral.py`：所有账户查询、
 抵押开关写入及回读均绑定部署环境的交易源 IP，直连官方 HTTPS。辅助查询

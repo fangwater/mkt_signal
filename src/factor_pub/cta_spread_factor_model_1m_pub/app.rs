@@ -7,7 +7,7 @@ use period_pbs::kafka::{decode_period_payload, PayloadCompressionMode, RawKafkaC
 use period_pbs::pb::{IncrementOrderBookInfo, PeriodMessage, TradeInfo};
 use period_pbs::period::normalize_timestamp_ms;
 use rolling_common::exact_rolling_window::ExactRollingWindow;
-use runtime_common::symbol_util::normalize_symbol_for_venue;
+use runtime_common::symbol_util::{normalize_symbol_for_internal, normalize_symbol_for_venue};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -499,6 +499,7 @@ pub struct CtaSpreadFactorModel1mPubApp {
     compression: PayloadCompressionMode,
     topic: String,
     cash_topic: String,
+    mode: crate::cta_spread::config::SpreadMode,
     history_start_ms: i64,
     amount_thresholds: HashMap<String, AmountThreshold>,
     allowed_symbols: HashSet<String>,
@@ -693,6 +694,7 @@ impl CtaSpreadFactorModel1mPubApp {
             compression: kafka_config.payload_compression,
             topic: config.kafka.topic.clone(),
             cash_topic: config.kafka.cash_topic.clone(),
+            mode: config.mode,
             history_start_ms: startup_ms
                 .saturating_sub(config.kafka.lookback_secs.saturating_mul(1_000) as i64),
             amount_thresholds,
@@ -738,7 +740,7 @@ impl CtaSpreadFactorModel1mPubApp {
             );
         }
         loop {
-            let outputs = create_shared_outputs(&app.venue_slug, &app.universe.factors);
+            let outputs = create_shared_outputs(&app.venue_slug, &app.universe.factors, app.mode);
             match outputs {
                 Ok(outputs) => {
                     app.outputs = outputs;
@@ -809,7 +811,8 @@ impl CtaSpreadFactorModel1mPubApp {
 
     fn consume_period(&mut self, period: &PeriodMessage, cash: bool) {
         for info in &period.symbol_infos {
-            let symbol = normalize_symbol_for_venue(&info.symbol, self.venue);
+            // Both venues join on the base/quote identity, not OKX's wire instId.
+            let symbol = normalize_symbol_for_internal(&info.symbol);
             if !self.allowed_symbols.contains(&symbol) {
                 continue;
             }
@@ -1168,13 +1171,21 @@ impl CtaSpreadFactorModel1mPubApp {
     }
 }
 
-fn create_shared_outputs(venue_slug: &str, factors: &[String]) -> Result<Vec<FactorOutput>> {
+fn create_shared_outputs(
+    venue_slug: &str,
+    factors: &[String],
+    mode: crate::cta_spread::config::SpreadMode,
+) -> Result<Vec<FactorOutput>> {
     let mut outputs = Vec::with_capacity(factors.len());
     // NQ arrives before the factors that consume it at the same closed minute.
     for (factor_index, name) in std::iter::once((usize::MAX, "nq"))
         .chain(factors.iter().enumerate().map(|(i, f)| (i, f.as_str())))
     {
-        let service = output_service_path(venue_slug, name);
+        let service = output_service_path(venue_slug, name).replacen(
+            "cta_spread-",
+            &format!("{}-", mode.family()),
+            1,
+        );
         let node_name = format!("cta_spread_factor_{}_{}", venue_slug, name)
             .replace('-', "_")
             .to_ascii_lowercase();
@@ -1237,6 +1248,32 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cross_spread_wire_symbols_join_on_the_same_asset_and_preserve_basis_direction() {
+        let config =
+            CtaSpreadFactorPubConfig::load("config/cta_cross_spread_factor_model_1m_pub.toml")
+                .unwrap();
+        assert_eq!(
+            config.mode,
+            crate::cta_spread::config::SpreadMode::OkexBinance
+        );
+        let okx = normalize_symbol_for_internal("BTC-USDT-SWAP");
+        let bn = normalize_symbol_for_internal("BTCUSDT");
+        assert_eq!(okx, bn);
+        assert!(config.universe.symbols.contains(&okx));
+        let mut state = SpreadState::default();
+        let mut latest = Vec::new();
+        for minute in 1..=1442 {
+            let ts = minute * BAR_MS;
+            assert!(state.on_close(false, ts, 100.0).is_empty());
+            latest = state.on_close(true, ts, 101.0);
+        }
+        assert_eq!(latest.len(), 1);
+        assert!(latest[0].1.ready);
+        assert_eq!(latest[0].1.source_ts_ms, Some(1441 * BAR_MS));
+        assert!((latest[0].1.value.unwrap() - 1.0 / 101.0).abs() < 1e-12);
+    }
 
     fn feature(bar: i64, missing_buckets: bool) -> TradeFlowFeatureMsg {
         use mkt_parsers::msg::trade_flow_feature_msg::{

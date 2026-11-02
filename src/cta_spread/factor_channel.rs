@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use trade_signal::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 
 pub struct WeightedFactorChannel {
+    mode: super::config::SpreadMode,
     watcher: FactorConfigWatcher,
     table: SymbolFactorTable,
     retain_retired: bool,
@@ -37,14 +38,29 @@ pub struct IndependentFactorObservation {
 
 impl WeightedFactorChannel {
     pub async fn new(key: String, node_name: &str, retain_retired: bool) -> Result<Self> {
+        Self::new_for_mode(
+            key,
+            node_name,
+            retain_retired,
+            super::config::SpreadMode::default(),
+        )
+        .await
+    }
+    pub async fn new_for_mode(
+        key: String,
+        node_name: &str,
+        retain_retired: bool,
+        mode: super::config::SpreadMode,
+    ) -> Result<Self> {
         let watcher = FactorConfigWatcher::new(key).await?;
         let table = watcher.current().as_ref().clone();
         let node = NodeBuilder::new()
             .name(&NodeName::new(node_name)?)
             .create::<ipc::Service>()?;
         let mut hub = ModelOutputHub::new_with_max_subscribers(TradingVenue::BinanceFutures, 32);
-        hub.update_services(&node, table_services(&table));
+        hub.update_services(&node, services_for(&table, mode));
         Ok(Self {
+            mode,
             watcher,
             table,
             retain_retired,
@@ -71,7 +87,7 @@ impl WeightedFactorChannel {
         let changed = if let Some(next) = self.watcher.take_change() {
             self.table = next.as_ref().clone();
             self.hub
-                .update_services(&self.node, table_services(&self.table));
+                .update_services(&self.node, services_for(&self.table, self.mode));
             self.last_subscribe = Instant::now();
             true
         } else {
@@ -79,7 +95,7 @@ impl WeightedFactorChannel {
         };
         if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
             self.hub
-                .update_services(&self.node, table_services(&self.table));
+                .update_services(&self.node, services_for(&self.table, self.mode));
             self.last_subscribe = Instant::now();
         }
         let touched: HashSet<String> = self
@@ -101,7 +117,7 @@ impl WeightedFactorChannel {
                 .filter(|(_, w)| **w != 0.0)
             {
                 let input = self.hub.cached_score(
-                    &model_service(factor),
+                    &service_for(factor, self.mode),
                     &symbol,
                     TradingVenue::BinanceFutures,
                 );
@@ -121,7 +137,7 @@ impl WeightedFactorChannel {
                 let mut bar = aggregate_bar(&single, &[input], &effective.entry);
                 if let Some(bar) = &mut bar {
                     let nq = self.hub.cached_score(
-                        &model_service("nq"),
+                        &service_for("nq", self.mode),
                         &symbol,
                         TradingVenue::BinanceFutures,
                     );
@@ -148,7 +164,7 @@ impl WeightedFactorChannel {
                 self.table = next.as_ref().clone();
             }
             self.hub
-                .update_services(&self.node, table_services(&self.table));
+                .update_services(&self.node, services_for(&self.table, self.mode));
             self.last_subscribe = Instant::now();
             true
         } else {
@@ -156,7 +172,7 @@ impl WeightedFactorChannel {
         };
         if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
             self.hub
-                .update_services(&self.node, table_services(&self.table));
+                .update_services(&self.node, services_for(&self.table, self.mode));
             self.last_subscribe = Instant::now();
         }
         let touched: HashSet<String> = self
@@ -175,7 +191,7 @@ impl WeightedFactorChannel {
                 .iter()
                 .map(|factor| {
                     self.hub.cached_score(
-                        &model_service(factor),
+                        &service_for(factor, self.mode),
                         &symbol,
                         TradingVenue::BinanceFutures,
                     )
@@ -387,4 +403,14 @@ mod tests {
         )
         .is_none());
     }
+}
+
+fn service_for(factor: &str, mode: super::config::SpreadMode) -> String {
+    model_service(factor).replacen("cta_spread-", &format!("{}-", mode.family()), 1)
+}
+fn services_for(table: &SymbolFactorTable, mode: super::config::SpreadMode) -> Vec<String> {
+    table_services(table)
+        .into_iter()
+        .map(|s| s.replacen("cta_spread-", &format!("{}-", mode.family()), 1))
+        .collect()
 }

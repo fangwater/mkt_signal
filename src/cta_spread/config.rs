@@ -12,6 +12,40 @@ pub const CTA_SPREAD_MAX_QUOTE_AGE_MS: u64 = 5_000;
 pub const CTA_SPREAD_MAX_MODEL_AGE_MS: u64 = 120_000;
 pub const CTA_SPREAD_STATUS_PATH: &str = "run/cta_spread_status.json";
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpreadMode {
+    #[default]
+    BinanceSpot,
+    OkexBinance,
+}
+impl SpreadMode {
+    pub fn family(self) -> &'static str {
+        match self {
+            Self::BinanceSpot => "cta_spread",
+            Self::OkexBinance => "cta_cross_spread",
+        }
+    }
+    pub fn direction_venue(self) -> TradingVenue {
+        match self {
+            Self::BinanceSpot => TradingVenue::BinanceMargin,
+            Self::OkexBinance => TradingVenue::OkexFutures,
+        }
+    }
+    pub fn target_symbols(self, symbol: &str) -> (String, String) {
+        match self {
+            Self::BinanceSpot => (
+                symbol.strip_suffix("USDT").unwrap_or(symbol).into(),
+                symbol.into(),
+            ),
+            Self::OkexBinance => (
+                format!("okex-futures:{symbol}"),
+                format!("binance-futures:{symbol}"),
+            ),
+        }
+    }
+}
+
 fn default_max_pos_u() -> f64 {
     200.0
 }
@@ -70,6 +104,8 @@ pub struct SymbolThresholdOverrides {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CtaSpreadConfig {
+    #[serde(default)]
+    pub mode: SpreadMode,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// USDT entry amount for each enabled symbol/factor pair.
@@ -160,6 +196,7 @@ impl CtaSpreadConfig {
 
     pub fn for_symbol(&self, symbol: &str) -> Self {
         let mut effective = Self {
+            mode: self.mode,
             enabled: self.enabled,
             max_pos_u: self.max_pos_u,
             symbol_overrides: BTreeMap::new(),

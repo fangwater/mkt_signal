@@ -28,7 +28,7 @@ HEDGE_VENUE = "binance-futures"
 
 MAX_BODY_BYTES = 512 * 1024
 
-TOP_FIELDS = {"enabled", "max_pos_u", "entry", "execution", "symbol_overrides"}
+TOP_FIELDS = {"mode", "enabled", "max_pos_u", "entry", "execution", "symbol_overrides"}
 ENTRY_FIELDS = {
     "factor_long_quantile", "factor_short_quantile",
     "spread_long_quantile", "spread_short_quantile",
@@ -133,6 +133,10 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         },
     }
 
+    if "mode" in root:
+        if not isinstance(root["mode"], str) or root["mode"] not in {"binance_spot", "okex_binance"}:
+            raise ValueError("invalid spread market mode")
+        result["mode"] = root["mode"]
     validate_position_thresholds(result)
     overrides = _object(root.get("symbol_overrides", {}), "symbol_overrides")
     if len(overrides) > 256:
@@ -179,6 +183,8 @@ class ConfigStore:
         config = normalize_config(raw)
         with self._lock:
             current, current_revision = self._load_unlocked()
+            if config.get("mode", "binance_spot") != current.get("mode", "binance_spot"):
+                raise ValueError("market mode requires a separate strategy environment")
             if not expected_revision or expected_revision != current_revision:
                 raise ConfigConflict("configuration changed; reload before saving")
             payload = (json.dumps(config, indent=2, ensure_ascii=True) + "\n").encode()
@@ -254,10 +260,15 @@ def make_handler(
                     if redis_client is None or not env_name:
                         self._json(503, {"error": "Redis factor configuration is unavailable"})
                         return
-                    self._json(200, {**read_factor_table(redis_client, env_name), "available": available_universe(store.path.parent / "cta_spread_factor_model_1m_pub.toml")})
+                    self._json(200, {**read_factor_table(redis_client, env_name), "available": available_universe(store.path.with_name(store.path.stem + "_factor_model_1m_pub.toml"))})
                     return
                 if path in {"/", "/index.html"}:
-                    self._send(200, index_path.read_bytes(), "text/html; charset=utf-8")
+                    body = index_path.read_text()
+                    if store.load()[0].get("mode") == "okex_binance":
+                        body = (body.replace("现货", "OKX 永续").replace("期现", "跨所")
+                                .replace("合约对冲", "Binance 永续对冲").replace("合约目标", "Binance 永续目标")
+                                .replace("− 永续 mid", "− Binance 永续 mid").replace("现合", "跨所"))
+                    self._send(200, body.encode(), "text/html; charset=utf-8")
                     return
                 self._json(404, {"error": "not found"})
             except Exception as exc:
@@ -273,7 +284,7 @@ def make_handler(
                     raw = json.loads(self.rfile.read(length), object_pairs_hook=reject_duplicate_keys)
                     prepared = prepare_deployment(raw, store.load()[0])
                     from cta_spread_factor_config import validate_available
-                    validate_available(prepared["symbol_factors"], available_universe(store.path.parent / "cta_spread_factor_model_1m_pub.toml"))
+                    validate_available(prepared["symbol_factors"], available_universe(store.path.with_name(store.path.stem + "_factor_model_1m_pub.toml")))
                     self._json(200, prepared)
                 except (ValueError, KeyError, TypeError) as exc:
                     self._json(400, {"error": str(exc)})
@@ -288,7 +299,7 @@ def make_handler(
                         raise ValueError("invalid request body size")
                     request = _object(json.loads(self.rfile.read(length), object_pairs_hook=reject_duplicate_keys), "request")
                     _reject_unknown(request, {"symbol_factors", "expected_revision"}, "request")
-                    universe = available_universe(store.path.parent / "cta_spread_factor_model_1m_pub.toml")
+                    universe = available_universe(store.path.with_name(store.path.stem + "_factor_model_1m_pub.toml"))
                     saved = save_factor_table(
                         redis_client, env_name,
                         request.get("symbol_factors"), request.get("expected_revision", ""),
