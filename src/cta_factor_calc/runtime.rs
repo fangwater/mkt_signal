@@ -8,6 +8,7 @@ use clap::{ArgGroup, Parser};
 use log::{info, warn};
 use period_pbs::kafka::{decode_period_payload, RawKafkaConsumer};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -58,20 +59,30 @@ pub fn service_path(worker: Worker) -> String {
     format!("factor_output/{}", worker.name())
 }
 
-struct FileLock(File);
+pub(crate) struct FileLock(File);
+#[derive(Debug)]
+pub struct CatalogConflict(pub &'static str);
+impl std::fmt::Display for CatalogConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for CatalogConflict {}
+
+pub fn catalog_revision(plan: &Plan) -> Result<String> {
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(plan)?)))
+}
 impl FileLock {
-    fn acquire(path: &Path) -> Result<Self> {
+    pub(crate) fn acquire(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .open(path)?;
-        ensure!(
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "factor configuration/runtime is already locked: {}",
-            path.display()
-        );
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(CatalogConflict("configuration is busy; reload and retry").into());
+        }
         Ok(Self(file))
     }
 }
@@ -118,6 +129,17 @@ pub fn edit_combination(
     execute: bool,
     worker: Worker,
 ) -> Result<Plan> {
+    edit_combination_checked(config, put, delete, execute, worker, None)
+}
+
+pub fn edit_combination_checked(
+    config: &Config,
+    put: Option<Combination>,
+    delete: Option<&str>,
+    execute: bool,
+    worker: Worker,
+    expected_revision: Option<&str>,
+) -> Result<Plan> {
     ensure!(
         put.is_some() != delete.is_some(),
         "choose one configuration edit"
@@ -128,9 +150,22 @@ pub fn edit_combination(
     let _lock = execute
         .then(|| FileLock::acquire(&config.combinations_dir.join(".catalog.lock")))
         .transpose()?;
-    let mut combinations = Plan::load(&config.combinations_dir)?.combinations;
+    let current = Plan::load(&config.combinations_dir)?;
+    if let Some(expected) = expected_revision {
+        if expected != catalog_revision(&current)? {
+            return Err(CatalogConflict("configuration changed; reload before saving").into());
+        }
+    }
+    let mut combinations = current.combinations;
     let name = if let Some(value) = &put {
         value.validate()?;
+        if let Some(previous) = combinations.get(&value.name) {
+            ensure!(
+                (previous.signal.is_none() && value.signal.is_none())
+                    || (previous.venue == value.venue && previous.interval == value.interval),
+                "signal venue/frequency cannot change in place; create a new combination"
+            );
+        }
         combinations.insert(value.name.clone(), value.clone());
         value.name.clone()
     } else {
@@ -326,7 +361,7 @@ fn send(publisher: &ModelPublisher, generation: &str, point: &FactorPoint) -> Re
 }
 
 /// The same engine drives both workers. Perp/Spread select configuration roots,
-/// never which kinds of factors are legal. Neither worker submits positions.
+/// and own their frequency position tables in the same process.
 pub async fn main(worker: Worker) -> Result<()> {
     env_logger::init();
     let args = Args::parse();
@@ -376,10 +411,12 @@ pub async fn main(worker: Worker) -> Result<()> {
     };
     worker.validate_plan(&plan)?;
     if args.check || editing {
+        let position_tables=plan.combinations.values().filter_map(|c|c.signal.as_ref().map(|p|
+            json!({"strategy_name":c.manager_strategy_name(),"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &json!({"worker":worker,"topics":plan.topics(),"plan":plan})
+                &json!({"worker":worker,"topics":plan.topics(),"position_tables":position_tables,"plan":plan})
             )?
         );
         return Ok(());
@@ -408,6 +445,13 @@ pub async fn main(worker: Worker) -> Result<()> {
     let mut last_status = Instant::now();
     let mut error: Option<String> = None;
     let mut observed_plan = candidate.as_ref().unwrap().engine.plan.clone();
+    let mut position_tables = if args.replay_only {
+        None
+    } else {
+        Some(super::positions::PositionTables::new(&config, worker)?)
+    };
+    let mut last_position_poll = Instant::now() - Duration::from_secs(1);
+    let mut positions_error: Option<String> = None;
     loop {
         let mut progressed = false;
         if let Some(generation) = &mut active {
@@ -464,10 +508,13 @@ pub async fn main(worker: Worker) -> Result<()> {
                             send(publisher, &generation.id, point)?;
                         }
                     }
+                    if let Some(tables) = &mut position_tables {
+                        tables.activate_generation(now_ms() * 1000);
+                    }
                     active = candidate.take();
                     error = None;
                     if args.replay_only {
-                        write_status(&config, worker, active.as_ref(), None, None)?;
+                        write_status(&config, worker, active.as_ref(), None, None, None, None)?;
                         return Ok(());
                     }
                 }
@@ -486,7 +533,10 @@ pub async fn main(worker: Worker) -> Result<()> {
             if let Some(generation) = &mut active {
                 generation.journal.flush()?;
             }
-            match Plan::load(&config.combinations_dir) {
+            match Plan::load(&config.combinations_dir).and_then(|p| {
+                worker.validate_plan(&p)?;
+                Ok(p)
+            }) {
                 Ok(next) if next != observed_plan => {
                     let changed_definitions = next.calculations.iter().any(|(id, new)| {
                         active
@@ -535,14 +585,37 @@ pub async fn main(worker: Worker) -> Result<()> {
                 Ok(_) => {}
                 Err(e) => error = Some(format!("configuration: {e:#}")),
             }
+            let positions = position_tables.as_ref().map(|p| p.snapshot()).transpose()?;
             write_status(
                 &config,
                 worker,
                 active.as_ref(),
                 candidate.as_ref(),
                 error.as_deref(),
+                positions.as_ref(),
+                positions_error.as_deref(),
             )?;
             last_status = Instant::now();
+        }
+        if last_position_poll.elapsed() >= Duration::from_secs(1) {
+            if let Some(tables) = &mut position_tables {
+                match tables.tick(
+                    &observed_plan,
+                    active.as_ref().map(|g| &g.engine),
+                    now_ms() * 1000,
+                ) {
+                    Ok(()) => positions_error = None,
+                    Err(e) => {
+                        tables.pause();
+                        let message = format!("position tables: {e:#}");
+                        if positions_error.as_ref() != Some(&message) {
+                            warn!("{message}");
+                        }
+                        positions_error = Some(message);
+                    }
+                }
+            }
+            last_position_poll = Instant::now();
         }
         // Yield both replay and network tasks, without imposing a per-record sleep.
         if !progressed {
@@ -559,9 +632,11 @@ fn write_status(
     active: Option<&Generation>,
     candidate: Option<&Generation>,
     error: Option<&str>,
+    position_tables: Option<&serde_json::Value>,
+    positions_error: Option<&str>,
 ) -> Result<()> {
     atomic_json(
         &config.history_dir.join("state.json"),
-        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error}),
+        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error}),
     )
 }

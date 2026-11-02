@@ -1,4 +1,6 @@
-use crate::cta_position_publisher::{PositionPublisher, Publication};
+use crate::cta_position_publisher::{
+    add_target_quantity, bind_strategy_ledger, PositionPublisher, Publication,
+};
 use crate::cta_spread::config::{
     CtaSpreadConfig, CTA_SPREAD_MAX_QUOTE_AGE_MS, CTA_SPREAD_SIGNAL_POLL_INTERVAL_MS,
     CTA_SPREAD_VENUE_NAME,
@@ -22,13 +24,49 @@ use trade_signal::MktChannel;
 
 type Positions = BTreeMap<String, BTreeMap<String, StrategyPosition>>;
 
+fn frequency_targets(
+    positions: &Positions,
+    table: &SymbolFactorTable,
+    mode: super::config::SpreadMode,
+) -> Result<BTreeMap<String, Value>> {
+    let mut totals = BTreeMap::new();
+    let mut removed = BTreeSet::new();
+    for rows in positions.values() {
+        for (symbol, position) in rows {
+            position.validate()?;
+            let (direction, hedge) = mode.target_symbols(symbol);
+            add_target_quantity(&mut totals, &direction, position.cash_qty)?;
+            add_target_quantity(&mut totals, &hedge, position.perpetual_qty)?;
+            if !table.contains_key(symbol) {
+                removed.extend([direction, hedge]);
+            }
+        }
+    }
+    for symbol in table.keys() {
+        let (direction, hedge) = mode.target_symbols(symbol);
+        totals.entry(direction).or_default();
+        totals.entry(hedge).or_default();
+    }
+    Ok(totals
+        .into_iter()
+        .map(|(symbol, qty)| {
+            let target = if removed.contains(&symbol) {
+                json!({"qty":"clear","signal":1})
+            } else {
+                json!({"qty":qty,"signal":0})
+            };
+            (symbol, target)
+        })
+        .collect())
+}
+
 pub struct CtaSpreadSignalApp {
     config_path: PathBuf,
     config_modified: Option<SystemTime>,
     config: CtaSpreadConfig,
     factors: WeightedFactorChannel,
     publisher: PositionPublisher,
-    strategy_prefix: String,
+    strategy_name: String,
     publication_error: Option<String>,
     positions: Positions,
     observations: BTreeMap<String, BTreeMap<String, Value>>,
@@ -79,6 +117,18 @@ impl CtaSpreadSignalApp {
                     .with_context(|| format!("invalid persisted CTA spread position {symbol}"))?;
             }
         }
+        let strategy_name = config.mode.manager_strategy_name().to_string();
+        bind_strategy_ledger(
+            Path::new(&format!(
+                "run/{}_manager_strategy.json",
+                config.mode.family()
+            )),
+            &strategy_name,
+            positions
+                .values()
+                .flat_map(|rows| rows.values())
+                .any(|p| p.flag != 0 || p.cash_qty != 0.0 || p.perpetual_qty != 0.0),
+        )?;
         let journal_dir = format!("data/{}/signal_events", config.mode.family());
         let config_modified = fs::metadata(&config_path).and_then(|m| m.modified()).ok();
         let mut app = Self {
@@ -87,8 +137,7 @@ impl CtaSpreadSignalApp {
             config,
             factors,
             publisher,
-            strategy_prefix: std::env::var("CTA_POSITION_STRATEGY_PREFIX")
-                .unwrap_or_else(|_| format!("{env}_")),
+            strategy_name,
             publication_error: None,
             positions,
             observations: BTreeMap::new(),
@@ -126,79 +175,39 @@ impl CtaSpreadSignalApp {
             !self.publisher.is_empty(),
             "CTA Manager publication URL is required"
         );
-        let mut publications = BTreeMap::new();
-        let names: BTreeSet<String> = self
-            .factors
-            .table()
-            .values()
-            .flat_map(|row| {
-                row.factors
-                    .iter()
-                    .zip(&row.weights)
-                    .filter(|(_, w)| **w != 0.0)
-                    .map(|(f, _)| f.clone())
-            })
-            .chain(self.positions.keys().cloned())
-            .collect();
-        for factor in names {
-            let mut targets: BTreeMap<String, Value> = self
-                .positions
-                .get(&factor)
-                .into_iter()
-                .flat_map(|rows| rows.iter())
-                .flat_map(|(symbol, p)| {
-                    market_targets_for_mode(
-                        symbol,
-                        p,
-                        !self.factors.table().contains_key(symbol),
-                        self.config.mode,
-                    )
-                })
-                .collect();
-            for (symbol, row) in self.factors.table() {
-                if row
-                    .factors
-                    .iter()
-                    .zip(&row.weights)
-                    .any(|(f, w)| f == &factor && *w != 0.0)
-                {
-                    targets
-                        .entry(self.config.mode.target_symbols(symbol).1)
-                        .or_insert_with(|| json!({"qty":0.0,"signal":0}));
-                    targets
-                        .entry(self.config.mode.target_symbols(symbol).0)
-                        .or_insert_with(|| json!({"qty":0.0,"signal":0}));
-                }
-            }
-            let payload = position_payload(format!("{}{factor}", self.strategy_prefix), &targets);
-            publications.insert(factor.clone(), Publication {
-                payload,
-                context: json!({"factor":factor,"observations":self.observations.get(&factor),
-                    "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
-            });
-        }
-        self.publisher.submit(publications);
+        let targets = frequency_targets(&self.positions, self.factors.table(), self.config.mode)?;
+        self.publisher.submit(BTreeMap::from([(
+            self.strategy_name.clone(),
+            Publication {
+                payload: position_payload(self.strategy_name.clone(), &targets),
+                context: json!({"observations":self.observations}),
+            },
+        )]));
         Ok(())
     }
     fn record_deliveries(&mut self) -> Result<()> {
         for delivery in self.publisher.drain_deliveries() {
             let payload = &delivery.publication.payload;
             let context = &delivery.publication.context;
-            let Some(factor) = context["factor"].as_str() else {
+            let Some(observations) = context["observations"].as_object() else {
                 continue;
             };
             let Some(targets) = payload["targets"].as_object() else {
                 continue;
             };
             let now = delivery.published_ts_us;
-            for (symbol, target) in targets {
-                let raw_symbol = symbol.strip_prefix("binance-futures:").unwrap_or(symbol);
-                if let Some(row) = context["observations"].get(raw_symbol) {
+            for (factor, rows) in observations {
+                for (raw_symbol, row) in rows.as_object().into_iter().flatten() {
+                    let (direction, hedge) = self.config.mode.target_symbols(raw_symbol);
+                    let (Some(cash), Some(target)) = (targets.get(&direction), targets.get(&hedge))
+                    else {
+                        continue;
+                    };
                     self.journal.record(raw_symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
                         "published", "manager_target", json!({"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
                             "signal":row["signal"],"entry":row["entry"],"execution":row["execution"],"max_pos_u":row["max_pos_u"]}),
-                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":targets[&self.config.mode.target_symbols(raw_symbol).0]["qty"],"perpetual_qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"cash_qty":cash["qty"],"perpetual_qty":target["qty"],"sub_cash_qty":row["cash_qty"],"sub_perpetual_qty":row["perpetual_qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
                 }
             }
         }
@@ -372,7 +381,8 @@ impl CtaSpreadSignalApp {
             }
         }
         let status = json!({"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_SPREAD_VENUE_NAME,"mode":self.config.mode,"direction_venue":self.config.mode.direction_venue().data_pub_slug(),
-            "publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
+            "publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_name":self.strategy_name,
+            "bar_interval":"1m","manager_targets":frequency_targets(&self.positions,self.factors.table(),self.config.mode)?,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
             "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
             "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":"per_symbol_factor","strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
@@ -390,7 +400,7 @@ impl CtaSpreadSignalApp {
     }
 }
 /// Compute one absolute target transition; no exchange calls or partial updates.
-fn advance_position(
+pub(crate) fn advance_position(
     position: &mut StrategyPosition,
     bar: Option<&WeightedBar>,
     config: &CtaSpreadConfig,
@@ -512,6 +522,7 @@ fn sync_position_scope(positions: &mut Positions, table: &SymbolFactorTable) {
 fn market_targets(symbol: &str, p: &StrategyPosition, removed: bool) -> [(String, Value); 2] {
     market_targets_for_mode(symbol, p, removed, super::config::SpreadMode::default())
 }
+#[cfg(test)]
 fn market_targets_for_mode(
     symbol: &str,
     p: &StrategyPosition,
@@ -542,6 +553,53 @@ mod tests {
     use super::*;
     use crate::cta_spread::factors::{aggregate_bar, SymbolFactors};
     use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
+
+    #[test]
+    fn frequency_table_nets_each_venue_and_keeps_retired_factor_hedges() {
+        let mode = super::super::config::SpreadMode::OkexBinance;
+        let mut long = StrategyPosition::default();
+        long.enter_cash(1, 200.0, 100.0).unwrap();
+        let mut short = StrategyPosition::default();
+        short.enter_cash(-1, 300.0, 100.0).unwrap();
+        short.exit();
+        let mut positions = Positions::from([
+            ("current".into(), BTreeMap::from([("ETHUSDT".into(), long)])),
+            ("old".into(), BTreeMap::from([("ETHUSDT".into(), short)])),
+        ]);
+        let table = SymbolFactorTable::from([
+            (
+                "ETHUSDT".into(),
+                SymbolFactors {
+                    factors: vec!["current".into()],
+                    weights: vec![1.0],
+                },
+            ),
+            (
+                "BTCUSDT".into(),
+                SymbolFactors {
+                    factors: vec!["current".into()],
+                    weights: vec![1.0],
+                },
+            ),
+        ]);
+        sync_position_scope(&mut positions, &table);
+        let targets = frequency_targets(&positions, &table, mode).unwrap();
+        assert_eq!(targets.len(), 4);
+        assert_eq!(targets["okex-futures:ETHUSDT"]["qty"], -1.0);
+        assert_eq!(targets["binance-futures:ETHUSDT"]["qty"], 3.0);
+        assert_eq!(targets["okex-futures:BTCUSDT"]["qty"], 0.0);
+        assert_eq!(targets["binance-futures:BTCUSDT"]["qty"], 0.0);
+        let restarted = serde_json::from_slice(&serde_json::to_vec(&positions).unwrap()).unwrap();
+        assert_eq!(
+            frequency_targets(&restarted, &table, mode).unwrap(),
+            targets
+        );
+        sync_position_scope(&mut positions, &BTreeMap::new());
+        let removed = frequency_targets(&positions, &BTreeMap::new(), mode).unwrap();
+        assert!(removed
+            .values()
+            .all(|target| target["qty"] == "clear" && target["signal"] == 1));
+    }
 
     #[test]
     fn cross_spread_direction_exit_and_reverse_keep_venue_qualified_absolute_targets() {

@@ -1,66 +1,294 @@
 {
   "name": "rx03_binance-futures_1min",
-  "factors": {
-    "binance-futures-algousdt-1min-baseline_140": 1,
-    "binance-futures-algousdt-1min-buy_avg_price": -1,
-    "binance-futures-algousdt-1min-factor_051": -1,
-    "binance-futures-algousdt-1min-nq": 1,
-    "binance-futures-belusdt-1min-baseline_200": -1,
-    "binance-futures-belusdt-1min-nq": 1,
-    "binance-futures-belusdt-1min-sell_avg_price": -1,
-    "binance-futures-dashusdt-1min-baseline_141": 1,
-    "binance-futures-dashusdt-1min-baseline_200": -1,
-    "binance-futures-dashusdt-1min-nq": 1,
-    "binance-futures-dogeusdt-1min-baseline_164": 1,
-    "binance-futures-dogeusdt-1min-factor_170": -1,
-    "binance-futures-dogeusdt-1min-nq": 1,
-    "binance-futures-dogeusdt-1min-td_ti_008": 1,
-    "binance-futures-dotusdt-1min-baseline_141": 1,
-    "binance-futures-dotusdt-1min-nq": 1,
-    "binance-futures-dotusdt-1min-td_ci_008": 1,
-    "binance-futures-filusdt-1min-baseline_141": 1,
-    "binance-futures-filusdt-1min-factor_036": -1,
-    "binance-futures-filusdt-1min-nq": 1,
-    "binance-futures-linkusdt-1min-baseline_141": 1,
-    "binance-futures-linkusdt-1min-nq": 1,
-    "binance-futures-linkusdt-1min-td_ti_013": 1,
-    "binance-futures-nearusdt-1min-baseline_005": -1,
-    "binance-futures-nearusdt-1min-baseline_141": 1,
-    "binance-futures-nearusdt-1min-factor_051": -1,
-    "binance-futures-nearusdt-1min-nq": 1,
-    "binance-futures-nearusdt-1min-td_ti_024": -1,
-    "binance-futures-rlcusdt-1min-nq": 1,
-    "binance-futures-rlcusdt-1min-td_pt_002": 1,
-    "binance-futures-rlcusdt-1min-td_ti_043": -1,
-    "binance-futures-sklusdt-1min-factor_113": -1,
-    "binance-futures-sklusdt-1min-factor_trades_040": -1,
-    "binance-futures-sklusdt-1min-nq": 1,
-    "binance-futures-trbusdt-1min-baseline_040": -1,
-    "binance-futures-trbusdt-1min-factor_170": -1,
-    "binance-futures-trbusdt-1min-nq": 1,
-    "binance-futures-trbusdt-1min-td_ti_024": -1,
-    "binance-futures-trbusdt-1min-tp_vpi_002": -1,
-    "binance-futures-vetusdt-1min-baseline_141": 1,
-    "binance-futures-vetusdt-1min-nq": 1,
-    "binance-futures-vetusdt-1min-td_ti_024": -1,
-    "binance-futures-xtzusdt-1min-baseline_091": -1,
-    "binance-futures-xtzusdt-1min-factor_051": -1,
-    "binance-futures-xtzusdt-1min-nq": 1,
-    "binance-futures-xtzusdt-1min-td_pt_002": 1,
-    "binance-futures-zecusdt-1min-baseline_028": -1,
-    "binance-futures-zecusdt-1min-baseline_146": -1,
-    "binance-futures-zecusdt-1min-baseline_164": 1,
-    "binance-futures-zecusdt-1min-nq": 1,
-    "binance-futures-zecusdt-1min-td_mt_019": -1,
-    "binance-futures-zenusdt-1min-baseline_141": 1,
-    "binance-futures-zenusdt-1min-baseline_151": -1,
-    "binance-futures-zenusdt-1min-factor_036": -1,
-    "binance-futures-zenusdt-1min-nq": 1,
-    "binance-futures-zenusdt-1min-td_ti_043": -1,
-    "binance-futures-zrxusdt-1min-baseline_040": -1,
-    "binance-futures-zrxusdt-1min-buy_avg_price": -1,
-    "binance-futures-zrxusdt-1min-factor_051": -1,
-    "binance-futures-zrxusdt-1min-factor_128": -1,
-    "binance-futures-zrxusdt-1min-nq": 1
+  "venue": "binance-futures",
+  "interval": "1min",
+  "factor_rules": [
+    {
+      "标的": "ZECUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_019"
+    },
+    {
+      "标的": "ZECUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_146"
+    },
+    {
+      "标的": "ZECUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_028"
+    },
+    {
+      "标的": "ZECUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "baseline_164"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_170"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_TI_008"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_005"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_TI_024"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_051"
+    },
+    {
+      "标的": "FILUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "FILUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_036"
+    },
+    {
+      "标的": "LINKUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "LINKUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_TI_013"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_CI_008"
+    },
+    {
+      "标的": "DASHUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "DASHUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_200"
+    },
+    {
+      "标的": "ALGOUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_140"
+    },
+    {
+      "标的": "ALGOUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_051"
+    },
+    {
+      "标的": "ALGOUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "buy_avg_price"
+    },
+    {
+      "标的": "BELUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_200"
+    },
+    {
+      "标的": "BELUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "sell_avg_price"
+    },
+    {
+      "标的": "RLCUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_043"
+    },
+    {
+      "标的": "RLCUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_PT_002"
+    },
+    {
+      "标的": "SKLUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_113"
+    },
+    {
+      "标的": "SKLUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_trades_040"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_040"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_170"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TP_VPI_002"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024"
+    },
+    {
+      "标的": "VETUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "XTZUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_PT_002"
+    },
+    {
+      "标的": "XTZUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_051"
+    },
+    {
+      "标的": "XTZUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_091"
+    },
+    {
+      "标的": "ZENUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_043"
+    },
+    {
+      "标的": "ZENUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141"
+    },
+    {
+      "标的": "ZENUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_151"
+    },
+    {
+      "标的": "ZENUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_036"
+    },
+    {
+      "标的": "ZRXUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "buy_avg_price"
+    },
+    {
+      "标的": "ZRXUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_051"
+    },
+    {
+      "标的": "ZRXUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_128"
+    },
+    {
+      "标的": "ZRXUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "baseline_040"
+    }
+  ],
+  "signal": {
+    "enabled": false,
+    "max_pos_u": 100.0,
+    "position_algorithm": "v0",
+    "symbol_overrides": {},
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.7,
+      "factor_exit_quantile_short": 0.3
+    }
   }
 }

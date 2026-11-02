@@ -166,6 +166,8 @@ pub struct CtaPerpConfig {
     pub factor_rules: Vec<FactorNqRule>,
     #[serde(skip)]
     pub strict_nq: bool,
+    #[serde(skip)]
+    pub linear_nq: bool,
     #[serde(default)]
     pub entry: EntryConfig,
     pub execution: ExecutionConfig,
@@ -285,7 +287,8 @@ impl CtaPerpConfig {
             position_algorithm: self.position_algorithm,
             symbol_overrides: BTreeMap::new(),
             factor_rules: Vec::new(),
-            strict_nq: false,
+            strict_nq: self.strict_nq,
+            linear_nq: self.linear_nq,
             entry: self.entry.clone(),
             execution: self.execution.clone(),
         };
@@ -319,7 +322,7 @@ impl CtaPerpConfig {
             .iter()
             .find(|r| r.venue_symbol() == symbol && self.rule_strategy(r) == factor)
         {
-            effective.strict_nq = true;
+            effective.strict_nq = !self.linear_nq;
             match rule.thresholds().ok().flatten() {
                 Some((long, short)) => {
                     effective.entry.nq_change_enabled = true;
@@ -353,9 +356,8 @@ impl CtaPerpConfig {
     pub fn validate(&self) -> Result<()> {
         if !self.factor_rules.is_empty() {
             anyhow::ensure!(
-                self.position_algorithm == PositionAlgorithm::V0
-                    && self.bar_interval != BarInterval::FiveMinutes,
-                "factor_rules requires v0 and 1m or 15m"
+                self.position_algorithm == PositionAlgorithm::V0,
+                "factor_rules requires v0"
             );
             anyhow::ensure!(self.factor_rules.len() <= 8192, "too many factor rules");
             let mut seen = std::collections::BTreeSet::new();
@@ -417,7 +419,7 @@ impl CtaPerpConfig {
     }
 
     fn validate_controls(&self) -> Result<()> {
-        if self.bar_interval.uses_linear_nq()
+        if (self.linear_nq || self.bar_interval.uses_linear_nq())
             && !self.strict_nq
             && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
         {

@@ -92,26 +92,28 @@ pub fn cash_entry_allowed(flag: i8, bar: &WeightedBar, config: &CtaSpreadConfig)
     else {
         return false;
     };
-    let Some(nq) = &bar.nq else {
-        return false;
-    };
-    let nq_q = if flag > 0 {
-        nq.filter_long_quantile
-    } else {
-        nq.filter_short_quantile
-    };
-    if !nq.filter_ready
-        || !nq_q.is_some_and(|q| {
-            q.is_finite()
-                && (0.0..=1.0).contains(&q)
-                && if flag > 0 {
-                    q >= config.entry.nq_long_quantile
-                } else {
-                    q <= config.entry.nq_short_quantile
-                }
-        })
-    {
-        return false;
+    if config.nq_change_enabled {
+        let Some(nq) = &bar.nq else {
+            return false;
+        };
+        let nq_q = if flag > 0 {
+            nq.filter_long_quantile
+        } else {
+            nq.filter_short_quantile
+        };
+        if !nq.filter_ready
+            || !nq_q.is_some_and(|q| {
+                q.is_finite()
+                    && (0.0..=1.0).contains(&q)
+                    && if flag > 0 {
+                        q >= config.entry.nq_long_quantile
+                    } else {
+                        q <= config.entry.nq_short_quantile
+                    }
+            })
+        {
+            return false;
+        }
     }
     // Every directional entry uses cash. The basis must favour that cash side.
     (flag > 0 && config.entry.spread_long_quantile - q > 4.0 * f64::EPSILON)

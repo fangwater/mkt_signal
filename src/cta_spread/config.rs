@@ -20,6 +20,13 @@ pub enum SpreadMode {
     OkexBinance,
 }
 impl SpreadMode {
+    pub fn manager_strategy_name(self) -> &'static str {
+        match self {
+            Self::BinanceSpot => "cta-spread-bn-spot-bn-1min-pos",
+            Self::OkexBinance => "cta-spread-okx-bn-1min-pos",
+        }
+    }
+
     pub fn family(self) -> &'static str {
         match self {
             Self::BinanceSpot => "cta_spread",
@@ -52,6 +59,9 @@ fn default_max_pos_u() -> f64 {
 
 fn default_enabled() -> bool {
     false
+}
+fn default_nq_enabled() -> bool {
+    true
 }
 
 fn default_factor_long_quantile() -> f64 {
@@ -108,6 +118,8 @@ pub struct CtaSpreadConfig {
     pub mode: SpreadMode,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_nq_enabled")]
+    pub nq_change_enabled: bool,
     /// USDT entry amount for each enabled symbol/factor pair.
     #[serde(default = "default_max_pos_u")]
     pub max_pos_u: f64,
@@ -198,6 +210,7 @@ impl CtaSpreadConfig {
         let mut effective = Self {
             mode: self.mode,
             enabled: self.enabled,
+            nq_change_enabled: self.nq_change_enabled,
             max_pos_u: self.max_pos_u,
             symbol_overrides: BTreeMap::new(),
             entry: self.entry.clone(),

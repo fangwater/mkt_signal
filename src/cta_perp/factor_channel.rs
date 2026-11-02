@@ -1,27 +1,26 @@
 use super::config::{CtaPerpConfig, EntryConfig, PositionAlgorithm, SYMBOL_MEAN_STRATEGY};
 use super::factors::{
-    aggregate_bar, mean_bar, model_bar_is_fresh, table_services_for_interval, FactorConfigWatcher,
-    SymbolFactorTable, SymbolFactors, WeightedBar,
+    aggregate_bar, mean_bar, model_bar_is_fresh, SymbolFactorTable, SymbolFactors, WeightedBar,
 };
-use super::{interval::BarInterval, model_service::model_service_path_for_interval};
+use crate::cta_factor_calc::{
+    client::FactorFeed,
+    config::{Combination, Worker},
+    engine::FactorPoint,
+};
 use anyhow::Result;
-use iceoryx2::prelude::*;
-use iceoryx2::service::ipc;
-use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
-use trade_signal::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
+use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
 
+/// Signal inputs come exclusively from the merged factor process and the same
+/// combination document that owns signal controls. No per-strategy Redis table.
 pub struct WeightedFactorChannel {
-    interval: BarInterval,
-    watcher: FactorConfigWatcher,
+    combination: Combination,
     table: SymbolFactorTable,
-    retain_retired: bool,
-    node: Node<ipc::Service>,
-    hub: ModelOutputHub,
+    feed: Option<FactorFeed>,
+    last_connect: Instant,
     last_ts: HashMap<String, i64>,
-    last_subscribe: Instant,
 }
 
 pub struct FactorObservation {
@@ -38,205 +37,169 @@ pub struct PositionObservation {
 }
 
 impl WeightedFactorChannel {
-    pub async fn new(
-        key: String,
-        node_name: &str,
-        retain_retired: bool,
-        interval: BarInterval,
-    ) -> Result<Self> {
-        let watcher = FactorConfigWatcher::new(key).await?;
-        let table = watcher.current().as_ref().clone();
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(node_name)?)
-            .create::<ipc::Service>()?;
-        let mut hub = ModelOutputHub::new_with_max_subscribers(TradingVenue::BinanceFutures, 32);
-        hub.update_services(&node, table_services_for_interval(&table, interval));
+    pub fn new(combination: Combination) -> Result<Self> {
+        let table = combination.signal_table()?;
         Ok(Self {
-            interval,
-            watcher,
+            combination,
             table,
-            retain_retired,
-            node,
-            hub,
+            feed: None,
+            last_connect: Instant::now() - Duration::from_secs(10),
             last_ts: HashMap::new(),
-            last_subscribe: Instant::now(),
         })
     }
-
-    pub fn apply_config_table(&mut self, config: &CtaPerpConfig) -> bool {
-        let table = if config.factor_rules.is_empty() {
-            self.watcher.current().as_ref().clone()
-        } else {
-            config.rule_table()
-        };
-        if table == self.table {
-            return false;
-        }
+    pub fn apply_combination(&mut self, next: Combination) -> Result<bool> {
+        let table = next.signal_table()?;
+        let changed = table != self.table;
         self.table = table;
-        self.hub.update_services(
-            &self.node,
-            table_services_for_interval(&self.table, self.interval),
-        );
-        self.last_subscribe = Instant::now();
-        true
+        self.combination = next;
+        Ok(changed)
     }
-
+    pub fn retire(&mut self) {
+        self.table.clear();
+    }
     pub fn key(&self) -> &str {
-        &self.watcher.key
+        &self.combination.name
+    }
+    pub fn combination(&self) -> &Combination {
+        &self.combination
     }
     pub fn table(&self) -> &SymbolFactorTable {
         &self.table
     }
 
-    /// v0 consumes each factor independently; v1 waits for an aligned symbol bar.
     pub fn poll_positions(&mut self, config: &CtaPerpConfig) -> (bool, Vec<PositionObservation>) {
-        // Consume Redis notifications, but choose exactly one combination source.
-        self.watcher.take_change();
-        let changed = self.apply_config_table(config);
-        if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
-            self.hub.update_services(
-                &self.node,
-                table_services_for_interval(&self.table, self.interval),
-            );
-            self.last_subscribe = Instant::now();
+        if self.table.is_empty() {
+            return (false, Vec::new());
         }
-        let touched: HashSet<String> = self
-            .hub
-            .poll_updates()
-            .into_iter()
-            .map(|event| event.symbol_key)
-            .collect();
+        if self.feed.is_none() && self.last_connect.elapsed() >= Duration::from_secs(5) {
+            self.last_connect = Instant::now();
+            match FactorFeed::new(Worker::Perp) {
+                Ok(feed) => self.feed = Some(feed),
+                Err(err) => log::warn!("shared CTA factor feed unavailable: {err:#}"),
+            }
+        }
+        let Some(feed) = &mut self.feed else {
+            return (false, Vec::new());
+        };
+        if let Err(err) = feed.poll() {
+            log::warn!("shared CTA factor feed failed: {err:#}");
+            self.feed = None;
+            return (false, Vec::new());
+        }
+        let now = get_timestamp_us();
         let mut updates = Vec::new();
-        for symbol in touched {
-            let effective = config.for_symbol(&symbol);
-            let Some(row) = self.table.get(&symbol) else {
-                continue;
-            };
+        for (symbol, row) in &self.table {
             if config.position_algorithm == PositionAlgorithm::V1 {
-                let inputs: Vec<_> = row
+                let effective = config.for_symbol(symbol);
+                let inputs = row
                     .factors
                     .iter()
                     .map(|factor| {
-                        self.hub.cached_score(
-                            &model_service_path_for_interval(
-                                "binance-futures",
-                                factor,
-                                self.interval,
-                            ),
-                            &symbol,
-                            TradingVenue::BinanceFutures,
-                        )
+                        shared_input(feed.latest(), symbol, factor, &effective, now / 1000)
                     })
-                    .collect();
-                if let Some(observation) = next_mean_observation(
-                    symbol,
-                    row,
-                    &inputs,
-                    &effective.entry,
-                    &mut self.last_ts,
-                    get_timestamp_us(),
-                    self.interval.max_model_age_ms(),
-                ) {
-                    updates.push(observation);
-                }
-                continue;
-            }
-            for binding in config.position_factors(&symbol, row) {
-                let factor = &binding.factor;
-                let input = self.hub.cached_score(
-                    &model_service_path_for_interval("binance-futures", factor, self.interval),
-                    &symbol,
-                    TradingVenue::BinanceFutures,
-                );
-                let key = format!("{}:{symbol}", binding.strategy);
-                let ts = input.score_ts_ms;
-                if ts <= 0
-                    || self.last_ts.get(&key).is_some_and(|old| ts <= *old)
-                    || !model_bar_is_fresh(ts, get_timestamp_us(), self.interval.max_model_age_ms())
-                {
-                    continue;
-                }
-                self.last_ts.insert(key, ts);
-                let effective = config.for_strategy(&symbol, &binding.strategy);
-                let single = SymbolFactors {
-                    factors: vec![factor.clone()],
-                    weights: vec![binding.weight.signum()],
-                };
-                updates.push(PositionObservation {
-                    symbol: symbol.clone(),
-                    factor: binding.strategy,
-                    model_ts_ms: ts,
-                    bar: aggregate_bar(
-                        &single,
-                        &[input],
+                    .collect::<Option<Vec<_>>>();
+                if let Some(inputs) = inputs {
+                    if let Some(observation) = next_mean_observation(
+                        symbol.clone(),
+                        row,
+                        &inputs,
                         &effective.entry,
-                        effective.position_algorithm,
-                    ),
-                });
-            }
-        }
-        (changed, updates)
-    }
-
-    pub fn poll(&mut self, entry: &EntryConfig) -> (bool, Vec<FactorObservation>) {
-        let changed = if let Some(next) = self.watcher.take_change() {
-            if self.retain_retired {
-                self.table.extend(next.as_ref().clone());
+                        &mut self.last_ts,
+                        now,
+                        config.bar_interval.max_model_age_ms(),
+                    ) {
+                        updates.push(observation);
+                    }
+                }
             } else {
-                self.table = next.as_ref().clone();
-            }
-            self.hub.update_services(
-                &self.node,
-                table_services_for_interval(&self.table, self.interval),
-            );
-            self.last_subscribe = Instant::now();
-            true
-        } else {
-            false
-        };
-        if self.last_subscribe.elapsed() >= Duration::from_secs(10) {
-            self.hub.update_services(
-                &self.node,
-                table_services_for_interval(&self.table, self.interval),
-            );
-            self.last_subscribe = Instant::now();
-        }
-        let touched: HashSet<String> = self
-            .hub
-            .poll_updates()
-            .into_iter()
-            .map(|event| event.symbol_key)
-            .collect();
-        let mut updates = Vec::new();
-        for symbol in touched {
-            let Some(row) = self.table.get(&symbol) else {
-                continue;
-            };
-            let inputs: Vec<_> = row
-                .factors
-                .iter()
-                .map(|factor| {
-                    self.hub.cached_score(
-                        &model_service_path_for_interval("binance-futures", factor, self.interval),
-                        &symbol,
-                        TradingVenue::BinanceFutures,
-                    )
-                })
-                .collect();
-            if let Some(observation) = next_observation(
-                symbol,
-                row,
-                &inputs,
-                entry,
-                &mut self.last_ts,
-                get_timestamp_us(),
-                self.interval.max_model_age_ms(),
-            ) {
-                updates.push(observation);
+                for binding in config.position_factors(symbol, row) {
+                    let effective = config.for_strategy(symbol, &binding.strategy);
+                    let Some(input) = shared_input(
+                        feed.latest(),
+                        symbol,
+                        &binding.factor,
+                        &effective,
+                        now / 1000,
+                    ) else {
+                        continue;
+                    };
+                    let key = format!("{}:{symbol}", binding.strategy);
+                    let ts = input.score_ts_ms;
+                    if self.last_ts.get(&key).is_some_and(|old| ts <= *old)
+                        || !model_bar_is_fresh(ts, now, config.bar_interval.max_model_age_ms())
+                    {
+                        continue;
+                    }
+                    self.last_ts.insert(key, ts);
+                    let single = SymbolFactors {
+                        factors: vec![binding.factor],
+                        weights: vec![binding.weight.signum()],
+                    };
+                    updates.push(PositionObservation {
+                        symbol: symbol.clone(),
+                        factor: binding.strategy,
+                        model_ts_ms: ts,
+                        bar: aggregate_bar(
+                            &single,
+                            &[input],
+                            &effective.entry,
+                            effective.position_algorithm,
+                        ),
+                    });
+                }
             }
         }
-        (changed, updates)
+        (false, updates)
     }
+}
+
+pub(crate) fn shared_input(
+    points: &BTreeMap<String, FactorPoint>,
+    symbol: &str,
+    factor: &str,
+    config: &CtaPerpConfig,
+    now_ms: i64,
+) -> Option<ModelOutputScoreLookupResult> {
+    let id = |name: &str| {
+        format!(
+            "binance-futures-{}-{}-{}",
+            symbol.to_ascii_lowercase(),
+            config.bar_interval.as_str().replace('m', "min"),
+            name.to_ascii_lowercase()
+        )
+    };
+    let point = points.get(&id(factor))?;
+    if point.ts_ms > now_ms {
+        return None;
+    }
+    let value = point.fields.get("value")?;
+    let nq = points.get(&id("nq")).filter(|n| n.ts_ms == point.ts_ms);
+    // Wait for both independently published inputs for this closed bar. An old
+    // NQ must never consume the current factor's one decision opportunity.
+    if config.entry.nq_change_enabled && nq.is_none() {
+        return None;
+    }
+    let long = nq.and_then(|n| n.fields.get("long"));
+    let short = nq.and_then(|n| n.fields.get("short"));
+    Some(ModelOutputScoreLookupResult {
+        service_name: format!("factor_output/{}", Worker::Perp.name()),
+        symbol_key: symbol.into(),
+        subscribed: true,
+        score: value.value,
+        score_quantile: value.quantile,
+        score_ready: value.ready,
+        score_long_threshold: None,
+        score_short_threshold: None,
+        filter_long_value: long.and_then(|f| f.value),
+        filter_short_value: short.and_then(|f| f.value),
+        filter_long_threshold: long.and_then(|f| f.median),
+        filter_short_threshold: short.and_then(|f| f.median),
+        filter_long_quantile: long.and_then(|f| f.quantile),
+        filter_short_quantile: short.and_then(|f| f.quantile),
+        filter_ready: long.is_some_and(|f| f.ready) && short.is_some_and(|f| f.ready),
+        score_ts_ms: point.ts_ms,
+        note: String::new(),
+    })
 }
 
 fn next_mean_observation(
@@ -273,6 +236,7 @@ fn next_mean_observation(
 
 // An aligned but unready bar still carries exit settings so recovered positions
 // can retain trailing protection without using an invalid factor percentile.
+#[cfg(test)]
 fn next_observation(
     symbol: String,
     row: &SymbolFactors,
@@ -307,6 +271,81 @@ fn next_observation(
 mod tests {
     use super::*;
     use crate::cta_perp::config::CTA_PERP_MAX_MODEL_AGE_MS;
+    #[test]
+    fn shared_inputs_wait_for_same_bar_nq_and_keep_linear_median() {
+        use crate::cta_factor_calc::engine::Field;
+        let combination = Combination::load(std::path::Path::new(
+            "config/cta_prep_binance_futures/rx04_binance-futures_5min.json",
+        ))
+        .unwrap();
+        let mut config = combination.signal_config().unwrap();
+        assert!(config.linear_nq);
+        let factor = FactorPoint {
+            factor_id: "binance-futures-ethusdt-5min-factor_036".into(),
+            ts_ms: 600_000,
+            fields: BTreeMap::from([(
+                "value".into(),
+                Field {
+                    raw: Some(2.0),
+                    value: Some(1.0),
+                    quantile: Some(0.99),
+                    median: Some(0.0),
+                    ready: true,
+                },
+            )]),
+        };
+        let mut points = BTreeMap::from([(factor.factor_id.clone(), factor)]);
+        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).is_none());
+        let mut nq = FactorPoint {
+            factor_id: "binance-futures-ethusdt-5min-nq".into(),
+            ts_ms: 300_000,
+            fields: BTreeMap::from([
+                (
+                    "long".into(),
+                    Field {
+                        raw: Some(0.1),
+                        value: Some(0.1),
+                        quantile: Some(0.2),
+                        median: Some(0.1),
+                        ready: true,
+                    },
+                ),
+                (
+                    "short".into(),
+                    Field {
+                        raw: Some(-0.1),
+                        value: Some(-0.1),
+                        quantile: Some(0.8),
+                        median: Some(-0.1),
+                        ready: true,
+                    },
+                ),
+            ]),
+        };
+        points.insert(nq.factor_id.clone(), nq.clone());
+        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).is_none());
+        nq.ts_ms = 600_000;
+        points.insert(nq.factor_id.clone(), nq);
+        let input = shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).unwrap();
+        assert_eq!(input.filter_long_threshold, Some(0.1));
+        let row = SymbolFactors {
+            factors: vec!["factor_036".into()],
+            weights: vec![1.0],
+        };
+        let bar = aggregate_bar(&row, &[input], &config.entry, config.position_algorithm).unwrap();
+        assert_eq!(
+            super::super::positions::next_position_flag(
+                0,
+                &bar,
+                &config.for_strategy("ETHUSDT", "factor_036")
+            ),
+            1
+        );
+        config.entry.nq_change_enabled = false;
+        points.remove("binance-futures-ethusdt-5min-nq");
+        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).is_some());
+        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 599_999).is_none());
+    }
     fn input(ts: i64) -> ModelOutputScoreLookupResult {
         ModelOutputScoreLookupResult {
             service_name: String::new(),

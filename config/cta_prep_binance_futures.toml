@@ -1,4 +1,4 @@
-# Factor observations only; no accounts, positions, or order submission.
+# Factor calculations and independently configured frequency position tables; orders are executed downstream by Manager/Exec.
 combinations_dir = "cta_prep_binance_futures"
 history_dir = "../data/cta_prep_binance_futures"
 lookback_secs = 1296000

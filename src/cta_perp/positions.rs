@@ -45,7 +45,10 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig
     if flag == 0 {
         return 0;
     }
-    if config.entry.nq_change_enabled && config.bar_interval.uses_linear_nq() && !config.strict_nq {
+    if config.entry.nq_change_enabled
+        && (config.linear_nq || config.bar_interval.uses_linear_nq())
+        && !config.strict_nq
+    {
         let (value, threshold) = if flag > 0 {
             (bar.nq.filter_long_value, bar.nq.filter_long_threshold)
         } else {
@@ -160,7 +163,8 @@ mod tests {
         let disabled = config.for_strategy("ETHUSDT", "factor_051");
         assert_eq!(next_position_flag(0, &short, &disabled), -1);
         config.bar_interval = super::super::interval::BarInterval::FiveMinutes;
-        assert!(config.validate().is_err());
+        config.validate().unwrap();
+        assert!(config.for_strategy("ETHUSDT", "factor_036").strict_nq);
     }
 
     #[test]

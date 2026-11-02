@@ -1,14 +1,17 @@
 use super::interval::BarInterval;
 use super::recovery::{PositionRecovery, Positions, StrategyPosition, REQUEST_PATH};
+use crate::cta_factor_calc::config::{Combination, Market};
 use crate::cta_perp::config::{
     CtaPerpConfig, PositionAlgorithm, CTA_PERP_MAX_QUOTE_AGE_MS, CTA_PERP_SIGNAL_POLL_INTERVAL_MS,
     CTA_PERP_STATUS_PATH, CTA_PERP_VENUE_NAME, SYMBOL_MEAN_STRATEGY,
 };
 use crate::cta_perp::factor_channel::{PositionObservation, WeightedFactorChannel};
-use crate::cta_perp::factors::{runtime_factor_config_key, SymbolFactorTable, WeightedBar};
+use crate::cta_perp::factors::{SymbolFactorTable, WeightedBar};
 use crate::cta_perp::journal::{GridPublication, SignalJournal, SIGNAL_JOURNAL_DIR};
 use crate::cta_perp::positions::{full_qty, next_position_flag};
-use crate::cta_position_publisher::{PositionPublisher, Publication};
+use crate::cta_position_publisher::{
+    add_target_quantity, bind_strategy_ledger, EndpointStatus, PositionPublisher, Publication,
+};
 use anyhow::{ensure, Context, Result};
 use log::{info, warn};
 use runtime_common::time_util::get_timestamp_us;
@@ -53,13 +56,44 @@ fn validate_position_scope(positions: &Positions, algorithm: PositionAlgorithm) 
     Ok(())
 }
 
+fn frequency_targets(
+    positions: &Positions,
+    scope: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<BTreeMap<String, Value>> {
+    let mut totals = BTreeMap::new();
+    // Include retired symbols so removing the last rule publishes a clear.
+    for rows in positions.values() {
+        for (symbol, position) in rows {
+            add_target_quantity(&mut totals, symbol, position.qty)?;
+        }
+    }
+    for symbol in scope.values().flatten() {
+        totals.entry(symbol.clone()).or_default();
+    }
+    Ok(totals
+        .into_iter()
+        .map(|(symbol, qty)| (symbol, target_value(qty)))
+        .collect())
+}
+
+fn retirement_delivered(endpoints: &[EndpointStatus], started_us: i64) -> bool {
+    !endpoints.is_empty()
+        && endpoints.iter().all(|endpoint| {
+            endpoint.pending_strategies.is_empty()
+                && endpoint.error.is_none()
+                && endpoint
+                    .last_success_ts_us
+                    .is_some_and(|ts| ts >= started_us)
+        })
+}
+
 pub struct CtaPerpSignalApp {
     config_path: PathBuf,
     config_modified: Option<SystemTime>,
     config: CtaPerpConfig,
     factors: WeightedFactorChannel,
     publisher: PositionPublisher,
-    strategy_prefix: String,
+    strategy_name: String,
     publication_error: Option<String>,
     configuration_error: Option<String>,
     positions: Positions,
@@ -70,10 +104,15 @@ pub struct CtaPerpSignalApp {
     journal: SignalJournal,
     last_reload_check_us: i64,
     entry_live_after_ms: i64,
+    retiring: bool,
+    retirement_started_us: i64,
+    _strategy_lock: crate::cta_factor_calc::runtime::FileLock,
 }
 impl CtaPerpSignalApp {
     pub async fn new(config_path: impl AsRef<Path>) -> Result<Self> {
-        Self::new_for_interval(config_path, BarInterval::OneMinute).await
+        let combination = Combination::load(config_path.as_ref())?;
+        let interval = combination.signal_config()?.bar_interval;
+        Self::new_for_interval(config_path, interval).await
     }
 
     pub async fn new_for_interval(
@@ -81,18 +120,24 @@ impl CtaPerpSignalApp {
         interval: BarInterval,
     ) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
-        let config = CtaPerpConfig::load(&config_path)?;
+        let combination = Combination::load(&config_path)?;
+        ensure!(combination.venue==Market::BinanceFutures,"this signal executes Binance futures; use the venue's signal executor for other markets");
+        let config = combination.signal_config()?;
         ensure!(
             config.bar_interval == interval,
             "signal bin/config bar_interval mismatch"
         );
-        let factor_key = runtime_factor_config_key()?;
-        let env = factor_key
-            .strip_suffix(":cta_symbol_factors")
-            .context("invalid CTA factor key")?
-            .to_string();
-        let mut factors =
-            WeightedFactorChannel::new(factor_key, "cta_perp_model_input", false, interval).await?;
+        let strategy_name = combination.manager_strategy_name();
+        let strategy_lock = crate::cta_factor_calc::runtime::FileLock::acquire(
+            &config_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(format!(".signal-{strategy_name}.lock")),
+        )
+        .context(
+            "another signal still owns this market/frequency; wait for its targets to be withdrawn",
+        )?;
+        let factors = WeightedFactorChannel::new(combination)?;
         MktChannel::init_bbo_singleton_readonly(config.venue(), config.venue())
             .context("initialize CTA sizing BBO")?;
         let publisher = PositionPublisher::from_env()?;
@@ -100,13 +145,20 @@ impl CtaPerpSignalApp {
             !config.enabled || !publisher.is_empty(),
             "CTA_MANAGER_API_URLS (or CTA_MANAGER_API_URL) is required when publishing positions"
         );
-        let positions = if Path::new(SHADOW_PATH).exists() {
+        let positions: Positions = if Path::new(SHADOW_PATH).exists() {
             serde_json::from_slice(&fs::read(SHADOW_PATH)?)
                 .context("read CTA observation positions")?
         } else {
             Positions::new()
         };
-        factors.apply_config_table(&config);
+        bind_strategy_ledger(
+            Path::new("run/cta_perp_manager_strategy.json"),
+            &strategy_name,
+            positions
+                .values()
+                .flat_map(|rows| rows.values())
+                .any(|p| p.flag != 0 || p.qty != 0.0),
+        )?;
         let recovery = PositionRecovery::load(&config, factors.table(), &positions)?;
         if recovery.is_none() {
             validate_position_scope(&positions, config.position_algorithm)?;
@@ -118,8 +170,7 @@ impl CtaPerpSignalApp {
             config,
             factors,
             publisher,
-            strategy_prefix: std::env::var("CTA_POSITION_STRATEGY_PREFIX")
-                .unwrap_or_else(|_| format!("{env}_")),
+            strategy_name,
             publication_error: None,
             configuration_error: None,
             positions,
@@ -130,6 +181,9 @@ impl CtaPerpSignalApp {
             journal: SignalJournal::new(SIGNAL_JOURNAL_DIR)?,
             last_reload_check_us: 0,
             entry_live_after_ms: get_timestamp_us() / 1000,
+            retiring: false,
+            retirement_started_us: 0,
+            _strategy_lock: strategy_lock,
         };
         app.sync_factor_scope();
         app.write_status()?;
@@ -156,7 +210,10 @@ impl CtaPerpSignalApp {
     }
     fn publish_targets(&mut self) -> Result<()> {
         self.record_deliveries()?;
-        if !self.config.enabled || self.recovery.is_some() || self.recovery_error.is_some() {
+        if (!self.config.enabled && !self.retiring)
+            || self.recovery.is_some()
+            || self.recovery_error.is_some()
+        {
             self.publisher.pause();
             return Ok(());
         }
@@ -164,55 +221,39 @@ impl CtaPerpSignalApp {
             !self.publisher.is_empty(),
             "CTA Manager publication URL is required"
         );
-        let mut publications = BTreeMap::new();
         let scope = strategy_scope(self.factors.table(), &self.config);
-        let names: BTreeSet<String> = scope
-            .keys()
-            .cloned()
-            .chain(self.positions.keys().cloned())
-            .collect();
-        for factor in names {
-            let mut targets: BTreeMap<String, Value> = self
-                .positions
-                .get(&factor)
-                .into_iter()
-                .flat_map(|rows| rows.iter())
-                .map(|(symbol, p)| (symbol.clone(), target_value(p.qty)))
-                .collect();
-            for symbol in scope.get(&factor).into_iter().flatten() {
-                targets
-                    .entry(symbol.clone())
-                    .or_insert_with(|| target_value(0.0));
-            }
-            let payload = json!({"strategy_name":format!("{}{factor}",self.strategy_prefix),"targets":targets});
-            publications.insert(factor.clone(), Publication {
-                payload,
-                context: json!({"factor":factor,"observations":self.observations.get(&factor),
-                    "entry":self.config.entry,"execution":self.config.execution,"max_pos_u":self.config.max_pos_u}),
-            });
-        }
-        self.publisher.submit(publications);
+        let targets = frequency_targets(&self.positions, &scope)?;
+        self.publisher.submit(BTreeMap::from([(
+            self.strategy_name.clone(),
+            Publication {
+                payload: json!({"strategy_name":self.strategy_name,"targets":targets}),
+                context: json!({"observations":self.observations}),
+            },
+        )]));
         Ok(())
     }
     fn record_deliveries(&mut self) -> Result<()> {
         for delivery in self.publisher.drain_deliveries() {
             let payload = &delivery.publication.payload;
             let context = &delivery.publication.context;
-            let Some(factor) = context["factor"].as_str() else {
+            let Some(observations) = context["observations"].as_object() else {
                 continue;
             };
             let Some(targets) = payload["targets"].as_object() else {
                 continue;
             };
             let now = delivery.published_ts_us;
-            for (symbol, target) in targets {
-                if let Some(row) = context["observations"].get(symbol) {
+            for (factor, rows) in observations {
+                for (symbol, row) in rows.as_object().into_iter().flatten() {
+                    let Some(target) = targets.get(symbol) else {
+                        continue;
+                    };
                     self.journal.record(symbol, row["model_ts_ms"].as_i64().unwrap_or(0), now,
                         "published", "manager_target", json!({"bar_interval":self.config.bar_interval,"enabled":true,"strategy_name":factor,
                             "position_flag":row["position_flag"],"position_qty":row["position_qty"],
                             "signal":row["signal"],"position_algorithm":row["position_algorithm"],
                             "entry":row["entry"],"execution":row["execution"],"max_pos_u":row["max_pos_u"]}),
-                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
+                        GridPublication { target:Some(json!({"strategy_name":payload["strategy_name"],"qty":target["qty"],"sub_position_qty":row["position_qty"],"published_ts_us":now,"manager_url":delivery.manager_url})), ..Default::default() });
                 }
             }
         }
@@ -268,6 +309,15 @@ impl CtaPerpSignalApp {
                     warn!("CTA publication failed; retry next refresh: {error}");
                 }
                 self.write_status()?;
+                if self.retiring
+                    && retirement_delivered(&self.publisher.statuses(), self.retirement_started_us)
+                {
+                    // The final clear is acknowledged by every Manager before
+                    // another signal may acquire this frequency's lease.
+                    self.configuration_error = None;
+                    self.write_status()?;
+                    return Ok(());
+                }
             }
             let (changed, updates) = self.factors.poll_positions(&self.config);
             if changed {
@@ -313,15 +363,50 @@ impl CtaPerpSignalApp {
         );
         Ok(())
     }
+    fn begin_retirement(&mut self, reason: &str) {
+        if !self.retiring {
+            for (strategy, symbols) in strategy_scope(self.factors.table(), &self.config) {
+                let rows = self.positions.entry(strategy).or_default();
+                for symbol in symbols {
+                    rows.entry(symbol).or_default();
+                }
+            }
+            self.factors.retire();
+            self.retiring = true;
+            self.retirement_started_us = get_timestamp_us();
+            self.publisher.reset();
+            self.configuration_error = Some(reason.into());
+        }
+    }
     fn reload_config(&mut self) {
-        let modified = fs::metadata(&self.config_path)
-            .and_then(|m| m.modified())
-            .ok();
-        if modified.is_none() || modified == self.config_modified {
+        let modified = match fs::metadata(&self.config_path).and_then(|m| m.modified()) {
+            Ok(modified) => Some(modified),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.begin_retirement("组合已删除，正在撤销原策略目标");
+                return;
+            }
+            Err(error) => {
+                self.configuration_error = Some(format!("读取统一配置元数据失败：{error}"));
+                return;
+            }
+        };
+        if modified == self.config_modified && !self.retiring {
             return;
         }
-        match CtaPerpConfig::load(&self.config_path) {
-            Ok(next) => {
+        let next = Combination::load(&self.config_path).and_then(|combination| {
+            ensure!(
+                combination.venue == Market::BinanceFutures,
+                "running signal venue cannot change"
+            );
+            let signal = combination
+                .signal
+                .as_ref()
+                .map(|_| combination.signal_config())
+                .transpose()?;
+            Ok((signal, combination))
+        });
+        match next {
+            Ok((Some(next), combination)) => {
                 if next.bar_interval != self.config.bar_interval {
                     self.configuration_error = Some("bar_interval cannot change in a running signal; use a separate environment".into());
                     return;
@@ -346,12 +431,21 @@ impl CtaPerpSignalApp {
                     return;
                 }
                 self.configuration_error = None;
-                self.factors.apply_config_table(&next);
+                if let Err(error) = self.factors.apply_combination(combination) {
+                    self.configuration_error = Some(format!("{error:#}"));
+                    return;
+                }
+                self.retiring = false;
+                self.retirement_started_us = 0;
                 self.config = next;
                 self.config_modified = modified;
                 self.entry_live_after_ms = get_timestamp_us() / 1000;
             }
-            Err(error) => warn!("CTA config refresh rejected: {error:#}"),
+            Ok((None, _)) => self.begin_retirement("信号参数已移除，正在撤销原策略目标"),
+            Err(error) => {
+                self.configuration_error = Some(format!("{error:#}"));
+                warn!("CTA config refresh rejected: {error:#}");
+            }
         }
     }
     async fn handle_observation(&mut self, observation: PositionObservation) -> Result<()> {
@@ -496,10 +590,11 @@ impl CtaPerpSignalApp {
                 };
             }
         }
-        let status = json!({"bar_interval":self.config.bar_interval,"enabled":self.config.enabled,"journal_healthy":self.journal.healthy(),"venue":CTA_PERP_VENUE_NAME,
+        let status = json!({"combination":self.factors.combination(),"combination_name":self.factors.key(),"combination_removed":self.retiring,"bar_interval":self.config.bar_interval,"enabled":self.config.enabled && !self.retiring,"journal_healthy":self.journal.healthy(),"venue":CTA_PERP_VENUE_NAME,
             "position_algorithm":self.config.position_algorithm,"symbol_overrides":self.config.symbol_overrides,"factor_rules":self.config.factor_rules,
             "recovering":self.recovery.is_some(),"recovery_records":self.recovery.as_ref().map(|r|r.records),"recovery_error":self.recovery_error,
-            "configuration_error":self.configuration_error,"publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_prefix":self.strategy_prefix,
+            "configuration_error":self.configuration_error,"publication_error":self.publication_error,"manager_publications":self.publisher.statuses(),"manager_strategy_name":self.strategy_name,
+            "manager_targets":frequency_targets(&self.positions,&scope)?,
             "virtual_account_name":std::env::var("CTA_VIRTUAL_ACCOUNT_NAME").ok(),
             "follower_source_id":std::env::var("CTA_FOLLOWER_SOURCE_ID").ok(),
             "factor_config_key":self.factors.key(),"symbol_factors":self.factors.table(),"max_pos_u":self.config.max_pos_u,"allocation":self.config.position_algorithm.allocation(),"strategies":strategies,"updated_ts_us":now,"scheduled_entries":0});
@@ -534,6 +629,92 @@ fn signal_snapshot(bar: &WeightedBar, flag: i8) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retirement_waits_for_every_managers_current_acknowledgement() {
+        let endpoint = || EndpointStatus {
+            manager_url: "http://127.0.0.1:4191/manager/api".into(),
+            pending_strategies: vec![],
+            last_success_ts_us: Some(100),
+            error: None,
+        };
+        assert!(!retirement_delivered(&[], 100));
+        let mut endpoints = vec![endpoint(), endpoint()];
+        assert!(retirement_delivered(&endpoints, 100));
+        endpoints[1]
+            .pending_strategies
+            .push("cta-prep-bn-1min-pos".into());
+        assert!(!retirement_delivered(&endpoints, 100));
+        endpoints[1].pending_strategies.clear();
+        endpoints[1].last_success_ts_us = Some(99);
+        assert!(!retirement_delivered(&endpoints, 100));
+        endpoints[1].last_success_ts_us = Some(101);
+        endpoints[1].error = Some("timeout".into());
+        assert!(!retirement_delivered(&endpoints, 100));
+    }
+
+    #[test]
+    fn only_one_process_can_own_a_shared_frequency_until_it_releases_its_lease() {
+        use crate::cta_factor_calc::runtime::FileLock;
+        let root = std::env::temp_dir().join(format!("cta-signal-lease-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join(".signal-cta-prep-bn-1min-pos.lock");
+        let lease = FileLock::acquire(&path).unwrap();
+        assert!(FileLock::acquire(&path).is_err());
+        let other = FileLock::acquire(&root.join(".signal-cta-prep-bn-5min-pos.lock")).unwrap();
+        drop(lease);
+        let next = FileLock::acquire(&path).unwrap();
+        drop(next);
+        drop(other);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn frequency_table_nets_sub_positions_without_changing_their_ledgers() {
+        let mut positions: Positions = serde_json::from_value(json!({
+            "factor_036":{"ETHUSDT":{"flag":1,"qty":2.0,"entry_notional":200.0}},
+            "factor_051":{"ETHUSDT":{"flag":-1,"qty":-2.0,"entry_notional":300.0}},
+            "retired":{"ZECUSDT":{"flag":0,"qty":0.0}}
+        }))
+        .unwrap();
+        let scope = BTreeMap::from([
+            (
+                "factor_036".into(),
+                BTreeSet::from(["ETHUSDT".into(), "BTCUSDT".into()]),
+            ),
+            ("factor_051".into(), BTreeSet::from(["ETHUSDT".into()])),
+        ]);
+        let netted = frequency_targets(&positions, &scope).unwrap();
+        assert_eq!(netted.len(), 3);
+        for target in netted.values() {
+            assert_eq!(target["qty"], "clear");
+        }
+        // Net zero at Manager must not close either factor's internal position.
+        assert_eq!(positions["factor_036"]["ETHUSDT"].qty, 2.0);
+        positions
+            .get_mut("factor_036")
+            .unwrap()
+            .insert("ETHUSDT".into(), StrategyPosition::default());
+        let after_exit = frequency_targets(&positions, &scope).unwrap();
+        assert_eq!(after_exit["ETHUSDT"]["qty"], -2.0);
+        let restarted = serde_json::from_slice(&serde_json::to_vec(&positions).unwrap()).unwrap();
+        assert_eq!(frequency_targets(&restarted, &scope).unwrap(), after_exit);
+    }
+
+    #[test]
+    fn invalid_sub_position_cannot_publish_a_partial_frequency_table() {
+        let positions = BTreeMap::from([(
+            "factor".into(),
+            BTreeMap::from([(
+                "ETHUSDT".into(),
+                StrategyPosition {
+                    flag: 1,
+                    qty: f64::NAN,
+                    entry_notional: 200.0,
+                },
+            )]),
+        )]);
+        assert!(frequency_targets(&positions, &BTreeMap::new()).is_err());
+    }
 
     #[test]
     fn flat_targets_are_explicit_clears() {

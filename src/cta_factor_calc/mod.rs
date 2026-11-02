@@ -2,6 +2,7 @@
 pub mod client;
 pub mod config;
 pub mod engine;
+pub(crate) mod positions;
 pub mod runtime;
 
 mod catalog;

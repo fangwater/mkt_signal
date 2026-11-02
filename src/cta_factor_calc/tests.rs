@@ -1,11 +1,30 @@
 use super::*;
 use crate::cta_factor_calc::config::*;
 use period_pbs::pb::{PriceLevel, SymbolInfo};
+use std::collections::BTreeSet;
 
 fn combination(name: &str, factors: &[(&str, f64)]) -> Combination {
     Combination {
+        signal: None,
         name: name.into(),
-        factors: factors.iter().map(|(s, w)| (s.to_string(), *w)).collect(),
+        venue: Market::BinanceFutures,
+        interval: Interval::Minute,
+        reference_venue: None,
+        factor_rules: factors
+            .iter()
+            .map(|(s, w)| {
+                let id = FactorId::parse(s).unwrap();
+                FactorRule {
+                    symbol: id.symbol,
+                    weight: *w,
+                    factor: id.factor,
+                    nq: "关闭".into(),
+                    venue: Some(id.market),
+                    interval: Some(id.interval),
+                    reference_venue: id.reference_market,
+                }
+            })
+            .collect(),
         parameters: BTreeMap::new(),
     }
 }
@@ -62,12 +81,77 @@ fn names_are_market_and_period_scoped_and_spread_inputs_are_ordered() {
 }
 
 #[test]
+fn four_column_rows_add_venue_period_and_nq_without_collapsing_signal_rules() {
+    let combo:Combination=serde_json::from_value(serde_json::json!({
+        "name":"okx_1min","venue":"okex-futures","interval":"1min",
+        "factor_rules":[{"标的":"BTC","nq":"0.2/0.8","符号":-1,"因子":"factor_036"},{"标的":"BTCUSDT","nq":"关闭","符号":-1,"因子":"factor_036"}]
+    })).unwrap();
+    combo.validate().unwrap();
+    assert_eq!(combo.factor_rules.len(), 2);
+    let plan = Plan::merge([combo]).unwrap();
+    assert_eq!(plan.calculations.len(), 2);
+    assert!(plan
+        .calculations
+        .contains_key("okex-futures-btcusdt-1min-factor_036"));
+    assert!(plan
+        .calculations
+        .contains_key("okex-futures-btcusdt-1min-nq"));
+    assert_eq!(plan.topics(), ["okex-swap"]);
+    assert!(Worker::Perp.validate_plan(&plan).is_err());
+    Worker::Spread.validate_plan(&plan).unwrap();
+    let rx = Combination::load(std::path::Path::new(
+        "config/cta_prep_binance_futures/rx01_binance-futures_15min.json",
+    ))
+    .unwrap();
+    assert_eq!(rx.signal_config().unwrap().factor_rules.len(), 146);
+    let duplicate = rx
+        .factor_rules
+        .iter()
+        .filter(|r| r.symbol == "SKLUSDT" && r.factor == "factor_170")
+        .count();
+    assert_eq!(duplicate, 2);
+}
+
+#[test]
 fn duplicate_json_references_are_rejected_instead_of_overwriting_weights() {
-    let json = r#"{"name":"one","factors":{"binance-futures-btcusdt-1min-nq":1,"binance-futures-btcusdt-1min-nq":-1}}"#;
-    assert!(serde_json::from_str::<Combination>(json)
+    let json = r#"{"name":"one","venue":"binance-futures","interval":"1min","factor_rules":[{"标的":"BTC","nq":"关闭","符号":1,"因子":"nq"}],"parameters":{"binance-futures-btcusdt-1min-nq":{},"binance-futures-btcusdt-1min-nq":{}}}"#;
+    assert!(serde_json::from_str::<Combination>(json).is_err());
+}
+
+#[test]
+fn frequency_strategies_own_independent_allocations_and_reject_duplicate_publishers() {
+    let config =
+        Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
+    let plan = Plan::load(&config.combinations_dir).unwrap();
+    let mut combinations = plan.combinations.values().cloned().collect::<Vec<_>>();
+    let identities = combinations
+        .iter()
+        .map(Combination::manager_strategy_name)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        identities,
+        BTreeSet::from([
+            "cta-prep-bn-1min-pos".into(),
+            "cta-prep-bn-5min-pos".into(),
+            "cta-prep-bn-15min-pos".into(),
+        ])
+    );
+    let before = combinations[1].signal.clone();
+    combinations[0].signal.as_mut().unwrap().max_pos_u = 123.0;
+    let changed = Plan::merge(combinations.clone()).unwrap();
+    assert_eq!(changed.calculations, plan.calculations);
+    assert_eq!(combinations[1].signal, before);
+    let mut duplicate = combinations[0].clone();
+    duplicate.name = "another_file_same_strategy".into();
+    combinations.push(duplicate);
+    assert!(Plan::merge(combinations)
         .unwrap_err()
         .to_string()
-        .contains("duplicate key"));
+        .contains("only one signal"));
+    assert_eq!(
+        crate::cta_spread::config::SpreadMode::OkexBinance.manager_strategy_name(),
+        "cta-spread-okx-bn-1min-pos"
+    );
 }
 
 #[test]
@@ -150,11 +234,12 @@ fn binance_worker_merges_the_three_current_strategy_identities_with_exact_period
                     interval.name(),
                     factor.to_ascii_lowercase()
                 );
-                assert_eq!(combination.factors[&id], weight);
+                assert_eq!(combination.factors().unwrap()[&id], weight);
             }
         }
         assert!(combination
-            .factors
+            .factors()
+            .unwrap()
             .keys()
             .all(|id| FactorId::parse(id).unwrap().interval == interval));
     }
@@ -267,6 +352,10 @@ fn spread_matches_timestamps_and_invalid_quotes_never_reuse_a_price() {
     }
     assert_eq!(engine.latest[name].fields["value"].raw, Some(1.0 / 101.0));
     assert!(engine.latest[name].ready());
+    assert_eq!(
+        engine.previous_spreads[name].ts_ms,
+        engine.latest[name].ts_ms - 60_000
+    );
     let mut invalid = period("BTC-USDT-SWAP", start + 4 * 60_000, 101.0, true);
     invalid.symbol_infos[0].incs[0].asks.clear();
     engine.on_period(Market::OkexFutures, &invalid).unwrap();
@@ -421,14 +510,18 @@ fn old_tables_gain_market_and_frequency_without_changing_signed_weights() {
         true,
     )
     .unwrap();
-    assert_eq!(imported.factors.len(), 4);
+    assert_eq!(imported.factors().unwrap().len(), 4);
     assert_eq!(
-        imported.factors["okex-futures-btcusdt-5min-factor_036"],
+        imported.factors().unwrap()["okex-futures-btcusdt-5min-factor_036"],
         -1.0
     );
-    assert_eq!(imported.factors["okex-futures-ethusdt-5min-td_ti_024"], 1.0);
+    assert_eq!(
+        imported.factors().unwrap()["okex-futures-ethusdt-5min-td_ti_024"],
+        1.0
+    );
     assert!(imported
-        .factors
+        .factors()
+        .unwrap()
         .contains_key("okex-futures-btcusdt-5min-nq"));
 }
 
@@ -537,6 +630,7 @@ fn consumer_invalidates_deleted_factors_and_replaced_definitions_even_at_equal_t
                 raw: Some(value),
                 value: Some(value),
                 quantile: Some(0.5),
+                median: Some(value),
                 ready: true,
             },
         )]),

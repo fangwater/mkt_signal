@@ -5,6 +5,7 @@ use runtime_common::time_util::get_timestamp_us;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -12,6 +13,39 @@ use tokio::task::JoinHandle;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Bind a local sub-position ledger to exactly one Manager strategy. Legacy
+/// factor ledgers require an explicit cutover before they can acquire this name.
+pub(crate) fn bind_strategy_ledger(path: &Path, strategy: &str, has_inventory: bool) -> Result<()> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let recorded: String = serde_json::from_slice(&bytes)
+                .context("read CTA ledger's Manager strategy identity")?;
+            ensure!(recorded == strategy, "CTA ledger belongs to {recorded}, not {strategy}; migrate the ledger and Manager bindings explicitly");
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ensure!(!has_inventory, "existing CTA inventory has no frequency strategy identity; reconcile old Manager strategies before migrating this ledger");
+            crate::cta_factor_calc::runtime::atomic_json(path, &strategy)
+        }
+        Err(error) => Err(error).context("read CTA ledger's Manager strategy identity"),
+    }
+}
+
+pub(crate) fn add_target_quantity(
+    totals: &mut BTreeMap<String, f64>,
+    symbol: &str,
+    qty: f64,
+) -> Result<()> {
+    ensure!(qty.is_finite(), "non-finite CTA sub-position for {symbol}");
+    let total = totals.entry(symbol.to_string()).or_default();
+    *total += qty;
+    ensure!(
+        total.is_finite(),
+        "CTA target quantity overflow for {symbol}"
+    );
+    Ok(())
+}
 
 fn normalize_url(raw: &str) -> Result<String> {
     let url = reqwest::Url::parse(raw.trim()).context("invalid CTA Manager URL")?;
@@ -136,6 +170,14 @@ pub(crate) struct PositionPublisher {
 }
 
 impl PositionPublisher {
+    #[cfg(test)]
+    pub(crate) fn test_endpoint(url: &str) -> Result<Self> {
+        Self::new(
+            endpoints(vec![url.to_string()], None, None)?,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+        )
+    }
     pub fn from_env() -> Result<Self> {
         let plural = std::env::var("CTA_MANAGER_API_URLS").ok();
         let single = std::env::var("CTA_MANAGER_API_URL").ok();
@@ -397,6 +439,21 @@ async fn deliver_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frequency_ledger_identity_survives_restarts_and_blocks_implicit_migration() {
+        let root = std::env::temp_dir().join(format!("cta-ledger-{}", uuid::Uuid::new_v4()));
+        let path = root.join("manager_strategy.json");
+        let name = "cta-prep-bn-1min-pos";
+        assert!(bind_strategy_ledger(&path, name, true).is_err());
+        assert!(!path.exists());
+        bind_strategy_ledger(&path, name, false).unwrap();
+        bind_strategy_ledger(&path, name, true).unwrap();
+        assert!(bind_strategy_ledger(&path, "cta-prep-bn-5min-pos", false).is_err());
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(bind_strategy_ledger(&path, name, false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use axum::extract::State;
     use axum::http::{HeaderMap, StatusCode};
     use axum::routing::post;

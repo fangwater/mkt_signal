@@ -1,6 +1,6 @@
 # OKX / Binance CTA Spread
 
-1min 策略族 `cta_cross_spread`，配置 `mode = okex_binance`。OKX 仍通过已有的
+1min 仓位表 `cta-spread-okx-bn-1min-pos`，由 `cta-factor-spread` 进程维护。OKX 仍通过已有的
 原生统一账户 Exec 执行，部署 venue 为 `okex-futures`，本策略只发布该账户的
 USDT 永续目标。Binance 使用独立的 `binance-futures` Exec 合约账户。两个账户
 分别维护原有账户模式、namespace、执行账本和持久化数据。
@@ -17,11 +17,12 @@ Kafka 的两路 topic 是 `binance-futures` 和 `okex-swap`；不以 `okex-futur
 Binance 0。数量均为基础资产数量，由现有 Exec 规则处理合约张数。持续同向信号
 保持冻结数量，不累积库存；删除币种会持续发布两腿显式 clear。
 
-每个 symbol × factor 的一份仓位策略一次发布完整两腿：
+每个 symbol × factor 保留独立子仓位和单份 `max_pos_u`；发布时按币种、venue
+汇总为 `cta-spread-okx-bn-1min-pos` 一份策略，一次发布完整两腿：
 
 ```json
 {
-  "strategy_name": "okex_binance_cta_spread_demo_baseline_005",
+  "strategy_name": "cta-spread-okx-bn-1min-pos",
   "targets": {
     "okex-futures:ETHUSDT": {"qty": 2, "signal": 0},
     "binance-futures:ETHUSDT": {"qty": -2, "signal": 0}
@@ -34,24 +35,20 @@ Manager 将该策略分别绑定至 OKX / Binance 账户，各账户只接收属
 独立完成并重试，不提供交易所之间的原子执行保证。Manager 在目标归档中冻结
 各账户的实际投影与份数，NAV、FIFO、Funding 和交易费用仍逐账户逐市场计算。
 
-两个入口复用原有 Spread 状态机和行情计算：
+当前入口为 `cta-factor-spread`，默认配置 `config/cta_factor_spread.toml`。
+组合放在 `config/cta_factor_spread/`，`config/cta_factor_spread/example.json` 是关闭
+发布的接口样例；`signal.max_pos_u` 独立维护单份 USDT，`signal.spread` 配置
+价差过滤阈值。普通因子和 NQ 使用 Binance 永续，价差使用 OKX/Binance 同分钟
+末盘口；因子、前一分钟价差与仓位决策在同一进程内衔接。仓位状态位于
+`data/cta_factor_spread/positions/cta-spread-okx-bn-1min-pos.json`，不再维护第二份
+Redis 因子绑定表或启动 `cta_cross_spread_signal`。旧独立入口已移出构建清单，
+后面的部署记录描述历史准备状态；本轮没有部署或迁移线上仓位。
 
-- `cta_cross_spread_factor_model_1m_pub`，默认配置
-  `config/cta_cross_spread_factor_model_1m_pub.toml`。
-- `cta_cross_spread_signal`，默认配置 `config/cta_cross_spread.json`。
-- 模型服务 `model_output/cta_cross_spread-binance-futures-1m-<factor>`。
-- 信号状态 `run/cta_cross_spread_status.json`；持久化目标
-  `run/cta_cross_spread_position_flags.json`；历史 `data/cta_cross_spread/`。
-- 环境名 `okex-binance-cta-spread-<tag>`；因子绑定键保持
-  `<env>:cta_symbol_factors`，与原 Spread 分离。
-
-仓库 BTC/ETH × baseline_005 是关闭发布的接口样例，正式币种、因子和符号应由
-研究清单配置。共享配置服务支持该 mode 并禁止保存时改变已有环境的市场含义。
 观察和核算使用 Manager 的账户 NAV；原 Binance 现货图表不适用于这个策略。
 
 仅准备文件的入口是 `scripts/deploy_cta_cross_spread.sh`，默认 dry-run，
 遵守现有本地构建和发布约束。运行环境内使用
 `scripts/start_cta_cross_spread.sh --execute` /
 `scripts/stop_cta_cross_spread.sh --execute`。环境需要配置独立
-`IPC_NAMESPACE`、Manager gateway、发布凭据和 `CTA_POSITION_STRATEGY_PREFIX`。
+`IPC_NAMESPACE`、Manager gateway 和发布凭据；策略名由市场对和频段确定。
 本次没有创建线上策略、绑定账户、部署或启动任何进程。

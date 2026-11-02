@@ -36,6 +36,7 @@ impl FactorCache {
                     ensure!(
                         field.raw.is_none_or(f64::is_finite)
                             && field.value.is_none_or(f64::is_finite)
+                            && field.median.is_none_or(f64::is_finite)
                             && field
                                 .quantile
                                 .is_none_or(|q| q.is_finite() && (0.0..=1.0).contains(&q)),

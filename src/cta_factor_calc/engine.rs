@@ -25,6 +25,7 @@ pub struct Field {
     pub raw: Option<f64>,
     pub value: Option<f64>,
     pub quantile: Option<f64>,
+    pub median: Option<f64>,
     pub ready: bool,
 }
 
@@ -97,6 +98,7 @@ impl Transform {
             raw,
             value,
             quantile,
+            median: self.ranks.quantile_linear(0.5),
             ready: value.is_some() && quantile.is_some() && self.ranks.len() >= self.min_periods,
         }
     }
@@ -151,6 +153,7 @@ impl Nq {
                 raw,
                 value: raw,
                 quantile,
+                median: window.quantile_linear(0.5),
                 ready: raw.is_some()
                     && quantile.is_some()
                     && window.len() >= self.params.rank_min_periods,
@@ -474,6 +477,9 @@ pub struct Engine {
     special: BTreeMap<String, Special>,
     quote_jobs: BTreeMap<GroupKey, Vec<String>>,
     pub latest: BTreeMap<String, FactorPoint>,
+    /// One preceding spread observation is needed by the entry filter. This
+    /// history belongs to the replay generation, including during handover.
+    pub previous_spreads: BTreeMap<String, FactorPoint>,
 }
 impl Engine {
     pub fn new(plan: Plan, config: &Config) -> Result<Self> {
@@ -484,6 +490,7 @@ impl Engine {
             special: BTreeMap::new(),
             quote_jobs: BTreeMap::new(),
             latest: BTreeMap::new(),
+            previous_spreads: BTreeMap::new(),
         };
         let mut groups: BTreeMap<GroupKey, Vec<&Calculation>> = BTreeMap::new();
         for (name, calculation) in &engine.plan.calculations {
@@ -643,6 +650,16 @@ impl Engine {
                     .is_none_or(|old| p.ts_ms > old.ts_ms)
         });
         for point in &points {
+            if point.factor_id.ends_with("-spread") {
+                if let Some(previous) = self
+                    .latest
+                    .get(&point.factor_id)
+                    .filter(|p| p.ts_ms < point.ts_ms)
+                {
+                    self.previous_spreads
+                        .insert(point.factor_id.clone(), previous.clone());
+                }
+            }
             self.latest.insert(point.factor_id.clone(), point.clone());
         }
         Ok(points)
@@ -651,6 +668,8 @@ impl Engine {
         self.special
             .retain(|name, _| plan.calculations.contains_key(name));
         self.latest
+            .retain(|name, _| plan.calculations.contains_key(name));
+        self.previous_spreads
             .retain(|name, _| plan.calculations.contains_key(name));
         for names in self.quote_jobs.values_mut() {
             names.retain(|name| plan.calculations.contains_key(name));

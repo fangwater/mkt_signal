@@ -15,6 +15,13 @@ pub enum Market {
     BinanceMargin,
 }
 impl Market {
+    pub fn short_name(self) -> &'static str {
+        match self {
+            Self::BinanceFutures => "bn",
+            Self::OkexFutures => "okx",
+            Self::BinanceMargin => "bn-spot",
+        }
+    }
     pub const ALL: [Self; 3] = [Self::BinanceFutures, Self::OkexFutures, Self::BinanceMargin];
     pub fn name(self) -> &'static str {
         match self {
@@ -228,10 +235,65 @@ impl Parameters {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct FactorRule {
+    #[serde(rename = "标的")]
+    pub symbol: String,
+    pub nq: String,
+    #[serde(rename = "符号")]
+    pub weight: f64,
+    #[serde(rename = "因子")]
+    pub factor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue: Option<Market>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<Interval>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_venue: Option<Market>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalParameters {
+    pub enabled: bool,
+    pub max_pos_u: f64,
+    #[serde(default)]
+    pub position_algorithm: crate::cta_perp::config::PositionAlgorithm,
+    #[serde(default)]
+    pub nq_mode: NqMode,
+    #[serde(default)]
+    pub symbol_overrides: BTreeMap<String, crate::cta_perp::config::SymbolThresholdOverrides>,
+    pub entry: crate::cta_perp::config::EntryConfig,
+    pub execution: crate::cta_perp::config::ExecutionConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spread: Option<SpreadFilters>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpreadFilters {
+    pub long_quantile: f64,
+    pub short_quantile: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NqMode {
+    #[default]
+    StrictQuantile,
+    LinearMedian,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Combination {
     pub name: String,
-    #[serde(deserialize_with = "unique_map")]
-    pub factors: BTreeMap<String, f64>,
+    pub venue: Market,
+    pub interval: Interval,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_venue: Option<Market>,
+    pub factor_rules: Vec<FactorRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<SignalParameters>,
     #[serde(
         default,
         deserialize_with = "unique_map",
@@ -267,16 +329,34 @@ where
     deserializer.deserialize_map(Visitor(std::marker::PhantomData))
 }
 impl Combination {
+    /// Manager ownership follows market and frequency, independently of the
+    /// configuration filename and the factor rules inside the strategy.
+    pub fn manager_strategy_name(&self) -> String {
+        match self.reference_venue {
+            Some(reference) => format!(
+                "cta-spread-{}-{}-{}-pos",
+                self.venue.short_name(),
+                reference.short_name(),
+                self.interval.name()
+            ),
+            None => format!(
+                "cta-prep-{}-{}-pos",
+                self.venue.short_name(),
+                self.interval.name()
+            ),
+        }
+    }
+
     pub fn from_symbol_factors(
         name: String,
-        market: Market,
+        venue: Market,
         interval: Interval,
         table: BTreeMap<String, BTreeMap<String, f64>>,
         include_nq: bool,
     ) -> Result<Self> {
-        let mut factors = BTreeMap::new();
+        let mut factor_rules = Vec::new();
+        let mut seen = BTreeSet::new();
         for (symbol, row) in table {
-            let symbol = symbol.trim().to_ascii_lowercase();
             for (factor, weight) in row {
                 let factor = factor.trim().to_ascii_lowercase();
                 ensure!(
@@ -288,25 +368,86 @@ impl Combination {
                     .strip_suffix("_positive")
                     .or_else(|| factor.strip_suffix("_negative"))
                     .unwrap_or(&factor);
-                let id = format!("{}-{symbol}-{}-{factor}", market.name(), interval.name());
                 ensure!(
-                    factors.insert(id.clone(), weight).is_none(),
-                    "multiple old sleeves map to {id}; import them as separate combinations"
+                    seen.insert((symbol.clone(), factor.to_string())),
+                    "multiple old sleeves map to one factor; import them as separate combinations"
                 );
-            }
-            if include_nq {
-                factors
-                    .entry(format!("{}-{symbol}-{}-nq", market.name(), interval.name()))
-                    .or_insert(1.0);
+                factor_rules.push(FactorRule {
+                    symbol: symbol.clone(),
+                    factor: factor.into(),
+                    weight,
+                    nq: if include_nq { "0.50" } else { "关闭" }.into(),
+                    venue: None,
+                    interval: None,
+                    reference_venue: None,
+                });
             }
         }
         let combination = Self {
             name,
-            factors,
+            venue,
+            interval,
+            reference_venue: None,
+            factor_rules,
+            signal: None,
             parameters: BTreeMap::new(),
         };
         combination.validate()?;
         Ok(combination)
+    }
+    pub fn rule_id(&self, rule: &FactorRule) -> Result<FactorId> {
+        let symbol = rule.symbol.trim().to_ascii_lowercase();
+        let symbol = if symbol.ends_with("usdt") {
+            symbol
+        } else {
+            format!("{symbol}usdt")
+        };
+        let reference = if rule.factor.eq_ignore_ascii_case("spread") {
+            rule.reference_venue.or(self.reference_venue)
+        } else {
+            None
+        };
+        let name = format!(
+            "{}-{}{symbol}-{}-{}",
+            rule.venue.unwrap_or(self.venue).name(),
+            reference.map_or(String::new(), |m| format!("{}-", m.name())),
+            rule.interval.unwrap_or(self.interval).name(),
+            rule.factor.trim().to_ascii_lowercase()
+        );
+        FactorId::parse(&name)
+    }
+    pub fn factors(&self) -> Result<BTreeMap<String, f64>> {
+        let mut factors = BTreeMap::new();
+        for rule in &self.factor_rules {
+            let id = self.rule_id(rule)?;
+            if rule.weight == 0.0 {
+                continue;
+            }
+            factors.entry(id.name()).or_insert(rule.weight);
+            if rule.nq != "关闭" && id.factor != "nq" {
+                let nq = FactorId {
+                    factor: "nq".into(),
+                    reference_market: None,
+                    ..id
+                };
+                factors.entry(nq.name()).or_insert(1.0);
+            }
+            if self.signal.is_some()
+                && self.reference_venue.is_some()
+                && self.rule_id(rule)?.is_formula()
+            {
+                let source = self.rule_id(rule)?;
+                let spread = FactorId {
+                    market: self.venue,
+                    reference_market: self.reference_venue,
+                    symbol: source.symbol,
+                    interval: self.interval,
+                    factor: "spread".into(),
+                };
+                factors.entry(spread.name()).or_insert(1.0);
+            }
+        }
+        Ok(factors)
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -319,22 +460,189 @@ impl Combination {
             "invalid combination name"
         );
         ensure!(
-            !self.factors.is_empty() && self.factors.len() <= 4096,
-            "combination requires 1..=4096 factor references"
+            !self.factor_rules.is_empty() && self.factor_rules.len() <= 8192,
+            "combination requires 1..=8192 factor rows"
         );
-        ensure!(
-            self.factors.values().all(|v| v.is_finite())
-                && self.factors.values().any(|v| *v != 0.0),
-            "combination requires finite weights and a nonzero term"
-        );
-        for id in self.factors.keys() {
-            FactorId::parse(id).with_context(|| format!("combination {}", self.name))?;
+        let mut seen = BTreeSet::new();
+        for rule in &self.factor_rules {
+            ensure!(rule.weight.is_finite(), "factor sign/weight must be finite");
+            let id = self.rule_id(rule)?;
+            let gate = crate::cta_perp::config::FactorNqRule {
+                symbol: id.symbol.clone(),
+                factor: id.factor.clone(),
+                sign: if rule.weight < 0.0 { -1 } else { 1 },
+                nq: rule.nq.clone(),
+            };
+            gate.thresholds()?;
+            ensure!(
+                seen.insert((id.name(), rule.weight.to_bits(), gate.nq_key())),
+                "duplicate factor/sign/NQ row"
+            );
+            ensure!(
+                id.factor == "spread" || rule.reference_venue.is_none(),
+                "only spread rows accept a reference venue"
+            );
         }
+        let factors = self.factors()?;
+        ensure!(
+            !factors.is_empty() && factors.len() <= 8192,
+            "combination requires nonzero factor references"
+        );
         for (id, parameters) in &self.parameters {
-            ensure!(self.factors.contains_key(id), "unused parameters: {id}");
+            ensure!(factors.contains_key(id), "unused parameters: {id}");
             parameters.validate(&FactorId::parse(id)?)?;
         }
+        if self.signal.is_some() {
+            self.signal_config()?.validate()?;
+            if self.reference_venue.is_some() {
+                self.spread_config()?.validate()?;
+            }
+        }
         Ok(())
+    }
+    pub fn load(path: &Path) -> Result<Self> {
+        let combination: Self = serde_json::from_slice(&std::fs::read(path)?)
+            .context("read unified CTA combination")?;
+        combination.validate()?;
+        ensure!(
+            path.file_stem().and_then(|s| s.to_str()) == Some(&combination.name),
+            "combination filename must match its name"
+        );
+        Ok(combination)
+    }
+    pub fn signal_config(&self) -> Result<crate::cta_perp::config::CtaPerpConfig> {
+        use crate::cta_perp::{
+            config::{CtaPerpConfig, FactorNqRule, PositionAlgorithm},
+            interval::BarInterval,
+        };
+        let p = self
+            .signal
+            .as_ref()
+            .context("combination has no signal parameters")?;
+        let source_venue = self.reference_venue.unwrap_or(self.venue);
+        if self.reference_venue.is_some() {
+            ensure!(
+                self.venue == Market::OkexFutures
+                    && self.reference_venue == Some(Market::BinanceFutures)
+                    && self.interval == Interval::Minute
+                && p.position_algorithm == PositionAlgorithm::V0
+                && p.nq_mode == NqMode::StrictQuantile,
+                "Spread positions require OKX/Binance futures, 1min, independent factor rules and quantile NQ"
+            );
+        } else {
+            ensure!(
+                self.venue == Market::BinanceFutures && p.spread.is_none(),
+                "Prep positions require Binance futures without spread filters"
+            );
+        }
+        let mut rules = Vec::new();
+        for rule in self.factor_rules.iter().filter(|r| r.weight != 0.0) {
+            let id = self.rule_id(rule)?;
+            if self.reference_venue.is_some() && id.factor == "spread" {
+                continue;
+            }
+            ensure!(
+                id.market == source_venue
+                    && id.interval == self.interval
+                    && id.reference_market.is_none()
+                    && id.factor != "nq",
+                "signal rows require ordinary factors at the combination venue/frequency"
+            );
+            rules.push(FactorNqRule {
+                symbol: id.symbol,
+                factor: id.factor,
+                sign: if rule.weight > 0.0 { 1 } else { -1 },
+                nq: rule.nq.clone(),
+            });
+        }
+        ensure!(!rules.is_empty(), "signal requires nonzero factor rows");
+        if p.position_algorithm == PositionAlgorithm::V1 {
+            let expected = if p.entry.nq_change_enabled {
+                Some((p.entry.nq_long_quantile, p.entry.nq_short_quantile))
+            } else {
+                None
+            };
+            ensure!(
+                rules
+                    .iter()
+                    .all(|r| r.thresholds().is_ok_and(|t| t == expected)),
+                "symbol mean requires one common NQ gate for its factor rows"
+            );
+            rules.clear();
+        }
+        Ok(CtaPerpConfig {
+            bar_interval: match self.interval {
+                Interval::Minute => BarInterval::OneMinute,
+                Interval::FiveMinutes => BarInterval::FiveMinutes,
+                Interval::FifteenMinutes => BarInterval::FifteenMinutes,
+            },
+            enabled: p.enabled,
+            max_pos_u: p.max_pos_u,
+            position_algorithm: p.position_algorithm,
+            symbol_overrides: p.symbol_overrides.clone(),
+            factor_rules: rules,
+            strict_nq: p.nq_mode == NqMode::StrictQuantile,
+            linear_nq: p.nq_mode == NqMode::LinearMedian,
+            entry: p.entry.clone(),
+            execution: p.execution.clone(),
+        })
+    }
+    pub fn spread_config(&self) -> Result<crate::cta_spread::config::CtaSpreadConfig> {
+        use crate::cta_spread::config::{
+            CtaSpreadConfig, EntryConfig, ExecutionConfig, SpreadMode,
+        };
+        ensure!(
+            self.reference_venue.is_some(),
+            "not a spread position table"
+        );
+        let p = self.signal.as_ref().context("missing signal parameters")?;
+        let filters = p
+            .spread
+            .as_ref()
+            .context("Spread positions require explicit spread filters")?;
+        let c = CtaSpreadConfig {
+            mode: SpreadMode::OkexBinance,
+            enabled: p.enabled,
+            nq_change_enabled: p.entry.nq_change_enabled,
+            max_pos_u: p.max_pos_u,
+            symbol_overrides: BTreeMap::new(),
+            entry: EntryConfig {
+                factor_long_quantile: p.entry.factor_long_quantile,
+                factor_short_quantile: p.entry.factor_short_quantile,
+                spread_long_quantile: filters.long_quantile,
+                spread_short_quantile: filters.short_quantile,
+                nq_long_quantile: p.entry.nq_long_quantile,
+                nq_short_quantile: p.entry.nq_short_quantile,
+            },
+            execution: ExecutionConfig {
+                factor_exit_quantile_long: p.execution.factor_exit_quantile_long,
+                factor_exit_quantile_short: p.execution.factor_exit_quantile_short,
+            },
+        };
+        c.validate()?;
+        Ok(c)
+    }
+    pub fn signal_table(&self) -> Result<crate::cta_perp::factors::SymbolFactorTable> {
+        use crate::cta_perp::factors::{SymbolFactorTable, SymbolFactors};
+        let config = self.signal_config()?;
+        if !config.factor_rules.is_empty() {
+            return Ok(config.rule_table());
+        }
+        let mut table = SymbolFactorTable::new();
+        for rule in self.factor_rules.iter().filter(|r| r.weight != 0.0) {
+            let id = self.rule_id(rule)?;
+            let row = table.entry(id.symbol).or_insert_with(|| SymbolFactors {
+                factors: vec![],
+                weights: vec![],
+            });
+            ensure!(
+                !row.factors.contains(&id.factor),
+                "symbol mean cannot duplicate a factor row"
+            );
+            row.factors.push(id.factor);
+            row.weights.push(rule.weight);
+        }
+        Ok(table)
     }
 }
 
@@ -352,14 +660,21 @@ pub struct Plan {
 impl Plan {
     pub fn merge(combinations: impl IntoIterator<Item = Combination>) -> Result<Self> {
         let mut plan = Self::default();
+        let mut signal_owners = BTreeSet::new();
         for combination in combinations {
             combination.validate()?;
+            if combination.signal.is_some() {
+                ensure!(
+                    signal_owners.insert(combination.manager_strategy_name()),
+                    "only one signal combination may own each market/frequency strategy"
+                );
+            }
             ensure!(
                 !plan.combinations.contains_key(&combination.name),
                 "duplicate combination {}",
                 combination.name
             );
-            for (name, weight) in &combination.factors {
+            for (name, weight) in &combination.factors()? {
                 if *weight == 0.0 {
                     continue;
                 }
@@ -423,7 +738,7 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Worker {
     #[serde(rename = "cta-prep-binance-futures")]
     Perp,
@@ -444,6 +759,14 @@ impl Worker {
         }
     }
     pub fn validate_plan(self, plan: &Plan) -> Result<()> {
+        if self == Self::Spread {
+            ensure!(
+                plan.combinations
+                    .values()
+                    .all(|c| c.signal.is_none() || c.reference_venue.is_some()),
+                "Spread worker position tables require an explicit market pair"
+            );
+        }
         if self == Self::Perp {
             ensure!(
                 plan.calculations

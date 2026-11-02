@@ -1,0 +1,36 @@
+# Render with scripts/render_cta_factor_config_nginx.py before installation.
+location = /cta/cta-prep-binance-futures/config {
+    return 303 /cta/cta-prep-binance-futures/config/;
+}
+location /cta/cta-prep-binance-futures/config/ {
+    auth_request /manager-auth/cta-factor-config;
+    proxy_pass http://127.0.0.1:__CTA_CONFIG_PORT__/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    add_header Cache-Control "no-store";
+}
+location = /manager-auth/cta-factor-config {
+    internal;
+    proxy_pass http://cta_manager_api/api/auth/verify;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-CTA-Source-ID "__CTA_CONFIG_SOURCE_IDS__";
+    proxy_set_header X-CTA-Access configure;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}
+# Replace the old editable configuration locations with these redirects.
+location = /cta/binance-cta-perp-rx01/config { return 303 "/cta/cta-prep-binance-futures/config/#rx01_binance-futures_15min"; }
+location /cta/binance-cta-perp-rx01/config/ { return 303 "/cta/cta-prep-binance-futures/config/#rx01_binance-futures_15min"; }
+location = /cta/binance-cta-perp-rx03/config { return 303 "/cta/cta-prep-binance-futures/config/#rx03_binance-futures_1min"; }
+location /cta/binance-cta-perp-rx03/config/ { return 303 "/cta/cta-prep-binance-futures/config/#rx03_binance-futures_1min"; }
+location = /cta/binance-cta-perp-rx04/config { return 303 "/cta/cta-prep-binance-futures/config/#rx04_binance-futures_5min"; }
+location /cta/binance-cta-perp-rx04/config/ { return 303 "/cta/cta-prep-binance-futures/config/#rx04_binance-futures_5min"; }
+
+# Spread uses the same editor and permission boundary, selecting its own catalog.
+location = /cta/cta-factor-spread/config { return 303 "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread"; }
+location /cta/cta-factor-spread/config/ { return 303 "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread"; }
+location = /cta/okex-binance-cta-spread-rx01/config { return 303 "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread"; }
+location /cta/okex-binance-cta-spread-rx01/config/ { return 303 "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread"; }
+location = /cta/binance-cta-spread-rx01/config { return 303 "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread"; }
+location /cta/binance-cta-spread-rx01/config/ { return 303 "/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread"; }
