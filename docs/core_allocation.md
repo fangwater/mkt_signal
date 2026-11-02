@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-10-30 10:24 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-02 15:05 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-02 15:05 UTC，按要求将 RX03 / RX04 从执行链路移除并 taker 清仓至0：
+`binance-cta-perp-rx03`、`binance-cta-perp-rx04` 均设为 `enabled=false`，
+通过环境本地脚本停止 signal，以及 `binance_exec_trade07` / `binance_exec_rx04_5m05`
+各自的 exec-pre-trade、trade_engine。63份因子策略先发布 `clear, signal=1`；
+因子子仓位低于最小下单量留下的12/8笔尾仓，按账户实际整手数量提交 reduce-only
+MARKET，全部成交并逐单对账为0。15:05 UTC再次签名核验两账户永续持仓、普通及算法挂单均0。
+Manager解除 virtual04/virtual05 跟随并删除28/35个账户绑定；实际Exec活跃策略索引均为空。
+账户监控、持久化、Viz/Config及历史数据保留，下单进程保持停止。CPU19 publisher
+PID2307925、CPU28 publisher PID705737继续运行，CPU绑定和 `.228` source IP未变。
+回执 `artifacts/rx03_rx04_taker_clear_20261102/final_verification.json`；完整私有审计在
+`~/crypto_cta_manager/maintenance-backups/rx03_rx04_taker_clear_20261102T144523Z/`。
 
 2026-10-30 10:24 UTC，新RX01 Perp 15min按操作员清单进入观察预热：38币、89因子、
 145个计算组合、146条独立仓位规则，SKL/factor_170的NQ关闭和0.50分别维护。
@@ -802,14 +814,14 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta_perp_factor_model_15m_pub(binance-cta-perp-rx01) | PID3646786；38币/89因子/146仓位规则；2026-10-30观察预热，enabled=false |
 | 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-22 新版23币/22因子/69组合，PID160373，双Manager推送；68/69就绪，RLC继续预热 |
-| 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | 16币/26因子，PID2307925；2026-10-29恢复45组合交易，单份200 USDT；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
+| 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | PID2307925；2026-11-02清仓至0并解除Exec07全部绑定，signal/下单停止，因子计算保留；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
 | 21 | (空) | 原 okex_mm_alpha trade_signal 已停止，配置保留 |
 | 22 | (空) | 原 okex_mm_alpha pre_trade 已停止，配置保留 |
 | 23 | (空) | 原 okex_mm_alpha trade_engine 已停止，配置保留 |
 | 24 | crypto_cta_manager / cta_web | Manager 网页服务，2026-10-22 实测仍固定 CPU24 |
 | 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
-| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737全部线程；CTA_PERP_FACTOR_MODEL_5M_CORE=28；2026-10-23开启5min实盘，仓位重算保留publisher |
+| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737；2026-11-02清仓至0并解除RX04 5min Exec全部绑定，signal/下单停止，因子计算保留；CTA_PERP_FACTOR_MODEL_5M_CORE=28 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |

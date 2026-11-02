@@ -1,6 +1,16 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-10-30 10:24 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-02 15:05 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-02 15:05 UTC，RX03 / RX04 已 taker 清仓并从执行链路移除。
+`binance_exec_trade07` / `binance_exec_rx04_5m05` 的 `local_ips=["172.31.35.228"]`
+保持；没有修改ENI/EIP、源地址或路由。两份信号禁用并停止，两套Exec的
+exec-pre-trade/trade_engine通过环境本地脚本停止。28/35个Manager绑定、
+virtual04/virtual05跟随及全部活跃Exec策略索引已移除；签名复核两账户的永续持仓、
+普通/算法挂单均为0。按账户实际数量补充的12/8笔 reduce-only MARKET全部成交并对账为0。
+CPU19/28的因子publisher、账户监控及历史持久化保留；两套Exec各保留监控/persist/Viz/Config。
+完整私有审计 `~/crypto_cta_manager/maintenance-backups/rx03_rx04_taker_clear_20261102T144523Z/`；
+脱敏回执 `artifacts/rx03_rx04_taker_clear_20261102/final_verification.json`。
 
 2026-10-30 10:24 UTC，新RX01 Perp 15min按操作员清单进入观察预热：38币、89因子、
 145个计算组合、146条独立仓位规则，SKL/factor_170的NQ关闭和0.50分别维护。
@@ -554,10 +564,10 @@ binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账�
 binance-cta-spread-rx01      已退役                         全环境归档；旧10186/19174监听及网页入口移除
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
-binance-cta-perp-rx03        默认出口 / 172.31.35.228       16币/45组合实盘，单份200 USDT；loopback10197/19187，关联Exec07
+binance-cta-perp-rx03        默认出口 / 172.31.35.228       signal禁用并停止；已清仓并解除Exec07绑定，CPU19因子计算及10197/19187页面保留
 binance-cta-perp-rx01        默认出口 / 172.31.35.228       15min框架待新清单；交易关闭、无进程，预留10195/19185
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
-binance-cta-perp-rx04        默认出口 / 172.31.35.228       5min实盘信号，loopback10198/19188；关联virtual05/RX04 5min，单份100 USDT
+binance-cta-perp-rx04        默认出口 / 172.31.35.228       signal禁用并停止；已清仓并解除virtual05/Exec绑定，CPU28因子计算及10198/19188页面保留
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230   全部停止；全部持仓/挂单/借款0，仅USDT；原配置及IP预留保留
@@ -579,9 +589,9 @@ binance_exec_trade02         172.31.35.228, 172.31.35.234
 binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
-binance_exec_rx04_5m05       172.31.35.228                  RX04 5min，复用05页面/端口，follow virtual05倍率1，lgq_grid_prep；六个Exec进程在线
+binance_exec_rx04_5m05       172.31.35.228                  RX04 5min已清仓至0、解除跟随及全部绑定；下单停止，监控/persist/Viz/Config保留
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，交易与Exec进程已停止；清仓并归档，Manager已移除
-binance_exec_trade07         172.31.35.228                  RX03 RapidX，六个Exec进程在线；follow virtual04/cta_perp_rx03倍率1、lgq_grid_prep，旧组合显式clear
+binance_exec_trade07         172.31.35.228                  RX03已清仓至0、解除跟随及全部绑定；下单停止，监控/persist/Viz/Config保留
 binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生STANDARD USD-M多资产/单向，在线Grid，follow virtual02/RX02，倍率1
 ```
 
