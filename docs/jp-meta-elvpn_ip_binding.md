@@ -1,6 +1,21 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 06:43 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 07:23 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 07:23 UTC，完成 CTA Kafka / NQ 健康修复及 ICX 下线清理，源码44fe891c。
+Kafka PARTITION_EOF 正常返回空轮询，后续有效记录清理旧Kafka错误；NQ允许从保留的增量
+盘口重建有效双边报价，显式不完整snapshot仍保持缺失侧无效。Period库19项、主库1448项
+测试通过（3项忽略），本机release构建后上传并校验SHA-256，再原子替换两个计算程序。
+仅通过环境脚本重启Prep，PID3729504 / CPU17；Spread程序同步更新但计算仍停止，
+Config、Manager和82个其他受保护进程未重启。全部配置、执行参数和绑定保持，源IP未改。
+用户要求移除ICX：Prep02的1min删1条、15min删2条规则，计算408→404；Manager两份
+ICX零目标及停止执行配置同步移除，其他标的、额度及NQ规则保持。回放追上实时后404项
+都有输出，94项NQ全部ready，Kafka/仓位表错误为空。核验时288项ready；另60项缺大小单
+阈值、35项归一化/排序样本不足、21项公式原始值缺失，仍保持未就绪，不降低就绪要求。
+七份仓位推送保持false，八条绑定shares=0，四套Exec下单进程停止。回执及诊断：
+`artifacts/cta_factor_health_20261103/`；发布私有备份
+`~/crypto_cta_manager/maintenance-backups/cta_factor_health_20261103T070200Z/`。
+ICX规则/目标另有私有备份，临时发布目录和Kafka诊断程序已清理。
 
 2026-11-03 06:43 UTC，RX01 / RX03 按要求切换为全新执行账户 `binance_exec_rx01` /
 `binance_exec_rx03`，分别绑定 Prep01 / Prep02 的1min、5min、15min，六条绑定均shares=0。

@@ -1,0 +1,11 @@
+{
+  "removed_symbol": "ICXUSDT",
+  "strategies": [
+    "cta-prep02-bn-15min-pos",
+    "cta-prep02-bn-1min-pos"
+  ],
+  "zero_targets_removed": 2,
+  "unrelated_strategy_writes": 0,
+  "runtime_targets_pruned_and_zero": true,
+  "all_bindings_still_stopped": true
+}

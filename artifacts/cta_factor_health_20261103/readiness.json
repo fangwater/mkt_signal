@@ -1,0 +1,27 @@
+{
+  "checked_at_ms": 1793690476478,
+  "generation": "67c74254-3f56-46dc-8a4b-c0dee17c0de6",
+  "error": null,
+  "positions_error": null,
+  "causes": {
+    "missing_amount_thresholds": 60,
+    "ready": 288,
+    "minimum_samples": 35,
+    "formula_raw_missing": 21
+  },
+  "latest_timestamps": {
+    "15min": {
+      "oldest": 1793690100000,
+      "newest": 1793690100000
+    },
+    "1min": {
+      "oldest": 1793690460000,
+      "newest": 1793690460000
+    },
+    "5min": {
+      "oldest": 1793690400000,
+      "newest": 1793690400000
+    }
+  },
+  "all_six_runtime_prep_tables_disabled": true
+}
