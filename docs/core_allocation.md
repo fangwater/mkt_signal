@@ -1,7 +1,18 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-03 02:28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 02:45 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 02:45 UTC，按操作员澄清移除JP旧 `lgq_ltp_81857` 账户入口，
+对应 `binance_exec_trade08`，此前已停用但仍显示在Manager账户列表。
+检查旧环境无交易进程、绑定/跟随/待发布任务均0后，备份并从Manager运行配置移除
+该source和对应source_viewers；仅重启Manager，现PID3279392、CPU24。
+账户列表及总览已无旧入口。新 `okex_binace_cross_1min` 组合及
+`okex_exec_trade01` / `binance_exec_spread01`两腿保持，87个受保护进程PID/启动时间一致。
+旧source记录、symbol索引、仓位快照及日净值记录指纹保持，虚拟账户定义保持；
+交易所下单/撤单/清仓调用数0，source IP及CPU19/28因子计算保持。
+回执 `artifacts/ltp_81857_manager_remove_20261103/verified.json`；完整私有备份
+`~/crypto_cta_manager/maintenance-backups/ltp_81857_manager_remove_20261103T024033Z/`。
 
 2026-11-03 02:28 UTC，补齐 RX03 / RX04 在 Manager 的入口清理：此前仅清仓并解绑，
 两条source仍启用，virtual04/virtual05也保留，故账户页仍有 `RX04 5min`。
@@ -831,7 +842,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 21 | (空) | 原 okex_mm_alpha trade_signal 已停止，配置保留 |
 | 22 | (空) | 原 okex_mm_alpha pre_trade 已停止，配置保留 |
 | 23 | (空) | 原 okex_mm_alpha trade_engine 已停止，配置保留 |
-| 24 | crypto_cta_manager / cta_web | PID3252503；2026-11-03移除RX03/RX04账户及虚拟账户入口；跨所组合和历史核算保持 |
+| 24 | crypto_cta_manager / cta_web | PID3279392；2026-11-03移除旧lgq_ltp_81857入口；okex_binace_cross_1min组合及历史核算保持 |
 | 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
 | 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737；2026-11-02清仓至0并解除RX04 5min Exec全部绑定，signal/下单停止，因子计算保留；CTA_PERP_FACTOR_MODEL_5M_CORE=28 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |

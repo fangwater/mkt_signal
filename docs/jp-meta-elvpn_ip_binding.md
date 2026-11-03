@@ -1,6 +1,15 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 02:28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 02:45 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 02:45 UTC，移除旧 `lgq_ltp_81857` / `binance_exec_trade08` 的Manager入口。
+仅从Manager配置移除旧source及对应source_viewers，并重启Manager；旧环境继续停止，
+历史source记录、symbol索引、仓位快照和日净值指纹保持。新跨所组合
+`okex_binace_cross_1min`及两腿 `okex_exec_trade01`（`.229/.230`）、
+`binance_exec_spread01`（`.228/.228`）保持，87个受保护进程PID及启动时间一致。
+旧Exec08的 `.228/.228` 配置、共享IP、ENI/EIP和路由保留；交易所下单/撤单/清仓调用数0。
+证据 `artifacts/ltp_81857_manager_remove_20261103/verified.json`；私有备份
+`~/crypto_cta_manager/maintenance-backups/ltp_81857_manager_remove_20261103T024033Z/`。
 
 2026-11-03 02:28 UTC，补齐 RX03 / RX04 的Manager入口移除：从运行配置移除
 `binance_exec_trade07` / `binance_exec_rx04_5m05` 及其source_viewers、RX03 funding出口例外，
@@ -601,7 +610,7 @@ binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部
 binance_exec_rx04_5m05       172.31.35.228                  RX04 5min已清仓至0，Manager账户和虚拟账户入口已移除；下单停止，监控/persist/Viz/Config保留
 binance_exec_trade06         172.31.35.228                  RX01 RapidX，交易与Exec进程已停止；清仓并归档，Manager已移除
 binance_exec_trade07         172.31.35.228                  RX03已清仓至0，Manager账户和虚拟账户入口已移除；下单停止，监控/persist/Viz/Config保留
-binance_exec_trade08         172.31.35.228, 172.31.35.228   lgq_ltp_81857，原生STANDARD USD-M多资产/单向，在线Grid，follow virtual02/RX02，倍率1
+binance_exec_trade08         172.31.35.228, 172.31.35.228   旧环境继续停止，lgq_ltp_81857 Manager入口已移除；历史保留，新组合另走binance_exec_spread01
 ```
 
 `0.0.0.0` 表示不绑独立 source IP，走默认出口（`.228`）。

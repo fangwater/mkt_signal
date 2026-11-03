@@ -1,0 +1,19 @@
+{
+  "removed_source": "binance_exec_trade08",
+  "removed_account": "lgq_ltp_81857",
+  "manager_entry_count": 0,
+  "preserved_group": {
+    "account": "okex_binace_cross_1min",
+    "enabled": true,
+    "execution_sources": [
+      "okex_exec_trade01",
+      "binance_exec_spread01"
+    ]
+  },
+  "history_preserved": true,
+  "virtual_definitions_preserved": true,
+  "protected_processes_unchanged": 87,
+  "orders_submitted": 0,
+  "manager_pid": 3279392,
+  "checked_at_ms": 1793673886103
+}
