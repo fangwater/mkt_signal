@@ -1,0 +1,22 @@
+{
+  "commit": "fa63d6e495d7e968fa3559ef122eb5c59fa3f929",
+  "branch": "arbmm",
+  "source": "clean committed snapshot within active local worktree",
+  "started_workers": [
+    "cta-prep-binance-futures"
+  ],
+  "spread_worker_started": false,
+  "all_publishing_disabled": true,
+  "files": {
+    "cta-factor-spread/config/cta_factor_spread/okex-futures_binance-futures_1min.json": "a5d346f6ef9f4c7f90b6c09c4368f10487be16a8a532959388fc9ada547aa025",
+    "cta-factor-spread/cta-factor-spread": "7127af7e53525426919240d21fcfb7e33cddb3d2529d3dd850a1b7240e090f32",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/binance-futures_15min.json": "92a878227ca0e450ac0750c967d166380bd750e906c6c2a60b104543720cccf3",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/binance-futures_1min.json": "b5f0d1eccbf2d3f188aa4ce6d09bcc8c52842ff0acc53bfb475adf9411a272ea",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/binance-futures_5min.json": "973ed4771b79c966b6cf0d5eed115c0a2e2f70317d8bc8795c72c64eca46fda9",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/prep02_binance-futures_15min.json": "59127ca65d713e8c32f3c3d316e88bfb6d2fd447135ba4ae2018604e0d6f1e32",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/prep02_binance-futures_1min.json": "22699010a05850f013d8db4e766a76bf29c301a6284398db7cf33dd74b27813f",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/prep02_binance-futures_5min.json": "f81d217f26a0b09cc028e3ef02f851de2cca763b42146df02d6e0ffd40e29e4d",
+    "cta-prep-binance-futures/cta-factor-config": "e6db97c431951f4af379ea832c2d293384f958295ecdbd91b16078957603effb",
+    "cta-prep-binance-futures/cta-prep-binance-futures": "7459bfc17940084126e3ecc8201f3575222905237279aa4922b6bedd9330a3dc"
+  }
+}

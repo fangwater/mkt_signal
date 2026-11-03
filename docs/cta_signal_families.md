@@ -1,15 +1,18 @@
 # CTA 仓位信号：Perp 与 Spread
 
-最后更新：2026-11-02 UTC（独立因子计算核心与 Perp/Spread 计算进程，本地源码未部署）
+最后更新：2026-11-03 UTC（Prep 多组计算已部署并预热，仓位发布关闭）
 
 当前新增的因子计算入口是 `cta-prep-binance-futures` / `cta-factor-spread`，共用
-`cta_factor_calc` 核心。前者合并 `rx01_binance-futures_15min`、
-`rx03_binance-futures_1min`、`rx04_binance-futures_5min` 的 Binance 永续因子需求；
+`cta_factor_calc` 核心。前者合并 `binance-futures_15min`、
+`binance-futures_1min`、`binance-futures_5min` 的 Binance 永续因子需求；
 后者仍可组合普通单市场因子、NQ 与跨市场价差。输入按完整因子 ID 去重，
-计算进程独立于策略信号及账户执行。统一 ID 和配置操作见 [独立因子计算](cta_factor_calc.md)。
+计算进程直接维护策略信号，账户执行由下游 Manager/Exec 承担。统一 ID 和配置操作见 [独立因子计算](cta_factor_calc.md)。
 当前源码由两个因子进程直接维护按频段命名的 `cta-*-pos` 仓位表，原独立
 信号二进制已移出构建清单。仓位持久化和发布见[仓位表说明](cta_factor_calc.md#按频段维护仓位表)。
-下面现有信号与历史部署的命名描述旧入口，尚未切换线上部署。
+RX01 已 taker 清仓并解除旧仓位绑定。用户确认更换 Prep02 因子名并授权部署后，
+`fa63d6e4` 多组版本于 2026-11-03 发布：Prep01/Prep02 各三个频段、408 项合并计算，
+Prep CPU17 正在预热；Spread01 产物/配置同步更新，计算仍停止。组与频段的仓位、
+开关和额度隔离；七张表开关均关闭、执行绑定0。下面命名和运行状态均为历史记录。
 
 新增独立 `cta_cross_spread` 1min 策略族：OKX 统一账户的永续作为方向腿，
 Binance 永续作为退出对冲腿；复用 Spread 的因子/NQ/价差门槛和仓位状态机。

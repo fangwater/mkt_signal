@@ -1,7 +1,32 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-03 02:45 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 05:08 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 05:08 UTC，用户确认 Prep02 两条 SOL/DOGE 15min 规则使用
+`TD_MT_040` 后，发布 `arbmm` 的 `fa63d6e4` 多策略组产物。Prep01 / Prep02
+各自 1min/5min/15min，共六张表、408 项合并计算；Spread01 配置和产物同步升级，
+其计算进程保持停止。Prep PID3522829 固定 CPU17，Config PID3522750 使用 housekeeping，
+监听 `127.0.0.1:19220`。Prep 已开始历史预热；七张表 `enabled=false`，Manager
+按新组名注册的七个策略均为零目标、无执行绑定，四个未启用的旧表定义已移除。
+旧版空账本及替换前产物/配置均先备份，未覆盖其他操作员的配置；Exec06 与跨所两腿
+下单进程保持停止，RX01 USDT 永续仓位/挂单仍 0，81 个受保护进程身份保持。
+七份页面的真实 Chromium 预览、组选择、行数、额度、桌面/手机检查通过，预览未修改开关。
+配置入口 `/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#prep02_binance-futures_1min`。
+没有改动交易源 IP、ENI/EIP 或路由。远端审计
+`~/crypto_cta_manager/maintenance-backups/cta_prep02_deploy_20261103T050422Z/`；
+脱敏回执 `artifacts/cta_prep02_deploy_20261103/verified.json`。
+
+2026-11-03 04:25 UTC，按用户“先开发，再上线”的要求，停止新
+`~/cta-prep-binance-futures` 和 `~/cta-factor-spread` 计算进程，实际进程扫描均为 0。
+此前已完成 RX01（Exec06）USDT 永续 taker 清仓：实际合约仓位、普通/算法挂单均 0，
+91 个旧因子账户绑定、virtual06 跟随及 Exec 活跃策略索引均已移除。
+旧 RX01/03/04 和跨所 Spread 的 signal/publisher/config/dashboard 已停止；不恢复旧交易。
+两个新运行目录和单组策略定义保留，四个仓位开关均关闭且无执行绑定；Exec06 及跨所
+两腿下单进程保持停止，监控/持久化/Viz/Config 保留。新统一配置服务仍监听 loopback19220，
+4191 CTA 网关及导航已安装，旧配置 URL 返回 410；多策略组功能仅本地开发，后续不自动上线。
+CPU17/18/19/28 当前无 CTA 因子进程；源 IP、ENI/EIP、路由、其他交易进程保持。
+回执：`artifacts/rx01_taker_clear_20261103/`、`artifacts/cta_factor_replace_20261103/user-paused.json`。
 
 2026-11-03 02:45 UTC，按操作员澄清移除JP旧 `lgq_ltp_81857` 账户入口，
 对应 `binance_exec_trade08`，此前已停用但仍显示在Manager账户列表。
@@ -835,16 +860,16 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta_perp_factor_model_15m_pub(binance-cta-perp-rx01) | PID3646786；38币/89因子/146仓位规则；2026-10-30观察预热，enabled=false |
-| 18 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx02) | 2026-10-22 新版23币/22因子/69组合，PID160373，双Manager推送；68/69就绪，RLC继续预热 |
-| 19 | cta_perp_factor_model_1m_pub(binance-cta-perp-rx03) | PID2307925；2026-11-02清仓至0并解除Exec07全部绑定，signal/下单停止，因子计算保留；CTA_PERP_FACTOR_MODEL_1M_CORE=19 |
+| 17 | cta-prep-binance-futures | PID3522829；Prep01/Prep02 六张表，408 项计算；历史预热中，六个发布开关均关闭、绑定0 |
+| 18 | 空闲 / CTA Spread 预留 | 多组产物和 Spread01 配置已安装，计算进程保持停止；发布关闭、绑定0 |
+| 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
 | 21 | (空) | 原 okex_mm_alpha trade_signal 已停止，配置保留 |
 | 22 | (空) | 原 okex_mm_alpha pre_trade 已停止，配置保留 |
 | 23 | (空) | 原 okex_mm_alpha trade_engine 已停止，配置保留 |
 | 24 | crypto_cta_manager / cta_web | PID3279392；2026-11-03移除旧lgq_ltp_81857入口；okex_binace_cross_1min组合及历史核算保持 |
 | 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
-| 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737；2026-11-02清仓至0并解除RX04 5min Exec全部绑定，signal/下单停止，因子计算保留；CTA_PERP_FACTOR_MODEL_5M_CORE=28 |
+| 28 | 空闲 | RX04 旧因子/信号/页面已停止，旧 5min 已清仓解绑并移除 Manager 入口 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |

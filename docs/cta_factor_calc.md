@@ -1,21 +1,26 @@
 # CTA 因子计算与仓位表
 
-最后更新：2026-11-02 UTC（源码框架和本地验证，未部署）
+最后更新：2026-11-03 UTC（多策略组和 Prep02 已部署，发布保持关闭）
 
 ## 按频段维护仓位表
 
-因子计算继续共享输入与预热状态，仓位和 Manager 归属按频段独立：
+因子计算继续共享输入与预热状态，仓位和 Manager 归属按 `strategy_group`、市场与频段独立。
+同一进程可同时维护 `prep01` / `prep02` 或 `spread01` / `spread02`，每组有自己的
+因子规则、NQ 条件、开平仓阈值、USDT 额度及各频段 `signal.enabled`。例如：
 
 | 仓位策略名 | 频率 | 单份 USDT 配置 |
 |---|---|---|
-| `cta-prep-bn-1min-pos` | 1min | `rx03_binance-futures_1min.json.signal.max_pos_u` |
-| `cta-prep-bn-5min-pos` | 5min | `rx04_binance-futures_5min.json.signal.max_pos_u` |
-| `cta-prep-bn-15min-pos` | 15min | `rx01_binance-futures_15min.json.signal.max_pos_u` |
-| `cta-spread-okx-bn-1min-pos` | 1min | `cta_factor_spread/example.json.signal.max_pos_u` |
+| `cta-prep01-bn-1min-pos` | 1min | `binance-futures_1min.json.signal.max_pos_u` |
+| `cta-prep01-bn-5min-pos` | 5min | `binance-futures_5min.json.signal.max_pos_u` |
+| `cta-prep01-bn-15min-pos` | 15min | `binance-futures_15min.json.signal.max_pos_u` |
+| `cta-spread01-okx-bn-1min-pos` | 1min | `cta_factor_spread/okex-futures_binance-futures_1min.json.signal.max_pos_u` |
 
-现有组合文件名保留为配置身份；Manager 策略名由市场、策略类别和频段确定，
-不再由 RX 环境前缀拼接因子。一个市场/频段只允许一份带 `signal` 参数的
-Prep 组合。两个计算进程各持有自己的单实例运行锁；只计算因子的组合仍可共享引用。
+组合文件名必须与 `name` 一致；用 `prep02_binance-futures_1min` 等名字区分同频段配置。
+每份 JSON 显式填写 `strategy_group`（1–32 位小写字母、数字或下划线，以字母开头）。
+Manager 策略名为 `cta-<strategy_group>-<市场缩写>-<频段>-pos`，Spread 增加参照市场缩写。
+同一组/市场/频段只允许一份带 `signal` 的组合；不同组可同时配置同市场同频段。
+同一组可包含三个 Prep 频段，Spread 当前仅支持 1min。两个计算进程各持有自己的单实例运行锁。
+共享完整因子 ID 的定义必须一致；各组可以有不同符号权重、NQ 门槛及交易参数。
 
 每个 symbol × factor / NQ 规则仍独立开平仓、冻结入场 qty、持久化和观察；
 现有 v0/v1 算法选择保持。发布时将本频段所有子仓位按币种相加，向 Manager
@@ -26,12 +31,14 @@ Spread 的方向腿和对冲腿按各自 venue 分别求和，保留已退出规
 
 USDT 额度仍按当前单份口径使用：v0 每条规则一份，v1 每个标的一份，
 Spread 每个 symbol × factor 一份；不是整个频段共享一个总金额上限。
-修改一个频段的额度只影响该频段之后的新开仓。Manager 使用四个策略身份
-分别配置跟随份数、观察成交、PnL 和资金费；内部子仓位明细继续留在信号状态和日志。
+修改某组某频段的额度只影响该表之后的新开仓。Manager 按组及频段的独立策略身份
+配置跟随份数、观察成交、PnL 和资金费；内部子仓位明细继续留在信号状态和日志。
+停用或删除一组不修改其他组的仓位与配置；只要仍有一组引用，因子计算就继续。
+已有仓位组合不允许原地修改组、市场或频段，须建立新的组合并明确处理原归属。
 
 仓位表由因子进程内的 `cta_factor_calc::positions` 模块维护，不再启动独立
-`cta-signal` / `cta_*_signal` 进程。Prep 进程持有三个频段的表，Spread 进程
-持有 OKX–Binance 1min 的表。仓位直接读取当前有效计算代次的结果，无需通过
+`cta-signal` / `cta_*_signal` 进程。Prep 进程持有各策略组的三个频段表，Spread 进程
+持有各策略组的 OKX–Binance 1min 表。仓位直接读取当前有效计算代次的结果，无需通过
 IPC 订阅自己的因子流；原因子 IPC 仍可供其他只读消费者使用。
 
 每张表在 `<history_dir>/positions/<仓位表名>.json` 持久化完整组合、子仓位、
@@ -46,30 +53,40 @@ IPC 订阅自己的因子流；原因子 IPC 仍可供其他只读消费者使�
 包含相同定义时暂停该表决策与发布。暂停发布保留子仓位，不生成模拟仓位。
 移除 `signal` 或删除组合时以原表名发布清零目标，持久化后持续重试，直到
 所有 Manager 确认后才完成退役；重启恢复尚未完成的清零任务。
-Spread 因子和当前 NQ 对齐，入场使用前一分钟价差；前一分钟价差来自同一个
+Spread 因子与 NQ 的输出时间对齐；NQ 已整体滞后一根 bar，入场价差也使用前一分钟。
+前一分钟价差来自同一个
 计算代次保存的前值。依赖缺失最多等待 5 秒，之后仍允许因子退出。
 
 切换部署须先停旧独立信号进程，核对并明确迁移旧因子策略的账本、目标和
 Manager 绑定，再启用新表；不会自动导入旧目录、叠加发布或重写历史归属。
-本轮仅修改本地源码，没有部署、改线上额度或更改账户绑定。
+2026-11-03 已按用户授权完成 RX01 USDT 永续 taker 清仓与 91 个旧因子绑定移除。
+旧 Prep/Spread 信号、因子和配置服务已停止；新单组产物曾安装并启动，随后按用户
+“先开发再上线”的纠正于 04:25 UTC 停止两个新计算进程。四个开关均关闭、执行绑定为 0，
+Exec 下单进程保持停止。用户随后确认将 Prep02 的 `TD_MI_040` 修正为 `TD_MT_040` 并授权部署。
+05:08 UTC，多组版本 `fa63d6e4` 已发布：Prep01/Prep02 各三个频段，408 项共享计算，
+Prep 进程 CPU17 运行并预热，七张表开关均关闭、无绑定；Spread 产物同步升级但计算不启动。
+四个未启用旧表的空账本已备份，Manager 旧定义替换为七个带组名的新定义；无历史仓位迁移。
+81 个受保护进程保持，页面预览与权限边界通过，见 `artifacts/cta_prep02_deploy_20261103/`。
 
 `cta_factor_calc` 是公共计算核心，提供两个独立运行入口：
 
 - `cta-prep-binance-futures`：默认读取 `config/cta_prep_binance_futures.toml`。
 - `cta-factor-spread`：默认读取 `config/cta_factor_spread.toml`。
 
-`cta-prep-binance-futures` 统筹下列三份现有策略的 Binance 永续因子需求：
+`cta-prep-binance-futures` 统筹下列三份频段配置的 Binance 永续因子需求：
 
 | 组合名称 | 频率 | 普通因子条目 | NQ 条目 |
 |---|---|---:|---:|
-| `rx01_binance-futures_15min` | 15min | 145 | 35 |
-| `rx03_binance-futures_1min` | 1min | 45 | 16 |
-| `rx04_binance-futures_5min` | 5min | 48 | 15 |
+| `binance-futures_15min` | 15min | 145 | 35 |
+| `binance-futures_1min` | 1min | 45 | 16 |
+| `binance-futures_5min` | 5min | 48 | 15 |
 
-启动自动合并为 304 个计算条目，仅订阅一份 `binance-futures` Kafka 流。
-RX01/RX03/RX04 是组合身份，计算代码不根据这些名称分支。初始清单从各自
-`cta_perp_symbol_factors.json` 和策略规则导入；现在以统一四列组合 JSON 为
-唯一配置源，NQ 依赖由规则推导。RX01 的
+Prep01 三份配置合并为 304 个计算条目；加入 Prep02 三个频段后合并为 408 项。
+仍仅订阅一份 `binance-futures` Kafka 流。
+三份 JSON 分别从原 RX01/15min、RX03/1min、RX04/5min 配置整理，因子行和
+信号参数保持原值。RX 编号不再作为组合或策略身份；`rx01` 仅为账户别名。
+初始清单从各自的 `cta_perp_symbol_factors.json` 和策略规则导入；现在以统一四列组合 JSON 为
+唯一配置源，NQ 依赖由规则推导。15min 配置的
 SKL × factor_170 存在两条不同 NQ 条件的交易规则，因子只计算一次；原策略的
 146 条规则保留，不能把合并计算误当作合并交易持仓。仓库内模板的
 `enabled=false` 不代表线上策略已停；运行关系按用户给定的现状维护。
@@ -80,6 +97,24 @@ SKL × factor_170 存在两条不同 NQ 条件的交易规则，因子只计算�
 不再按 RX 编号或 1m/5m/15m 启动不同的因子程序。因子进程兼任仓位表维护和
 Manager 目标发布；交易账户绑定、份数与订单执行仍由下游 Manager/Exec 负责。
 
+## Prep02 用户清单
+
+2026-11-03 用户提供 18 组规则，按标的展开 102 条，移除 3 条完全重复规则后为 99 条。
+频率 `1m` / `5m` / `15m` 分别规范为 `1min` / `5min` / `15min`，标的补 `USDT`。
+相同因子但不同 NQ 条件保留为独立规则，例如 DOGE 1min 的 baseline_141。
+
+| 频率 | 标的数 | 规则数 | 单份 USDT | 配置状态 |
+|---|---:|---:|---:|---|
+| 1min | 37 | 59 | 100 | `prep02_binance-futures_1min.json`，发布关闭 |
+| 5min | 6 | 7 | 200 | `prep02_binance-futures_5min.json`，发布关闭 |
+| 15min | 24 | 33 | 200 | `prep02_binance-futures_15min.json`，发布关闭 |
+
+额度及开平仓参数暂沿用 Prep01 同频段模板，均保留各因子独立持仓。已部署，发布保持关闭。
+研究库 `final_factor_pool_update20260817.py:4286` 定义 `TD_MT_040` 为最近 10 根
+bar 的 `high-close` 之和，与 Rust 实现一致。用户确认将 SOL/DOGE 15min 的两条
+`TD_MI_040` 改为 `TD_MT_040`，99 条规则均通过计算器计划校验。
+原始输入、去重及名称修正回执在 `artifacts/cta_prep02_config_20261103/`。
+
 ## 统一配置入口和 JSON
 
 统一导航入口为 `/delist/`，固定提供 CTA Prep 和 CTA Spread 两个配置链接。
@@ -89,18 +124,20 @@ Manager 目标发布；交易账户绑定、份数与订单执行仍由下游 Ma
 
 新的页面路径为 `/cta/cta-prep-binance-futures/config/`，由独立
 `cta-factor-config` 提供（默认仅监听 `127.0.0.1:19220`）。这是源码中准备的
-入口，尚未部署。页面统一维护三套组合的因子行、NQ 条件、开平仓阈值、额度、
+入口，当前已部署多组编辑器，按策略组选择频段，
+支持复制当前频段到新组草稿（复制后的发布开关关闭）。页面维护因子行、NQ 条件、开平仓阈值、额度、
 信号启用状态和聚合方式。配置服务器只写组合 JSON，不直接发布持仓或订单。
-旧策略的可编辑 Config 路由在新网关模板中全部跳转此入口；历史信号面板保持
+旧策略的可编辑 Config 路由在新网关模板中直接返回 410；历史信号面板保持
 原身份。新配置不再依赖各策略的 `cta_perp.json`、磁盘 symbol-factor 表或
 `<env>:cta_symbol_factors` Redis 键。
 
 每份组合一份 JSON，文件名与 `name` 相同。沿用最新的四列因子行，仅在组合层
-补充 `venue`、`interval`。例如：
+补充 `strategy_group`、`venue`、`interval`。例如：
 
 ```json
 {
-  "name": "rx01_binance-futures_15min",
+  "name": "binance-futures_15min",
+  "strategy_group": "prep01",
   "venue": "binance-futures",
   "interval": "15min",
   "factor_rules": [
@@ -111,7 +148,6 @@ Manager 目标发布；交易账户绑定、份数与订单执行仍由下游 Ma
     "enabled": false,
     "max_pos_u": 200,
     "position_algorithm": "v0",
-    "nq_mode": "strict_quantile",
     "symbol_overrides": {},
     "entry": {
       "factor_long_quantile": 0.9,
@@ -137,7 +173,9 @@ Manager 目标发布；交易账户绑定、份数与订单执行仍由下游 Ma
 
 跨市场 spread 行使用 `因子=spread` 和 `reference_venue`。同一组合需要另一
 市场或频率时，可在具体行显式覆盖 `venue`、`interval`；普通单 venue 行仍只有
-原四列。`config/cta_factor_spread/example.json` 提供普通因子与价差混合示例。
+原四列。`config/cta_factor_spread/okex-futures_binance-futures_1min.json` 为正式 Spread 清单：
+TRB、DOT、ADA、NEAR、ATOM、DOGE、ETC、CRV，共 34 条普通因子规则，符号沿用用户提供值。
+默认 NQ 0.50，自动补齐各标的的 NQ 和价差，合并为 50 项计算；发布保持关闭。
 `cta-prep-binance-futures` 只接受 Binance 永续输入；OKX 和混合市场计算由独立
 `cta-factor-spread` 承担，可用同一个配置服务程序的 `--spread --config ...`
 入口维护。也可在主配置服务增加 `--spread-config /path/cta_factor_spread.toml`，
@@ -153,15 +191,23 @@ Spread 仓位表当前支持 OKX–Binance 永续 1min、v0，并要求显式填
 确认后将该表标记为已退役；计算进程和其他频段继续运行。
 保留 `signal` 而设置 `enabled=false` 仍是暂停发布。
 `v0` 按因子规则独立持仓，`v1` 对每个
-标的的有符号因子值等权取均值。`v1` 要求所有行使用共同 NQ 条件。`nq_mode`
-显式选择严格分位比较或线性中位数的包含边界比较；RX01、RX03 使用前者，
-RX04 保留后者。`max_pos_u` 的含义分别为每条因子规则、每个标的的单份 USDT
+标的的有符号因子值等权取均值。`v1` 要求所有行使用共同 NQ 条件。
+NQ 在 1min、5min、15min 使用同一套包含边界的判断，不再配置 `nq_mode`。
+默认开多要求买入变化不低于自身 Q50，开空要求卖出变化不高于自身 Q50；
+Q50 按变化值与线性中位数比较，避免相等值被排名中的重复样本误拒绝。
+行内显式的其他 NQ 条件及“关闭”保留，其他分位按排名包含边界判断。
+`max_pos_u` 的含义分别为每条因子规则、每个标的的单份 USDT
 额度。现有非零持仓仍会阻止信号在运行中切换持仓算法；市场/频率需创建新组合。
 
 `parameters` 仍可按完整计算 ID 固定窗口定义。默认普通因子归一化窗口为 1 天、
 分位窗口为 2 天，最少样本随频率换算；同 ID 的定义冲突会拒绝保存。NQ 使用
-120 根极值窗口和 120 个变化值的排名窗口，60 个有效变化值就绪。1min 保留
-缺失槽位，5/15min 使用有效样本窗口。普通因子的无效当前值保持未知。
+120 根有效 bar 的极值窗口和 120 个有效变化值的分位窗口，60 个有效变化值就绪。
+全部频率使用有效样本窗口，并将整个 NQ 结果滞后各自的一根 bar：
+1min / 5min / 15min 分别滞后 1 / 5 / 15 分钟。当前输出时间为决策 bar，
+其数值、分位、Q50 和就绪状态全部来自上一根 bar，缺失源 bar 的结果也按同样方式后移。
+默认 0.50 / 0.50；买入变化为 `(mid - 窗口最低 mid) / 窗口最低 mid`，
+卖出变化为 `(mid - 窗口最高 mid) / 窗口最高 mid`。Prep 和 OKX/Binance Spread
+的 NQ 均取该币种 Binance 永续 mid；普通因子的无效当前值保持未知。
 Spread 同一闭合 bar 的原值为 `(第一个市场 - 第二个市场) / 第一个市场`，
 任一路输入缺失即未就绪；因子自身没有额外信号滞后。
 
@@ -175,8 +221,10 @@ Web 共用跨进程文件锁和原子替换；并发修改返回 409，保留页
 一个市场/币种只维护一份原始分钟基线，再分发至所需 1/5/15min 状态。同一
 市场/币种/周期的普通因子共享基线历史求值器，各因子维护自己的归一化和排名。
 NQ、价差共享对齐后的盘口收盘数据。报价仅在已收到快照后有效；多分钟末价要求
-最后一分钟内存在有效盘口。所有数量遵循现有 PeriodMessage 的基础资产数量契约，
-不将交易所原始张数隐式当作币数量。
+最后一分钟内存在有效盘口。数量沿用现有 PeriodMessage 的市场原生单位：
+Binance 为基础资产数量，OKX 永续为原始合约张数，采集端不乘 `ctVal`。
+大小单统计与实时分类统一使用 `price * amount`，阈值按市场和币种独立维护；
+OKX 阈值的单位是 `price_x_contracts`，不能当作真实 USDT 成交额。
 
 依赖成交大小分类的公式需要真实 `amount_thresholds`。配置键是
 `市场:内部币对`，值为 `[medium_notional_threshold, large_notional_threshold]`。
@@ -236,7 +284,7 @@ cta-prep-binance-futures --delete-combination momentum --execute
 
 ```bash
 cta-prep-binance-futures --import-symbol-factors /path/symbol_factors.json \
-  --name rx01_binance-futures_15min --market binance-futures --interval 15min --include-nq
+  --name binance-futures_15min --strategy-group prep01 --market binance-futures --interval 15min --include-nq
 ```
 
 检查计划后加 `--execute` 保存。正负权重不变。旧 `_positive`/`_negative` 后缀

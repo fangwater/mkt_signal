@@ -1,6 +1,31 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 02:45 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 05:08 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 05:08 UTC，用户确认 Prep02 两条 SOL/DOGE 15min 规则使用
+`TD_MT_040` 后，发布 `arbmm` 的 `fa63d6e4` 多策略组产物。Prep01 / Prep02
+各自 1min/5min/15min，共六张表、408 项合并计算；Spread01 配置和产物同步升级，
+其计算进程保持停止。Prep PID3522829 固定 CPU17，Config PID3522750 使用 housekeeping，
+监听 `127.0.0.1:19220`。Prep 已开始历史预热；七张表 `enabled=false`，Manager
+按新组名注册的七个策略均为零目标、无执行绑定，四个未启用的旧表定义已移除。
+旧版空账本及替换前产物/配置均先备份，未覆盖其他操作员的配置；Exec06 与跨所两腿
+下单进程保持停止，RX01 USDT 永续仓位/挂单仍 0，81 个受保护进程身份保持。
+七份页面的真实 Chromium 预览、组选择、行数、额度、桌面/手机检查通过，预览未修改开关。
+配置入口 `/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures#prep02_binance-futures_1min`。
+没有改动交易源 IP、ENI/EIP 或路由。远端审计
+`~/crypto_cta_manager/maintenance-backups/cta_prep02_deploy_20261103T050422Z/`；
+脱敏回执 `artifacts/cta_prep02_deploy_20261103/verified.json`。
+
+2026-11-03 04:25 UTC，按用户“先开发，再上线”的要求，停止新
+`~/cta-prep-binance-futures` 和 `~/cta-factor-spread` 计算进程，实际进程扫描均为 0。
+此前已完成 RX01（Exec06）USDT 永续 taker 清仓：实际合约仓位、普通/算法挂单均 0，
+91 个旧因子账户绑定、virtual06 跟随及 Exec 活跃策略索引均已移除。
+旧 RX01/03/04 和跨所 Spread 的 signal/publisher/config/dashboard 已停止；不恢复旧交易。
+两个新运行目录和单组策略定义保留，四个仓位开关均关闭且无执行绑定；Exec06 及跨所
+两腿下单进程保持停止，监控/持久化/Viz/Config 保留。新统一配置服务仍监听 loopback19220，
+4191 CTA 网关及导航已安装，旧配置 URL 返回 410；多策略组功能仅本地开发，后续不自动上线。
+CPU17/18/19/28 当前无 CTA 因子进程；源 IP、ENI/EIP、路由、其他交易进程保持。
+回执：`artifacts/rx01_taker_clear_20261103/`、`artifacts/cta_factor_replace_20261103/user-paused.json`。
 
 2026-11-03 02:45 UTC，移除旧 `lgq_ltp_81857` / `binance_exec_trade08` 的Manager入口。
 仅从Manager配置移除旧source及对应source_viewers，并重启Manager；旧环境继续停止，
@@ -582,10 +607,12 @@ binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账�
 binance-cta-spread-rx01      已退役                         全环境归档；旧10186/19174监听及网页入口移除
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
-binance-cta-perp-rx03        默认出口 / 172.31.35.228       signal禁用并停止；已清仓并解除Exec07绑定，CPU19因子计算及10197/19187页面保留
-binance-cta-perp-rx01        默认出口 / 172.31.35.228       15min框架待新清单；交易关闭、无进程，预留10195/19185
+binance-cta-perp-rx03        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；Exec07已清仓解绑，旧配置410
+binance-cta-perp-rx01        默认出口 / 172.31.35.228       全部旧进程停止；Exec06永续仓位/挂单0，91旧绑定及virtual06跟随移除，旧配置410
+cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17 计算运行，Prep01/02 六张表预热；Config loopback19220，发布/绑定均关闭
+cta-factor-spread           默认出口 / 172.31.35.228       多组产物和 Spread01 配置已安装；计算停止、发布关闭，无私有交易请求
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
-binance-cta-perp-rx04        默认出口 / 172.31.35.228       signal禁用并停止；已清仓并解除virtual05/Exec绑定，CPU28因子计算及10198/19188页面保留
+binance-cta-perp-rx04        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；5min已清仓解绑，旧配置410
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230   全部停止；全部持仓/挂单/借款0，仅USDT；原配置及IP预留保留

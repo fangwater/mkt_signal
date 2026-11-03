@@ -1,0 +1,77 @@
+{
+  "commit": "fa63d6e495d7e968fa3559ef122eb5c59fa3f929",
+  "profiles": {
+    "cta-prep-binance-futures": {
+      "binance-futures_15min": {
+        "strategy_group": "prep01",
+        "rules": 146,
+        "enabled": false,
+        "max_pos_u": 200.0
+      },
+      "binance-futures_1min": {
+        "strategy_group": "prep01",
+        "rules": 45,
+        "enabled": false,
+        "max_pos_u": 100.0
+      },
+      "binance-futures_5min": {
+        "strategy_group": "prep01",
+        "rules": 48,
+        "enabled": false,
+        "max_pos_u": 200.0
+      },
+      "prep02_binance-futures_15min": {
+        "strategy_group": "prep02",
+        "rules": 33,
+        "enabled": false,
+        "max_pos_u": 200.0
+      },
+      "prep02_binance-futures_1min": {
+        "strategy_group": "prep02",
+        "rules": 59,
+        "enabled": false,
+        "max_pos_u": 100.0
+      },
+      "prep02_binance-futures_5min": {
+        "strategy_group": "prep02",
+        "rules": 7,
+        "enabled": false,
+        "max_pos_u": 200.0
+      }
+    },
+    "cta-factor-spread": {
+      "okex-futures_binance-futures_1min": {
+        "strategy_group": "spread01",
+        "rules": 34,
+        "enabled": false,
+        "max_pos_u": 200.0
+      }
+    }
+  },
+  "processes": [
+    {
+      "pid": 3522750,
+      "binary": "cta-factor-config",
+      "cwd": "/home/ubuntu/cta-prep-binance-futures",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 3522829,
+      "binary": "cta-prep-binance-futures",
+      "cwd": "/home/ubuntu/cta-prep-binance-futures",
+      "cpus": "17"
+    }
+  ],
+  "protected_processes_unchanged": 81,
+  "rx01_perpetual_positions": 0,
+  "rx01_orders": 0,
+  "bindings": 0,
+  "all_publishing_disabled": true,
+  "spread_worker_started": false,
+  "warming": true,
+  "warm_records": 12150,
+  "checked_at_ms": 1793682536111,
+  "browser_profiles_checked": 7,
+  "browser_script_errors": 0,
+  "prc_config_http_status": 403
+}
