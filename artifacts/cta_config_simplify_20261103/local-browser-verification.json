@@ -1,0 +1,57 @@
+{
+  "local_only": true,
+  "profiles": [
+    {
+      "worker": "cta-prep-binance-futures",
+      "name": "binance-futures_1min",
+      "interval": "1min",
+      "rules": 45
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "name": "binance-futures_5min",
+      "interval": "5min",
+      "rules": 48
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "name": "binance-futures_15min",
+      "interval": "15min",
+      "rules": 146
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "name": "prep02_binance-futures_1min",
+      "interval": "1min",
+      "rules": 59
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "name": "prep02_binance-futures_5min",
+      "interval": "5min",
+      "rules": 7
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "name": "prep02_binance-futures_15min",
+      "interval": "15min",
+      "rules": 33
+    },
+    {
+      "worker": "cta-factor-spread",
+      "name": "okex-futures_binance-futures_1min",
+      "interval": "1min",
+      "rules": 34
+    }
+  ],
+  "json_only": true,
+  "frequency_isolation": true,
+  "hidden_settings_preserved": true,
+  "spread_round_trip": true,
+  "legacy_and_mixed_frequency_json_rejected": true,
+  "duplicate_rows_removed": true,
+  "conflict_preserves_draft": true,
+  "preview_does_not_persist": true,
+  "script_errors": [],
+  "mobile_width": 390
+}

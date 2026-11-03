@@ -1,7 +1,16 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-03 05:08 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 05:31 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 05:31 UTC，按用户要求精简 CTA 配置页，发布 `38c037e9` 的 Config 产物。
+页面恢复旧 CTA 深色风格，按策略组和频段标签分别配置；因子仅使用
+`频率/NQ/因子/符号/标的数组` JSON，移除仓位展示、计算参数及逐行/替代格式输入。
+仅替换并通过环境脚本重启 `cta-factor-config`，新 PID3562496，仍监听 loopback19220。
+Prep PID3522829 / CPU17 / start_ticks137144251 保持，81 个受保护进程身份一致；
+两套环境全部因子 JSON、主 TOML、env.sh 哈希和配置 revision 均保持，没有修改开关、
+额度、交易绑定或源 IP。七份配置的桌面/手机验证及仅校验不写盘检查通过。
+审计 `artifacts/cta_config_simplify_20261103/`；原配置 URL 保持。
 
 2026-11-03 05:08 UTC，用户确认 Prep02 两条 SOL/DOGE 15min 规则使用
 `TD_MT_040` 后，发布 `arbmm` 的 `fa63d6e4` 多策略组产物。Prep01 / Prep02
@@ -860,7 +869,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta-prep-binance-futures | PID3522829；Prep01/Prep02 六张表，408 项计算；历史预热中，六个发布开关均关闭、绑定0 |
+| 17 | cta-prep-binance-futures | PID3522829；Prep01/Prep02 六张表，408 项计算；计算进程保持，六个发布开关均关闭、绑定0 |
 | 18 | 空闲 / CTA Spread 预留 | 多组产物和 Spread01 配置已安装，计算进程保持停止；发布关闭、绑定0 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |

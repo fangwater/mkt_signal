@@ -1,6 +1,15 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 05:08 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 05:31 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 05:31 UTC，按用户要求精简 CTA 配置页，发布 `38c037e9` 的 Config 产物。
+页面恢复旧 CTA 深色风格，按策略组和频段标签分别配置；因子仅使用
+`频率/NQ/因子/符号/标的数组` JSON，移除仓位展示、计算参数及逐行/替代格式输入。
+仅替换并通过环境脚本重启 `cta-factor-config`，新 PID3562496，仍监听 loopback19220。
+Prep PID3522829 / CPU17 / start_ticks137144251 保持，81 个受保护进程身份一致；
+两套环境全部因子 JSON、主 TOML、env.sh 哈希和配置 revision 均保持，没有修改开关、
+额度、交易绑定或源 IP。七份配置的桌面/手机验证及仅校验不写盘检查通过。
+审计 `artifacts/cta_config_simplify_20261103/`；原配置 URL 保持。
 
 2026-11-03 05:08 UTC，用户确认 Prep02 两条 SOL/DOGE 15min 规则使用
 `TD_MT_040` 后，发布 `arbmm` 的 `fa63d6e4` 多策略组产物。Prep01 / Prep02

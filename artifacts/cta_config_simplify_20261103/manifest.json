@@ -1,0 +1,7 @@
+{
+  "commit": "38c037e98ebe9441fe2d06e63a62e5a9194ca43d",
+  "binary_sha256": "c5b580f482ca14e54504ea750ee309a9ba42f4bfb69e27cf25490f2ec56ad268",
+  "html_sha256": "173e8e9e3162b3316de95e81455c09bae3e7442ed484af54b8fba0f063f00297",
+  "audit": "/home/ubuntu/crypto_cta_manager/maintenance-backups/cta_config_simplify_20261103T052746Z",
+  "restart_scope": "cta-factor-config only"
+}
