@@ -1,7 +1,22 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-03 06:19 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 06:43 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 06:43 UTC，RX01 / RX03 按要求切换为全新执行账户 `binance_exec_rx01` /
+`binance_exec_rx03`，分别绑定 Prep01 / Prep02 的1min、5min、15min，六条绑定均shares=0。
+原Exec06/07各观察进程通过环境脚本停止后，整个运行目录同盘归档；新namespace、空订单库
+和空账户journal不导入旧订单/仓位/盈亏锚点。旧PostgreSQL不可变历史仍隔离在退役source下，
+旧入口、绑定及Redis前缀移除，新账户累计盈亏与策略目标为0，实际永续仓位及挂单均0。
+`ff6d0575` 已删除RapidX监控自动历史成交补抓及回看参数，实时成交继续落库；新账单从
+当前会话采集。381项测试与格式检查通过，本机release上传并核对SHA-256后原子安装。
+仅启动新账户监控/persist/Viz/Config，并重启Manager；原4191路径、loopback端口、
+源IP与风控保留，Nginx鉴权头及LGQ configure权限改指新source。其余15条账户绑定及
+77个受保护进程身份保持。七份signal.enabled=false，所有下单进程仍停止。
+检查发现Prep计算输出持续更新，但404项最新输出仅194项ready且保留Kafka No more messages
+状态错误；Spread计算停止。未启用推送或交易。RX01现货零碎余额未出售或登记为新Prep初仓。
+私有备份/旧运行目录在 `~/crypto_cta_manager/maintenance-backups/cta_prep_fresh_20261103T063500Z/`；
+脱敏回执、发布哈希与开关检查见 `artifacts/cta_prep_fresh_20261103/`。临时发布目录已清理。
 
 2026-11-03 06:19 UTC，按用户要求完成停止状态的 CTA 绑定：RX01 / Exec06 对应
 Prep01 的 1min/5min/15min，RX03 / Exec07 对应 Prep02 的 1min/5min/15min，

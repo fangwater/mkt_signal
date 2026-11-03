@@ -1,0 +1,15 @@
+{
+  "branch": "arbmm",
+  "commit": "ff6d0575083dcdebe81acb15007b3b0852e1d93c",
+  "monitor_built_in": "/home/fanghaizhou/mkt_signal",
+  "baseline_artifacts_commit": "1a10d3b29269caba1c287ea0e845129651c3cb70",
+  "binaries": {
+    "exec-pre-trade": "4e770341cc0bfcf4af4ec6c0afac3d8b14772bc76e3d0586f09446e568cc0940",
+    "trade_engine": "bb263a467c7aab96bafb5bc1dbe7124c7eefbf7c6ff03ec7d2205497e93a2611",
+    "trade_signal": "8bd54fc5fe95ea955fec85372c46a324002628c6fa508e52bd37a40cdc67cc18",
+    "persist_manager": "086a38d8882da147b17f42dd36764e103440b651c8ad3b8561f07687ba5edcd6",
+    "viz_server": "91a51991279d89f803a858be37d93b9e6d5de2a6c76053b6dff214df26ed4df7",
+    "rapidx_account_monitor": "e2d36502813cc81c3d64bd405312524d8d1b6fe10825c2a8ed613cd51109ffe4"
+  },
+  "automatic_execution_history_backfill": false
+}

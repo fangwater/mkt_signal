@@ -1,0 +1,92 @@
+{
+  "checked_at_ms": 1793688019223,
+  "publishing_flags": [
+    {
+      "worker": "cta-prep-binance-futures",
+      "file": "prep02_binance-futures_5min.json",
+      "enabled": false
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "file": "binance-futures_1min.json",
+      "enabled": false
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "file": "prep02_binance-futures_1min.json",
+      "enabled": false
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "file": "binance-futures_5min.json",
+      "enabled": false
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "file": "prep02_binance-futures_15min.json",
+      "enabled": false
+    },
+    {
+      "worker": "cta-prep-binance-futures",
+      "file": "binance-futures_15min.json",
+      "enabled": false
+    },
+    {
+      "worker": "cta-factor-spread",
+      "file": "okex-futures_binance-futures_1min.json",
+      "enabled": false
+    }
+  ],
+  "bindings": [
+    {
+      "shares": 0,
+      "strategy": "cta-spread01-okx-bn-1min-pos",
+      "source_id": "okex_exec_trade01"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-spread01-okx-bn-1min-pos",
+      "source_id": "binance_exec_spread01"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-prep01-bn-1min-pos",
+      "source_id": "binance_exec_rx01"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-prep01-bn-5min-pos",
+      "source_id": "binance_exec_rx01"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-prep01-bn-15min-pos",
+      "source_id": "binance_exec_rx01"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-prep02-bn-1min-pos",
+      "source_id": "binance_exec_rx03"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-prep02-bn-5min-pos",
+      "source_id": "binance_exec_rx03"
+    },
+    {
+      "shares": 0,
+      "strategy": "cta-prep02-bn-15min-pos",
+      "source_id": "binance_exec_rx03"
+    }
+  ],
+  "prep": {
+    "running": true,
+    "warming": false,
+    "latest_factors": 404,
+    "ready_factors": 194,
+    "error": "active Kafka: poll factor Kafka consumer: Kafka message error: Broker: No more messages",
+    "updated_ms": 1793688018198
+  },
+  "spread_running": false,
+  "execution_enabled": false
+}
