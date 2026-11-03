@@ -365,6 +365,12 @@ fn send(publisher: &ModelPublisher, generation: &str, point: &FactorPoint) -> Re
 /// The same engine drives both workers. Perp/Spread select configuration roots,
 /// and own their frequency position tables in the same process.
 pub async fn main(worker: Worker) -> Result<()> {
+    // Position sizing starts the thread-local BBO consumers when the first
+    // table is enabled, including after a configuration hot reload.
+    tokio::task::LocalSet::new().run_until(run(worker)).await
+}
+
+async fn run(worker: Worker) -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     ensure!(
