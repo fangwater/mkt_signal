@@ -71,8 +71,8 @@ def main():
                 page.locator('#strategy-group').select_option('prep02')
                 page.locator('[data-interval="5min"]').click()
                 rows=json.loads(page.locator('#factor-json').input_value())
-                assert all(set(row)=={'频率','NQ','因子','符号','标的'} and isinstance(row['标的'],list) and row['频率']=='5m' for row in rows)
-                assert sum(len(row['标的']) for row in rows)==7
+                assert all(set(row)=={'标的','nq','符号','因子'} and isinstance(row['标的'],str) for row in rows)
+                assert len(rows)==7
                 untouched=(root/'config/cta_prep_binance_futures/prep02_binance-futures_1min.json').read_bytes()
                 page.locator('#max-pos').fill('250')
                 with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
@@ -95,7 +95,7 @@ def main():
                 page.locator('#reload').click()
                 page.wait_for_function("document.querySelector('#max-pos').value==='250'")
                 original=recipe.read_bytes()
-                page.locator('#factor-json').fill('[{"标的":"SOL","nq":"关闭","符号":1,"因子":"factor_049"}]')
+                page.locator('#factor-json').fill('[{"频率":"5m","NQ":"关闭","符号":1,"因子":"factor_049","标的":["SOL"]}]')
                 page.locator('#validate').click()
                 page.wait_for_function("document.querySelector('#message').classList.contains('err')")
                 assert recipe.read_bytes()==original
@@ -108,8 +108,8 @@ def main():
                 page.locator('#strategy-group').select_option('prep02')
                 page.locator('[data-interval="15min"]').click()
                 rows=json.loads(page.locator('#factor-json').input_value())
-                assert sum(len(row['标的']) for row in rows)==33
-                assert any(row['因子']=='TD_MT_040' and row['NQ']=='0.2/0.8' for row in rows)
+                assert len(rows)==33
+                assert any(row['因子']=='TD_MT_040' and row['nq']=='0.2/0.8' for row in rows)
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'desktop.png'), full_page=True)
@@ -119,7 +119,7 @@ def main():
                     page.screenshot(path=str(args.screenshot_dir/'mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-                print('Frequency JSON editor passed: grouped JSON, isolated save, conflict, single format and mobile layout')
+                print('Frequency JSON editor passed: factor row JSON, isolated save, conflict, single format and mobile layout')
         finally:
             server.terminate()
             try:

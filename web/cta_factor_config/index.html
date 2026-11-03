@@ -63,7 +63,7 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
-const intervalNames={'1min':'1m','5min':'5m','15min':'15m'};
+const prepIntervals=['1min','5min','15min'];
 let catalog=null,draft=null,dirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
@@ -73,36 +73,26 @@ async function api(path,options={}){
   const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
   const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
 }
-function groupedRules(doc){
-  const groups=new Map();
-  for(const row of doc.factor_rules){
-    const frequency=intervalNames[row.interval||doc.interval],actualKey=JSON.stringify([frequency,row.nq,row['因子'],row['符号']]);
-    if(!groups.has(actualKey))groups.set(actualKey,{'频率':frequency,'NQ':row.nq,'因子':row['因子'],'符号':row['符号'],'标的':[]});
-    groups.get(actualKey)['标的'].push(row['标的'].replace(/USDT$/i,''));
-  }
-  return [...groups.values()];
+function factorRows(doc){
+  return doc.factor_rules.map(row=>({'标的':row['标的'].replace(/USDT$/i,''),nq:row.nq,'符号':row['符号'],'因子':row['因子']}));
 }
 function parseRules(){
   let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
   if(!Array.isArray(rows)||!rows.length)throw Error('因子配置必须是非空 JSON 数组');
-  const fields=['频率','NQ','因子','符号','标的'],result=[],seen=new Set();
+  const fields=['标的','nq','符号','因子'],result=[],seen=new Set();
   for(const [index,row] of rows.entries()){
     const label='第 '+(index+1)+' 项：';
-    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==fields.length||fields.some(key=>!Object.hasOwn(row,key)))throw Error(label+'只接受「频率、NQ、因子、符号、标的」五个字段');
-    if(row['频率']!==intervalNames[draft.interval])throw Error(label+'当前频段为 '+draft.interval+'，频率请填写 '+intervalNames[draft.interval]);
-    if(typeof row.NQ!=='string'||!row.NQ.trim())throw Error(label+'NQ 请填写分位字符串或「关闭」');
+    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==fields.length||fields.some(key=>!Object.hasOwn(row,key)))throw Error(label+'只接受「标的、nq、符号、因子」四个字段，频率在页面上统一选择');
+    if(typeof row.nq!=='string'||!row.nq.trim())throw Error(label+'nq 请填写分位字符串或「关闭」');
     if(typeof row['因子']!=='string'||!row['因子'].trim())throw Error(label+'请填写因子名称');
     if(typeof row['符号']!=='number'||!Number.isFinite(row['符号']))throw Error(label+'符号必须是有效数字');
-    if(!Array.isArray(row['标的'])||!row['标的'].length)throw Error(label+'标的必须是非空数组，例如 ["BTC", "ETH"]');
-    for(const symbol of row['标的']){
-      if(typeof symbol!=='string'||!symbol.trim())throw Error(label+'标的必须是币种名称字符串');
-      const base=symbol.trim().toUpperCase().replace(/USDT$/,'');
-      if(!/^[A-Z0-9]{1,28}$/.test(base))throw Error(label+'标的名称无效：'+symbol);
-      const next={'标的':base+'USDT',nq:row.NQ.trim(),'符号':row['符号'],'因子':row['因子'].trim()},key=JSON.stringify([next['标的'],next.nq,next['符号'],next['因子'].toLowerCase()]);
-      if(seen.has(key))continue;seen.add(key);
-      if(draft.reference_venue&&next['因子'].toLowerCase()!=='spread')next.venue=draft.reference_venue;
-      result.push(next);
-    }
+    if(typeof row['标的']!=='string'||!row['标的'].trim())throw Error(label+'标的必须是币种名称字符串，例如 "BTC"');
+    const base=row['标的'].trim().toUpperCase().replace(/USDT$/,'');
+    if(!/^[A-Z0-9]{1,28}$/.test(base))throw Error(label+'标的名称无效：'+row['标的']);
+    const next={'标的':base+'USDT',nq:row.nq.trim(),'符号':row['符号'],'因子':row['因子'].trim()},key=JSON.stringify([next['标的'],next.nq,next['符号'],next['因子'].toLowerCase()]);
+    if(seen.has(key))continue;seen.add(key);
+    if(draft.reference_venue&&next['因子'].toLowerCase()!=='spread')next.venue=draft.reference_venue;
+    result.push(next);
   }
   return result;
 }
@@ -127,13 +117,13 @@ function show(doc){
   draft=clone(doc);dirty=false;$('dirty').textContent='';$('strategy-group').value=doc.strategy_group;$('current-frequency').textContent=doc.interval;
   const signal=doc.signal;$('strategy-settings').hidden=!signal;
   if(signal){$('enabled').value=String(signal.enabled);$('max-pos').value=signal.max_pos_u;$('entry-long').value=signal.entry.factor_long_quantile;$('entry-short').value=signal.entry.factor_short_quantile;$('exit-long').value=signal.execution.factor_exit_quantile_long;$('exit-short').value=signal.execution.factor_exit_quantile_short;$('spread-long').value=signal.spread?.long_quantile??.3;$('spread-short').value=signal.spread?.short_quantile??.7;}
-  $('spread-settings').hidden=!doc.reference_venue;$('factor-json').value=JSON.stringify(groupedRules(doc),null,2);updateCount(doc.factor_rules);
-  $('factor-hint').textContent='仅使用「频率、NQ、因子、符号、标的数组」JSON。当前频率填写 '+intervalNames[doc.interval]+'；NQ 填「0.50」「0.2/0.8」或「关闭」。相同因子搭配不同 NQ 条件分别保留。';
+  $('spread-settings').hidden=!doc.reference_venue;$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);
+  $('factor-hint').textContent='每项只填「标的、nq、符号、因子」，标的为字符串。频率统一使用上方选择的 '+doc.interval+'。nq 填「0.50」「0.2/0.8」或「关闭」。';
   renderTabs();const url=new URL(location.href);url.searchParams.set('worker',selectedWorker);url.hash=doc.name;history.replaceState(null,'',url);
 }
 function renderTabs(){
   $('frequency-tabs').replaceChildren();
-  const group=$('strategy-group').value,intervals=selectedWorker==='cta-factor-spread'?['1min']:Object.keys(intervalNames);
+  const group=$('strategy-group').value,intervals=selectedWorker==='cta-factor-spread'?['1min']:prepIntervals;
   for(const interval of intervals){
     const doc=Object.values(catalog.plan.combinations).find(c=>c.strategy_group===group&&c.interval===interval),button=document.createElement('button');
     button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(draft?.name===doc?.name));button.dataset.interval=interval;button.dataset.name=doc?.name||'';button.disabled=busy||!doc;
@@ -161,7 +151,7 @@ async function action(save){
 $('strategy-type').onchange=async()=>{if(dirty&&!confirm('放弃未保存修改，切换策略类型？')){$('strategy-type').value=selectedWorker;return;}selectedWorker=$('strategy-type').value;dirty=false;const url=new URL(location.href);url.hash='';history.replaceState(null,'',url);await load();};
 $('strategy-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换策略组？')){$('strategy-group').value=draft.strategy_group;return;}const docs=Object.values(catalog.plan.combinations).filter(doc=>doc.strategy_group===$('strategy-group').value);const next=docs.find(doc=>doc.interval===draft?.interval)||docs.find(doc=>doc.interval==='1min')||docs[0];if(next)show(next);message('');};
 $('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
-$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(groupedRules(doc),null,2);updateCount(doc.factor_rules);changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
+$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
 for(const id of ['factor-json','enabled','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
 window.addEventListener('hashchange',()=>{if(!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
 window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});

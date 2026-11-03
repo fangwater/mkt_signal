@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 
 const root=process.cwd();
-const output=path.resolve(process.argv[2]||'artifacts/cta_config_simplify_20261103');
+const output=path.resolve(process.argv[2]||'artifacts/cta_config_rows_20261103');
 const temporary=await mkdtemp('/tmp/cta-json-editor-');
 let server,chrome,ws;
 try {
@@ -64,24 +64,24 @@ try {
     assert.equal(await evaluate("document.querySelectorAll('#frequency-tabs button').length"),worker===prep?3:1);
     assert.equal(await evaluate("document.querySelector('#frequency-tabs [aria-selected=true]').dataset.interval"),interval);
     const rows=await readJson();
-    assert(rows.every(row=>JSON.stringify(Object.keys(row))===JSON.stringify(['频率','NQ','因子','符号','标的'])&&Array.isArray(row['标的'])&&row['频率']===interval.replace('min','m')));
-    assert.equal(rows.reduce((sum,row)=>sum+row['标的'].length,0),count);
+    assert(rows.every(row=>JSON.stringify(Object.keys(row))===JSON.stringify(['标的','nq','符号','因子'])&&typeof row['标的']==='string'&&typeof row.nq==='string'));
+    assert.equal(rows.length,count);
     checked.push({worker,name,interval,rules:count});
   }
   await navigate(prep,target);
   const original=await readJson(),before=await api(prep),file=path.join(temporary,'config/cta_prep_binance_futures',target+'.json'),fileBefore=await readFile(file,'utf8');
-  await fillJson([{'标的':'SOL','nq':'关闭','符号':1,'因子':'factor_049'}]);await click('validate');await waitFor(`${idle} && document.querySelector('#message').classList.contains('err')`);
+  await fillJson([{'频率':'5m','NQ':'关闭','符号':1,'因子':'factor_049','标的':['SOL']}]);await click('validate');await waitFor(`${idle} && document.querySelector('#message').classList.contains('err')`);
   assert.equal(await readFile(file,'utf8'),fileBefore);
-  const mixed=structuredClone(original);mixed[0]['频率']='1m';await fillJson(mixed);await click('validate');await waitFor(`${idle} && document.querySelector('#message').textContent.includes('当前频段为 5min')`);
+  const mixed=structuredClone(original);mixed[0]['频率']='1m';await fillJson(mixed);await click('validate');await waitFor(`${idle} && document.querySelector('#message').textContent.includes('四个字段')`);
   assert.equal(await readFile(file,'utf8'),fileBefore);
   const unknown=structuredClone(original);unknown[0]['因子']='unmapped_factor';await fillJson(unknown);await click('validate');await waitFor(`${idle} && document.querySelector('#message').classList.contains('err')`);
   assert.equal(await readFile(file,'utf8'),fileBefore);
-  const edited=structuredClone(original);edited[0].NQ='0.2/0.8';edited.push(structuredClone(edited[0]));
+  const edited=structuredClone(original);edited[0].nq='0.2/0.8';edited.push(structuredClone(edited[0]));
   await fillJson(edited);await evaluate("document.querySelector('#max-pos').value='321';document.querySelector('#max-pos').dispatchEvent(new Event('input',{bubbles:true}));");
   await click('validate');await waitFor(`${idle} && document.querySelector('#message').textContent.includes('校验通过')`);assert.equal(await readFile(file,'utf8'),fileBefore);
   await click('save');await waitFor(`${idle} && document.querySelector('#message').textContent.includes('已保存')`);
   let saved=await api(prep);const current=saved.plan.combinations[target];
-  assert.equal(current.signal.max_pos_u,321);assert.equal(current.factor_rules.length,7);assert(current.factor_rules.filter(row=>row['因子']==='factor_049').every(row=>row.nq==='0.2/0.8'));
+  assert.equal(current.signal.max_pos_u,321);assert.equal(current.factor_rules.length,7);assert.equal(current.factor_rules.find(row=>row['因子']==='factor_049'&&row['标的']===edited[0]['标的']+'USDT').nq,'0.2/0.8');
   assert.deepEqual(current.parameters,before.plan.combinations[target].parameters);assert.deepEqual(current.signal.symbol_overrides,before.plan.combinations[target].signal.symbol_overrides);
   for(const [name,doc] of Object.entries(before.plan.combinations))if(name!==target)assert.deepEqual(saved.plan.combinations[name],doc);
   const external=structuredClone(saved.plan.combinations['binance-futures_1min']);external.signal.max_pos_u=123;
@@ -91,7 +91,7 @@ try {
   assert.equal((await api(prep)).plan.combinations[target].signal.max_pos_u,321);
   await click('reload');await waitFor(`${idle} && document.querySelector('#max-pos').value==='321'`);
   await evaluate("location.hash='prep02_binance-futures_15min'");await waitFor("document.querySelector('#current-frequency').textContent==='15min'");assert.equal(await evaluate("document.querySelector('#max-pos').value"),'200');
-  const rows=await readJson();assert(rows.some(row=>row['因子']==='TD_MT_040'&&row['标的'].includes('SOL')));
+  const rows=await readJson();assert(rows.some(row=>row['因子']==='TD_MT_040'&&row['标的']==='SOL'));
   await select('strategy-group','prep01');assert.equal(await evaluate("document.querySelector('#current-frequency').textContent"),'15min');
   await select('strategy-type',spread);await waitFor(`${idle} && document.querySelector('#spread-settings').hidden===false`);assert.equal(await evaluate("document.querySelector('#spread-long').value"),'0.3');
   // A read/save round trip must retain the Spread leg's factor venue.
@@ -103,6 +103,6 @@ try {
   await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:false});assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'mobile page overflow');
   shot=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});await writeFile(path.join(output,'mobile.png'),Buffer.from(shot.data,'base64'));
   assert.deepEqual(errors,[]);
-  const result={local_only:true,profiles:checked,json_only:true,frequency_isolation:true,hidden_settings_preserved:true,spread_round_trip:true,legacy_and_mixed_frequency_json_rejected:true,duplicate_rows_removed:true,conflict_preserves_draft:true,preview_does_not_persist:true,script_errors:errors,mobile_width:390};
+  const result={local_only:true,profiles:checked,json_only:true,frequency_isolation:true,hidden_settings_preserved:true,spread_round_trip:true,grouped_and_inline_frequency_json_rejected:true,duplicate_rows_removed:true,conflict_preserves_draft:true,preview_does_not_persist:true,script_errors:errors,mobile_width:390};
   await writeFile(path.join(output,'browser-verification.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));
 }finally{ws?.close();chrome?.kill('SIGTERM');server?.kill('SIGTERM');await delay(300);await rm(temporary,{recursive:true,force:true});}
