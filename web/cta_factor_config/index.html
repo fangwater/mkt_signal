@@ -1,75 +1,171 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CTA 统一配置</title>
-<style>
-:root{font-family:system-ui,sans-serif;color:#182737;background:#f3f5f7;font-size:14px}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0}main{max-width:1400px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;align-items:center;gap:20px}h1{font-size:25px;margin:0 0 8px}h2{font-size:17px;margin:0 0 18px}p{line-height:1.65}.muted{color:#607182}.bar,.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.bar{margin:20px 0}.card{background:white;border:1px solid #dae1e7;border-radius:10px;padding:22px;margin:18px 0}.tag{background:#e9eef4;border-radius:5px;padding:7px 11px}button,select,input,textarea{font:inherit;border:1px solid #c4cdd6;border-radius:5px;padding:9px;background:white;color:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.primary{background:#176651;color:white;border-color:#176651}.danger{color:#b52b35}label{display:flex;flex-direction:column;gap:7px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}input,select{min-width:0;width:100%}input[type=checkbox]{width:auto;align-self:flex-start}.check{display:flex;flex-direction:row;align-items:center;gap:8px}.wide{grid-column:1/-1}.table-wrap{overflow:auto;max-height:520px;margin:14px 0}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #e5e9ee;text-align:left;padding:9px}th{font-weight:600;background:#f8fafb;position:sticky;top:0;z-index:1}td input{min-width:100px}td:nth-child(4) input{min-width:190px}textarea{width:100%;min-height:160px;resize:vertical;font:13px/1.6 ui-monospace,monospace}details{margin:18px 0}summary{cursor:pointer;margin-bottom:12px}#message{white-space:pre-wrap;min-height:24px;line-height:1.5}#message.error{color:#b52b35}#message.ok{color:#176651}.foot{position:sticky;bottom:0;background:#fff;padding:14px 0;border-top:1px solid #dae1e7}.name{max-width:440px;flex:1}#worker{overflow-wrap:anywhere}a{color:#176651}@media(max-width:760px){main{padding:16px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start;flex-direction:column}.card{padding:16px}.bar .name{max-width:100%;flex-basis:100%}}
-</style></head><body><main>
-<header><div><h1>CTA 统一配置</h1><div class="muted">策略组独立维护仓位；每组按频段配置因子行、NQ 条件和额度。</div></div><nav class="actions"><a href="/delist/">返回 Delist</a><a href="/manager/">Manager ↗</a></nav></header>
-<div class="bar"><span id="worker" class="tag">读取中</span><span id="count" class="tag"></span><span id="runtime" class="muted"></span></div>
-<div class="bar"><select id="worker-select" aria-label="选择因子进程" style="max-width:270px"></select><select id="group-select" aria-label="选择策略组" style="max-width:180px"></select><select id="combination-list" class="name" aria-label="选择组合"></select><button id="new">新建频段配置</button><button id="copy-group">复制当前频段到新组</button><button id="reload">重新读取</button></div>
-<div id="message" role="status" aria-live="polite"></div>
-<section class="card"><h2>组合</h2><div class="grid">
-<label>策略组<input id="strategy-group" placeholder="prep01 / prep02 / spread01" maxlength="32" required></label>
-<label class="wide">组合名称<input id="name" placeholder="binance-futures_15min" maxlength="96" required></label>
-<label>交易所<select id="venue"><option value="binance-futures">Binance 合约</option><option value="okex-futures">OKX 合约</option><option value="binance-margin">Binance 现货／杠杆</option></select></label>
-<label>频率<select id="interval"><option value="1min">1min</option><option value="5min">5min</option><option value="15min">15min</option></select></label>
-<label>价差参照市场<select id="reference-venue"><option value="">无</option><option value="binance-futures">Binance 合约</option><option value="okex-futures">OKX 合约</option><option value="binance-margin">Binance 现货／杠杆</option></select></label>
-</div></section>
-<section class="card"><h2>因子组合</h2><p class="muted">沿用「标的、nq、符号、因子」四列。单市场的所有行共用上方交易所与频率；NQ 依赖自动合并。相同因子搭配不同 NQ 条件时，保留各条信号规则，共享一次因子计算。</p>
-<div class="actions"><button id="add-row">添加一行</button><button id="export">导出 JSON</button><label class="check">筛选<input id="filter" placeholder="标的或因子"></label></div>
-<div class="table-wrap"><table><thead><tr><th>标的</th><th>nq</th><th>符号</th><th>因子</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
-<details><summary>导入 JSON</summary><p class="muted">可粘贴四列行数组，或完整组合 JSON。导入先修改页面草稿，点击保存后生效。</p><textarea id="import-json" spellcheck="false" aria-label="导入 JSON"></textarea><button id="import">载入草稿</button></details>
-</section>
-<section class="card"><h2>仓位参数</h2><p id="manager-strategy" class="muted"></p><label class="check"><input type="checkbox" id="has-signal">为此组合配置信号</label><div id="signal-fields" class="grid" style="margin-top:18px">
-<label class="check"><input type="checkbox" id="enabled">启用仓位发布</label>
-<label>聚合方式<select id="algorithm"><option value="v0">各因子独立持仓</option><option value="v1">按标的取因子均值</option></select></label>
-<label>单份额度（USDT）<input id="max-pos" type="number" min="0" step="any"></label>
-<label>多头开仓阈值<input id="entry-long" type="number" min="-1" max="1" step="any"></label>
-<label>空头开仓阈值<input id="entry-short" type="number" min="-1" max="1" step="any"></label>
-<label>多头平仓阈值<input id="exit-long" type="number" min="-1" max="1" step="any"></label>
-<label>空头平仓阈值<input id="exit-short" type="number" min="-1" max="1" step="any"></label>
-<label>Spread 多头价差分位上限<input id="spread-long" type="number" min="0" max="1" step="any"></label>
-<label>Spread 空头价差分位下限<input id="spread-short" type="number" min="0" max="1" step="any"></label>
-<p class="wide muted" id="nq-definition">NQ 统一使用所选频率的 120 根有效 bar：高低点回看 120 根，变化值分位窗口 120 根，至少 60 个有效点，滞后 1 根 bar。默认多头不低于 Q50、空头不高于 Q50。</p>
-<details class="wide"><summary>按标的覆盖阈值 / 均值模式 NQ 参数</summary><label>按标的覆盖（JSON）<textarea id="overrides" spellcheck="false"></textarea></label><div class="grid"><label class="check"><input type="checkbox" id="nq-enabled">均值模式启用 NQ</label><label>多头 NQ 分位<input id="nq-long" type="number" min="0" max="1" step="any"></label><label>空头 NQ 分位<input id="nq-short" type="number" min="0" max="1" step="any"></label></div></details>
-</div><p class="muted">独立持仓按每行的 NQ 条件判断；均值模式要求同一组合使用共同的 NQ 条件。额度在两种聚合方式下分别按因子、按标的使用。每个策略组的各频段独立配置额度和开关；组内同频段的子仓位按币种汇总，向 Manager 发布为一份策略。相同因子计算在组间共享，仓位分别持久化。</p></section>
-<section class="card"><h2>仓位表</h2><p id="position-state" class="muted">等待读取仓位</p><div class="table-wrap"><table><thead><tr><th>市场与币种</th><th>目标数量</th><th>调整</th></tr></thead><tbody id="position-targets"></tbody></table></div></section>
-<section class="card"><details><summary>因子计算参数</summary><p class="muted">按完整因子 ID 指定计算窗口等参数。留空对象使用默认值；共享 ID 的定义必须一致。</p><textarea id="parameters" spellcheck="false" aria-label="因子计算参数"></textarea></details></section>
-<div class="actions foot"><button id="preview">校验预览</button><button id="save" class="primary">保存组合</button><button id="delete" class="danger">删除组合</button><span id="dirty" class="muted"></span></div>
-</main><script>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTA 配置中心</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1221;--panel:#111a33;--border:#223259;--muted:#94a3b8;--text:#e4ecff;--accent:#38bdf8;--accent-2:#2563eb;--danger:#ef4444;--ok:#34d399}
+    *{box-sizing:border-box}[hidden]{display:none!important}
+    body{margin:0;font-family:"Segoe UI","PingFang SC","Helvetica Neue",sans-serif;background:var(--bg);color:var(--text)}
+    header{padding:18px 20px;background:linear-gradient(180deg,#0f1830,#0b1221);border-bottom:1px solid var(--border)}
+    h1{margin:0 0 12px;font-size:20px;font-weight:650}main{padding:20px;max-width:1440px;margin:auto}
+    .toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:end}.field{display:flex;flex-direction:column;gap:6px;min-width:180px}
+    label{font-size:12px;color:var(--muted)}input,select,button,textarea{padding:8px 10px;border-radius:8px;border:1px solid #2f4066;background:#0f1c3b;color:var(--text);font:13px "Segoe UI","PingFang SC","Helvetica Neue",sans-serif}
+    button{cursor:pointer;border-color:var(--accent-2);background:linear-gradient(90deg,var(--accent-2),var(--accent));color:white;font-weight:650}
+    button.secondary{background:#16213c;border-color:#31446d;color:#cbd5f5}button.ghost{background:transparent;border-color:#2f4066;color:#cbd5f5}button:disabled{opacity:.6;cursor:not-allowed}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 10px 28px rgba(0,0,0,.35);margin-bottom:18px}
+    .section-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.section-header h2{margin:0;font-size:16px}.actions{display:flex;flex-wrap:wrap;gap:8px}
+    .subnav{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 16px}.subnav a,.subnav button{color:#cbd5f5;text-decoration:none;padding:6px 14px;border:1px solid #26375b;border-radius:999px;font-size:12px;background:transparent;font-weight:400}.subnav button[aria-selected=true]{border-color:var(--accent);color:var(--accent);background:#132b49}.subnav small{margin-left:8px;color:var(--muted)}
+    .kv-table{display:grid;grid-template-columns:220px minmax(180px,1fr) 1.6fr;gap:8px;align-items:center}.kv-key{padding:8px 10px;background:#0c142b;border:1px solid #1b294c;border-radius:6px;font-size:12px}.kv-input input,.kv-input select{width:100%}.kv-desc{font-size:12px;color:var(--muted);padding:8px 4px}
+    .hint,.badge{color:var(--muted);font-size:12px;line-height:1.5}.badge{font-weight:400;margin-left:8px}.status{font-size:12px;color:var(--muted);min-height:18px;margin:10px 0;white-space:pre-wrap;line-height:1.6}.status.ok{color:var(--ok)}.status.err{color:var(--danger)}
+    textarea{display:block;width:100%;min-height:420px;resize:vertical;font:13px/1.65 Menlo,Consolas,monospace;tab-size:2;margin-top:12px}
+    #dirty{align-self:center;color:var(--muted);font-size:12px}
+    @media(max-width:960px){.kv-table{grid-template-columns:1fr}.kv-desc{padding:0 4px 10px}header,main{padding-left:12px;padding-right:12px}}
+    @media(max-width:480px){.field{min-width:0;flex:1 1 130px}.toolbar>.actions{width:100%}.section-header{align-items:flex-start;flex-wrap:wrap}textarea{min-height:420px;font-size:12px}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>CTA 配置中心</h1>
+  <div class="toolbar">
+    <div class="field"><label for="strategy-type">策略类型</label><select id="strategy-type"><option value="cta-prep-binance-futures">Prep</option><option value="cta-factor-spread">Spread</option></select></div>
+    <div class="field"><label for="strategy-group">策略组</label><select id="strategy-group"></select></div>
+    <div class="actions"><button id="reload" class="ghost" type="button">读取</button><button id="save" type="button">保存当前频段</button><span id="dirty"></span></div>
+  </div>
+</header>
+<main aria-busy="true">
+  <nav class="subnav" aria-label="页面导航"><a href="/delist/">返回 Delist</a><a href="/manager/">CTA Manager ↗</a></nav>
+  <div id="frequency-tabs" class="subnav" role="tablist" aria-label="配置频段"></div>
+  <div id="message" class="status" role="status" aria-live="polite"></div>
+  <section id="strategy-settings" class="panel">
+    <div class="section-header"><h2>策略参数 <span id="current-frequency" class="badge"></span></h2></div>
+    <p class="hint">开关、金额和开平仓阈值分别保存到当前频段。各因子沿用独立开平仓规则。</p>
+    <div class="kv-table">
+      <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组的当前频段。</div>
+      <label for="max-pos" class="kv-key">单份金额（USDT）</label><div class="kv-input"><input id="max-pos" type="number" min="0" step="any"></div><div class="kv-desc">每条因子规则的单份金额，修改后用于后续新开仓。</div>
+      <label for="entry-long" class="kv-key">多头开仓阈值</label><div class="kv-input"><input id="entry-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值高于此阈值时开多。</div>
+      <label for="entry-short" class="kv-key">空头开仓阈值</label><div class="kv-input"><input id="entry-short" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值低于此阈值时开空。</div>
+      <label for="exit-long" class="kv-key">多头平仓阈值</label><div class="kv-input"><input id="exit-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">多头因子值低于此阈值时退出。</div>
+      <label for="exit-short" class="kv-key">空头平仓阈值</label><div class="kv-input"><input id="exit-short" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">空头因子值高于此阈值时退出。</div>
+    </div>
+    <div id="spread-settings" class="kv-table" style="margin-top:8px" hidden>
+      <label for="spread-long" class="kv-key">多头价差分位上限</label><div class="kv-input"><input id="spread-long" type="number" min="0" max="1" step="any"></div><div class="kv-desc">前一分钟价差分位低于此值时允许开多。</div>
+      <label for="spread-short" class="kv-key">空头价差分位下限</label><div class="kv-input"><input id="spread-short" type="number" min="0" max="1" step="any"></div><div class="kv-desc">前一分钟价差分位高于此值时允许开空。</div>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="section-header"><h2>因子配置 <span id="factor-count" class="badge"></span></h2><div class="actions"><button id="format" class="ghost" type="button">格式化 JSON</button><button id="validate" class="secondary" type="button">校验 JSON</button></div></div>
+    <p id="factor-hint" class="hint"></p>
+    <textarea id="factor-json" aria-label="因子配置 JSON" spellcheck="false"></textarea>
+  </section>
+</main>
+<script>
 'use strict';
-const $=id=>document.getElementById(id), clone=x=>JSON.parse(JSON.stringify(x));
-let catalog=null, draft=null, dirty=false, busy=false, creating=false, selectedWorker=new URL(location.href).searchParams.get('worker'), positionSnapshot=null;
-const defaults=()=>({enabled:false,max_pos_u:200,position_algorithm:'v0',symbol_overrides:{},entry:{factor_long_quantile:.9,factor_short_quantile:.1,nq_change_enabled:true,nq_long_quantile:.5,nq_short_quantile:.5},execution:{factor_exit_quantile_long:.3,factor_exit_quantile_short:.7}});
-function message(text,error=false){$('message').textContent=text;$('message').className=error?'error':'ok';}
+const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
+const intervalNames={'1min':'1m','5min':'5m','15min':'15m'};
+let catalog=null,draft=null,dirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
-function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const control of document.querySelectorAll('input,select,textarea,button'))control.disabled=value;if(!value)$('delete').disabled=creating;}
-async function api(path,options={}){const url=new URL('api/'+path,location.href.split('#')[0]);if(selectedWorker)url.searchParams.set('worker',selectedWorker);const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})},credentials:'same-origin',cache:'no-store'});const text=await response.text();let data;try{data=JSON.parse(text);}catch{throw Error([400,422].includes(response.status)?text:'服务返回非 JSON，请检查登录和网关配置');}if(!response.ok)throw Error(data.error||data.message||text);return data;}
-function rowInput(value,field,index){const input=document.createElement('input');input.value=value;input.setAttribute('aria-label',field+' '+(index+1));if(field==='符号'){input.type='number';input.step='any';}input.addEventListener('input',()=>{draft.factor_rules[index][field]=field==='符号'?(input.value.trim()?Number(input.value):NaN):input.value;changed();});return input;}
-function renderRows(){const root=$('rows');root.replaceChildren();const filter=$('filter').value.toLowerCase();draft.factor_rules.forEach((row,index)=>{if(filter&&!JSON.stringify(row).toLowerCase().includes(filter))return;const tr=document.createElement('tr');for(const field of ['标的','nq','符号','因子']){const td=document.createElement('td');td.append(rowInput(row[field],field,index));if(field==='因子'&&(row.venue||row.interval)){const note=document.createElement('small');note.textContent=[row.venue,row.interval].filter(Boolean).join(' / ');td.append(note);}tr.append(td);}const td=document.createElement('td'),button=document.createElement('button');button.textContent='移除';button.className='danger';button.onclick=()=>{draft.factor_rules.splice(index,1);changed();renderRows();};td.append(button);tr.append(td);root.append(tr);});}
-function show(doc,isNew=false){draft=clone(doc);creating=isNew;dirty=false;$('dirty').textContent='';$('name').value=draft.name;$('strategy-group').value=draft.strategy_group;$('strategy-group').readOnly=!isNew;$('name').readOnly=!isNew;$('venue').value=draft.venue;$('interval').value=draft.interval;$('reference-venue').value=draft.reference_venue||'';$('parameters').value=JSON.stringify(draft.parameters||{},null,2);const signal=draft.signal||defaults();$('has-signal').checked=!!draft.signal;$('enabled').checked=signal.enabled;$('algorithm').value=signal.position_algorithm||'v0';$('max-pos').value=signal.max_pos_u;$('entry-long').value=signal.entry.factor_long_quantile;$('entry-short').value=signal.entry.factor_short_quantile;$('exit-long').value=signal.execution.factor_exit_quantile_long;$('exit-short').value=signal.execution.factor_exit_quantile_short;$('spread-long').value=signal.spread?.long_quantile??.3;$('spread-short').value=signal.spread?.short_quantile??.7;$('overrides').value=JSON.stringify(signal.symbol_overrides||{},null,2);$('nq-enabled').checked=signal.entry.nq_change_enabled;$('nq-long').value=signal.entry.nq_long_quantile;$('nq-short').value=signal.entry.nq_short_quantile;$('signal-fields').hidden=!$('has-signal').checked;$('delete').disabled=isNew;renderRows();renderStrategy();}
-function positionName(){const short={'binance-futures':'bn','okex-futures':'okx','binance-margin':'bn-spot'},venue=short[$('venue').value],reference=$('reference-venue').value;return 'cta-'+$('strategy-group').value.trim()+'-'+venue+'-'+(reference?short[reference]+'-':'')+$('interval').value+'-pos';}
-function renderStrategy(){$('manager-strategy').textContent=$('has-signal').checked?'仓位表：'+positionName()+' · 由当前因子进程维护':'仅维护因子计算';for(const id of ['spread-long','spread-short'])$(id).parentElement.hidden=!$('reference-venue').value;renderPosition();}
-function renderPosition(){const state=positionSnapshot,table=state&&state.worker===catalog?.worker?state.position_tables?.tables?.find(t=>t.combination_name===draft?.name):null;$('position-targets').replaceChildren();$('position-state').textContent=state?.positions_error||(!table?'尚无此组合的仓位快照':table.strategy_name+' · '+(Date.now()-state.updated_ms>180000?'快照已过期':table.retired?'已退役':table.retiring?'正在清零':table.enabled?'发布已启用':'发布已关闭'));if(!table)return;for(const [symbol,target] of Object.entries(table.targets||{})){const tr=document.createElement('tr');for(const value of [symbol,target.qty==='clear'?'清零':target.qty,target.signal===1?'主动清仓':'目标调整']){const td=document.createElement('td');td.textContent=String(value);tr.append(td);}$('position-targets').append(tr);}}
-
-function number(id){const text=$(id).value;if(!text.trim()||!Number.isFinite(Number(text)))throw Error('请填写有效数字：'+id);return Number(text);}
-function collect(){const doc=clone(draft);if(doc.factor_rules.some(row=>!Number.isFinite(row['符号'])))throw Error('每行符号必须是有效数字');doc.name=$('name').value.trim();doc.strategy_group=$('strategy-group').value.trim();doc.venue=$('venue').value;doc.interval=$('interval').value;const reference=$('reference-venue').value;if(reference)doc.reference_venue=reference;else delete doc.reference_venue;doc.parameters=JSON.parse($('parameters').value||'{}');if($('has-signal').checked){doc.signal={...defaults(),enabled:$('enabled').checked,max_pos_u:number('max-pos'),position_algorithm:$('algorithm').value,symbol_overrides:JSON.parse($('overrides').value||'{}'),entry:{factor_long_quantile:number('entry-long'),factor_short_quantile:number('entry-short'),nq_change_enabled:$('nq-enabled').checked,nq_long_quantile:number('nq-long'),nq_short_quantile:number('nq-short')},execution:{factor_exit_quantile_long:number('exit-long'),factor_exit_quantile_short:number('exit-short')}};if(reference)doc.signal.spread={long_quantile:number('spread-long'),short_quantile:number('spread-short')};}else delete doc.signal;return doc;}
-function renderCombinations(group,selected){const entries=Object.entries(catalog.plan.combinations).filter(([,doc])=>doc.strategy_group===group);$('combination-list').replaceChildren();for(const [name,doc] of entries)$('combination-list').append(new Option(doc.interval+' · '+name,name));const name=entries.some(([name])=>name===selected)?selected:entries[0]?.[0];if(name){$('combination-list').value=name;show(catalog.plan.combinations[name]);location.hash=name;}else newCombination();}
-function renderCatalog(selected){selectedWorker=catalog.worker;const pageUrl=new URL(location.href);pageUrl.searchParams.set('worker',selectedWorker);history.replaceState(null,'',pageUrl);$('worker-select').replaceChildren();for(const worker of catalog.workers||[catalog.worker])$('worker-select').append(new Option(worker,worker));$('worker-select').value=catalog.worker;for(const option of $('venue').options)option.disabled=catalog.worker==='cta-prep-binance-futures'&&option.value!=='binance-futures';$('worker').textContent=catalog.worker;const groups=[...new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group))].sort();$('count').textContent=`${groups.length} 个策略组 · ${Object.keys(catalog.plan.combinations).length} 份频段配置 · 合并计算 ${catalog.unique_factor_count} 项`;const group=catalog.plan.combinations[selected]?.strategy_group||groups[0];$('group-select').replaceChildren();for(const name of groups)$('group-select').append(new Option(name,name));$('group-select').value=group||'';renderCombinations(group,selected);}
-async function load(){if(busy)return;if(dirty&&!confirm('放弃未保存的修改，重新读取？'))return;setBusy(true);try{catalog=await api('config');const requested=decodeURIComponent(location.hash.slice(1));renderCatalog(requested);message(requested&&!catalog.plan.combinations[requested]?'请求的组合尚未接入该清单，请核对后选择组合':'已读取统一配置',!!requested&&!catalog.plan.combinations[requested]);await runtime();}catch(e){if(catalog){selectedWorker=catalog.worker;const pageUrl=new URL(location.href);pageUrl.searchParams.set('worker',selectedWorker);history.replaceState(null,'',pageUrl);$('worker-select').value=selectedWorker;}message(e.message,true);}finally{setBusy(false);}}
-function newCombination(){if(dirty&&!confirm('放弃未保存的修改？'))return;show({name:'',strategy_group:$('group-select').value||(catalog?.worker==='cta-factor-spread'?'spread01':'prep01'),venue:catalog?.worker==='cta-factor-spread'?'okex-futures':'binance-futures',interval:'1min',factor_rules:[{'标的':'BTCUSDT','nq':'0.50','符号':1,'因子':'factor_036'}]},true);changed();}
-async function action(kind){if(busy||!catalog)return;setBusy(true);try{const combination=collect();if(kind==='save'&&creating&&catalog.plan.combinations[combination.name])throw Error('组合名称已存在，请选择该组合后编辑');const result=await api(kind==='preview'?'preview':'combinations',{method:'POST',body:JSON.stringify({combination,expected_revision:catalog.revision,worker:catalog.worker})});if(kind==='preview'){message(`校验通过：合并后 ${result.unique_factor_count} 项计算，输入 ${result.topics.join('、')}`);}else{catalog=result;renderCatalog(combination.name);message('组合已保存，等待因子进程加载仓位参数');}}catch(e){message(e.message,true);}finally{setBusy(false);}}
-async function runtime(){try{const state=await api('status');positionSnapshot=state;renderPosition();const age=Date.now()-state.updated_ms;$('runtime').textContent=!state.available?'尚无因子运行状态':age>180000||age< -30000?'因子状态已过期':state.error||state.positions_error?'因子或仓位运行有错误':state.warming?`正在回放 · ${state.warm_records||0} 条`:'因子状态已更新';}catch{$('runtime').textContent='运行状态读取失败';}}
-$('worker-select').onchange=async()=>{if(dirty&&!confirm('放弃未保存修改，切换因子进程？')){$('worker-select').value=selectedWorker;return;}selectedWorker=$('worker-select').value;dirty=false;location.hash='';await load();};
-$('group-select').onchange=()=>{if(dirty&&!confirm('放弃未保存的修改，切换策略组？')){$('group-select').value=draft.strategy_group;return;}renderCombinations($('group-select').value);message('');};
-$('combination-list').onchange=()=>{const name=$('combination-list').value;if(dirty&&!confirm('放弃未保存的修改？')){$('combination-list').value=draft.name;return;}show(catalog.plan.combinations[name]);location.hash=name;message('');};
-$('new').onclick=newCombination;$('copy-group').onclick=()=>{if(dirty&&!confirm('将未保存的修改一并复制到新组？'))return;try{const doc=collect(),prefix=catalog.worker==='cta-factor-spread'?'spread':'prep',groups=new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group));let index=1;while(groups.has(prefix+String(index).padStart(2,'0')))index++;doc.strategy_group=prefix+String(index).padStart(2,'0');doc.name=doc.strategy_group+'_'+doc.venue+(doc.reference_venue?'_'+doc.reference_venue:'')+'_'+doc.interval;if(doc.signal)doc.signal.enabled=false;show(doc,true);changed();message('已复制到新策略组草稿；仓位发布关闭，保存后创建该频段配置');}catch(e){message(e.message,true);}};$('reload').onclick=load;$('save').onclick=()=>action('save');$('preview').onclick=()=>action('preview');$('filter').oninput=renderRows;
-$('has-signal').onchange=()=>{if(!$('has-signal').checked&&draft.signal&&!confirm('移除信号参数会撤销此组合的策略目标，因子计算继续。确认移除？')){$('has-signal').checked=true;return;}$('signal-fields').hidden=!$('has-signal').checked;renderStrategy();changed();};
-$('add-row').onclick=()=>{draft.factor_rules.push({'标的':'','nq':'0.50','符号':1,'因子':''});$('filter').value='';changed();renderRows();};
-$('import').onclick=()=>{try{const data=JSON.parse($('import-json').value);const doc=Array.isArray(data)?{...collect(),factor_rules:data}:data;if(!Array.isArray(doc.factor_rules))throw Error('JSON 需要 factor_rules 行数组');const isNew=!catalog.plan.combinations[doc.name];show(doc,isNew);changed();message('JSON 已载入草稿，尚未保存');}catch(e){message(e.message,true);}};
-$('export').onclick=()=>{try{const doc=collect(),link=document.createElement('a');const url=URL.createObjectURL(new Blob([JSON.stringify(doc,null,2)+'\n'],{type:'application/json'}));link.href=url;link.download=(doc.name||'combination')+'.json';link.click();URL.revokeObjectURL(url);}catch(e){message(e.message,true);}};
-$('delete').onclick=async()=>{if(!catalog||creating||busy)return;if(!confirm(`删除 ${draft.name}？\n关联信号将撤销原策略目标；不再被引用的因子将停止计算。`))return;setBusy(true);try{catalog=await api('combinations/'+encodeURIComponent(draft.name),{method:'DELETE',body:JSON.stringify({expected_revision:catalog.revision,worker:catalog.worker})});dirty=false;renderCatalog();message('组合已删除；其他组合和历史记录保留');}catch(e){message(e.message,true);}finally{setBusy(false);}};
-for(const id of ['name','strategy-group','venue','interval','reference-venue','parameters','enabled','algorithm','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short','overrides','nq-enabled','nq-long','nq-short'])$(id).addEventListener('input',changed);
-for(const id of ['strategy-group','venue','interval','reference-venue'])$(id).addEventListener('input',renderStrategy);
+function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}}
+async function api(path,options={}){
+  const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
+  const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})},credentials:'same-origin',cache:'no-store'});
+  const raw=await response.text();let result;try{result=JSON.parse(raw);}catch{throw Error('读取失败，请检查登录状态');}if(!response.ok)throw Error(result.error||result.message||raw);return result;
+}
+function groupedRules(doc){
+  const groups=new Map();
+  for(const row of doc.factor_rules){
+    const frequency=intervalNames[row.interval||doc.interval],actualKey=JSON.stringify([frequency,row.nq,row['因子'],row['符号']]);
+    if(!groups.has(actualKey))groups.set(actualKey,{'频率':frequency,'NQ':row.nq,'因子':row['因子'],'符号':row['符号'],'标的':[]});
+    groups.get(actualKey)['标的'].push(row['标的'].replace(/USDT$/i,''));
+  }
+  return [...groups.values()];
+}
+function parseRules(){
+  let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
+  if(!Array.isArray(rows)||!rows.length)throw Error('因子配置必须是非空 JSON 数组');
+  const fields=['频率','NQ','因子','符号','标的'],result=[],seen=new Set();
+  for(const [index,row] of rows.entries()){
+    const label='第 '+(index+1)+' 项：';
+    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).length!==fields.length||fields.some(key=>!Object.hasOwn(row,key)))throw Error(label+'只接受「频率、NQ、因子、符号、标的」五个字段');
+    if(row['频率']!==intervalNames[draft.interval])throw Error(label+'当前频段为 '+draft.interval+'，频率请填写 '+intervalNames[draft.interval]);
+    if(typeof row.NQ!=='string'||!row.NQ.trim())throw Error(label+'NQ 请填写分位字符串或「关闭」');
+    if(typeof row['因子']!=='string'||!row['因子'].trim())throw Error(label+'请填写因子名称');
+    if(typeof row['符号']!=='number'||!Number.isFinite(row['符号']))throw Error(label+'符号必须是有效数字');
+    if(!Array.isArray(row['标的'])||!row['标的'].length)throw Error(label+'标的必须是非空数组，例如 ["BTC", "ETH"]');
+    for(const symbol of row['标的']){
+      if(typeof symbol!=='string'||!symbol.trim())throw Error(label+'标的必须是币种名称字符串');
+      const base=symbol.trim().toUpperCase().replace(/USDT$/,'');
+      if(!/^[A-Z0-9]{1,28}$/.test(base))throw Error(label+'标的名称无效：'+symbol);
+      const next={'标的':base+'USDT',nq:row.NQ.trim(),'符号':row['符号'],'因子':row['因子'].trim()},key=JSON.stringify([next['标的'],next.nq,next['符号'],next['因子'].toLowerCase()]);
+      if(seen.has(key))continue;seen.add(key);
+      if(draft.reference_venue&&next['因子'].toLowerCase()!=='spread')next.venue=draft.reference_venue;
+      result.push(next);
+    }
+  }
+  return result;
+}
+function number(id){const text=$(id).value;if(!text.trim()||!Number.isFinite(Number(text)))throw Error('请填写有效参数：'+$(id).closest('.kv-input').previousElementSibling.textContent);return Number(text);}
+function collect(){
+  if(!draft)throw Error('请先选择策略组和频段');
+  const doc=clone(draft),key=row=>JSON.stringify([row['标的'],row.nq,row['符号'],row['因子'].toLowerCase(),row.venue||doc.venue,row.interval||doc.interval,row['因子'].toLowerCase()==='spread'?(row.reference_venue||doc.reference_venue):null]);
+  const pending=new Map(parseRules().map(row=>[key(row),row]));
+  // Keep unchanged rows in their original order, with their existing market scope.
+  doc.factor_rules=doc.factor_rules.filter(row=>{const id=key(row);if(!pending.has(id))return false;pending.delete(id);return true;});
+  doc.factor_rules.push(...pending.values());
+  if(doc.signal){
+    doc.signal.enabled=$('enabled').value==='true';doc.signal.max_pos_u=number('max-pos');
+    doc.signal.entry.factor_long_quantile=number('entry-long');doc.signal.entry.factor_short_quantile=number('entry-short');
+    doc.signal.execution.factor_exit_quantile_long=number('exit-long');doc.signal.execution.factor_exit_quantile_short=number('exit-short');
+    if(doc.reference_venue){doc.signal.spread={long_quantile:number('spread-long'),short_quantile:number('spread-short')};}
+  }
+  return doc;
+}
+function updateCount(rows){$('factor-count').textContent=new Set(rows.map(row=>row['标的'])).size+' 个标的 · '+rows.length+' 条规则';}
+function show(doc){
+  draft=clone(doc);dirty=false;$('dirty').textContent='';$('strategy-group').value=doc.strategy_group;$('current-frequency').textContent=doc.interval;
+  const signal=doc.signal;$('strategy-settings').hidden=!signal;
+  if(signal){$('enabled').value=String(signal.enabled);$('max-pos').value=signal.max_pos_u;$('entry-long').value=signal.entry.factor_long_quantile;$('entry-short').value=signal.entry.factor_short_quantile;$('exit-long').value=signal.execution.factor_exit_quantile_long;$('exit-short').value=signal.execution.factor_exit_quantile_short;$('spread-long').value=signal.spread?.long_quantile??.3;$('spread-short').value=signal.spread?.short_quantile??.7;}
+  $('spread-settings').hidden=!doc.reference_venue;$('factor-json').value=JSON.stringify(groupedRules(doc),null,2);updateCount(doc.factor_rules);
+  $('factor-hint').textContent='仅使用「频率、NQ、因子、符号、标的数组」JSON。当前频率填写 '+intervalNames[doc.interval]+'；NQ 填「0.50」「0.2/0.8」或「关闭」。相同因子搭配不同 NQ 条件分别保留。';
+  renderTabs();const url=new URL(location.href);url.searchParams.set('worker',selectedWorker);url.hash=doc.name;history.replaceState(null,'',url);
+}
+function renderTabs(){
+  $('frequency-tabs').replaceChildren();
+  const group=$('strategy-group').value,intervals=selectedWorker==='cta-factor-spread'?['1min']:Object.keys(intervalNames);
+  for(const interval of intervals){
+    const doc=Object.values(catalog.plan.combinations).find(c=>c.strategy_group===group&&c.interval===interval),button=document.createElement('button');
+    button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(draft?.name===doc?.name));button.dataset.interval=interval;button.dataset.name=doc?.name||'';button.disabled=busy||!doc;
+    button.append(document.createTextNode(interval));const badge=document.createElement('small');badge.textContent=doc?(doc.signal?.enabled?'已启用':'已关闭'):'未配置';button.append(badge);
+    button.onclick=()=>{if(!doc||busy)return;if(dirty&&!confirm('放弃未保存修改，切换频段？'))return;show(doc);message('');};$('frequency-tabs').append(button);
+  }
+}
+function renderCatalog(preferred){
+  selectedWorker=catalog.worker;$('strategy-type').replaceChildren();for(const worker of catalog.workers||[catalog.worker])$('strategy-type').append(new Option(worker==='cta-factor-spread'?'Spread':'Prep',worker));$('strategy-type').value=selectedWorker;
+  const groups=[...new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group))].sort();$('strategy-group').replaceChildren();for(const group of groups)$('strategy-group').append(new Option(group,group));
+  const doc=catalog.plan.combinations[preferred]||Object.values(catalog.plan.combinations).find(doc=>doc.interval==='1min')||Object.values(catalog.plan.combinations)[0];
+  if(doc)show(doc);else{draft=null;$('factor-json').value='[]';$('frequency-tabs').replaceChildren();$('strategy-settings').hidden=true;message('尚无该策略的频段配置');}
+}
+async function load(){
+  if(busy&&catalog)return;if(dirty&&!confirm('放弃未保存修改，重新读取？'))return;
+  setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
+}
+async function action(save){
+  if(busy||!draft)return;setBusy(true);
+  try{const combination=collect(),result=await api(save?'combinations':'preview',{method:'POST',body:JSON.stringify({worker:selectedWorker,combination,expected_revision:catalog.revision})});
+    if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+combination.interval);}
+    else{updateCount(combination.factor_rules);message('JSON 校验通过：'+combination.factor_rules.length+' 条规则');}
+  }catch(error){message(error.message,true);}finally{setBusy(false);}
+}
+$('strategy-type').onchange=async()=>{if(dirty&&!confirm('放弃未保存修改，切换策略类型？')){$('strategy-type').value=selectedWorker;return;}selectedWorker=$('strategy-type').value;dirty=false;const url=new URL(location.href);url.hash='';history.replaceState(null,'',url);await load();};
+$('strategy-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换策略组？')){$('strategy-group').value=draft.strategy_group;return;}const docs=Object.values(catalog.plan.combinations).filter(doc=>doc.strategy_group===$('strategy-group').value);const next=docs.find(doc=>doc.interval===draft?.interval)||docs.find(doc=>doc.interval==='1min')||docs[0];if(next)show(next);message('');};
+$('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
+$('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(groupedRules(doc),null,2);updateCount(doc.factor_rules);changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
+for(const id of ['factor-json','enabled','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
+window.addEventListener('hashchange',()=>{if(!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
 window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
-load();setInterval(runtime,10000);
-</script></body></html>
+load();
+</script>
+</body>
+</html>

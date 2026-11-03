@@ -65,25 +65,27 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('dialog', lambda dialog: dialog.accept())
                 page.goto(base)
-                page.wait_for_function("count=>document.querySelector('#count').textContent.includes(String(count))", arg=api('config')['unique_factor_count'])
-                assert page.locator('#rows tr').count()==146
-                assert 'cta-prep01-bn-15min-pos' in page.locator('#manager-strategy').inner_text()
-                page.wait_for_function("document.querySelector('#position-targets').textContent.includes('1.25')")
-                assert page.locator('#worker-select option').count()==2
+                page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#factor-json').value!==''")
+                assert page.locator('#parameters,#position-targets,#rows,#import-json').count()==0
+                assert page.locator('textarea').count()==1
+                page.locator('#strategy-group').select_option('prep02')
+                page.locator('[data-interval="5min"]').click()
+                rows=json.loads(page.locator('#factor-json').input_value())
+                assert all(set(row)=={'频率','NQ','因子','符号','标的'} and isinstance(row['标的'],list) and row['频率']=='5m' for row in rows)
+                assert sum(len(row['标的']) for row in rows)==7
+                untouched=(root/'config/cta_prep_binance_futures/prep02_binance-futures_1min.json').read_bytes()
                 page.locator('#max-pos').fill('250')
-                with page.expect_response(lambda response: response.url.endswith('/api/combinations?worker=cta-prep-binance-futures')) as saved:
+                with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
                     page.locator('#save').click()
                 assert saved.value.status==200
-                recipe=root/'config/cta_prep_binance_futures/binance-futures_15min.json'
+                recipe=root/'config/cta_prep_binance_futures/prep02_binance-futures_5min.json'
                 data=json.loads(recipe.read_text())
-                assert data['signal']['max_pos_u']==250
-                assert len(data['factor_rules'])==146 and 'factors' not in data
-                assert len([r for r in data['factor_rules'] if r['标的']=='SKLUSDT' and r['因子']=='factor_170'])==2
-                # Another editor changes the catalog. A stale save retains the draft.
+                assert data['signal']['max_pos_u']==250 and len(data['factor_rules'])==7
+                assert (root/'config/cta_prep_binance_futures/prep02_binance-futures_1min.json').read_bytes()==untouched
                 current=api('config')
                 external=current['plan']['combinations']['binance-futures_1min']
                 external['signal']['max_pos_u']=123
-                api('combinations', {'combination':external,'expected_revision':current['revision']})
+                api('combinations',{'combination':external,'expected_revision':current['revision']})
                 page.locator('#max-pos').fill('999')
                 with page.expect_response(lambda response: '/api/combinations' in response.url) as conflict:
                     page.locator('#save').click()
@@ -93,38 +95,21 @@ def main():
                 page.locator('#reload').click()
                 page.wait_for_function("document.querySelector('#max-pos').value==='250'")
                 original=recipe.read_bytes()
-                page.get_by_label('nq 1', exact=True).fill('2')
-                with page.expect_response(lambda response: '/api/preview' in response.url) as invalid:
-                    page.locator('#preview').click()
-                assert invalid.value.status==400
+                page.locator('#factor-json').fill('[{"标的":"SOL","nq":"关闭","符号":1,"因子":"factor_049"}]')
+                page.locator('#validate').click()
+                page.wait_for_function("document.querySelector('#message').classList.contains('err')")
                 assert recipe.read_bytes()==original
-                page.locator('#worker-select').select_option('cta-factor-spread')
-                page.wait_for_function("document.querySelector('#worker').textContent==='cta-factor-spread'")
-                assert 'cta-spread01-okx-bn-1min-pos' in page.locator('#manager-strategy').inner_text()
+                page.locator('#strategy-type').select_option('cta-factor-spread')
+                page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#spread-settings').hidden===false")
                 assert page.locator('#spread-long').input_value()=='0.3'
-                page.locator('#new').click()
-                page.locator('#name').fill('okx_single_1min')
-                assert page.locator('#venue').input_value()=='okex-futures'
-                page.locator('#has-signal').check()
-                with page.expect_response(lambda response: '/api/combinations' in response.url) as unsupported:
-                    page.locator('#save').click()
-                assert unsupported.value.status==400
-                page.locator('#has-signal').uncheck()
-                with page.expect_response(lambda response: '/api/combinations' in response.url) as okx:
-                    page.locator('#save').click()
-                assert okx.value.status==200
-                okx_path=root/'config/cta_factor_spread/okx_single_1min.json'
-                okx_config=json.loads(okx_path.read_text())
-                assert okx_config['venue']=='okex-futures'
-                assert 'signal' not in okx_config
-                assert set(okx_config['factor_rules'][0])=={'标的','nq','符号','因子'}
-                with page.expect_response(lambda response: response.request.method=='DELETE') as deleted:
-                    page.locator('#delete').click()
-                assert deleted.value.status==200 and not okx_path.exists()
-                page.locator('#worker-select').select_option('cta-prep-binance-futures')
-                page.wait_for_function("document.querySelector('#worker').textContent==='cta-prep-binance-futures'")
-                page.locator('#combination-list').select_option('binance-futures_5min')
-                assert page.locator('#nq-long').input_value()=='0.5'
+                assert page.locator('#spread-short').input_value()=='0.7'
+                page.locator('#strategy-type').select_option('cta-prep-binance-futures')
+                page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#strategy-type').value==='cta-prep-binance-futures'")
+                page.locator('#strategy-group').select_option('prep02')
+                page.locator('[data-interval="15min"]').click()
+                rows=json.loads(page.locator('#factor-json').input_value())
+                assert sum(len(row['标的']) for row in rows)==33
+                assert any(row['因子']=='TD_MT_040' and row['NQ']=='0.2/0.8' for row in rows)
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'desktop.png'), full_page=True)
@@ -134,7 +119,7 @@ def main():
                     page.screenshot(path=str(args.screenshot_dir/'mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-                print('Unified editor passed: four-column JSON, signal save, conflict, invalid NQ, OKX profile, delete and mobile layout')
+                print('Frequency JSON editor passed: grouped JSON, isolated save, conflict, single format and mobile layout')
         finally:
             server.terminate()
             try:
