@@ -1,0 +1,34 @@
+{
+  "total_position_strategies": 13,
+  "own_position_strategies": [
+    "cta-prep01-bn-15min-pos",
+    "cta-prep01-bn-1min-pos",
+    "cta-prep01-bn-5min-pos",
+    "cta-prep02-bn-15min-pos",
+    "cta-prep02-bn-1min-pos",
+    "cta-prep02-bn-5min-pos",
+    "cta-spread01-okx-bn-1min-pos"
+  ],
+  "prc_position_strategies": [
+    "CTA_TOP_V1",
+    "CTA_TOP_V2",
+    "funding",
+    "rbf_big",
+    "rbf_mid_1min",
+    "rbf_small"
+  ],
+  "removed_legacy_strategies": 229,
+  "removed_unused_virtual_templates": [
+    "virtual02",
+    "virtual03"
+  ],
+  "removed_legacy_virtual_bindings": 66,
+  "real_account_bindings_unchanged": 13,
+  "retained_strategy_permissions_and_tokens_unchanged": true,
+  "all_seven_publishing_disabled": true,
+  "own_execution_bindings": 0,
+  "runtime_configs_unchanged": true,
+  "protected_processes_unchanged": 82,
+  "orders_or_target_updates_sent": 0,
+  "checked_at_ms": 1793685972816
+}

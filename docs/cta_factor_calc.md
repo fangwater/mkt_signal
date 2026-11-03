@@ -115,6 +115,24 @@ bar 的 `high-close` 之和，与 Rust 实现一致。用户确认将 SOL/DOGE 1
 `TD_MI_040` 改为 `TD_MT_040`，99 条规则均通过计算器计划校验。
 原始输入、去重及名称修正回执在 `artifacts/cta_prep02_config_20261103/`。
 
+## Manager 当前仓位策略目录
+
+2026-11-03 完成目录整理后，Manager 全局保留 13 个仓位策略：
+
+| 类别 | 数量 | 策略 |
+|---|---:|---|
+| Prep01 | 3 | `cta-prep01-bn-{1min,5min,15min}-pos` |
+| Prep02 | 3 | `cta-prep02-bn-{1min,5min,15min}-pos` |
+| Spread01 | 1 | `cta-spread01-okx-bn-1min-pos` |
+| PRC RBF | 3 | `rbf_big`、`rbf_mid_1min`、`rbf_small` |
+| PRC funding | 1 | `funding` |
+| PRC CTA | 2 | `CTA_TOP_V1`、`CTA_TOP_V2` |
+
+七个新策略已注册为零目标，发布开关为 false，执行绑定为 0；不开交易阶段不会实时更新仓位。
+229 个旧因子目录定义及 virtual02/virtual03 两个无人跟随的旧模板已先备份再移除，
+PRC 的真实账户绑定、权限、令牌和 virtual01 保留。没有发送目标更新或订单。
+完整私有备份在远端，脱敏回执见 `artifacts/cta_catalog_cleanup_20261103/verified.json`。
+
 ## 统一配置入口和 JSON
 
 统一导航入口为 `/delist/`，固定提供 CTA Prep 和 CTA Spread 两个配置链接。
