@@ -366,6 +366,36 @@ fn period(symbol: &str, ts: i64, mid: f64, snapshot: bool) -> PeriodMessage {
 }
 
 #[test]
+fn retained_deltas_without_snapshot_warm_nq_at_every_frequency() {
+    let names = [
+        "binance-futures-btcusdt-1min-nq",
+        "binance-futures-btcusdt-5min-nq",
+        "binance-futures-btcusdt-15min-nq",
+    ];
+    let plan = Plan::merge([combination("retained", &names.map(|name| (name, 1.0)))]).unwrap();
+    let mut engine = Engine::new(plan, &config()).unwrap();
+    let start = 1_800_000_000_000i64.div_euclid(900_000) * 900_000;
+    for minute in 0..=1000 {
+        let mut record = period(
+            "BTCUSDT",
+            start + minute * 60_000,
+            100.0 + (minute % 17) as f64,
+            false,
+        );
+        if minute == 0 {
+            record.symbol_infos[0].incs[0].asks.clear();
+        }
+        engine.on_period(Market::BinanceFutures, &record).unwrap();
+        if minute == 1 {
+            assert!(engine.latest[names[0]].fields["long"].raw.is_none());
+        }
+    }
+    for name in names {
+        assert!(engine.latest[name].ready(), "{}", name);
+    }
+}
+
+#[test]
 fn nq_uses_each_markets_own_bars_at_all_requested_frequencies() {
     let names = [
         "binance-futures-btcusdt-1min-nq",

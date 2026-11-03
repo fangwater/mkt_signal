@@ -447,6 +447,7 @@ pub async fn main(worker: Worker) -> Result<()> {
     };
     let mut last_status = Instant::now();
     let mut error: Option<String> = None;
+    let mut kafka_error: Option<String> = None;
     let mut observed_plan = candidate.as_ref().unwrap().engine.plan.clone();
     let mut position_tables = if args.replay_only {
         None
@@ -458,8 +459,12 @@ pub async fn main(worker: Worker) -> Result<()> {
     loop {
         let mut progressed = false;
         if let Some(generation) = &mut active {
+            let records = generation.records;
             match generation.poll(&config, 0) {
                 Ok(points) => {
+                    if generation.records > records {
+                        kafka_error = None;
+                    }
                     progressed |= !points.is_empty();
                     if let Some(publisher) = &publisher {
                         for point in points {
@@ -470,7 +475,7 @@ pub async fn main(worker: Worker) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    error = Some(format!("active Kafka: {e:#}"));
+                    kafka_error = Some(format!("active Kafka: {e:#}"));
                 }
             }
         }
@@ -516,6 +521,7 @@ pub async fn main(worker: Worker) -> Result<()> {
                     }
                     active = candidate.take();
                     error = None;
+                    kafka_error = None;
                     if args.replay_only {
                         write_status(&config, worker, active.as_ref(), None, None, None, None)?;
                         return Ok(());
@@ -594,7 +600,7 @@ pub async fn main(worker: Worker) -> Result<()> {
                 worker,
                 active.as_ref(),
                 candidate.as_ref(),
-                error.as_deref(),
+                error.as_deref().or(kafka_error.as_deref()),
                 positions.as_ref(),
                 positions_error.as_deref(),
             )?;

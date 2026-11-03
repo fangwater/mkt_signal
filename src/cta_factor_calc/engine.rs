@@ -268,7 +268,6 @@ struct Series {
     book: OrderBook,
     update_id: i64,
     last_book_ts: i64,
-    book_initialized: bool,
     clocks: BTreeMap<Interval, QuoteClock>,
     threshold: Option<AmountThreshold>,
 }
@@ -291,7 +290,6 @@ impl Series {
             .collect::<Vec<_>>();
         if book.is_snapshot {
             self.book = OrderBook::new();
-            self.book_initialized = true;
         }
         self.update_id = self.update_id.saturating_add(1);
         self.book
@@ -299,13 +297,13 @@ impl Series {
         if !self.book.is_valid() {
             self.book.prune_crossed_by_best_update_id();
         }
+        // Retention can begin with deltas. A reconstructed two-sided BBO is
+        // usable just as it is in LocalBaselineAggregator's retained replay.
         let mid = self
             .book
             .best_bid_price()
             .zip(self.book.best_ask_price())
-            .filter(|(b, a)| {
-                self.book_initialized && b.is_finite() && a.is_finite() && *b > 0.0 && a >= b
-            })
+            .filter(|(b, a)| b.is_finite() && a.is_finite() && *b > 0.0 && a >= b)
             .map(|(b, a)| (b + a) * 0.5);
         // Close the previous bucket before using this book's price.
         let output = self
@@ -522,7 +520,6 @@ impl Engine {
                         book: OrderBook::new(),
                         update_id: 0,
                         last_book_ts: 0,
-                        book_initialized: false,
                         clocks: BTreeMap::new(),
                         threshold,
                     }
