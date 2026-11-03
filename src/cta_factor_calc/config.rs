@@ -166,8 +166,8 @@ impl FactorId {
     }
 }
 
-/// Time slots retain missing observations; valid samples preserve the existing
-/// multi-minute NQ convention. The choice belongs to the factor definition.
+/// Time slots retain missing observations. NQ defaults to valid samples at
+/// every frequency; the choice belongs to the factor definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MissingPolicy {
@@ -200,7 +200,7 @@ impl Parameters {
             rank_window: if id.factor == "nq" { 120 } else { slots },
             rank_min_periods: if id.factor == "nq" { 60 } else { slots / 2 },
             lookback: 120,
-            missing_policy: if id.factor == "nq" && id.interval != Interval::Minute {
+            missing_policy: if id.factor == "nq" {
                 MissingPolicy::ValidSamples
             } else {
                 MissingPolicy::Slots
@@ -259,8 +259,6 @@ pub struct SignalParameters {
     #[serde(default)]
     pub position_algorithm: crate::cta_perp::config::PositionAlgorithm,
     #[serde(default)]
-    pub nq_mode: NqMode,
-    #[serde(default)]
     pub symbol_overrides: BTreeMap<String, crate::cta_perp::config::SymbolThresholdOverrides>,
     pub entry: crate::cta_perp::config::EntryConfig,
     pub execution: crate::cta_perp::config::ExecutionConfig,
@@ -273,14 +271,6 @@ pub struct SignalParameters {
 pub struct SpreadFilters {
     pub long_quantile: f64,
     pub short_quantile: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NqMode {
-    #[default]
-    StrictQuantile,
-    LinearMedian,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -525,9 +515,8 @@ impl Combination {
                 self.venue == Market::OkexFutures
                     && self.reference_venue == Some(Market::BinanceFutures)
                     && self.interval == Interval::Minute
-                && p.position_algorithm == PositionAlgorithm::V0
-                && p.nq_mode == NqMode::StrictQuantile,
-                "Spread positions require OKX/Binance futures, 1min, independent factor rules and quantile NQ"
+                    && p.position_algorithm == PositionAlgorithm::V0,
+                "Spread positions require OKX/Binance futures, 1min and independent factor rules"
             );
         } else {
             ensure!(
@@ -581,8 +570,8 @@ impl Combination {
             position_algorithm: p.position_algorithm,
             symbol_overrides: p.symbol_overrides.clone(),
             factor_rules: rules,
-            strict_nq: p.nq_mode == NqMode::StrictQuantile,
-            linear_nq: p.nq_mode == NqMode::LinearMedian,
+            strict_nq: false,
+            linear_nq: true,
             entry: p.entry.clone(),
             execution: p.execution.clone(),
         })

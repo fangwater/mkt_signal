@@ -52,8 +52,8 @@ pub(crate) fn observe_nq(
         long_quantile,
         short_value,
         short_quantile,
-        long_threshold: None,
-        short_threshold: None,
+        long_threshold: long_window.quantile_linear(0.5),
+        short_threshold: short_window.quantile_linear(0.5),
         ready: long_value.is_some()
             && short_value.is_some()
             && long_window.len() >= NQ_MIN_PERIODS

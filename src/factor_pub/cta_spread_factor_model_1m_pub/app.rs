@@ -992,9 +992,9 @@ impl CtaSpreadFactorModel1mPubApp {
                     None,
                     None,
                     nq.long_value,
-                    None,
+                    nq.long_threshold,
                     nq.short_value,
-                    None,
+                    nq.short_threshold,
                     nq.ready,
                 )
                 .with_filter_quantiles(nq.long_quantile, nq.short_quantile);

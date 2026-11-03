@@ -9,7 +9,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
     config.combinations_dir = root.clone();
     config.history_dir = root.join("history");
     let mut combination = Combination::load(std::path::Path::new(
-        "config/cta_prep_binance_futures/rx01_binance-futures_15min.json",
+        "config/cta_prep_binance_futures/binance-futures_15min.json",
     ))
     .unwrap();
     combination.name = "one".into();

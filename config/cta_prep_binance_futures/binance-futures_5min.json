@@ -1,5 +1,5 @@
 {
-  "name": "rx04_binance-futures_5min",
+  "name": "binance-futures_5min",
   "venue": "binance-futures",
   "interval": "5min",
   "factor_rules": [
@@ -305,7 +305,6 @@
     "execution": {
       "factor_exit_quantile_long": 0.3,
       "factor_exit_quantile_short": 0.7
-    },
-    "nq_mode": "linear_median"
+    }
   }
 }

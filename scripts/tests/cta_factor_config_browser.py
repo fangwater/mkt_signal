@@ -31,7 +31,7 @@ def main():
         (history/'state.json').write_text(json.dumps({
             'worker':'cta-prep-binance-futures','updated_ms':int(time.time()*1000),'warming':False,
             'position_tables':{'tables':[{'strategy_name':'cta-prep-bn-15min-pos',
-                'combination_name':'rx01_binance-futures_15min','enabled':False,'retired':False,
+                'combination_name':'binance-futures_15min','enabled':False,'retired':False,
                 'retiring':False,'targets':{'ETHUSDT':{'qty':1.25,'signal':0}}}]}
         }))
         with socket.socket() as sock:
@@ -74,14 +74,14 @@ def main():
                 with page.expect_response(lambda response: response.url.endswith('/api/combinations?worker=cta-prep-binance-futures')) as saved:
                     page.locator('#save').click()
                 assert saved.value.status==200
-                recipe=root/'config/cta_prep_binance_futures/rx01_binance-futures_15min.json'
+                recipe=root/'config/cta_prep_binance_futures/binance-futures_15min.json'
                 data=json.loads(recipe.read_text())
                 assert data['signal']['max_pos_u']==250
                 assert len(data['factor_rules'])==146 and 'factors' not in data
                 assert len([r for r in data['factor_rules'] if r['标的']=='SKLUSDT' and r['因子']=='factor_170'])==2
                 # Another editor changes the catalog. A stale save retains the draft.
                 current=api('config')
-                external=current['plan']['combinations']['rx03_binance-futures_1min']
+                external=current['plan']['combinations']['binance-futures_1min']
                 external['signal']['max_pos_u']=123
                 api('combinations', {'combination':external,'expected_revision':current['revision']})
                 page.locator('#max-pos').fill('999')
@@ -101,7 +101,7 @@ def main():
                 page.locator('#worker-select').select_option('cta-factor-spread')
                 page.wait_for_function("document.querySelector('#worker').textContent==='cta-factor-spread'")
                 assert 'cta-spread-okx-bn-1min-pos' in page.locator('#manager-strategy').inner_text()
-                assert page.locator('#spread-long').input_value()=='0.7'
+                assert page.locator('#spread-long').input_value()=='0.3'
                 page.locator('#new').click()
                 page.locator('#name').fill('okx_single_1min')
                 assert page.locator('#venue').input_value()=='okex-futures'
@@ -123,8 +123,8 @@ def main():
                 assert deleted.value.status==200 and not okx_path.exists()
                 page.locator('#worker-select').select_option('cta-prep-binance-futures')
                 page.wait_for_function("document.querySelector('#worker').textContent==='cta-prep-binance-futures'")
-                page.locator('#combination-list').select_option('rx04_binance-futures_5min')
-                assert page.locator('#nq-mode').input_value()=='linear_median'
+                page.locator('#combination-list').select_option('binance-futures_5min')
+                assert page.locator('#nq-long').input_value()=='0.5'
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'desktop.png'), full_page=True)

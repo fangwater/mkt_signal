@@ -6,7 +6,10 @@ use runtime_common::affinity::maybe_pin_current_thread;
 #[derive(Debug, Parser)]
 #[command(name = "cta_perp_5m_signal")]
 struct Args {
-    #[arg(long, default_value = "config/cta_perp_rx04/cta_perp.json")]
+    #[arg(
+        long,
+        default_value = "config/cta_prep_binance_futures/binance-futures_5min.json"
+    )]
     config: String,
     #[arg(long)]
     core: Option<usize>,

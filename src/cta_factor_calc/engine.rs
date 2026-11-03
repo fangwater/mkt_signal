@@ -109,6 +109,7 @@ struct Nq {
     closes: VecDeque<Option<f64>>,
     long: ExactRollingWindow,
     short: ExactRollingWindow,
+    previous: BTreeMap<String, Field>,
 }
 impl Nq {
     fn new(params: &Parameters) -> Self {
@@ -117,9 +118,20 @@ impl Nq {
             closes: VecDeque::new(),
             long: ExactRollingWindow::new(params.rank_window),
             short: ExactRollingWindow::new(params.rank_window),
+            previous: BTreeMap::from([
+                ("long".into(), Field::default()),
+                ("short".into(), Field::default()),
+            ]),
         }
     }
     fn observe(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
+        // The observation timestamp identifies the decision bar. Its NQ uses
+        // only the distribution and close from the preceding bar, including
+        // an explicit unknown value after a missing source bar.
+        let current = self.observe_current(mid);
+        std::mem::replace(&mut self.previous, current)
+    }
+    fn observe_current(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
         let valid = mid.filter(|p| p.is_finite() && *p > 0.0);
         if valid.is_none() && self.params.missing_policy == MissingPolicy::ValidSamples {
             return BTreeMap::from([

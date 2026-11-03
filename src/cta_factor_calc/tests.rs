@@ -100,7 +100,7 @@ fn four_column_rows_add_venue_period_and_nq_without_collapsing_signal_rules() {
     assert!(Worker::Perp.validate_plan(&plan).is_err());
     Worker::Spread.validate_plan(&plan).unwrap();
     let rx = Combination::load(std::path::Path::new(
-        "config/cta_prep_binance_futures/rx01_binance-futures_15min.json",
+        "config/cta_prep_binance_futures/binance-futures_15min.json",
     ))
     .unwrap();
     assert_eq!(rx.signal_config().unwrap().factor_rules.len(), 146);
@@ -189,7 +189,7 @@ fn merge_is_exactly_the_requested_union_and_rejects_parameter_conflicts() {
 }
 
 #[test]
-fn binance_worker_merges_the_three_current_strategy_identities_with_exact_periods() {
+fn binance_worker_merges_three_frequency_configurations_with_exact_periods() {
     let config =
         Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
     let plan = Plan::load(&config.combinations_dir).unwrap();
@@ -199,24 +199,20 @@ fn binance_worker_merges_the_three_current_strategy_identities_with_exact_period
             .map(String::as_str)
             .collect::<Vec<_>>(),
         [
-            "rx01_binance-futures_15min",
-            "rx03_binance-futures_1min",
-            "rx04_binance-futures_5min"
+            "binance-futures_15min",
+            "binance-futures_1min",
+            "binance-futures_5min"
         ]
     );
     for (name, folder, interval) in [
         (
-            "rx01_binance-futures_15min",
+            "binance-futures_15min",
             "cta_perp_rx01",
             Interval::FifteenMinutes,
         ),
+        ("binance-futures_1min", "cta_perp_rx03", Interval::Minute),
         (
-            "rx03_binance-futures_1min",
-            "cta_perp_rx03",
-            Interval::Minute,
-        ),
-        (
-            "rx04_binance-futures_5min",
+            "binance-futures_5min",
             "cta_perp_rx04",
             Interval::FiveMinutes,
         ),
@@ -314,11 +310,11 @@ fn nq_uses_each_markets_own_bars_at_all_requested_frequencies() {
             0
         );
     }
-    // At the last closed 15m bucket the OKX sample is minute 989; the 120-bar
-    // extrema contain only that market's prices and include the current close.
+    // NQ at the last closed 15m bucket uses the preceding bucket (minute 974).
+    // Its 120-bar extrema contain only that market's prices.
     let point = &engine.latest[names[2]];
     let count = (point.ts_ms - start) / 900_000;
-    let mids = (0..count)
+    let mids = (0..count - 1)
         .map(|bar| 200.0 + ((bar * 15 + 14) % 31) as f64)
         .collect::<Vec<_>>();
     let last = *mids.last().unwrap();
@@ -326,6 +322,78 @@ fn nq_uses_each_markets_own_bars_at_all_requested_frequencies() {
     let high = mids.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     assert_eq!(point.fields["long"].raw, Some((last - low) / low));
     assert_eq!(point.fields["short"].raw, Some((last - high) / high));
+}
+
+#[test]
+fn nq_uses_120_valid_bars_and_lags_one_bar_at_every_frequency() {
+    for frequency in ["1min", "5min", "15min"] {
+        let id = FactorId::parse(&format!("binance-futures-btcusdt-{frequency}-nq")).unwrap();
+        let parameters = Parameters::for_id(&id);
+        assert_eq!(parameters.lookback, 120);
+        assert_eq!(parameters.rank_window, 120);
+        assert_eq!(parameters.rank_min_periods, 60);
+        assert_eq!(parameters.missing_policy, MissingPolicy::ValidSamples);
+        let mut nq = Nq::new(&parameters);
+        for source in 1..=120 {
+            let fields = nq.observe(Some(if source == 1 { 50.0 } else { 100.0 }));
+            assert_eq!(fields["long"].ready, source > 60);
+            assert_eq!(fields["short"].ready, source > 60);
+            if source == 1 {
+                assert!(fields["long"].raw.is_none());
+            } else if source == 2 {
+                // Source bar 1 had only its own price, not the new higher mid.
+                assert_eq!(fields["long"].raw, Some(0.0));
+            } else {
+                assert_eq!(fields["long"].raw, Some(1.0));
+            }
+        }
+        // The missing bar emits the preceding valid observation, without
+        // consuming a valid-sample window slot. Its unknown value appears one
+        // bar later and must not be replaced by the last valid NQ.
+        assert_eq!(nq.observe(None)["long"].raw, Some(1.0));
+        assert_eq!(nq.closes.len(), 120);
+        let after_gap = nq.observe(Some(100.0));
+        assert!(!after_gap["long"].ready && after_gap["long"].raw.is_none());
+        let expired = nq.observe(Some(100.0));
+        assert_eq!(expired["long"].raw, Some(0.0));
+        assert!(expired["long"].ready);
+        assert_eq!(nq.long.len(), 120);
+        assert_eq!(nq.short.len(), 120);
+    }
+}
+
+#[test]
+fn spread_window_is_2880_minutes_and_requires_1440_valid_pairs() {
+    let id = FactorId::parse("okex-futures-binance-futures-btcusdt-1min-spread").unwrap();
+    let parameters = Parameters::for_id(&id);
+    assert_eq!(parameters.rank_window, 2880);
+    assert_eq!(parameters.rank_min_periods, 1440);
+    let mut state = Spread::new(&parameters);
+    let observe = |state: &mut Spread, minute: i64, okx: Option<f64>| {
+        let ts = minute * 60_000;
+        assert!(state.observe(0, ts, okx).is_empty());
+        let mut output = state.observe(1, ts, Some(100.0));
+        assert_eq!(output.len(), 1);
+        output.pop().unwrap().1
+    };
+    for minute in 1..1440 {
+        let field = observe(&mut state, minute, Some(101.0));
+        assert_eq!(field.raw, Some(1.0 / 101.0));
+        assert!(!field.ready);
+    }
+    let missing = observe(&mut state, 1440, None);
+    assert!(missing.raw.is_none() && missing.quantile.is_none() && !missing.ready);
+    assert_eq!(state.transform.ranks.len(), 1439);
+    assert!(observe(&mut state, 1441, Some(101.0)).ready);
+    for minute in 1442..=2880 {
+        assert!(!observe(&mut state, minute, None).ready);
+    }
+    // Missing minutes still consume window slots. Old valid pairs expire after
+    // 2880 minutes even when fewer than 2880 valid pairs have arrived.
+    assert!(observe(&mut state, 2881, Some(101.0)).ready);
+    assert!(!observe(&mut state, 2882, None).ready);
+    assert!(!observe(&mut state, 2883, Some(101.0)).ready);
+    assert_eq!(state.transform.ranks.len(), 1439);
 }
 
 #[test]
@@ -523,6 +591,59 @@ fn old_tables_gain_market_and_frequency_without_changing_signed_weights() {
         .factors()
         .unwrap()
         .contains_key("okex-futures-btcusdt-5min-nq"));
+}
+
+#[test]
+fn spread_price_formulas_run_without_size_metadata_while_size_formulas_wait() {
+    let names = [
+        "binance-futures-btcusdt-1min-baseline_115",
+        "binance-futures-btcusdt-1min-baseline_126",
+        "binance-futures-btcusdt-1min-td_pr_014",
+        "binance-futures-btcusdt-1min-baseline_035",
+        "binance-futures-btcusdt-1min-baseline_047",
+    ];
+    let mut combo = combination("inputs", &names.map(|name| (name, 1.0)));
+    for name in names {
+        let mut parameters = Parameters::for_id(&FactorId::parse(name).unwrap());
+        parameters.normalize_window = 3;
+        parameters.normalize_min_periods = 2;
+        parameters.rank_window = 3;
+        parameters.rank_min_periods = 2;
+        combo.parameters.insert(name.into(), parameters);
+    }
+    let mut engine = Engine::new(Plan::merge([combo]).unwrap(), &config()).unwrap();
+    let start = 1_800_000_000_000;
+    for minute in 0..=320 {
+        let ts = start + minute * 60_000;
+        let mid = 100.0 + (minute % 7) as f64;
+        let mut input = period("BTCUSDT", ts, mid, true);
+        input.symbol_infos[0].trades = vec![
+            TradeInfo {
+                timestamp: ts + 1,
+                side: "buy".into(),
+                price: mid + 0.25,
+                amount: 1.0,
+            },
+            TradeInfo {
+                timestamp: ts + 2,
+                side: "sell".into(),
+                price: mid - 0.25,
+                amount: 2.0,
+            },
+        ];
+        engine.on_period(Market::BinanceFutures, &input).unwrap();
+    }
+    for name in &names[..3] {
+        assert!(
+            engine.latest[*name].ready(),
+            "{name}: {:?}",
+            engine.latest[*name]
+        );
+    }
+    for name in &names[3..] {
+        assert!(!engine.latest[*name].ready());
+        assert_eq!(engine.latest[*name].fields["value"].raw, None);
+    }
 }
 
 #[test]

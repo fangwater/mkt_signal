@@ -13,8 +13,8 @@ fn spread() -> Combination {
     c.reference_venue = Some(super::super::config::Market::BinanceFutures);
     c.factor_rules[0].venue = Some(super::super::config::Market::BinanceFutures);
     c.signal.as_mut().unwrap().spread = Some(super::super::config::SpreadFilters {
-        long_quantile: 0.7,
-        short_quantile: 0.3,
+        long_quantile: 0.3,
+        short_quantile: 0.7,
     });
     c.validate().unwrap();
     c
@@ -119,6 +119,113 @@ fn warmup_disabled_and_generation_handover_never_replay_positions() {
 }
 
 #[test]
+fn prep_nq_uses_the_same_inclusive_q50_gate_at_all_frequencies() {
+    for frequency in ["1min", "5min", "15min"] {
+        let mut combination = prep(frequency);
+        combination.factor_rules[0].nq = "0.50".into();
+        for (factor_q, long_value, short_value, ready, expected_qty) in [
+            (0.99, 0.0, -0.05, true, 2.0),
+            (0.99, -0.01, -0.05, true, 0.0),
+            (0.01, 0.0, -0.05, true, -2.0),
+            (0.01, 0.0, -0.04, true, 0.0),
+            (0.99, 0.0, -0.05, false, 0.0),
+            (0.01, 0.0, -0.05, false, 0.0),
+        ] {
+            let mut table = Table::new(combination.clone(), (TS - 900000) * 1000);
+            let factor_id = format!("binance-futures-ethusdt-{frequency}-factor_036");
+            let nq_id = format!("binance-futures-ethusdt-{frequency}-nq");
+            let field = |value, median, rank| Field {
+                raw: Some(value),
+                value: Some(value),
+                median: Some(median),
+                quantile: Some(rank),
+                ready,
+            };
+            let points = BTreeMap::from([
+                (factor_id.clone(), point(&factor_id, TS, factor_q)),
+                (
+                    nq_id.clone(),
+                    FactorPoint {
+                        factor_id: nq_id,
+                        ts_ms: TS,
+                        fields: BTreeMap::from([
+                            ("long".into(), field(long_value, 0.0, 0.1)),
+                            ("short".into(), field(short_value, -0.05, 0.9)),
+                        ]),
+                    },
+                ),
+            ]);
+            table
+                .observe(&points, &BTreeMap::new(), (TS + 6000) * 1000, &book)
+                .unwrap();
+            let targets = table.targets().unwrap();
+            let expected = if expected_qty == 0.0 {
+                json!("clear")
+            } else {
+                json!(expected_qty)
+            };
+            assert_eq!(
+                targets["ETHUSDT"]["qty"], expected,
+                "frequency={frequency}, factor={factor_q}, ready={ready}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spread_configuration_requires_strict_previous_minute_30_70_tails() {
+    let mut combination = Combination::load(std::path::Path::new(
+        "config/cta_factor_spread/okex-futures_binance-futures_1min.json",
+    ))
+    .unwrap();
+    combination.signal.as_mut().unwrap().enabled = true;
+    // Isolate the spread gate; the independent NQ gate has its own tests.
+    combination.factor_rules = spread().factor_rules;
+    let factor_id = "binance-futures-ethusdt-1min-factor_036";
+    let spread_id = "okex-futures-binance-futures-ethusdt-1min-spread";
+    for (factor_q, previous_q, ready, expected_qty) in [
+        (0.99, Some(0.29), true, 2.0),
+        (0.99, Some(0.30), true, 0.0),
+        (0.99, Some(0.50), true, 0.0),
+        (0.01, Some(0.71), true, -2.0),
+        (0.01, Some(0.70), true, 0.0),
+        (0.01, Some(0.50), true, 0.0),
+        (0.99, None, false, 0.0),
+        (0.01, None, false, 0.0),
+        (0.99, Some(f64::NAN), true, 0.0),
+        (0.01, Some(f64::NAN), true, 0.0),
+        (0.99, Some(0.20), false, 0.0),
+        (0.01, Some(0.80), false, 0.0),
+    ] {
+        let mut table = Table::new(combination.clone(), (TS - 60000) * 1000);
+        // The current-minute spread favours the opposite decision: only the
+        // exact preceding minute may determine whether this entry is allowed.
+        let current_q = if factor_q > 0.5 { 0.99 } else { 0.01 };
+        let points = BTreeMap::from([
+            (factor_id.into(), point(factor_id, TS, factor_q)),
+            (spread_id.into(), point(spread_id, TS, current_q)),
+        ]);
+        let mut lagged = point(spread_id, TS - 60000, 0.5);
+        let field = lagged.fields.get_mut("value").unwrap();
+        field.quantile = previous_q;
+        field.ready = ready;
+        if previous_q.is_none() {
+            field.raw = None;
+            field.value = None;
+        }
+        let previous = BTreeMap::from([(spread_id.into(), lagged)]);
+        table
+            .observe(&points, &previous, (TS + 6000) * 1000, &book)
+            .unwrap();
+        assert_eq!(
+            table.targets().unwrap()["okex-futures:ETHUSDT"]["qty"],
+            expected_qty,
+            "factor={factor_q}, previous spread={previous_q:?}, ready={ready}"
+        );
+    }
+}
+
+#[test]
 fn spread_uses_previous_bar_and_exits_without_current_quote_or_filter() {
     let mut table = Table::new(spread(), (TS - 60000) * 1000);
     let factor = point("binance-futures-ethusdt-1min-factor_036", TS, 0.99);
@@ -127,7 +234,7 @@ fn spread_uses_previous_bar_and_exits_without_current_quote_or_filter() {
         (factor.factor_id.clone(), factor),
         (spread_id.into(), point(spread_id, TS, 0.99)),
     ]);
-    let previous = BTreeMap::from([(spread_id.into(), point(spread_id, TS - 60000, 0.5))]);
+    let previous = BTreeMap::from([(spread_id.into(), point(spread_id, TS - 60000, 0.2))]);
     table
         .observe(&points, &previous, (TS + 6000) * 1000, &book)
         .unwrap();
@@ -167,7 +274,7 @@ fn missing_spread_blocks_entry_and_factor_clocks_prevent_double_decisions() {
         .unwrap();
     assert_eq!(table.targets().unwrap()["okex-futures:ETHUSDT"]["qty"], 0.0);
     let id = "okex-futures-binance-futures-ethusdt-1min-spread";
-    let previous = BTreeMap::from([(id.into(), point(id, TS - 60000, 0.5))]);
+    let previous = BTreeMap::from([(id.into(), point(id, TS - 60000, 0.2))]);
     table
         .observe(&points, &previous, (TS + 6000) * 1000, &book)
         .unwrap();

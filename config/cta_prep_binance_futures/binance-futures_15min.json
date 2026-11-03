@@ -1,5 +1,5 @@
 {
-  "name": "rx01_binance-futures_15min",
+  "name": "binance-futures_15min",
   "venue": "binance-futures",
   "interval": "15min",
   "factor_rules": [

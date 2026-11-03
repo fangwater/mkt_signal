@@ -667,6 +667,8 @@ mod tests {
         let mut nq = result.spread.clone();
         nq.filter_long_quantile = Some(0.5);
         nq.filter_short_quantile = Some(0.5);
+        nq.filter_long_threshold = nq.filter_long_value;
+        nq.filter_short_threshold = nq.filter_short_value;
         nq.filter_ready = true;
         result.nq = Some(nq);
         result

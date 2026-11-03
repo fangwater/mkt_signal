@@ -275,7 +275,7 @@ mod tests {
     fn shared_inputs_wait_for_same_bar_nq_and_keep_linear_median() {
         use crate::cta_factor_calc::engine::Field;
         let combination = Combination::load(std::path::Path::new(
-            "config/cta_prep_binance_futures/rx04_binance-futures_5min.json",
+            "config/cta_prep_binance_futures/binance-futures_5min.json",
         ))
         .unwrap();
         let mut config = combination.signal_config().unwrap();

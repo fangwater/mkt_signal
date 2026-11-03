@@ -1,0 +1,266 @@
+{
+  "name": "okex-futures_binance-futures_1min",
+  "venue": "okex-futures",
+  "interval": "1min",
+  "reference_venue": "binance-futures",
+  "factor_rules": [
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_016",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_019",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_005",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_022",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_115",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_126",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_185",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_019",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_035",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ADAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_019",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ADAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ADAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_115",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ADAUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_005",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ATOMUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_019",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ATOMUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ATOMUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_035",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_164",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_019",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_170",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "CRVUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_PR_014",
+      "venue": "binance-futures"
+    },
+    {
+      "标的": "CRVUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_047",
+      "venue": "binance-futures"
+    }
+  ],
+  "signal": {
+    "enabled": false,
+    "max_pos_u": 200,
+    "position_algorithm": "v0",
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.7,
+      "factor_exit_quantile_short": 0.3
+    },
+    "spread": {
+      "long_quantile": 0.3,
+      "short_quantile": 0.7
+    }
+  }
+}

@@ -96,22 +96,12 @@ pub fn cash_entry_allowed(flag: i8, bar: &WeightedBar, config: &CtaSpreadConfig)
         let Some(nq) = &bar.nq else {
             return false;
         };
-        let nq_q = if flag > 0 {
-            nq.filter_long_quantile
-        } else {
-            nq.filter_short_quantile
-        };
-        if !nq.filter_ready
-            || !nq_q.is_some_and(|q| {
-                q.is_finite()
-                    && (0.0..=1.0).contains(&q)
-                    && if flag > 0 {
-                        q >= config.entry.nq_long_quantile
-                    } else {
-                        q <= config.entry.nq_short_quantile
-                    }
-            })
-        {
+        if !crate::cta_perp::positions::nq_entry_allowed(
+            flag,
+            nq,
+            config.entry.nq_long_quantile,
+            config.entry.nq_short_quantile,
+        ) {
             return false;
         }
     }
@@ -203,6 +193,8 @@ mod tests {
         let mut nq = result.spread.clone();
         nq.filter_long_quantile = Some(0.5);
         nq.filter_short_quantile = Some(0.5);
+        nq.filter_long_threshold = nq.filter_long_value;
+        nq.filter_short_threshold = nq.filter_short_value;
         nq.filter_ready = true;
         result.nq = Some(nq);
         result
@@ -250,6 +242,7 @@ mod tests {
         let mut long = bar(0.99, Some(0.6));
         assert_eq!(next_position_flag(0, &long, &c), 1);
         long.nq.as_mut().unwrap().filter_long_quantile = Some(0.49);
+        long.nq.as_mut().unwrap().filter_long_value = Some(0.0009);
         assert_eq!(next_position_flag(0, &long, &c), 0);
         assert_eq!(next_position_flag(-1, &long, &c), 0);
         long.nq = None;
@@ -257,6 +250,7 @@ mod tests {
         let mut short = bar(0.01, Some(0.4));
         assert_eq!(next_position_flag(0, &short, &c), -1);
         short.nq.as_mut().unwrap().filter_short_quantile = Some(0.51);
+        short.nq.as_mut().unwrap().filter_short_value = Some(0.0011);
         assert_eq!(next_position_flag(0, &short, &c), 0);
         short.nq.as_mut().unwrap().filter_ready = false;
         assert_eq!(next_position_flag(1, &short, &c), 0);

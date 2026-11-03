@@ -419,15 +419,6 @@ impl CtaPerpConfig {
     }
 
     fn validate_controls(&self) -> Result<()> {
-        if (self.linear_nq || self.bar_interval.uses_linear_nq())
-            && !self.strict_nq
-            && (self.entry.nq_long_quantile != 0.5 || self.entry.nq_short_quantile != 0.5)
-        {
-            bail!(
-                "{} NQ uses fixed 0.50 linear quantile thresholds",
-                self.bar_interval.as_str()
-            );
-        }
         let minimum = self.position_algorithm.minimum();
         if !self.max_pos_u.is_finite() || self.max_pos_u <= 0.0 {
             bail!("max_pos_u must be a positive finite USDT amount");
@@ -561,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn symbol_nq_bounds_and_five_minute_contract_are_validated() {
+    fn symbol_nq_bounds_are_validated_at_every_frequency() {
         let mut config: CtaPerpConfig = serde_json::from_value(serde_json::json!({
             "execution": {}, "symbol_overrides": {
                 "BTCUSDT": {"nq_long_quantile":0.65, "nq_short_quantile":0.35}
@@ -569,9 +560,14 @@ mod tests {
         }))
         .unwrap();
         config.validate().unwrap();
-        config.bar_interval = BarInterval::FiveMinutes;
-        assert!(format!("{:#}", config.validate().unwrap_err()).contains("BTCUSDT"));
-        config.bar_interval = BarInterval::OneMinute;
+        for interval in [
+            BarInterval::OneMinute,
+            BarInterval::FiveMinutes,
+            BarInterval::FifteenMinutes,
+        ] {
+            config.bar_interval = interval;
+            config.validate().unwrap();
+        }
         for value in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
             config
                 .symbol_overrides

@@ -1,6 +1,55 @@
 use super::config::CtaPerpConfig;
 use super::factors::WeightedBar;
 use anyhow::{ensure, Result};
+use trade_signal::model_output_hub::ModelOutputScoreLookupResult;
+
+/// Shared inclusive NQ gate. Q50 compares the value with its linear median so
+/// ties at the threshold remain eligible; explicit other gates use the rank.
+pub(crate) fn nq_entry_allowed(
+    flag: i8,
+    nq: &ModelOutputScoreLookupResult,
+    long_quantile: f64,
+    short_quantile: f64,
+) -> bool {
+    if !matches!(flag, -1 | 1) || !nq.filter_ready {
+        return false;
+    }
+    let (value, median, rank, threshold) = if flag > 0 {
+        (
+            nq.filter_long_value,
+            nq.filter_long_threshold,
+            nq.filter_long_quantile,
+            long_quantile,
+        )
+    } else {
+        (
+            nq.filter_short_value,
+            nq.filter_short_threshold,
+            nq.filter_short_quantile,
+            short_quantile,
+        )
+    };
+    if threshold == 0.5 {
+        return value.zip(median).is_some_and(|(value, median)| {
+            value.is_finite()
+                && median.is_finite()
+                && if flag > 0 {
+                    value >= median
+                } else {
+                    value <= median
+                }
+        });
+    }
+    rank.is_some_and(|q| {
+        q.is_finite()
+            && (0.0..=1.0).contains(&q)
+            && if flag > 0 {
+                q >= threshold
+            } else {
+                q <= threshold
+            }
+    })
+}
 
 /// Size one independent symbol/factor entry from its full USDT allocation.
 pub fn full_qty(max_pos_u: f64, flag: i8, price: f64) -> Result<f64> {
@@ -49,21 +98,12 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig
         && (config.linear_nq || config.bar_interval.uses_linear_nq())
         && !config.strict_nq
     {
-        let (value, threshold) = if flag > 0 {
-            (bar.nq.filter_long_value, bar.nq.filter_long_threshold)
-        } else {
-            (bar.nq.filter_short_value, bar.nq.filter_short_threshold)
-        };
-        let valid = bar.nq.filter_ready
-            && value.zip(threshold).is_some_and(|(value, threshold)| {
-                value.is_finite()
-                    && threshold.is_finite()
-                    && if flag > 0 {
-                        value >= threshold
-                    } else {
-                        value <= threshold
-                    }
-            });
+        let valid = nq_entry_allowed(
+            flag,
+            &bar.nq,
+            config.entry.nq_long_quantile,
+            config.entry.nq_short_quantile,
+        );
         return if valid { flag } else { 0 };
     }
     if config.entry.nq_change_enabled {
