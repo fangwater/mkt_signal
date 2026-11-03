@@ -22,7 +22,6 @@ impl RecoveryReadiness {
             "Accounts",
             "LoanInfo",
             "LoanCapacity",
-            "Trades",
             "Statements",
         ]
         .iter()
@@ -197,8 +196,6 @@ mod tests {
             readiness.mark_complete(channel);
             assert!(!readiness.is_ready());
         }
-        readiness.mark_complete("Trades");
-        assert!(!readiness.is_ready());
         readiness.mark_complete("Statements");
         assert!(readiness.is_ready());
     }

@@ -32,9 +32,6 @@ struct Args {
     journal_dir: PathBuf,
     #[arg(long)]
     core: Option<usize>,
-    /// Initial execution/statement window; subsequent runs resume independent checkpoints.
-    #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u32).range(1..=2136))]
-    history_lookback_hours: u32,
 }
 
 struct Forwarder {
@@ -188,7 +185,6 @@ impl Forwarder {
             &self.financial_path,
             &json!({
                 "recovery_ready":self.readiness.is_ready(),
-                "history_end_ms":self.journal.history_end_ms,
                 "execution_persistence_pending":self.journal.execution_delivery_pending() + self.executions.pending_count(),
                 "statement_history_end_ms":self.journal.statement_history_end_ms,
                 "statement_persistence_pending":self.journal.statement_delivery_pending() + self.statements.pending_count(),
@@ -232,15 +228,6 @@ impl Forwarder {
                 }
                 self.readiness.mark_complete(channel);
             }
-            Refresh::History(end, rows) => {
-                self.journal.record_history(&rows)?;
-                self.journal.complete_history(end)?;
-                // Catch-up windows are complete individually, but the account is
-                // not recovered until the checkpoint reaches the recent tail.
-                if chrono::Utc::now().timestamp_millis() - end < 60_000 {
-                    self.readiness.mark_complete("Trades");
-                }
-            }
             Refresh::Statements(end, rows) => {
                 self.journal.record_statements(&rows)?;
                 self.journal.complete_statement_history(end)?;
@@ -256,7 +243,6 @@ impl Forwarder {
 enum Refresh {
     Account(String, i64),
     Financial(&'static str, Value),
-    History(i64, Vec<Value>),
     Statements(i64, Vec<StatementRecord>),
 }
 
@@ -298,42 +284,6 @@ async fn refresh_accounts(
             return;
         }
         index = (index + 1) % 5;
-    }
-}
-
-async fn refresh_history(
-    rest: LtpRestClient,
-    exchange: &'static str,
-    start_ms: i64,
-    tx: tokio::sync::mpsc::Sender<Result<Refresh>>,
-) {
-    let mut begin = start_ms;
-    loop {
-        let now = chrono::Utc::now().timestamp_millis();
-        if begin < now - 90 * 86_400_000 {
-            let _ = tx
-                .send(Err(anyhow::anyhow!(
-                    "RapidX checkpoint predates 90-day archive; refusing to skip missing history"
-                )))
-                .await;
-            return;
-        }
-        let end = (begin + 3_600_000).min(now);
-        let result = rest
-            .fetch_transaction_history(exchange, begin, end)
-            .await
-            .map(|rows| Refresh::History(end, rows));
-        let failed = result.is_err();
-        if tx.send(result).await.is_err() || failed {
-            return;
-        }
-        begin = (end - 60_000).max(start_ms);
-        tokio::time::sleep(if end == now {
-            Duration::from_secs(30)
-        } else {
-            Duration::from_millis(2100)
-        })
-        .await;
     }
 }
 
@@ -468,11 +418,10 @@ async fn main() -> Result<()> {
                 if !response.is_login() || !response.is_success() { bail!("RapidX account login rejected"); }
                 log::info!("RapidX account websocket login successful exchange={wire_exchange}");
                 let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-                let initial_begin = chrono::Utc::now().timestamp_millis() - i64::from(args.history_lookback_hours) * 3_600_000;
-                let begin = forwarder.journal.history_end_ms.map(|end| end - 60_000).unwrap_or(initial_begin);
                 workers.push(tokio::spawn(refresh_accounts(rest.clone(), wire_exchange, tx.clone())));
-                workers.push(tokio::spawn(refresh_history(rest.clone(), wire_exchange, begin, tx.clone())));
-                let statement_begin = forwarder.journal.statement_history_end_ms.map(|end| end - 60_000).unwrap_or(initial_begin);
+                let statement_begin = forwarder.journal.statement_history_end_ms
+                    .map(|end| end - 60_000)
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
                 workers.push(tokio::spawn(refresh_statements(rest.clone(), wire_exchange, statement_begin, tx)));
                 let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
                 heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

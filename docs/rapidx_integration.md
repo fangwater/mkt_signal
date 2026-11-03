@@ -190,13 +190,18 @@ Loan status and portfolio borrowing capacity use the read-only
 loan capacity is not margin-order automatic-borrow capacity. Unknown accrued
 interest is not fabricated as zero.
 
-Execution recovery defaults to the preceding 24 hours on first startup;
-`--history-lookback-hours` allows 1 through 2136 hours (89 days). Subsequent
-sessions resume their durable checkpoint with a one-minute overlap. Recovery
-uses one-hour windows, recent execution pages and the 7-to-90-day archive,
-including the boundary in both queries with duplicate checking. The active tail
-is polled every 30 seconds. A checkpoint older than the documented 90-day
-retention is an error, not silently truncated history.
+The account monitor records executions from the live WebSocket `Trades` channel.
+It does not query recent/archive execution-history endpoints on startup or
+reconnect, and has no execution lookback option. An empty journal starts with no
+historical fills. Reopening an existing journal still replays its already
+received durable observations to persistence. Executions missed while disconnected
+are not automatically backfilled.
+
+Account snapshots, loan queries and statement collection remain active. A new
+journal starts statement collection at the current session time; later sessions
+resume its durable statement checkpoint with a one-minute overlap. Account
+readiness requires complete current account/loan snapshots and a current statement
+checkpoint; it does not wait for an execution-history request.
 
 Every page is checked for scope, timestamps, duplicate IDs and stable pagination;
 an incomplete window never advances the checkpoint. Each endpoint/window has a
@@ -230,7 +235,7 @@ outbox share that durable write. Lost ACKs and IPC sends retry with a bounded
 The journal remains intact, and monitor restart replays all retained executions.
 Delivery also runs during connection attempts and reconnect backoff.
 `latest_financial.json.execution_persistence_pending` reports journal backlog plus
-in-flight records; `recovery_ready` still describes account/history recovery, not
+in-flight records; `recovery_ready` still describes account/statement readiness, not
 central persistence completion. A persist ACK means local durable storage, not
 that the remote sync collector has received the record.
 
