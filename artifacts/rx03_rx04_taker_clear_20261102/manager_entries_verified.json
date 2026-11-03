@@ -1,0 +1,20 @@
+{
+  "removed_sources": [
+    "binance_exec_trade07",
+    "binance_exec_rx04_5m05"
+  ],
+  "removed_virtuals": [
+    "virtual04",
+    "virtual05"
+  ],
+  "dashboard_and_overview_entries": 0,
+  "virtual_entries": 0,
+  "history_preserved": true,
+  "historical_source_rows_preserved": 2,
+  "protected_processes_unchanged": 87,
+  "positions": 0,
+  "open_orders": 0,
+  "algo_orders": 0,
+  "checked_at_ms": 1793672867556,
+  "config_sha256": "217739576c6cc8ef77eb805eb30d25d4f62c4a7caae4d957fd3500a0f881e9ff"
+}

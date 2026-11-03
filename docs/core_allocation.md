@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-02 15:05 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 02:28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 02:28 UTC，补齐 RX03 / RX04 在 Manager 的入口清理：此前仅清仓并解绑，
+两条source仍启用，virtual04/virtual05也保留，故账户页仍有 `RX04 5min`。
+现从线上Manager配置移除 `binance_exec_trade07` / `binance_exec_rx04_5m05`，
+同步移除对应source_viewers和RX03 funding出口例外，并备份后通过API删除无跟随者的
+virtual04/virtual05及其配置绑定。账户页、总览、虚拟账户列表均确认无这两个入口。
+仅重启Manager，现PID3252503、CPU24；首次等待55秒不足触发配置自动回退，
+延长历史缓存预热等待后成功。87个受保护交易/监控/持久化/因子进程PID及启动时间保持。
+历史source记录、订单库及仓位快照保留；签名复核两账户持仓、普通/算法挂单仍均0。
+CPU19/28因子计算和 `.228` source IP保持。完整备份
+`~/crypto_cta_manager/maintenance-backups/rx03_rx04_manager_entries_20261103T022116Z/`；
+脱敏回执 `artifacts/rx03_rx04_taker_clear_20261102/manager_entries_verified.json`。
 
 2026-11-02 15:05 UTC，按要求将 RX03 / RX04 从执行链路移除并 taker 清仓至0：
 `binance-cta-perp-rx03`、`binance-cta-perp-rx04` 均设为 `enabled=false`，
@@ -819,7 +831,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 21 | (空) | 原 okex_mm_alpha trade_signal 已停止，配置保留 |
 | 22 | (空) | 原 okex_mm_alpha pre_trade 已停止，配置保留 |
 | 23 | (空) | 原 okex_mm_alpha trade_engine 已停止，配置保留 |
-| 24 | crypto_cta_manager / cta_web | Manager 网页服务，2026-10-22 实测仍固定 CPU24 |
+| 24 | crypto_cta_manager / cta_web | PID3252503；2026-11-03移除RX03/RX04账户及虚拟账户入口；跨所组合和历史核算保持 |
 | 25-27 | (空) | 原 binance_mm_alpha 已下线退役 |
 | 28 | cta_perp_factor_model_5m_pub(binance-cta-perp-rx04) | PID705737；2026-11-02清仓至0并解除RX04 5min Exec全部绑定，signal/下单停止，因子计算保留；CTA_PERP_FACTOR_MODEL_5M_CORE=28 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
