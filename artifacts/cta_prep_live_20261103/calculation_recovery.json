@@ -1,0 +1,33 @@
+{
+  "generation": "51d31fd2-9ced-4b40-8137-d32301ad9cbc",
+  "prep_pid": 3956979,
+  "cpus": [
+    17
+  ],
+  "factor_outputs": 404,
+  "ready_factors": 333,
+  "nq_ready": 94,
+  "amount_threshold_symbols": 51,
+  "six_prep_tables_enabled": true,
+  "prep_configs_and_nonspread_bindings_unchanged": true,
+  "outside_scope_config_changes": [
+    "/home/ubuntu/cta-factor-spread/config/cta_factor_spread/okex-futures_binance-futures_1min.json"
+  ],
+  "protected_processes_unchanged": 101,
+  "outside_scope_process_changes": [
+    "3932603"
+  ],
+  "binary_sha256": {
+    "cta-prep-binance-futures": "2438d065bd500454e22367845079da24ba817e947e94eaf12b23a04f87f5da2b",
+    "cta-factor-spread": "c916363a41cdc7b6af066cb1c575b80333cd8ba922af27e26738613dc79e85dd"
+  },
+  "manager_publications": [
+    {
+      "error": null,
+      "last_success_ts_us": 1793698506565256,
+      "manager_url": "http://127.0.0.1:18201/api",
+      "pending_strategies": []
+    }
+  ],
+  "checked_at_ms": 1793698584519
+}

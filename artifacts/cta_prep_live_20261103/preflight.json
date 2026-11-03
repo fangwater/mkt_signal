@@ -1,0 +1,59 @@
+{
+  "prepared_at_ms": 1793696052086,
+  "accounts": {
+    "binance_exec_rx01": {
+      "source": "binance_exec_rx01",
+      "nonzero_positions": [],
+      "open_orders": 0,
+      "algo_orders": 0,
+      "checked_at_ms": 1793696051359
+    },
+    "binance_exec_rx03": {
+      "source": "binance_exec_rx03",
+      "nonzero_positions": [],
+      "open_orders": 0,
+      "algo_orders": 0,
+      "checked_at_ms": 1793696051671
+    }
+  },
+  "bindings_before": [
+    {
+      "source_id": "binance_exec_rx01",
+      "binding_name": "cta-prep01-bn-1min-pos",
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_rx01",
+      "binding_name": "cta-prep01-bn-5min-pos",
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_rx01",
+      "binding_name": "cta-prep01-bn-15min-pos",
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "binding_name": "cta-prep02-bn-1min-pos",
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "binding_name": "cta-prep02-bn-5min-pos",
+      "shares": 0
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "binding_name": "cta-prep02-bn-15min-pos",
+      "shares": 0
+    }
+  ],
+  "all_six_tables_disabled_before": true,
+  "calculation_count": 404,
+  "exec_release_commits": {
+    "binance_exec_rx01": "ff6d0575083dcdebe81acb15007b3b0852e1d93c",
+    "binance_exec_rx03": "ff6d0575083dcdebe81acb15007b3b0852e1d93c"
+  },
+  "exec_binaries_matched_receipts_at_prepare": true,
+  "protected_processes_before": 90
+}

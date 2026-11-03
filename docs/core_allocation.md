@@ -1,7 +1,24 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-03 08:38 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 09:40 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 09:38 UTC，按要求启用新账户RX01 / RX03实盘：分别绑定Prep01 / Prep02
+的1min、5min、15min，六条shares=1、六个signal.enabled=true。规则、独立开平仓、
+执行模板及额度保持（RX01为100/100/50U，RX03三个频段各100U）。通过环境本地脚本
+启动六个下单进程，均在housekeeping 0-5：RX01 trade_engine/pre_trade/trade_signal
+为PID3934587/3934756/3934963，RX03为PID3936910/3937159/3937530。
+首次开启仓位表发现BBO订阅缺Tokio LocalSet而panic，尚未发布非零目标；源码9b343d29
+修复两个计算worker共用入口。33项CTA测试及fmt通过，本机release构建、上传校验SHA-256
+后原子安装；只用环境脚本恢复Prep PID3956979 / CPU17，重新回放至09:29追上实时。
+核验404项中333项ready、94项NQ全就绪、共享阈值51币；六份目标与Exec逐项一致、推送
+全部成功，计算/仓位错误为空。Manager09:37快照RX01已有60笔、RX03已有29笔成交，
+两个新账户initial_position_count均为0；六频段独立PnL摘要全部有成交。
+复核Prep全部线程仅CPU17，Spread PID3960454全部线程仅CPU18，均在隔离范围6-47；
+启动参数持久化。源IP/local_ips和原观察进程保持。并行操作另行启用Spread并调整其模板，
+本次未覆盖其修改；核验回执区分该外部变化。证据 `artifacts/cta_prep_live_20261103/`；
+私有备份 `~/crypto_cta_manager/maintenance-backups/cta_prep_live_20261103T085500Z/`。
+临时上传目录已清理，旧计算程序和写前配置保留。
 
 2026-11-03 08:33 UTC，补齐 Prep01 / Prep02 共51币的 Binance Futures 月度大小单阈值：
 完整2026-10成交934404516笔、1581文件，每币744小时；P50/P90以USDT用于2026-11。
@@ -933,7 +950,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta-prep-binance-futures | PID3855958；Prep01/Prep02 六张表、404项计算，月度阈值51币；六个发布开关关闭、绑定shares=0 |
+| 17 | cta-prep-binance-futures | PID3956979；Prep01/Prep02六张表、404项计算，全部线程CPU17；六个发布开关开启、RX01/RX03绑定shares=1，已实盘成交 |
 | 18 | 空闲 / CTA Spread 预留 | 多组产物和 Spread01 配置已安装，计算进程保持停止；发布关闭、绑定0 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |

@@ -1,0 +1,279 @@
+{
+  "checked_at_ms": 1793698675252,
+  "generation": "51d31fd2-9ced-4b40-8137-d32301ad9cbc",
+  "tables": [
+    {
+      "source_id": "binance_exec_rx01",
+      "strategy_name": "cta-prep01-bn-1min-pos",
+      "shares": 1,
+      "target_count": 16,
+      "nonzero_targets": 8,
+      "manager_targets_match_exec": true,
+      "manager_updated_at_us": 1793698448054092,
+      "exec_updated_at_us": 1793698448057132
+    },
+    {
+      "source_id": "binance_exec_rx01",
+      "strategy_name": "cta-prep01-bn-5min-pos",
+      "shares": 1,
+      "target_count": 15,
+      "nonzero_targets": 4,
+      "manager_targets_match_exec": true,
+      "manager_updated_at_us": 1793698506551868,
+      "exec_updated_at_us": 1793698506564616
+    },
+    {
+      "source_id": "binance_exec_rx01",
+      "strategy_name": "cta-prep01-bn-15min-pos",
+      "shares": 1,
+      "target_count": 38,
+      "nonzero_targets": 20,
+      "manager_targets_match_exec": true,
+      "manager_updated_at_us": 1793698213234043,
+      "exec_updated_at_us": 1793698213238624
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "strategy_name": "cta-prep02-bn-1min-pos",
+      "shares": 1,
+      "target_count": 36,
+      "nonzero_targets": 8,
+      "manager_targets_match_exec": true,
+      "manager_updated_at_us": 1793698385268327,
+      "exec_updated_at_us": 1793698385271608
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "strategy_name": "cta-prep02-bn-5min-pos",
+      "shares": 1,
+      "target_count": 6,
+      "nonzero_targets": 1,
+      "manager_targets_match_exec": true,
+      "manager_updated_at_us": 1793698213468750,
+      "exec_updated_at_us": 1793698213471567
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "strategy_name": "cta-prep02-bn-15min-pos",
+      "shares": 1,
+      "target_count": 23,
+      "nonzero_targets": 9,
+      "manager_targets_match_exec": true,
+      "manager_updated_at_us": 1793698213457203,
+      "exec_updated_at_us": 1793698213460536
+    }
+  ],
+  "manager_order_reports": [
+    {
+      "source_id": "binance_exec_rx01",
+      "initial_position_count": 0,
+      "order_event_count": 4572,
+      "fill_count": 60,
+      "first_fill_ts_us": 1793698221361000,
+      "last_fill_ts_us": 1793698628064000
+    },
+    {
+      "source_id": "binance_exec_rx03",
+      "initial_position_count": 0,
+      "order_event_count": 741,
+      "fill_count": 29,
+      "first_fill_ts_us": 1793698221361000,
+      "last_fill_ts_us": 1793698461628000
+    }
+  ],
+  "legacy_postgres_order_activity": [],
+  "legacy_postgres_order_attribution": [],
+  "exchange_accounts": [
+    {
+      "source": "binance_exec_rx01",
+      "nonzero_positions": [
+        {
+          "symbol": "BINANCE_PERP_FIL_USDT",
+          "qty": "-115.5"
+        },
+        {
+          "symbol": "BINANCE_PERP_DOT_USDT",
+          "qty": "-267.5"
+        },
+        {
+          "symbol": "BINANCE_PERP_QTUM_USDT",
+          "qty": "-64.3"
+        },
+        {
+          "symbol": "BINANCE_PERP_TRB_USDT",
+          "qty": "6.2"
+        },
+        {
+          "symbol": "BINANCE_PERP_DOGE_USDT",
+          "qty": "-1349"
+        },
+        {
+          "symbol": "BINANCE_PERP_RUNE_USDT",
+          "qty": "518"
+        },
+        {
+          "symbol": "BINANCE_PERP_XRP_USDT",
+          "qty": "-39.8"
+        },
+        {
+          "symbol": "BINANCE_PERP_ZIL_USDT",
+          "qty": "-28233"
+        },
+        {
+          "symbol": "BINANCE_PERP_DASH_USDT",
+          "qty": "-3.277"
+        },
+        {
+          "symbol": "BINANCE_PERP_ZEN_USDT",
+          "qty": "-39.2"
+        },
+        {
+          "symbol": "BINANCE_PERP_ETC_USDT",
+          "qty": "-14.37"
+        },
+        {
+          "symbol": "BINANCE_PERP_ZRX_USDT",
+          "qty": "-2095.8"
+        },
+        {
+          "symbol": "BINANCE_PERP_ALGO_USDT",
+          "qty": "-548.2"
+        },
+        {
+          "symbol": "BINANCE_PERP_ADA_USDT",
+          "qty": "-267"
+        },
+        {
+          "symbol": "BINANCE_PERP_BNB_USDT",
+          "qty": "-0.07"
+        },
+        {
+          "symbol": "BINANCE_PERP_LTC_USDT",
+          "qty": "-1.855"
+        },
+        {
+          "symbol": "BINANCE_PERP_RSR_USDT",
+          "qty": "35285"
+        },
+        {
+          "symbol": "BINANCE_PERP_ATOM_USDT",
+          "qty": "-35.24"
+        },
+        {
+          "symbol": "BINANCE_PERP_AAVE_USDT",
+          "qty": "-0.8"
+        },
+        {
+          "symbol": "BINANCE_PERP_NEAR_USDT",
+          "qty": "-66"
+        },
+        {
+          "symbol": "BINANCE_PERP_XTZ_USDT",
+          "qty": "-406.6"
+        },
+        {
+          "symbol": "BINANCE_PERP_BEL_USDT",
+          "qty": "1039"
+        },
+        {
+          "symbol": "BINANCE_PERP_RLC_USDT",
+          "qty": "-222.7"
+        },
+        {
+          "symbol": "BINANCE_PERP_SOL_USDT",
+          "qty": "-1.08"
+        },
+        {
+          "symbol": "BINANCE_PERP_ONT_USDT",
+          "qty": "-1133"
+        },
+        {
+          "symbol": "BINANCE_PERP_IOTA_USDT",
+          "qty": "-2600.7"
+        }
+      ],
+      "open_orders": 3,
+      "algo_orders": 0,
+      "checked_at_ms": 1793698675131
+    },
+    {
+      "source": "binance_exec_rx03",
+      "nonzero_positions": [
+        {
+          "symbol": "BINANCE_PERP_FIL_USDT",
+          "qty": "-115.4"
+        },
+        {
+          "symbol": "BINANCE_PERP_BTC_USDT",
+          "qty": "-0.001"
+        },
+        {
+          "symbol": "BINANCE_PERP_AXS_USDT",
+          "qty": "-121"
+        },
+        {
+          "symbol": "BINANCE_PERP_QTUM_USDT",
+          "qty": "-135"
+        },
+        {
+          "symbol": "BINANCE_PERP_LTC_USDT",
+          "qty": "-1.854"
+        },
+        {
+          "symbol": "BINANCE_PERP_RSR_USDT",
+          "qty": "70771"
+        },
+        {
+          "symbol": "BINANCE_PERP_DOGE_USDT",
+          "qty": "-1349"
+        },
+        {
+          "symbol": "BINANCE_PERP_NEAR_USDT",
+          "qty": "-26"
+        },
+        {
+          "symbol": "BINANCE_PERP_XRP_USDT",
+          "qty": "-79.6"
+        },
+        {
+          "symbol": "BINANCE_PERP_KNC_USDT",
+          "qty": "-896"
+        },
+        {
+          "symbol": "BINANCE_PERP_DASH_USDT",
+          "qty": "-4.37"
+        },
+        {
+          "symbol": "BINANCE_PERP_SOL_USDT",
+          "qty": "-1.08"
+        },
+        {
+          "symbol": "BINANCE_PERP_KSM_USDT",
+          "qty": "-29.9"
+        },
+        {
+          "symbol": "BINANCE_PERP_ZEN_USDT",
+          "qty": "-39.2"
+        },
+        {
+          "symbol": "BINANCE_PERP_ETC_USDT",
+          "qty": "-28.73"
+        }
+      ],
+      "open_orders": 0,
+      "algo_orders": 0,
+      "checked_at_ms": 1793698675244
+    }
+  ],
+  "manager_publications": [
+    {
+      "error": null,
+      "last_success_ts_us": 1793698506565256,
+      "manager_url": "http://127.0.0.1:18201/api",
+      "pending_strategies": []
+    }
+  ],
+  "publication_error": null,
+  "factor_outputs": 404,
+  "ready_factors": 333
+}

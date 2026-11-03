@@ -1,0 +1,94 @@
+{
+  "sources": {
+    "binance_exec_rx01": {
+      "trade_engine": {
+        "pid": 3934587,
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "exec-pre-trade": {
+        "pid": 3934756,
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "trade_signal": {
+        "pid": 3934963,
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    },
+    "binance_exec_rx03": {
+      "trade_engine": {
+        "pid": 3936910,
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "exec-pre-trade": {
+        "pid": 3937159,
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "trade_signal": {
+        "pid": 3937530,
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    }
+  },
+  "six_bindings_shares_one": true,
+  "six_prep_tables_enabled": true,
+  "factor_plan_and_amounts_unchanged": true,
+  "factor_generation_preserved": false,
+  "localset_fix_recovery": true,
+  "prep_configs_and_nonspread_bindings_unchanged": true,
+  "spread_activated_by_parallel_operation": true,
+  "parallel_spread_order_template_excluded_from_prep_audit": true,
+  "protected_processes_unchanged": 89,
+  "factor_error": null,
+  "positions_error": null,
+  "manager_publications": [
+    {
+      "error": null,
+      "last_success_ts_us": 1793698506565256,
+      "manager_url": "http://127.0.0.1:18201/api",
+      "pending_strategies": []
+    }
+  ],
+  "checked_at_ms": 1793698674688
+}

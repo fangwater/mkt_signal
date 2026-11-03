@@ -1,6 +1,14 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 08:38 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 09:40 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 09:38 UTC，启用 `binance_exec_rx01` / `binance_exec_rx03` 的六份Prep
+策略：shares=1、六频段enable=true，交易引擎/pre-trade/信号转发运行在0-5。
+修复LocalSet后仅恢复Prep计算并重新回放，PID3956979 / CPU17；核验其全部线程仅17，
+Spread PID3960454全部线程仅18，启动配置持久化。六份目标成功到达Manager/Exec，
+两账户及全部六频段已有成交。本次未改任何source IP、`local_ips`、ENI/EIP、网卡、
+路由或监听；并行Spread操作独立保留。完整配置/进程/成交及CPU核验见
+`artifacts/cta_prep_live_20261103/`，绑核登记见 `docs/core_allocation.md`。
 
 2026-11-03 08:33 UTC，补齐 Binance Futures 51币的2026-11大小单阈值并发布源码
 a0d39e69 的共享阈值读取修复（月份/单位校验、180秒复查、变化后重新回放）。

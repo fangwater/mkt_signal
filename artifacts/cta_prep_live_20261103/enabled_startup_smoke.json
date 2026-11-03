@@ -1,0 +1,11 @@
+{
+  "phase": "enabled_startup_smoke",
+  "checked_at_ms": 1793697365508,
+  "prep_pid": 3956979,
+  "warming": true,
+  "warm_records": 18388,
+  "six_runtime_tables_enabled": true,
+  "factor_error": null,
+  "positions_error": null,
+  "publication_error": null
+}
