@@ -277,6 +277,8 @@ pub struct SpreadFilters {
 #[serde(deny_unknown_fields)]
 pub struct Combination {
     pub name: String,
+    /// Independent position ownership, e.g. prep01, prep02 or spread01.
+    pub strategy_group: String,
     pub venue: Market,
     pub interval: Interval,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -319,18 +321,20 @@ where
     deserializer.deserialize_map(Visitor(std::marker::PhantomData))
 }
 impl Combination {
-    /// Manager ownership follows market and frequency, independently of the
+    /// Manager ownership follows strategy group, market and frequency, independently of the
     /// configuration filename and the factor rules inside the strategy.
     pub fn manager_strategy_name(&self) -> String {
         match self.reference_venue {
             Some(reference) => format!(
-                "cta-spread-{}-{}-{}-pos",
+                "cta-{}-{}-{}-{}-pos",
+                self.strategy_group,
                 self.venue.short_name(),
                 reference.short_name(),
                 self.interval.name()
             ),
             None => format!(
-                "cta-prep-{}-{}-pos",
+                "cta-{}-{}-{}-pos",
+                self.strategy_group,
                 self.venue.short_name(),
                 self.interval.name()
             ),
@@ -339,6 +343,7 @@ impl Combination {
 
     pub fn from_symbol_factors(
         name: String,
+        strategy_group: String,
         venue: Market,
         interval: Interval,
         table: BTreeMap<String, BTreeMap<String, f64>>,
@@ -375,6 +380,7 @@ impl Combination {
         }
         let combination = Self {
             name,
+            strategy_group,
             venue,
             interval,
             reference_venue: None,
@@ -440,6 +446,12 @@ impl Combination {
         Ok(factors)
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=32).contains(&self.strategy_group.len())
+                && self.strategy_group.as_bytes()[0].is_ascii_lowercase()
+                && self.strategy_group.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+            "strategy_group must start with a lowercase letter and contain 1..=32 lowercase letters, digits or underscores"
+        );
         ensure!(
             !self.name.is_empty()
                 && self.name.len() <= 96
@@ -655,7 +667,7 @@ impl Plan {
             if combination.signal.is_some() {
                 ensure!(
                     signal_owners.insert(combination.manager_strategy_name()),
-                    "only one signal combination may own each market/frequency strategy"
+                    "only one signal combination may own each strategy group/market/frequency"
                 );
             }
             ensure!(

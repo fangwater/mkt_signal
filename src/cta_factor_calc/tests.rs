@@ -7,6 +7,7 @@ fn combination(name: &str, factors: &[(&str, f64)]) -> Combination {
     Combination {
         signal: None,
         name: name.into(),
+        strategy_group: "prep01".into(),
         venue: Market::BinanceFutures,
         interval: Interval::Minute,
         reference_venue: None,
@@ -37,6 +38,15 @@ fn config() -> Config {
         kafka: Default::default(),
         amount_thresholds: BTreeMap::new(),
     }
+}
+fn group_plan(config: &Config, group: &str) -> Plan {
+    let plan = Plan::load(&config.combinations_dir).unwrap();
+    Plan::merge(
+        plan.combinations
+            .into_values()
+            .filter(|c| c.strategy_group == group),
+    )
+    .unwrap()
 }
 use std::path::PathBuf;
 
@@ -83,7 +93,7 @@ fn names_are_market_and_period_scoped_and_spread_inputs_are_ordered() {
 #[test]
 fn four_column_rows_add_venue_period_and_nq_without_collapsing_signal_rules() {
     let combo:Combination=serde_json::from_value(serde_json::json!({
-        "name":"okx_1min","venue":"okex-futures","interval":"1min",
+        "name":"okx_1min","strategy_group":"spread01","venue":"okex-futures","interval":"1min",
         "factor_rules":[{"标的":"BTC","nq":"0.2/0.8","符号":-1,"因子":"factor_036"},{"标的":"BTCUSDT","nq":"关闭","符号":-1,"因子":"factor_036"}]
     })).unwrap();
     combo.validate().unwrap();
@@ -114,7 +124,7 @@ fn four_column_rows_add_venue_period_and_nq_without_collapsing_signal_rules() {
 
 #[test]
 fn duplicate_json_references_are_rejected_instead_of_overwriting_weights() {
-    let json = r#"{"name":"one","venue":"binance-futures","interval":"1min","factor_rules":[{"标的":"BTC","nq":"关闭","符号":1,"因子":"nq"}],"parameters":{"binance-futures-btcusdt-1min-nq":{},"binance-futures-btcusdt-1min-nq":{}}}"#;
+    let json = r#"{"name":"one","strategy_group":"prep01","venue":"binance-futures","interval":"1min","factor_rules":[{"标的":"BTC","nq":"关闭","符号":1,"因子":"nq"}],"parameters":{"binance-futures-btcusdt-1min-nq":{},"binance-futures-btcusdt-1min-nq":{}}}"#;
     assert!(serde_json::from_str::<Combination>(json).is_err());
 }
 
@@ -122,7 +132,7 @@ fn duplicate_json_references_are_rejected_instead_of_overwriting_weights() {
 fn frequency_strategies_own_independent_allocations_and_reject_duplicate_publishers() {
     let config =
         Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
-    let plan = Plan::load(&config.combinations_dir).unwrap();
+    let plan = group_plan(&config, "prep01");
     let mut combinations = plan.combinations.values().cloned().collect::<Vec<_>>();
     let identities = combinations
         .iter()
@@ -131,9 +141,9 @@ fn frequency_strategies_own_independent_allocations_and_reject_duplicate_publish
     assert_eq!(
         identities,
         BTreeSet::from([
-            "cta-prep-bn-1min-pos".into(),
-            "cta-prep-bn-5min-pos".into(),
-            "cta-prep-bn-15min-pos".into(),
+            "cta-prep01-bn-1min-pos".into(),
+            "cta-prep01-bn-5min-pos".into(),
+            "cta-prep01-bn-15min-pos".into(),
         ])
     );
     let before = combinations[1].signal.clone();
@@ -152,6 +162,87 @@ fn frequency_strategies_own_independent_allocations_and_reject_duplicate_publish
         crate::cta_spread::config::SpreadMode::OkexBinance.manager_strategy_name(),
         "cta-spread-okx-bn-1min-pos"
     );
+}
+
+#[test]
+fn strategy_groups_share_calculations_and_own_independent_frequency_strategies() {
+    for (config_path, first_group, second_group, worker, expected_tables) in [
+        (
+            "config/cta_prep_binance_futures.toml",
+            "prep01",
+            "prep02",
+            Worker::Perp,
+            6,
+        ),
+        (
+            "config/cta_factor_spread.toml",
+            "spread01",
+            "spread02",
+            Worker::Spread,
+            2,
+        ),
+    ] {
+        let config = Config::load(std::path::Path::new(config_path)).unwrap();
+        let original = group_plan(&config, first_group);
+        let mut combinations = original.combinations.values().cloned().collect::<Vec<_>>();
+        for c in original.combinations.values() {
+            assert_eq!(c.strategy_group, first_group);
+            let mut other = c.clone();
+            other.strategy_group = second_group.into();
+            other.name = format!("{second_group}_{}", c.name);
+            other.signal.as_mut().unwrap().max_pos_u = 123.0;
+            other.signal.as_mut().unwrap().enabled = true;
+            combinations.push(other);
+        }
+        let merged = Plan::merge(combinations).unwrap();
+        worker.validate_plan(&merged).unwrap();
+        assert_eq!(merged.combinations.len(), expected_tables);
+        assert_eq!(merged.calculations.len(), original.calculations.len());
+        assert_eq!(
+            merged
+                .combinations
+                .values()
+                .map(Combination::manager_strategy_name)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            expected_tables
+        );
+        for (id, c) in &original.calculations {
+            assert_eq!(merged.calculations[id].parameters, c.parameters);
+            assert_eq!(
+                merged.calculations[id].combinations.len(),
+                c.combinations.len() * 2
+            );
+        }
+        let remaining = Plan::merge(
+            merged
+                .combinations
+                .into_values()
+                .filter(|c| c.strategy_group == second_group),
+        )
+        .unwrap();
+        assert_eq!(remaining.calculations.len(), original.calculations.len());
+        assert!(original
+            .combinations
+            .values()
+            .all(|c| !c.signal.as_ref().unwrap().enabled));
+        assert!(remaining
+            .combinations
+            .values()
+            .all(|c| c.signal.as_ref().unwrap().enabled));
+    }
+}
+
+#[test]
+fn strategy_groups_require_explicit_safe_names() {
+    let mut c = combination("one", &[("binance-futures-btcusdt-1min-nq", 1.0)]);
+    for group in ["", "Prep01", "../prep01", "prep-01", "1prep", "prep 01"] {
+        c.strategy_group = group.into();
+        assert!(c.validate().is_err(), "{group}");
+    }
+    let mut value = serde_json::to_value(c).unwrap();
+    value.as_object_mut().unwrap().remove("strategy_group");
+    assert!(serde_json::from_value::<Combination>(value).is_err());
 }
 
 #[test]
@@ -192,7 +283,7 @@ fn merge_is_exactly_the_requested_union_and_rejects_parameter_conflicts() {
 fn binance_worker_merges_three_frequency_configurations_with_exact_periods() {
     let config =
         Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
-    let plan = Plan::load(&config.combinations_dir).unwrap();
+    let plan = group_plan(&config, "prep01");
     assert_eq!(
         plan.combinations
             .keys()
@@ -572,6 +663,7 @@ fn old_tables_gain_market_and_frequency_without_changing_signed_weights() {
     ]);
     let imported = Combination::from_symbol_factors(
         "momentum".into(),
+        "spread01".into(),
         Market::OkexFutures,
         Interval::FiveMinutes,
         table,

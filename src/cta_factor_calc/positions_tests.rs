@@ -3,12 +3,13 @@ use crate::cta_factor_calc::{config::FactorId, engine::Field};
 
 const TS: i64 = 1_800_000_060_000;
 fn prep(interval: &str) -> Combination {
-    serde_json::from_value(json!({"name":"test","venue":"binance-futures","interval":interval,
+    serde_json::from_value(json!({"name":"test","strategy_group":"prep01","venue":"binance-futures","interval":interval,
         "factor_rules":[{"标的":"ETH","nq":"关闭","符号":1,"因子":"factor_036"}],
         "signal":{"enabled":true,"max_pos_u":200,"entry":{"nq_change_enabled":false},"execution":{}}})).unwrap()
 }
 fn spread() -> Combination {
     let mut c = prep("1min");
+    c.strategy_group = "spread01".into();
     c.venue = super::super::config::Market::OkexFutures;
     c.reference_venue = Some(super::super::config::Market::BinanceFutures);
     c.factor_rules[0].venue = Some(super::super::config::Market::BinanceFutures);
@@ -54,16 +55,77 @@ fn worker_owns_four_named_tables_and_spread_dependencies_are_implicit() {
     assert_eq!(
         identities,
         [
-            "cta-prep-bn-1min-pos",
-            "cta-prep-bn-5min-pos",
-            "cta-prep-bn-15min-pos",
-            "cta-spread-okx-bn-1min-pos"
+            "cta-prep01-bn-1min-pos",
+            "cta-prep01-bn-5min-pos",
+            "cta-prep01-bn-15min-pos",
+            "cta-spread01-okx-bn-1min-pos"
         ]
     );
     assert!(spread()
         .factors()
         .unwrap()
         .contains_key("okex-futures-binance-futures-ethusdt-1min-spread"));
+}
+
+#[test]
+fn groups_size_persist_disable_and_retire_positions_independently() {
+    for base in [prep("1min"), spread()] {
+        let mut other = base.clone();
+        other.name = "second".into();
+        other.strategy_group = if base.reference_venue.is_some() {
+            "spread02"
+        } else {
+            "prep02"
+        }
+        .into();
+        other.signal.as_mut().unwrap().max_pos_u = 500.0;
+        let mut first = Table::new(base, (TS - 60000) * 1000);
+        let mut second = Table::new(other, (TS - 60000) * 1000);
+        let id = "binance-futures-ethusdt-1min-factor_036";
+        let spread_id = "okex-futures-binance-futures-ethusdt-1min-spread";
+        let points = BTreeMap::from([
+            (id.into(), point(id, TS, 0.99)),
+            (spread_id.into(), point(spread_id, TS, 0.99)),
+        ]);
+        let previous = BTreeMap::from([(spread_id.into(), point(spread_id, TS - 60000, 0.2))]);
+        for table in [&mut first, &mut second] {
+            table
+                .observe(&points, &previous, (TS + 6000) * 1000, &book)
+                .unwrap();
+        }
+        let target = if first.combination.reference_venue.is_some() {
+            "okex-futures:ETHUSDT"
+        } else {
+            "ETHUSDT"
+        };
+        assert_eq!(first.targets().unwrap()[target]["qty"], 2.0);
+        assert_eq!(second.targets().unwrap()[target]["qty"], 5.0);
+        let untouched = serde_json::to_value(&second).unwrap();
+        let mut disabled = first.combination.clone();
+        disabled.signal.as_mut().unwrap().enabled = false;
+        first.update(&disabled, (TS + 7000) * 1000).unwrap();
+        assert!(!first.enabled());
+        assert!(second.enabled());
+        first.retire((TS + 8000) * 1000).unwrap();
+        assert_eq!(first.targets().unwrap()[target]["qty"], "clear");
+        assert_eq!(serde_json::to_value(&second).unwrap(), untouched);
+        let root = std::env::temp_dir().join(format!("cta-multi-group-{}", uuid::Uuid::new_v4()));
+        for table in [&mut first, &mut second] {
+            table.save(&root, (TS + 9000) * 1000).unwrap();
+            let restored: Table = serde_json::from_slice(
+                &fs::read(root.join(format!("{}.json", table.strategy_name))).unwrap(),
+            )
+            .unwrap();
+            restored.validate().unwrap();
+            assert_eq!(restored.targets().unwrap(), table.targets().unwrap());
+            assert_eq!(
+                restored.combination.strategy_group,
+                table.combination.strategy_group
+            );
+        }
+        assert_ne!(first.strategy_name, second.strategy_name);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]
@@ -82,7 +144,8 @@ fn prep_uses_live_direct_factors_and_persists_frozen_independent_positions() {
     let root = std::env::temp_dir().join(format!("cta-pos-{}", uuid::Uuid::new_v4()));
     table.save(&root, (TS + 11000) * 1000).unwrap();
     let restored: Table =
-        serde_json::from_slice(&fs::read(root.join("cta-prep-bn-1min-pos.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(root.join("cta-prep01-bn-1min-pos.json")).unwrap())
+            .unwrap();
     restored.validate().unwrap();
     assert_eq!(restored.targets().unwrap(), table.targets().unwrap());
     assert_eq!(restored.clock, table.clock);
@@ -292,7 +355,7 @@ async fn deleted_table_is_durable_before_publication_and_retires_only_after_ack(
     let handler = |State((root, received)): State<(PathBuf, Arc<Mutex<Vec<Value>>>)>,
                    Json(body): Json<Value>| async move {
         let saved: Value =
-            serde_json::from_slice(&fs::read(root.join("cta-prep-bn-1min-pos.json")).unwrap())
+            serde_json::from_slice(&fs::read(root.join("cta-prep01-bn-1min-pos.json")).unwrap())
                 .unwrap();
         assert!(saved["retiring"].as_bool().unwrap());
         assert_eq!(saved["ledger"]["rows"]["factor_036"]["ETHUSDT"]["qty"], 0.0);

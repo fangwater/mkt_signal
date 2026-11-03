@@ -1,4 +1,5 @@
 {
+  "strategy_group": "spread01",
   "name": "okex-futures_binance-futures_1min",
   "venue": "okex-futures",
   "interval": "1min",

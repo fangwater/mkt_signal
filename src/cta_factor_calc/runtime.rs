@@ -30,10 +30,12 @@ struct Args {
     #[arg(long)]
     put_combination: Option<PathBuf>,
     /// Convert the existing symbol -> factor -> weight JSON table.
-    #[arg(long, requires_all=["name","market","interval"])]
+    #[arg(long, requires_all=["name","strategy_group","market","interval"])]
     import_symbol_factors: Option<PathBuf>,
     #[arg(long, requires = "import_symbol_factors")]
     name: Option<String>,
+    #[arg(long, requires = "import_symbol_factors")]
+    strategy_group: Option<String>,
     #[arg(long, requires = "import_symbol_factors")]
     market: Option<String>,
     #[arg(long, requires = "import_symbol_factors")]
@@ -162,8 +164,8 @@ pub fn edit_combination_checked(
         if let Some(previous) = combinations.get(&value.name) {
             ensure!(
                 (previous.signal.is_none() && value.signal.is_none())
-                    || (previous.venue == value.venue && previous.interval == value.interval),
-                "signal venue/frequency cannot change in place; create a new combination"
+                    || previous.manager_strategy_name() == value.manager_strategy_name(),
+                "signal strategy group/market/frequency cannot change in place; create a new combination"
             );
         }
         combinations.insert(value.name.clone(), value.clone());
@@ -393,6 +395,7 @@ pub async fn main(worker: Worker) -> Result<()> {
                 serde_json::from_value(json!(args.interval.as_ref().unwrap()))?;
             put = Some(Combination::from_symbol_factors(
                 args.name.as_ref().unwrap().clone(),
+                args.strategy_group.as_ref().unwrap().clone(),
                 market,
                 interval,
                 serde_json::from_slice(&fs::read(path)?)?,
@@ -412,7 +415,7 @@ pub async fn main(worker: Worker) -> Result<()> {
     worker.validate_plan(&plan)?;
     if args.check || editing {
         let position_tables=plan.combinations.values().filter_map(|c|c.signal.as_ref().map(|p|
-            json!({"strategy_name":c.manager_strategy_name(),"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
+            json!({"strategy_name":c.manager_strategy_name(),"strategy_group":c.strategy_group,"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
         println!(
             "{}",
             serde_json::to_string_pretty(

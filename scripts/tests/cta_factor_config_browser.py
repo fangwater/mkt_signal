@@ -30,7 +30,7 @@ def main():
         history.mkdir(parents=True)
         (history/'state.json').write_text(json.dumps({
             'worker':'cta-prep-binance-futures','updated_ms':int(time.time()*1000),'warming':False,
-            'position_tables':{'tables':[{'strategy_name':'cta-prep-bn-15min-pos',
+            'position_tables':{'tables':[{'strategy_name':'cta-prep01-bn-15min-pos',
                 'combination_name':'binance-futures_15min','enabled':False,'retired':False,
                 'retiring':False,'targets':{'ETHUSDT':{'qty':1.25,'signal':0}}}]}
         }))
@@ -65,9 +65,9 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('dialog', lambda dialog: dialog.accept())
                 page.goto(base)
-                page.wait_for_function("document.querySelector('#count').textContent.includes('304')")
+                page.wait_for_function("count=>document.querySelector('#count').textContent.includes(String(count))", arg=api('config')['unique_factor_count'])
                 assert page.locator('#rows tr').count()==146
-                assert 'cta-prep-bn-15min-pos' in page.locator('#manager-strategy').inner_text()
+                assert 'cta-prep01-bn-15min-pos' in page.locator('#manager-strategy').inner_text()
                 page.wait_for_function("document.querySelector('#position-targets').textContent.includes('1.25')")
                 assert page.locator('#worker-select option').count()==2
                 page.locator('#max-pos').fill('250')
@@ -100,7 +100,7 @@ def main():
                 assert recipe.read_bytes()==original
                 page.locator('#worker-select').select_option('cta-factor-spread')
                 page.wait_for_function("document.querySelector('#worker').textContent==='cta-factor-spread'")
-                assert 'cta-spread-okx-bn-1min-pos' in page.locator('#manager-strategy').inner_text()
+                assert 'cta-spread01-okx-bn-1min-pos' in page.locator('#manager-strategy').inner_text()
                 assert page.locator('#spread-long').input_value()=='0.3'
                 page.locator('#new').click()
                 page.locator('#name').fill('okx_single_1min')

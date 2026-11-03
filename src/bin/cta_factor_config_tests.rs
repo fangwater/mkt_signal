@@ -16,10 +16,9 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
     mkt_signal::cta_factor_calc::runtime::atomic_json(&root.join("one.json"), &combination)
         .unwrap();
     combination.name = "two".into();
-    let signal = combination.signal.take();
+    combination.strategy_group = "prep02".into();
     mkt_signal::cta_factor_calc::runtime::atomic_json(&root.join("two.json"), &combination)
         .unwrap();
-    combination.signal = signal;
     let untouched = std::fs::read(root.join("two.json")).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -47,9 +46,12 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
     assert_eq!(initial["unique_factor_count"], 180);
     assert_eq!(
         initial["position_strategies"]["one"],
-        "cta-prep-bn-15min-pos"
+        "cta-prep01-bn-15min-pos"
     );
-    assert!(initial["position_strategies"].get("two").is_none());
+    assert_eq!(
+        initial["position_strategies"]["two"],
+        "cta-prep02-bn-15min-pos"
+    );
     assert_eq!(
         initial["plan"]["combinations"]["one"]["factor_rules"]
             .as_array()
@@ -61,6 +63,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
         .get("factors")
         .is_none());
     combination.name = "one".into();
+    combination.strategy_group = "prep01".into();
     combination.signal.as_mut().unwrap().max_pos_u = 321.0;
     let body = json!({"combination":combination,"expected_revision":initial["revision"]});
     let preview: Value = http
@@ -113,6 +116,21 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
         .await
         .unwrap();
     assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let mut renamed = combination.clone();
+    renamed.strategy_group = "prep03".into();
+    let denied = http
+        .post(format!("{url}/api/combinations"))
+        .json(&json!({"combination":renamed,"expected_revision":saved["revision"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        Combination::load(&root.join("one.json"))
+            .unwrap()
+            .strategy_group,
+        "prep01"
+    );
     combination.signal = None;
     let retired = http
         .post(format!("{url}/api/combinations"))

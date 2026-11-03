@@ -1,4 +1,5 @@
 {
+  "strategy_group": "prep01",
   "name": "binance-futures_1min",
   "venue": "binance-futures",
   "interval": "1min",
