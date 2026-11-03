@@ -1,4 +1,5 @@
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmountThreshold {
     pub medium_notional_threshold: f64,
     pub large_notional_threshold: f64,

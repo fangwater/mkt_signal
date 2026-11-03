@@ -377,7 +377,7 @@ pub async fn main(worker: Worker) -> Result<()> {
     let config_path = args
         .config
         .unwrap_or_else(|| PathBuf::from(worker.default_config()));
-    let config = Config::load(&config_path)?;
+    let mut config = Config::load(&config_path)?;
     let editing = args.put_combination.is_some()
         || args.delete_combination.is_some()
         || args.import_symbol_factors.is_some();
@@ -433,6 +433,21 @@ pub async fn main(worker: Worker) -> Result<()> {
     )?;
     fs::create_dir_all(&config.history_dir)?;
     let _runtime_lock = FileLock::acquire(&config.history_dir.join(".worker.lock"))?;
+    let mut thresholds_error = None;
+    match super::thresholds::load(&plan) {
+        Ok(values) => {
+            info!(
+                "shared monthly amount thresholds loaded: {} symbols",
+                values.len()
+            );
+            config.amount_thresholds = values;
+        }
+        Err(e) => {
+            warn!("shared amount thresholds unavailable: {e:#}");
+            thresholds_error = Some(format!("amount thresholds: {e:#}"));
+        }
+    }
+    let mut last_threshold_reload = Instant::now();
     let mut active: Option<Generation> = None;
     let mut candidate = Some(Generation::new(plan, &config, worker)?);
     let publisher = if args.replay_only {
@@ -523,7 +538,15 @@ pub async fn main(worker: Worker) -> Result<()> {
                     error = None;
                     kafka_error = None;
                     if args.replay_only {
-                        write_status(&config, worker, active.as_ref(), None, None, None, None)?;
+                        write_status(
+                            &config,
+                            worker,
+                            active.as_ref(),
+                            None,
+                            thresholds_error.as_deref(),
+                            None,
+                            None,
+                        )?;
                         return Ok(());
                     }
                 }
@@ -542,20 +565,45 @@ pub async fn main(worker: Worker) -> Result<()> {
             if let Some(generation) = &mut active {
                 generation.journal.flush()?;
             }
-            match Plan::load(&config.combinations_dir).and_then(|p| {
+            let next_plan = Plan::load(&config.combinations_dir).and_then(|p| {
                 worker.validate_plan(&p)?;
                 Ok(p)
-            }) {
-                Ok(next) if next != observed_plan => {
-                    let changed_definitions = next.calculations.iter().any(|(id, new)| {
-                        active
-                            .as_ref()
-                            .and_then(|g| g.engine.plan.calculations.get(id))
-                            .is_none_or(|old| old.parameters != new.parameters)
-                    });
+            });
+            let mut next_thresholds = None;
+            if last_threshold_reload.elapsed() >= Duration::from_secs(180)
+                || next_plan.as_ref().is_ok_and(|p| p != &observed_plan)
+            {
+                if let Ok(plan) = &next_plan {
+                    match super::thresholds::load(plan) {
+                        Ok(values) => {
+                            next_thresholds = Some(values);
+                            thresholds_error = None;
+                        }
+                        Err(e) => thresholds_error = Some(format!("amount thresholds: {e:#}")),
+                    }
+                }
+                last_threshold_reload = Instant::now();
+            }
+            let thresholds_changed = next_thresholds
+                .as_ref()
+                .is_some_and(|v| v != &config.amount_thresholds);
+            match next_plan {
+                Ok(next) if next != observed_plan || thresholds_changed => {
+                    let changed_definitions = thresholds_changed
+                        || next.calculations.iter().any(|(id, new)| {
+                            active
+                                .as_ref()
+                                .and_then(|g| g.engine.plan.calculations.get(id))
+                                .is_none_or(|old| old.parameters != new.parameters)
+                        });
                     if changed_definitions || active.is_none() {
-                        match Generation::new(next.clone(), &config, worker) {
+                        let mut replay_config = config.clone();
+                        if let Some(values) = next_thresholds {
+                            replay_config.amount_thresholds = values;
+                        }
+                        match Generation::new(next.clone(), &replay_config, worker) {
                             Ok(g) => {
+                                config = replay_config;
                                 candidate = Some(g);
                                 observed_plan = next;
                                 error = None;
@@ -600,7 +648,10 @@ pub async fn main(worker: Worker) -> Result<()> {
                 worker,
                 active.as_ref(),
                 candidate.as_ref(),
-                error.as_deref().or(kafka_error.as_deref()),
+                error
+                    .as_deref()
+                    .or(kafka_error.as_deref())
+                    .or(thresholds_error.as_deref()),
                 positions.as_ref(),
                 positions_error.as_deref(),
             )?;
@@ -646,6 +697,6 @@ fn write_status(
 ) -> Result<()> {
     atomic_json(
         &config.history_dir.join("state.json"),
-        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error}),
+        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len()}),
     )
 }

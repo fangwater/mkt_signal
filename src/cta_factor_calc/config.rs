@@ -789,7 +789,9 @@ pub struct Config {
     pub lookback_secs: u64,
     pub catchup_timeout_secs: u64,
     pub kafka: KafkaConsumerConfig,
-    #[serde(default)]
+    /// Runtime snapshot of the shared monthly Redis thresholds, never a second
+    /// operator-maintained threshold table in the factor TOML.
+    #[serde(skip)]
     pub amount_thresholds: BTreeMap<String, [f64; 2]>,
 }
 impl Config {
@@ -811,13 +813,6 @@ impl Config {
             !config.kafka.brokers.trim().is_empty(),
             "Kafka brokers are required"
         );
-        for (key, [medium, large]) in &config.amount_thresholds {
-            ensure!(
-                key.split_once(':').is_some()
-                    && crate::common::amount_threshold::is_online_amount_threshold(*medium, *large),
-                "invalid amount thresholds for {key}"
-            );
-        }
         Ok(config)
     }
 }
