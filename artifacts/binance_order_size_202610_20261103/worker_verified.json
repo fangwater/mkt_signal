@@ -1,0 +1,21 @@
+{
+  "generation": "483c9c50-405a-4434-b05f-aa71dd017b6f",
+  "warming": false,
+  "kafka_error": null,
+  "factor_outputs": 404,
+  "ready_factors": 331,
+  "nq_factors": 94,
+  "nq_ready": 94,
+  "amount_threshold_symbols": 51,
+  "icx_removed": true,
+  "all_seven_publishing_disabled": true,
+  "all_eight_bindings_stopped": true,
+  "exec_submitters_stopped": true,
+  "configurations_and_bindings_unchanged": true,
+  "protected_processes_unchanged": 87,
+  "binary_sha256": {
+    "cta-prep-binance-futures": "ecfe1b6b9ae507c4c894a3c14e98b0c68f2366235a6319b9d378ab3e8bd3f567",
+    "cta-factor-spread": "e373f8d6fdaec72e8db0fe6878a658d42e2c14e26cc4dda39278f29948aa9da0"
+  },
+  "checked_at_ms": 1793694745485
+}

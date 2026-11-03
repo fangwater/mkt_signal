@@ -1,7 +1,23 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-03 07:23 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-03 08:38 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-03 08:33 UTC，补齐 Prep01 / Prep02 共51币的 Binance Futures 月度大小单阈值：
+完整2026-10成交934404516笔、1581文件，每币744小时；P50/P90以USDT用于2026-11。
+共享Redis合约金额表0→51，逐项读回一致；OKX8项、现货表及公共因子计划保持。
+源码a0d39e69让Prep从同一共享表加载并每180秒复查，校验月份/单位/数值；阈值变化
+重建回放，失败保留最后成功快照。主库1450项通过（3项忽略），本机release构建、
+上传SHA-256核对及原子安装后，仅用环境脚本重启Prep：PID3855958 / CPU17。
+Spread产物同步更新而计算保持停止，Config/Manager及87个受保护进程身份保持。
+08:33:52快照404项中331项ready：1min132/134、5min56/69、15min143/201；94项NQ
+全就绪，大小阈值缺项0。73项未就绪中58项为15min：28项原始值缺失、3项标准化值
+缺失、27项排名样本不足；其余1min2项、5min13项也是排名样本不足，不降低门槛。
+七份仓位推送false、八条绑定shares=0，四套Exec下单进程停止；源IP/local_ips未改。
+证据 `artifacts/binance_order_size_202610_20261103/`；私有数据审计
+`~/tlen_config_shared/run/binance_order_size_202610_20261103T080500Z/`，程序备份
+`~/crypto_cta_manager/maintenance-backups/cta_factor_health_bnthreshold_20261103T081500Z/`。
+临时发布目录已清理，旧产物及核验回执保留。
 
 2026-11-03 07:23 UTC，完成 CTA Kafka / NQ 健康修复及 ICX 下线清理，源码44fe891c。
 Kafka PARTITION_EOF 正常返回空轮询，后续有效记录清理旧Kafka错误；NQ允许从保留的增量
@@ -917,7 +933,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | fr_arb03/04、bitget_fr_arb02、gate_fr_arb01/02 等堆叠；okex_mm_alpha 已停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta-prep-binance-futures | PID3522829；Prep01/Prep02 六张表，408 项计算；计算进程保持，六个发布开关均关闭、绑定0 |
+| 17 | cta-prep-binance-futures | PID3855958；Prep01/Prep02 六张表、404项计算，月度阈值51币；六个发布开关关闭、绑定shares=0 |
 | 18 | 空闲 / CTA Spread 预留 | 多组产物和 Spread01 配置已安装，计算进程保持停止；发布关闭、绑定0 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |

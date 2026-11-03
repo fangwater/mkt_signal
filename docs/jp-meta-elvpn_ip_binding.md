@@ -1,6 +1,14 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 07:23 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 08:38 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 08:33 UTC，补齐 Binance Futures 51币的2026-11大小单阈值并发布源码
+a0d39e69 的共享阈值读取修复（月份/单位校验、180秒复查、变化后重新回放）。
+仅通过环境脚本重启 `~/cta-prep-binance-futures`，PID3855958 / CPU17；Spread
+产物同步更新但计算保持停止。Config/Manager及87个受保护进程身份保持；四套Exec
+下单进程停止，七份推送false、八条绑定shares=0。此次未改 `local_ips`、源IP、
+ENI/EIP、网卡、路由或监听地址。完整阈值/就绪回执及哈希见
+`artifacts/binance_order_size_202610_20261103/`，CPU记录见 `docs/core_allocation.md`。
 
 2026-11-03 07:23 UTC，完成 CTA Kafka / NQ 健康修复及 ICX 下线清理，源码44fe891c。
 Kafka PARTITION_EOF 正常返回空轮询，后续有效记录清理旧Kafka错误；NQ允许从保留的增量

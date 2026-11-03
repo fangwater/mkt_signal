@@ -1,0 +1,1985 @@
+{
+  "checked_at_ms": 1793694832986,
+  "updated_ms": 1793694832563,
+  "generation": "483c9c50-405a-4434-b05f-aa71dd017b6f",
+  "warming": false,
+  "error": null,
+  "amount_threshold_symbols": 51,
+  "summary": {
+    "15min": {
+      "total": 201,
+      "标准化值为空": 3,
+      "ready": 143,
+      "原始值为空": 28,
+      "有效样本不足": 27
+    },
+    "1min": {
+      "total": 134,
+      "ready": 132,
+      "有效样本不足": 2
+    },
+    "5min": {
+      "total": 69,
+      "ready": 56,
+      "有效样本不足": 13
+    }
+  },
+  "groups": [
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "TD_TI_030",
+      "symbols": [
+        "DASH"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "TP_VPI_001",
+      "symbols": [
+        "KNC"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "TP_VPI_002",
+      "symbols": [
+        "SNX"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "TP_VPI_005",
+      "symbols": [
+        "1INCH",
+        "SOL"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "avg_price",
+      "symbols": [
+        "QTUM"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "baseline_040",
+      "symbols": [
+        "BEL",
+        "EGLD",
+        "IOST",
+        "IOTA",
+        "KSM",
+        "ONT",
+        "RLC",
+        "SKL",
+        "SUSHI",
+        "ZRX"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "baseline_047",
+      "symbols": [
+        "SNX"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "baseline_120",
+      "symbols": [
+        "SUSHI"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "baseline_151",
+      "symbols": [
+        "AXS"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "factor_032",
+      "symbols": [
+        "IOTA"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "factor_051",
+      "symbols": [
+        "KAVA",
+        "SKL"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "factor_052",
+      "symbols": [
+        "IOTA"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "factor_093",
+      "symbols": [
+        "BEL"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "factor_114",
+      "symbols": [
+        "ENJ"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "factor_134",
+      "symbols": [
+        "CRV"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "原始值为空",
+      "factor": "sell_avg_price",
+      "symbols": [
+        "KSM",
+        "SUSHI"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "TD_TI_008",
+      "symbols": [
+        "ENJ"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "TD_TI_015",
+      "symbols": [
+        "IOTA"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "baseline_035",
+      "symbols": [
+        "FIL"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "baseline_104",
+      "symbols": [
+        "AXS",
+        "BAT",
+        "BNB",
+        "EGLD",
+        "ETC",
+        "IOTA",
+        "KNC",
+        "KSM",
+        "LINK",
+        "QTUM",
+        "SOL",
+        "VET",
+        "YFI",
+        "ZEN"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "baseline_141",
+      "symbols": [
+        "DASH"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "baseline_189",
+      "symbols": [
+        "SOL"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "factor_048",
+      "symbols": [
+        "ONT",
+        "RSR"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "factor_094",
+      "symbols": [
+        "ZIL"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "有效样本不足",
+      "factor": "factor_170",
+      "symbols": [
+        "ATOM",
+        "IOST",
+        "KAVA",
+        "SKL",
+        "YFI"
+      ]
+    },
+    {
+      "frequency": "15min",
+      "reason": "标准化值为空",
+      "factor": "baseline_100",
+      "symbols": [
+        "1INCH",
+        "CRV",
+        "RUNE"
+      ]
+    },
+    {
+      "frequency": "1min",
+      "reason": "有效样本不足",
+      "factor": "buy_avg_price",
+      "symbols": [
+        "ALGO",
+        "ZRX"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "TD_TI_008",
+      "symbols": [
+        "DOGE"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "TD_TI_033",
+      "symbols": [
+        "BEL",
+        "SKL"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "TP_VPI_001",
+      "symbols": [
+        "VET"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "TP_VPI_006",
+      "symbols": [
+        "SKL"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "avg_price",
+      "symbols": [
+        "YFI"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "baseline_040",
+      "symbols": [
+        "BAND",
+        "SKL"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "baseline_118",
+      "symbols": [
+        "DASH"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "baseline_120",
+      "symbols": [
+        "SKL"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "factor_032",
+      "symbols": [
+        "SOL"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "factor_051",
+      "symbols": [
+        "NEAR"
+      ]
+    },
+    {
+      "frequency": "5min",
+      "reason": "有效样本不足",
+      "factor": "sell_avg_price",
+      "symbols": [
+        "BEL"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "frequency": "15min",
+      "factor": "baseline_100",
+      "symbol": "1INCH",
+      "reason": "标准化值为空",
+      "raw": 0.0811863888888889,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TP_VPI_005",
+      "symbol": "1INCH",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "1min",
+      "factor": "buy_avg_price",
+      "symbol": "ALGO",
+      "reason": "有效样本不足",
+      "raw": 0.000723166527335628,
+      "value": -0.053165158349124955,
+      "quantile": 0.40855354659248955,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 1000,
+        "normalize_window": 1440,
+        "rank_min_periods": 1440,
+        "rank_window": 2880
+      },
+      "combinations": [
+        "binance-futures_1min"
+      ],
+      "ts_ms": 1793694780000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_170",
+      "symbol": "ATOM",
+      "reason": "有效样本不足",
+      "raw": -0.04224872231686545,
+      "value": -1.93467885038524,
+      "quantile": 0.05555555555555555,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "AXS",
+      "reason": "有效样本不足",
+      "raw": 1.0052497095847694,
+      "value": -0.1388693026493471,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_151",
+      "symbol": "AXS",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "baseline_040",
+      "symbol": "BAND",
+      "reason": "有效样本不足",
+      "raw": 129.38557961824426,
+      "value": 1.7523526705323116,
+      "quantile": 0.19642857142857142,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "BAT",
+      "reason": "有效样本不足",
+      "raw": 1.0064645577808726,
+      "value": 1.0482778924384843,
+      "quantile": 0.07857142857142857,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "BEL",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_093",
+      "symbol": "BEL",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "sell_avg_price",
+      "symbol": "BEL",
+      "reason": "有效样本不足",
+      "raw": 9.902394938674223e-06,
+      "value": -0.8851837335326024,
+      "quantile": 0.26785714285714285,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "TD_TI_033",
+      "symbol": "BEL",
+      "reason": "有效样本不足",
+      "raw": 0.04146584499359892,
+      "value": 1.6604986340229226,
+      "quantile": 0.23295454545454544,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "BNB",
+      "reason": "有效样本不足",
+      "raw": 1.0026646189051736,
+      "value": 0.421283057939343,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_100",
+      "symbol": "CRV",
+      "reason": "标准化值为空",
+      "raw": 0.2726777777777777,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_134",
+      "symbol": "CRV",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_141",
+      "symbol": "DASH",
+      "reason": "有效样本不足",
+      "raw": 1.1799999999999997,
+      "value": -1.013703360973112,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TD_TI_030",
+      "symbol": "DASH",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "baseline_118",
+      "symbol": "DASH",
+      "reason": "有效样本不足",
+      "raw": 0.5728214045673214,
+      "value": 0.8228287990621517,
+      "quantile": 0.6306122448979592,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "TD_TI_008",
+      "symbol": "DOGE",
+      "reason": "有效样本不足",
+      "raw": 1.0019101389044676,
+      "value": -0.9854279848225935,
+      "quantile": 0.027985074626865673,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "EGLD",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "EGLD",
+      "reason": "有效样本不足",
+      "raw": 1.0054369328892456,
+      "value": -0.08169495939258001,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_114",
+      "symbol": "ENJ",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TD_TI_008",
+      "symbol": "ENJ",
+      "reason": "有效样本不足",
+      "raw": 1.0052260321948092,
+      "value": 1.0204924724945958,
+      "quantile": 0.75,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "ETC",
+      "reason": "有效样本不足",
+      "raw": 1.0035672887050602,
+      "value": -0.6161465891056164,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_035",
+      "symbol": "FIL",
+      "reason": "有效样本不足",
+      "raw": -275809.91618316644,
+      "value": 0.8639289752563977,
+      "quantile": 0.9929577464788732,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "IOST",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_170",
+      "symbol": "IOST",
+      "reason": "有效样本不足",
+      "raw": -0.04129814053903474,
+      "value": -0.7975505614470352,
+      "quantile": 0.05555555555555555,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "IOTA",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "IOTA",
+      "reason": "有效样本不足",
+      "raw": 1.005422566786959,
+      "value": -0.427052614752188,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_032",
+      "symbol": "IOTA",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_052",
+      "symbol": "IOTA",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TD_TI_015",
+      "symbol": "IOTA",
+      "reason": "有效样本不足",
+      "raw": 0.012574756388952581,
+      "value": -1.8655976567570625,
+      "quantile": 0.027472527472527472,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_051",
+      "symbol": "KAVA",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_170",
+      "symbol": "KAVA",
+      "reason": "有效样本不足",
+      "raw": -0.007597340930674359,
+      "value": -0.04729635008496378,
+      "quantile": 0.5,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "KNC",
+      "reason": "有效样本不足",
+      "raw": 1.0042740861525534,
+      "value": -0.5206799209307759,
+      "quantile": 0.02142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TP_VPI_001",
+      "symbol": "KNC",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "KSM",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "KSM",
+      "reason": "有效样本不足",
+      "raw": 1.0046782823766771,
+      "value": -0.8391552878688637,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "sell_avg_price",
+      "symbol": "KSM",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "LINK",
+      "reason": "有效样本不足",
+      "raw": 1.0046927722178587,
+      "value": -1.3675203604084254,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "factor_051",
+      "symbol": "NEAR",
+      "reason": "有效样本不足",
+      "raw": 0.9508415188128801,
+      "value": -0.012086324729559861,
+      "quantile": 0.5284090909090909,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "ONT",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_048",
+      "symbol": "ONT",
+      "reason": "有效样本不足",
+      "raw": -0.8359091210882993,
+      "value": -2.867563281210648,
+      "quantile": 0.05,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "avg_price",
+      "symbol": "QTUM",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "QTUM",
+      "reason": "有效样本不足",
+      "raw": 1.0041460920874856,
+      "value": -0.09322658767175068,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "RLC",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_048",
+      "symbol": "RSR",
+      "reason": "有效样本不足",
+      "raw": 0.2971395921792479,
+      "value": -0.13317916922342274,
+      "quantile": 0.5071428571428571,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_100",
+      "symbol": "RUNE",
+      "reason": "标准化值为空",
+      "raw": 0.5542455555555558,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "SKL",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_051",
+      "symbol": "SKL",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_170",
+      "symbol": "SKL",
+      "reason": "有效样本不足",
+      "raw": -0.0530275003082994,
+      "value": -2.1869211176827763,
+      "quantile": 0.16666666666666666,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "baseline_040",
+      "symbol": "SKL",
+      "reason": "有效样本不足",
+      "raw": -28790.107616556335,
+      "value": -1.6014952514400893,
+      "quantile": 0.9107142857142857,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "baseline_120",
+      "symbol": "SKL",
+      "reason": "有效样本不足",
+      "raw": -0.00596356922788604,
+      "value": -0.9254915420850237,
+      "quantile": 0.9868421052631579,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "TD_TI_033",
+      "symbol": "SKL",
+      "reason": "有效样本不足",
+      "raw": 0.03676453513550219,
+      "value": 1.899882904802776,
+      "quantile": 0.6875,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "TP_VPI_006",
+      "symbol": "SKL",
+      "reason": "有效样本不足",
+      "raw": -34031258.5,
+      "value": -1.638263446559521,
+      "quantile": 0.7842105263157895,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_047",
+      "symbol": "SNX",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TP_VPI_002",
+      "symbol": "SNX",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "SOL",
+      "reason": "有效样本不足",
+      "raw": 1.004628176325291,
+      "value": -0.24405320376594766,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_189",
+      "symbol": "SOL",
+      "reason": "有效样本不足",
+      "raw": 0.49903704686363276,
+      "value": -2.8736658105494928,
+      "quantile": 0.4090909090909091,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "TP_VPI_005",
+      "symbol": "SOL",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "factor_032",
+      "symbol": "SOL",
+      "reason": "有效样本不足",
+      "raw": -0.08429417827384061,
+      "value": -1.6765214440814602,
+      "quantile": 0.9488636363636364,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "SUSHI",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_120",
+      "symbol": "SUSHI",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "sell_avg_price",
+      "symbol": "SUSHI",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "VET",
+      "reason": "有效样本不足",
+      "raw": 1.0046668075204275,
+      "value": -0.39677642442122013,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "TP_VPI_001",
+      "symbol": "VET",
+      "reason": "有效样本不足",
+      "raw": -10915265.47647518,
+      "value": -2.3406150465206443,
+      "quantile": 0.30357142857142855,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "YFI",
+      "reason": "有效样本不足",
+      "raw": 1.0050085639210975,
+      "value": -0.8399557247382722,
+      "quantile": 0.2642857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_170",
+      "symbol": "YFI",
+      "reason": "有效样本不足",
+      "raw": -0.023332487953335024,
+      "value": 1.524460292319505,
+      "quantile": 0.7222222222222222,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "5min",
+      "factor": "avg_price",
+      "symbol": "YFI",
+      "reason": "有效样本不足",
+      "raw": -0.014211047093804186,
+      "value": 1.7712319528964804,
+      "quantile": 0.6630434782608695,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 200,
+        "normalize_window": 288,
+        "rank_min_periods": 288,
+        "rank_window": 576
+      },
+      "combinations": [
+        "binance-futures_5min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_104",
+      "symbol": "ZEN",
+      "reason": "有效样本不足",
+      "raw": 1.0054747668952173,
+      "value": -0.47167081589890625,
+      "quantile": 0.007142857142857143,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "factor_094",
+      "symbol": "ZIL",
+      "reason": "有效样本不足",
+      "raw": 0.0017648999999999998,
+      "value": -1.7902622652421687,
+      "quantile": 0.31666666666666665,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "15min",
+      "factor": "baseline_040",
+      "symbol": "ZRX",
+      "reason": "原始值为空",
+      "raw": null,
+      "value": null,
+      "quantile": null,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 67,
+        "normalize_window": 96,
+        "rank_min_periods": 96,
+        "rank_window": 192
+      },
+      "combinations": [
+        "binance-futures_15min",
+        "prep02_binance-futures_15min"
+      ],
+      "ts_ms": 1793694600000
+    },
+    {
+      "frequency": "1min",
+      "factor": "buy_avg_price",
+      "symbol": "ZRX",
+      "reason": "有效样本不足",
+      "raw": -0.27599845128422607,
+      "value": -0.15310532319444356,
+      "quantile": 0.659581881533101,
+      "parameters": {
+        "clip_zscore": 3.0,
+        "lookback": 120,
+        "missing_policy": "slots",
+        "normalize_min_periods": 1000,
+        "normalize_window": 1440,
+        "rank_min_periods": 1440,
+        "rank_window": 2880
+      },
+      "combinations": [
+        "binance-futures_1min"
+      ],
+      "ts_ms": 1793694780000
+    }
+  ]
+}

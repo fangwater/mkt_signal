@@ -1,0 +1,212 @@
+{
+  "redis_key": "binance-futures:amount-thresholds",
+  "venue": "binance-futures",
+  "config_type": "amount_thresholds",
+  "count": 51,
+  "thresholds": {
+    "1INCHUSDT": {
+      "medium_notional_threshold": 10.86488,
+      "large_notional_threshold": 89.09208000000001
+    },
+    "AAVEUSDT": {
+      "medium_notional_threshold": 27.246,
+      "large_notional_threshold": 431.976
+    },
+    "ADAUSDT": {
+      "medium_notional_threshold": 20.1195,
+      "large_notional_threshold": 750.7305
+    },
+    "ALGOUSDT": {
+      "medium_notional_threshold": 16.502292,
+      "large_notional_threshold": 144.970345
+    },
+    "ATOMUSDT": {
+      "medium_notional_threshold": 19.40732,
+      "large_notional_threshold": 401.625
+    },
+    "AVAXUSDT": {
+      "medium_notional_threshold": 21.906,
+      "large_notional_threshold": 566.852
+    },
+    "AXSUSDT": {
+      "medium_notional_threshold": 17.2242,
+      "large_notional_threshold": 156.88260000000002
+    },
+    "BANDUSDT": {
+      "medium_notional_threshold": 13.2363,
+      "large_notional_threshold": 117.36509
+    },
+    "BATUSDT": {
+      "medium_notional_threshold": 15.030311999999999,
+      "large_notional_threshold": 126.72428599999999
+    },
+    "BCHUSDT": {
+      "medium_notional_threshold": 30.114050000000002,
+      "large_notional_threshold": 400.8759999999999
+    },
+    "BELUSDT": {
+      "medium_notional_threshold": 9.81344,
+      "large_notional_threshold": 61.192249999999994
+    },
+    "BNBUSDT": {
+      "medium_notional_threshold": 16.0288,
+      "large_notional_threshold": 758.5538
+    },
+    "BTCUSDT": {
+      "medium_notional_threshold": 163.802,
+      "large_notional_threshold": 6819.224700000001
+    },
+    "CRVUSDT": {
+      "medium_notional_threshold": 16.5039,
+      "large_notional_threshold": 247.04955
+    },
+    "DASHUSDT": {
+      "medium_notional_threshold": 16.54113,
+      "large_notional_threshold": 280.4232
+    },
+    "DOGEUSDT": {
+      "medium_notional_threshold": 16.07112,
+      "large_notional_threshold": 700.1651999999999
+    },
+    "DOTUSDT": {
+      "medium_notional_threshold": 16.55175,
+      "large_notional_threshold": 219.55552000000003
+    },
+    "EGLDUSDT": {
+      "medium_notional_threshold": 16.5378,
+      "large_notional_threshold": 129.2895
+    },
+    "ENJUSDT": {
+      "medium_notional_threshold": 21.52,
+      "large_notional_threshold": 150.5205
+    },
+    "ETCUSDT": {
+      "medium_notional_threshold": 30.0934,
+      "large_notional_threshold": 317.37834000000004
+    },
+    "ETHUSDT": {
+      "medium_notional_threshold": 34.666380000000004,
+      "large_notional_threshold": 3713.4946
+    },
+    "FILUSDT": {
+      "medium_notional_threshold": 16.59735,
+      "large_notional_threshold": 363.71999999999997
+    },
+    "IOSTUSDT": {
+      "medium_notional_threshold": 18.1376,
+      "large_notional_threshold": 150.1133931
+    },
+    "IOTAUSDT": {
+      "medium_notional_threshold": 16.50762,
+      "large_notional_threshold": 132.080762
+    },
+    "KAVAUSDT": {
+      "medium_notional_threshold": 16.506456,
+      "large_notional_threshold": 126.77643
+    },
+    "KNCUSDT": {
+      "medium_notional_threshold": 16.906499999999998,
+      "large_notional_threshold": 99.9966
+    },
+    "KSMUSDT": {
+      "medium_notional_threshold": 15.352599999999999,
+      "large_notional_threshold": 104.05079999999998
+    },
+    "LINKUSDT": {
+      "medium_notional_threshold": 38.448919999999994,
+      "large_notional_threshold": 621.8947
+    },
+    "LTCUSDT": {
+      "medium_notional_threshold": 36.051,
+      "large_notional_threshold": 601.38192
+    },
+    "NEARUSDT": {
+      "medium_notional_threshold": 29.418,
+      "large_notional_threshold": 1076.715
+    },
+    "ONTUSDT": {
+      "medium_notional_threshold": 16.497087999999998,
+      "large_notional_threshold": 126.86681800000001
+    },
+    "QTUMUSDT": {
+      "medium_notional_threshold": 12.72816,
+      "large_notional_threshold": 74.31426000000002
+    },
+    "RLCUSDT": {
+      "medium_notional_threshold": 24.9375,
+      "large_notional_threshold": 184.92432
+    },
+    "RSRUSDT": {
+      "medium_notional_threshold": 37.569158,
+      "large_notional_threshold": 261.04832
+    },
+    "RUNEUSDT": {
+      "medium_notional_threshold": 16.835,
+      "large_notional_threshold": 152.37199999999999
+    },
+    "SKLUSDT": {
+      "medium_notional_threshold": 19.816703999999998,
+      "large_notional_threshold": 121.999932
+    },
+    "SNXUSDT": {
+      "medium_notional_threshold": 16.51351,
+      "large_notional_threshold": 111.13601999999999
+    },
+    "SOLUSDT": {
+      "medium_notional_threshold": 22.624799999999997,
+      "large_notional_threshold": 1680.8
+    },
+    "SUSHIUSDT": {
+      "medium_notional_threshold": 16.6148,
+      "large_notional_threshold": 127.7666
+    },
+    "THETAUSDT": {
+      "medium_notional_threshold": 16.51482,
+      "large_notional_threshold": 140.06216
+    },
+    "TRBUSDT": {
+      "medium_notional_threshold": 16.852500000000003,
+      "large_notional_threshold": 106.9796
+    },
+    "UNIUSDT": {
+      "medium_notional_threshold": 22.716,
+      "large_notional_threshold": 718.382
+    },
+    "VETUSDT": {
+      "medium_notional_threshold": 16.490901,
+      "large_notional_threshold": 103.31685
+    },
+    "XLMUSDT": {
+      "medium_notional_threshold": 16.5555,
+      "large_notional_threshold": 356.18705
+    },
+    "XRPUSDT": {
+      "medium_notional_threshold": 14.80128,
+      "large_notional_threshold": 760.59114
+    },
+    "XTZUSDT": {
+      "medium_notional_threshold": 14.97648,
+      "large_notional_threshold": 120.399
+    },
+    "YFIUSDT": {
+      "medium_notional_threshold": 18.696,
+      "large_notional_threshold": 160.132
+    },
+    "ZECUSDT": {
+      "medium_notional_threshold": 16.494,
+      "large_notional_threshold": 905.01125
+    },
+    "ZENUSDT": {
+      "medium_notional_threshold": 17.0184,
+      "large_notional_threshold": 155.4075
+    },
+    "ZILUSDT": {
+      "medium_notional_threshold": 19.963376,
+      "large_notional_threshold": 142.772448
+    },
+    "ZRXUSDT": {
+      "medium_notional_threshold": 15.732,
+      "large_notional_threshold": 122.17557
+    }
+  }
+}
