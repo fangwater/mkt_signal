@@ -1,0 +1,8 @@
+{
+  "commit": "212a531ede0b9bad0d1b3152c254ba19a1ca0e07",
+  "binary_sha256": "1d10d1abe0734319b9c73def54ff4091b88361ee27f990b3614798772715b3fd",
+  "html_sha256": "d2b2d3c34206ea0c122531084db5770204021f3caee4c37e6e9388a3015205fa",
+  "audit": "/home/ubuntu/crypto_cta_manager/maintenance-backups/cta_config_simplify_20261103T053902Z",
+  "helper": "artifacts/cta_config_simplify_20261103/deploy.py",
+  "restart_scope": "cta-factor-config only"
+}

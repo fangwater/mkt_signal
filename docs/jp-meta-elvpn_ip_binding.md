@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 05:31 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 05:40 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 05:40 UTC，按用户补充的四列 JSON 规范，更新 Config 产物 `212a531e`：
+因子每行只含 `标的` 字符串、小写 `nq`、`符号`、`因子`，频率统一取页面所选频段。
+仅通过环境脚本重启 Config（PID3578063，loopback19220）；Prep PID3522829
+及 start_ticks137144251 保持，81 个受保护进程身份保持，全部运行配置哈希/revision 保持。
+未替换或修改现有因子清单、金额、开关或执行绑定。回执 `artifacts/cta_config_rows_20261103/`。
 
 2026-11-03 05:31 UTC，按用户要求精简 CTA 配置页，发布 `38c037e9` 的 Config 产物。
 页面恢复旧 CTA 深色风格，按策略组和频段标签分别配置；因子仅使用
