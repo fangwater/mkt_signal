@@ -1,0 +1,6 @@
+{
+  "host": "jp-meta-elvpn",
+  "audit": "/home/ubuntu/crypto_cta_manager/maintenance-backups/cta_disabled_bindings_20261103T061615Z",
+  "production_branch": "arbmm",
+  "production_base": "4d2829c97fe94308587441c111da3995ea216b37"
+}

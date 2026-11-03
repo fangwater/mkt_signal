@@ -1,6 +1,18 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 05:40 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-03 06:19 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-03 06:19 UTC，按用户要求完成停止状态的 CTA 绑定：RX01 / Exec06 对应
+Prep01 的 1min/5min/15min，RX03 / Exec07 对应 Prep02 的 1min/5min/15min，
+现有 OKX–Binance 组合账户对应 Spread01 的 1min。七份策略、八条物理绑定全部
+shares=0；Manager 正常保存同名零目标，后续自动推送排除停止绑定。七个 signal.enabled
+保持 false，四套 Exec 下单进程保持停止，Prep / Spread 沿用原执行模板。
+恢复 Exec07 原 source 与 LGQ 查看入口，不恢复旧因子、virtual04 或 Funding 出口例外，
+RX04 / 旧 LTP 入口仍移除。仅重启 Manager，PID3642376 / CPU24；83 个受保护进程
+身份、全部因子/Exec运行配置、执行模板及 PRC 的13条账户绑定保持。源IP、ENI/EIP、
+local_ips、端口和CPU分配均未改动。API/数据库/Redis复核绑定、零目标及跨所投影通过。
+私有备份 `~/crypto_cta_manager/maintenance-backups/cta_disabled_bindings_20261103T061615Z/`；
+脱敏回执 `artifacts/cta_disabled_bindings_20261103/verified.json`。
 
 2026-11-03 05:40 UTC，按用户补充的四列 JSON 规范，更新 Config 产物 `212a531e`：
 因子每行只含 `标的` 字符串、小写 `nq`、`符号`、`因子`，频率统一取页面所选频段。
@@ -650,8 +662,8 @@ binance_exec_trade03         172.31.35.228, 172.31.35.234
 binance_exec_trade04         172.31.35.228, 172.31.35.234
 binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部停止并归档，Manager禁用且解除跟随；原配置保留
 binance_exec_rx04_5m05       172.31.35.228                  RX04 5min已清仓至0，Manager账户和虚拟账户入口已移除；下单停止，监控/persist/Viz/Config保留
-binance_exec_trade06         172.31.35.228                  RX01 RapidX，交易与Exec进程已停止；清仓并归档，Manager已移除
-binance_exec_trade07         172.31.35.228                  RX03已清仓至0，Manager账户和虚拟账户入口已移除；下单停止，监控/persist/Viz/Config保留
+binance_exec_trade06         172.31.35.228                  RX01绑定Prep01三频段，shares=0；下单停止，监控/persist/Viz/Config保留
+binance_exec_trade07         172.31.35.228                  RX03 Manager入口恢复，绑定Prep02三频段，shares=0；下单停止，监控/persist/Viz/Config保留
 binance_exec_trade08         172.31.35.228, 172.31.35.228   旧环境继续停止，lgq_ltp_81857 Manager入口已移除；历史保留，新组合另走binance_exec_spread01
 ```
 
