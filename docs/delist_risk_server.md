@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-04 10:04 UTC（独立FR钉钉、建仓覆盖及特殊现货尾差排除已验收）
+最后更新：2026-11-04 12:16 UTC（恢复导航和备份按钮布局，敞口明细默认折叠）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -70,6 +70,15 @@ The board includes a permanent, read-only FR exposure section. `/exposures`
 returns the cached report under the same login protection. Account discovery
 uses the current NAV catalog's `funding_rate` entries, including Gate arb04 and
 SG Bybit; directional CTA/Exec targets do not enter this check.
+
+The exposure section defaults to a compact, expandable summary so its account
+list does not displace the existing CTA and exchange navigation. Alert, pending
+and incomplete-data counts remain visible when collapsed. Automatic refresh
+preserves the section and per-account expansion state. CTA combination links
+wrap into two columns on desktop and one on mobile; account navigation and FR
+backup controls wrap within their cells. The browser regression uses populated
+CTA/FR sections, checks navigation/backup containment at 320–1440px, and exercises
+the backup request against a disposable fixture as well as exposure updates.
 
 Every 10 seconds, the service concurrently reads each account's existing
 `/fr/<env>/snapshot` through the loopback gateway (five-second request timeout).

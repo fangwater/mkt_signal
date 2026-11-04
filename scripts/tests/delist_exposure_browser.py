@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--screenshot-dir', type=Path)
     args = parser.parse_args()
     mode = {'gate': 'building'}
+    backups = []
     slugs = ['gate_fr_arb01', 'gate_fr_arb04', 'bybit_fr_arb01']
     with tempfile.TemporaryDirectory(prefix='delist-exposure-browser-') as temporary:
         root = Path(temporary)
@@ -94,9 +95,32 @@ def main():
                         {'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
                         {'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000}}
                     ]})
-                # Other board sections have separate tests; avoid Redis/Manager in this fixture.
-                fixtures = {'/delist/accounts': {'accounts': [], 'summary': {}, 'as_of_ms': int(time.time()*1000)},
-                            '/delist/flatten-candidates': {'items': []}, '/delist/cta-strategies': {'strategies': [], 'managers': []}, '/delist/status': {'sources': []}}
+                # Keep the existing navigation and backups populated: an empty board
+                # misses layout regressions caused by adding the exposure section.
+                accounts = [{'slug': slug, 'alias': slug, 'kind': 'funding_rate',
+                             'exchange': 'bybit' if slug.startswith('bybit') else 'gate',
+                             'host': 'sg' if slug.startswith('bybit') else 'jp',
+                             'venues': ['gate-margin', 'gate-futures'], 'tone': 'ok',
+                             'universe_n': 42, 'risk_n': 0,
+                             'viz_url': '/delist/open?env='+slug+'&panel=viz',
+                             'config_url': '/delist/open?env='+slug+'&panel=config'} for slug in slugs]
+                config_url = '/cta/cta-prep-binance-futures/config/'
+                combinations = [{'name': f'last-20_prep02_binance-futures_{i}min',
+                                 'config_url': config_url+f'?combination={i}', 'factor_count': 42,
+                                 'symbols': ['BTCUSDT'], 'position_strategies': [f'cta-prep02-bn-{i}min-pos']}
+                                for i in range(1, 14)]
+                cta = {'managers': [{'site': 'jp', 'ok': True}], 'factor_processes': [{
+                    'name': 'cta-prep-binance-futures', 'config_url': config_url,
+                    'configured': True, 'plan_matches_config': True, 'unique_factor_count': 42,
+                    'combinations': combinations}], 'strategies': [{
+                    'slug': 'cta-prep02-bn-1min-pos', 'name': combinations[0]['name'],
+                    'enabled': True, 'factor_count': 42,
+                    'risk': {'tone': 'ok', 'config_url': config_url, 'universe_n': 42},
+                    'accounts': [{'source_id': 'binance_exec_rx01', 'alias': 'CTA execution account',
+                                  'site': 'jp', 'active': True, 'viz_url': '/exec/rx01/viz/'}]}]}
+                fixtures = {'/delist/accounts': {'accounts': accounts, 'summary': {}, 'as_of_ms': int(time.time()*1000)},
+                            '/delist/flatten-candidates': {'items': []}, '/delist/cta-strategies': cta,
+                            '/delist/status': {'sources': []}}
                 if self.path in fixtures:
                     return self.respond(fixtures[self.path])
                 if self.path.startswith('/delist/'):
@@ -104,6 +128,9 @@ def main():
                 self.send_error(404)
 
             def do_POST(self):
+                if self.path == '/delist/backup-now':
+                    backups.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                    return self.respond({'filename': 'fixture.tar.gz'})
                 if self.path.startswith('/delist/'):
                     return self.proxy()
                 self.send_error(405)
@@ -175,6 +202,36 @@ def main():
                 assert len(data['accounts']) == 3
                 assert next(a for a in data['accounts'] if a['slug'] == slugs[2])['risk_status'] == 'unknown'
                 page.goto(origin+'/delist/')
+                page.wait_for_selector('#exchange-list .backup-action')
+                assert not page.locator('#exposure-panel').evaluate('e => e.open')
+                assert page.locator('#cta-strategies').bounding_box()['y'] < 500
+                assert page.locator('#exchange-list .backup-action').count() == 3
+                assert page.locator('#exchange-list .config-link').count() == 6
+                for width in (1440, 1024, 768, 390, 320):
+                    page.set_viewport_size({'width': width, 'height': 1000})
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+                    assert page.locator('#exchange-list .account-nav').evaluate_all('''nodes => nodes.every(nav => {
+                        const cell = nav.closest('td').getBoundingClientRect();
+                        return [...nav.children].every(el => {
+                            const rect = el.getBoundingClientRect();
+                            return rect.left >= cell.left && rect.right <= cell.right + 1;
+                        });
+                    })'''), width
+                    for button in page.locator('#exchange-list .backup-action').all():
+                        button.click(trial=True)
+                page.set_viewport_size({'width': 1440, 'height': 1000})
+                page.once('dialog', lambda dialog: dialog.accept())
+                page.locator('#exchange-list .backup-action').first.click()
+                page.wait_for_function("document.querySelector('#exchange-list .backup-action').textContent === '立即备份'")
+                assert backups == [{'kind': 'funding_rate', 'env': slugs[0]}]
+                page.locator('[data-filter="funding_rate"]').click()
+                assert page.locator('#cta-strategies .cta-table').count() == 0
+                assert page.locator('#exchange-list .backup-action').count() == 3
+                page.locator('[data-filter="all"]').click()
+                if args.screenshot_dir:
+                    args.screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(args.screenshot_dir/'board-desktop.png'), full_page=True)
+                page.locator('#exposure-panel > summary').click()
                 page.wait_for_selector('[data-exposure-account="gate_fr_arb01"]')
                 assert page.locator('[data-exposure-account]').count() == 3
                 assert '持续超限' in page.locator('#exposures').inner_text()
@@ -193,6 +250,7 @@ def main():
                 page.evaluate('loadExposures()')
                 page.wait_for_function("document.querySelector('#exposures').textContent.includes('保留异常记录')")
                 assert page.locator('details[data-env="gate_fr_arb01"][open]').count() == 1
+                assert page.locator('#exposure-panel').evaluate('e => e.open')
                 mode['gate'] = 'stale'
                 wait_account(lambda a: any('过期' in e for e in a['errors']))
                 mode['gate'] = 'recovered'
@@ -202,12 +260,12 @@ def main():
                 assert '有持仓但缺少有效价格' in page.locator('#exposures').inner_text()
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                assert page.locator('details[open] .exposure__scroll').evaluate('e => e.scrollWidth > e.clientWidth')
+                assert page.locator('#exposures details[open] .exposure__scroll').evaluate('e => e.scrollWidth > e.clientWidth')
                 if args.screenshot_dir:
                     page.screenshot(path=str(args.screenshot_dir/'exposure-mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-            print('PASS: authenticated exposure collection, Gate04/SG discovery, sustained alert, stale/failure preservation, recovery, automatic refresh, escaping, desktop/mobile')
+            print('PASS: populated CTA/FR board, navigation and backup containment at 320–1440px, manual backup request, filters, exposure expand/refresh, authenticated collection, alerts, recovery, escaping')
         finally:
             server.terminate()
             server.wait(timeout=10)

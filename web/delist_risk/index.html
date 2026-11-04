@@ -44,6 +44,8 @@
       .brand__name { color: var(--ink); font-size: 16px; font-weight: 650; line-height: 1; }
       .brand__context { padding-left: 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; }
       .system-state { display: inline-flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .system-state > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+      .brand, .topbar .refresh { flex-shrink: 0; }
       .state-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--quiet); }
       .state-dot--ok { background: #26845e; box-shadow: 0 0 0 3px #e8f5ee; }
       .state-dot--risk { background: #c18310; box-shadow: 0 0 0 3px #fff4d9; }
@@ -107,11 +109,21 @@
       .account-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
       .account-table th { padding: 8px 18px; border-bottom: 1px solid var(--line); background: #fafbfd; color: var(--quiet); font-size: 10px; font-weight: 650; letter-spacing: 0; text-align: left; text-transform: uppercase; }
       .account-table th:last-child, .account-table td:last-child { text-align: right; }
-      .account-table td { padding: 11px 18px; border-bottom: 1px solid #edf0f3; color: var(--muted); font-size: 12px; vertical-align: top; }
+      .account-table td { padding: 11px 18px; border-bottom: 1px solid #edf0f3; color: var(--muted); font-size: 12px; vertical-align: top; overflow-wrap: anywhere; }
       .account-table tbody tr:last-child td { border-bottom: 0; }
       .account-name { color: var(--ink); font-size: 13px; font-weight: 600; }
       .account-slug { display: block; margin-top: 2px; color: var(--quiet); font-size: 10px; }
-      .account-nav { display: inline-flex; align-items: center; gap: 8px; }
+      .account-nav { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+      .account-nav > * { min-width: 0; }
+      .account-nav .backup-action { white-space: nowrap; }
+      .account-nav > .account-venues { flex-basis: 100%; }
+      .factor-combinations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; padding: 12px 18px; }
+      .factor-combinations .account-nav { display: flex; align-items: flex-start; font-size: 12px; overflow-wrap: anywhere; }
+      .factor-combinations .config-link { white-space: normal; }
+      .cta-table th:first-child { width: 30%; }
+      .cta-table th:nth-child(2) { width: 18%; }
+      .cta-table th:nth-child(3), .cta-table th:nth-child(4) { width: 6%; }
+      .cta-table th:last-child { width: 40%; }
       .config-link { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 12px; text-decoration: none; white-space: nowrap; }
       .config-link:hover { border-color: var(--muted); background: var(--surface-hover); }
       .config-link:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
@@ -138,7 +150,12 @@
       .chip--ok { color: var(--good); background: var(--good-soft); }
       .chip--risk { color: var(--danger); background: var(--danger-soft); }
       .chip--error, .chip--uncovered { color: var(--warn); background: var(--warn-soft); }
-      .exposure { margin: 22px 0; border: 1px solid var(--line); background: var(--surface); }
+      .exposure-panel { margin: 20px 0; border: 1px solid var(--line); background: var(--surface); }
+      .exposure-panel > summary { padding: 12px 18px; cursor: pointer; font-weight: 600; }
+      .exposure-panel > summary span { margin-left: 12px; color: var(--muted); font-size: 12px; font-weight: 400; }
+      .exposure-panel > summary:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
+      .exposure-panel[open] > summary { border-bottom: 1px solid var(--line); }
+      .exposure { min-width: 0; }
       .exposure__heading { padding: 16px 18px 10px; }
       .exposure h2 { margin: 0; font-size: 17px; }
       .exposure__note { margin: 6px 0; color: var(--muted); font-size: 12px; }
@@ -201,6 +218,8 @@
         .cta-table td:nth-child(2)::before { content: "状态："; }
         .cta-table td:nth-child(4)::before { content: "风险："; color: var(--quiet); }
         .account-nav { display: flex; justify-content: flex-start; }
+        .factor-combinations { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+        .exposure-panel > summary { padding: 12px; }
         .hit-row { padding-top: 0 !important; }
         .hit-row td { display: block; padding: 0; background: transparent; }
         .hit { align-items: flex-start; flex-wrap: wrap; }
@@ -230,7 +249,10 @@
         <a class="config-link" href="/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread">CTA Spread 统一配置 ↗</a>
       </nav>
       <div id="error"></div>
-      <section class="exposure" id="exposures" aria-label="FR 敞口检查" aria-live="polite"><div class="exposure__heading"><h2>FR 敞口检查</h2><p class="exposure__note">正在读取账户持仓</p></div></section>
+      <details class="exposure-panel" id="exposure-panel">
+        <summary>FR 敞口计算<span id="exposure-summary" aria-live="polite">正在读取 · 展开查看明细</span></summary>
+        <section class="exposure" id="exposures" aria-label="FR 敞口检查"><div class="exposure__heading"><h2>FR 敞口检查</h2><p class="exposure__note">正在读取账户持仓</p></div></section>
+      </details>
       <section class="exchange-list" id="cta-strategies" aria-label="CTA 组合与执行账户"></section>
       <section class="exchange-list" id="exchange-list" aria-label="交易所风险明细"></section>
     </main>
@@ -297,12 +319,18 @@
       }
       function renderExposures() {
         const root = document.getElementById('exposures');
+        const summary = document.getElementById('exposure-summary');
         if (!exposurePayload) {
+          summary.textContent = exposureError ? '读取失败 · 展开查看详情' : '正在读取 · 展开查看明细';
           root.innerHTML = `<div class="exposure__heading"><h2>FR 敞口检查</h2><p class="exposure__issues">${escapeHtml(exposureError || '正在读取账户持仓')}</p></div>`;
           return;
         }
         const opened = new Set([...root.querySelectorAll('details[open]')].map(d => d.dataset.env));
         const accounts = exposureAccounts();
+        const alerts = accounts.filter(a => a.risk_status === 'alert').length;
+        const pending = accounts.filter(a => a.risk_status === 'pending').length;
+        const unknown = accounts.filter(a => !a.complete).length;
+        summary.textContent = [`${accounts.length} 个 FR`, alerts ? `${alerts} 个超限告警` : '', pending ? `${pending} 个超限观察` : '', unknown ? `${unknown} 个数据不完整` : '', exposureError || (exposurePayload.errors || []).length ? '读取异常' : '', '展开查看明细'].filter(Boolean).join(' · ');
         const settings = exposurePayload.settings;
         const money = value => Number.isFinite(value) ? `${(Math.abs(value) < .005 ? 0 : value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} U` : '未知';
         const qty = value => Number.isFinite(value) ? value.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '未知';
@@ -559,7 +587,7 @@
         const factorBlock = (ctaPayload.factor_processes || []).map(factor => {
         const factorState = !factor?.configured ? '配置不可用' : factor.stale ? '运行状态不可用或过期' : factor.warming ? '正在回放新计划' : !factor.plan_matches_config ? '计划待同步' : '状态已更新';
         const factorCombinations = (factor?.combinations || []).map(c => `<div class="account-nav"><a class="config-link" href="${escapeHtml(c.config_url)}"><code>${escapeHtml(c.name)}</code></a><span>${c.factor_count} 项因子 · ${c.symbols.length} 个标的 · ${c.position_strategies.length ? `仓位策略 ${c.position_strategies.map(escapeHtml).join('、')}` : '未配置仓位策略'}</span></div>`).join('');
-        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · <a class="config-link" href="${escapeHtml(factor.config_url)}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="account-nav">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
+        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · <a class="config-link" href="${escapeHtml(factor.config_url)}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="factor-combinations">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
         }).join('');
         const rows = (ctaPayload.strategies || []).map(s => {
           const title = s.name;
