@@ -2,6 +2,16 @@
 
 最后更新: 2026-11-04 10:45 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
+2026-11-04 10:14–10:45 UTC，依次发布并恢复 JP `bitget_fr_arb01/02/03` 的 ADL
+现货修复与原有信号。本地同步 arbmm `516116fa` 构建6个 release 二进制，经SCP
+临时路径、SHA-256核对和原子安装发布；env.sh、全部已采样配置及账户设置保持。
+三套 `trade_engine.toml local_ips` 仍为 `["172.31.35.231", "172.31.35.231"]`，
+主备交易WS日志及账户流外连确认使用 `.231`；交易引擎另有既有默认路由 `.228`
+外连，本次未改动REST/WS出口逻辑。无ENI/EIP、源策略路由、网卡、监听端口或CPU
+分配变化。Gate未发布/重启，24个既有Gate进程身份保持。最终CPU/PID、原生净尾差、
+备份及健康检查见 `core_allocation.md`、
+`../artifacts/bitget_fr_adl_release_20261104/README.md`。
+
 2026-11-04 10:45 UTC，JP Prep02 切换为三券池×三频段九策略，RX03绑定及执行配置
 由原三项替换为九项，仍shares=1 / grid / `lgq_grid_prep`。存量分仓按确认口径迁移，
 账户总数量与FIFO/盈亏守恒，历史保留；Prep01和Spread01原绑定及参数保留。

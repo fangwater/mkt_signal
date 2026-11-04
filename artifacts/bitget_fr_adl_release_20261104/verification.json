@@ -1,0 +1,390 @@
+{
+  "host": "jp-meta-elvpn",
+  "verified_at_utc": "2026-11-04T10:47:34.630970+00:00",
+  "production_deployed": true,
+  "source": {
+    "commit": "516116faee788b45357490412f0d125181cf05f9",
+    "branch": "arbmm",
+    "synced_with_origin": true,
+    "clean": true
+  },
+  "patches": [
+    "f281e5f4",
+    "5f52d8f4"
+  ],
+  "live_adl_test_performed": false,
+  "gate_deployed": false,
+  "environments": [
+    {
+      "env": "bitget_fr_arb01",
+      "native_before": {
+        "abs_net_u": 48.83386179637643,
+        "max_symbol_abs_net_u": 12.178916768822084,
+        "futures_position_count": 21
+      },
+      "native_after": {
+        "abs_net_u": 48.85227347629013,
+        "max_symbol_abs_net_u": 12.171113105792083,
+        "futures_position_count": 21
+      },
+      "open_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "source_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "config_and_account_settings_unchanged": true,
+      "binary_sha256": {
+        "trade_engine": "2c43f9dd91492a596821e60b1ef1a2dfdb6a4a6198d3bc19248a66caf2b0a796",
+        "pre_trade": "d97352fba42f29cb04cb993cad8d5394354bb7ba679998ec800b80c36cd592e2",
+        "account_monitor": "9faa8118f797d396c4c0bb9bb7644cdf118ec8e8046bc2cbf3b42bf4532cf0a2",
+        "trade_signal": "6f86bf3b76740bf5bf6b730c6b7157ad0fcdd737275ae3b6e294cd2f89304d9b",
+        "viz_server": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de",
+        "persist_manager": "12cbefb582c388014d75740f708b4391984071a479a72fac3deaf60eb1aab002"
+      },
+      "processes": [
+        {
+          "service": "fr_signal_dashb",
+          "pid": 64097,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "config_server",
+          "pid": 2962347,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "viz_server",
+          "pid": 2964545,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "persist_manager",
+          "pid": 2964944,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "trade_engine",
+          "pid": 2967754,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "pre_trade",
+          "pid": 2968088,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "account_monitor",
+          "pid": 2970516,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "trade_signal",
+          "pid": 2973252,
+          "cpu": "0-5,48-95"
+        }
+      ],
+      "signal_decisions_last60s": 75,
+      "unexpected_runtime_errors_last60s": 0,
+      "preexisting_leverage_blocks_in_recent_log_window": 204,
+      "probe_start_minus_exposure_ts_ms": 495,
+      "engine_connections_from": [
+        "172.31.35.228",
+        "172.31.35.231"
+      ],
+      "monitor_connections_from": [
+        "172.31.35.231"
+      ],
+      "startup_engine_logins": 2,
+      "startup_monitor_subscription_completions": 2,
+      "startup_tier_cache_missing": 0,
+      "signal_restored_utc": "2026-11-04T10:22:05.480940+00:00",
+      "backup": "/home/ubuntu/bitget_fr_arb01/run/adl_release_20261104T101356Z/",
+      "steps": {
+        "stop_signal": {
+          "tag": "arb01_stop_signal",
+          "started": "2026-11-04T10:14:05.733660+00:00",
+          "ended": "2026-11-04T10:14:10.312400+00:00",
+          "exit_code": 0
+        },
+        "stop": {
+          "tag": "arb01_stop",
+          "started": "2026-11-04T10:14:12.528535+00:00",
+          "ended": "2026-11-04T10:16:28.728402+00:00",
+          "exit_code": 0
+        },
+        "publish": {
+          "tag": "arb01_publish",
+          "started": "2026-11-04T10:16:45.096872+00:00",
+          "ended": "2026-11-04T10:17:06.248987+00:00",
+          "exit_code": 0
+        },
+        "start": {
+          "tag": "arb01_start",
+          "started": "2026-11-04T10:18:09.591158+00:00",
+          "ended": "2026-11-04T10:21:23.143458+00:00",
+          "exit_code": 0
+        },
+        "start_signal": {
+          "tag": "arb01_start_signal",
+          "started": "2026-11-04T10:21:56.555971+00:00",
+          "ended": "2026-11-04T10:22:05.480940+00:00",
+          "exit_code": 0
+        }
+      }
+    },
+    {
+      "env": "bitget_fr_arb02",
+      "native_before": {
+        "abs_net_u": 41.74010287192795,
+        "max_symbol_abs_net_u": 6.865336133909463,
+        "futures_position_count": 22
+      },
+      "native_after": {
+        "abs_net_u": 41.869525198222824,
+        "max_symbol_abs_net_u": 6.916224744066474,
+        "futures_position_count": 22
+      },
+      "open_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "source_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "config_and_account_settings_unchanged": true,
+      "binary_sha256": {
+        "trade_engine": "2c43f9dd91492a596821e60b1ef1a2dfdb6a4a6198d3bc19248a66caf2b0a796",
+        "pre_trade": "d97352fba42f29cb04cb993cad8d5394354bb7ba679998ec800b80c36cd592e2",
+        "account_monitor": "9faa8118f797d396c4c0bb9bb7644cdf118ec8e8046bc2cbf3b42bf4532cf0a2",
+        "trade_signal": "6f86bf3b76740bf5bf6b730c6b7157ad0fcdd737275ae3b6e294cd2f89304d9b",
+        "viz_server": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de",
+        "persist_manager": "12cbefb582c388014d75740f708b4391984071a479a72fac3deaf60eb1aab002"
+      },
+      "processes": [
+        {
+          "service": "fr_signal_dashb",
+          "pid": 64843,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "config_server",
+          "pid": 2996724,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "viz_server",
+          "pid": 2996936,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "persist_manager",
+          "pid": 2999246,
+          "cpu": "15"
+        },
+        {
+          "service": "trade_engine",
+          "pid": 2999856,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "pre_trade",
+          "pid": 3000374,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "account_monitor",
+          "pid": 3002512,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "trade_signal",
+          "pid": 3005114,
+          "cpu": "0-5,48-95"
+        }
+      ],
+      "signal_decisions_last60s": 74,
+      "unexpected_runtime_errors_last60s": 0,
+      "preexisting_leverage_blocks_in_recent_log_window": 206,
+      "probe_start_minus_exposure_ts_ms": -3405,
+      "engine_connections_from": [
+        "172.31.35.228",
+        "172.31.35.231"
+      ],
+      "monitor_connections_from": [
+        "172.31.35.231"
+      ],
+      "startup_engine_logins": 2,
+      "startup_monitor_subscription_completions": 2,
+      "startup_tier_cache_missing": 0,
+      "signal_restored_utc": "2026-11-04T10:32:20.255540+00:00",
+      "backup": "/home/ubuntu/bitget_fr_arb02/run/adl_release_20261104T101356Z/",
+      "steps": {
+        "stop_signal": {
+          "tag": "arb02_stop_signal",
+          "started": "2026-11-04T10:23:53.477471+00:00",
+          "ended": "2026-11-04T10:24:04.354397+00:00",
+          "exit_code": 0
+        },
+        "stop": {
+          "tag": "arb02_stop",
+          "started": "2026-11-04T10:24:33.612245+00:00",
+          "ended": "2026-11-04T10:27:00.636650+00:00",
+          "exit_code": 0
+        },
+        "publish": {
+          "tag": "arb02_publish",
+          "started": "2026-11-04T10:27:48.438072+00:00",
+          "ended": "2026-11-04T10:28:08.316044+00:00",
+          "exit_code": 0
+        },
+        "start": {
+          "tag": "arb02_start",
+          "started": "2026-11-04T10:28:30.982038+00:00",
+          "ended": "2026-11-04T10:31:22.251967+00:00",
+          "exit_code": 0
+        },
+        "start_signal": {
+          "tag": "arb02_start_signal",
+          "started": "2026-11-04T10:32:13.828400+00:00",
+          "ended": "2026-11-04T10:32:20.255540+00:00",
+          "exit_code": 0
+        }
+      }
+    },
+    {
+      "env": "bitget_fr_arb03",
+      "native_before": {
+        "abs_net_u": 52.195826468903036,
+        "max_symbol_abs_net_u": 8.281484006151063,
+        "futures_position_count": 21
+      },
+      "native_after": {
+        "abs_net_u": 52.33802473639303,
+        "max_symbol_abs_net_u": 8.26508502792106,
+        "futures_position_count": 21
+      },
+      "open_orders": {
+        "USDT-FUTURES": 0,
+        "SPOT": 0,
+        "MARGIN": 0
+      },
+      "source_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "config_and_account_settings_unchanged": true,
+      "binary_sha256": {
+        "trade_engine": "2c43f9dd91492a596821e60b1ef1a2dfdb6a4a6198d3bc19248a66caf2b0a796",
+        "pre_trade": "d97352fba42f29cb04cb993cad8d5394354bb7ba679998ec800b80c36cd592e2",
+        "account_monitor": "9faa8118f797d396c4c0bb9bb7644cdf118ec8e8046bc2cbf3b42bf4532cf0a2",
+        "trade_signal": "6f86bf3b76740bf5bf6b730c6b7157ad0fcdd737275ae3b6e294cd2f89304d9b",
+        "viz_server": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de",
+        "persist_manager": "12cbefb582c388014d75740f708b4391984071a479a72fac3deaf60eb1aab002"
+      },
+      "processes": [
+        {
+          "service": "fr_signal_dashb",
+          "pid": 65688,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "config_server",
+          "pid": 3028830,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "viz_server",
+          "pid": 3031076,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "persist_manager",
+          "pid": 3033636,
+          "cpu": "15"
+        },
+        {
+          "service": "trade_engine",
+          "pid": 3034228,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "pre_trade",
+          "pid": 3036529,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "account_monitor",
+          "pid": 3038826,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "trade_signal",
+          "pid": 3039325,
+          "cpu": "0-5,48-95"
+        }
+      ],
+      "signal_decisions_last60s": 76,
+      "unexpected_runtime_errors_last60s": 0,
+      "preexisting_leverage_blocks_in_recent_log_window": 26,
+      "probe_start_minus_exposure_ts_ms": 1521,
+      "engine_connections_from": [
+        "172.31.35.228",
+        "172.31.35.231"
+      ],
+      "monitor_connections_from": [
+        "172.31.35.231"
+      ],
+      "startup_engine_logins": 2,
+      "startup_monitor_subscription_completions": 2,
+      "startup_tier_cache_missing": 0,
+      "signal_restored_utc": "2026-11-04T10:43:33.013535+00:00",
+      "backup": "/home/ubuntu/bitget_fr_arb03/run/adl_release_20261104T101356Z/",
+      "steps": {
+        "stop_signal": {
+          "tag": "arb03_stop_signal",
+          "started": "2026-11-04T10:33:02.100229+00:00",
+          "ended": "2026-11-04T10:33:08.367813+00:00",
+          "exit_code": 0
+        },
+        "stop": {
+          "tag": "arb03_stop",
+          "started": "2026-11-04T10:34:13.416575+00:00",
+          "ended": "2026-11-04T10:36:25.091197+00:00",
+          "exit_code": 0
+        },
+        "publish": {
+          "tag": "arb03_publish",
+          "started": "2026-11-04T10:38:24.281497+00:00",
+          "ended": "2026-11-04T10:39:01.699755+00:00",
+          "exit_code": 0
+        },
+        "start": {
+          "tag": "arb03_start",
+          "started": "2026-11-04T10:39:25.934520+00:00",
+          "ended": "2026-11-04T10:43:08.789285+00:00",
+          "exit_code": 0
+        },
+        "start_signal": {
+          "tag": "arb03_start_signal",
+          "started": "2026-11-04T10:43:27.460629+00:00",
+          "ended": "2026-11-04T10:43:33.013535+00:00",
+          "exit_code": 0
+        }
+      }
+    }
+  ],
+  "gate_unchanged_process_count": 24,
+  "raw_evidence_directory": "data/ops/bitget_fr_adl_release_20261104",
+  "evidence_sha256": {
+    "preflight.jsonl": "dce0864b602ba460b2de3fbad0e7355777fcb3164adc1443910bfadad1e1238a",
+    "final_probe.jsonl": "ee820f248d5ab2406b76345977b953d55ba5f11a814ce7aaec30ae1f59e08531",
+    "final_runtime.jsonl": "899cc0f8c273b61ed6c0249c8c6a4d5a843e68b79b0c75875d0462101a8d50d5",
+    "build.log": "e844b65623cea70aa59a72f860172614d32dece553702bcc7ce820618e9a9bb7"
+  }
+}
