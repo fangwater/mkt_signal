@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 03:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 06:32 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 06:32 UTC，JP Delist 接入11个FR的只读敞口检查，后端 PID `2469971` / CPU `0-5`。
+沿用8787/4191与现有16379/14191的SG回环隧道；未改动交易源IP、`local_ips`、ENI/EIP、路由、
+监听及核心分配。仅原子更新Delist二进制、页面与敞口参数，并经环境本地脚本重启该服务/隧道；
+服务/鉴权配置及原自动下架处理参数保持，92个既有交易/行情/CTA进程核对未变。
+构建/覆盖范围/数据缺口及验收见 `docs/core_allocation.md`、`docs/delist_risk_server.md`
+与 `../artifacts/fr_exposure_check_20261104/README.md`。
 
 2026-11-04 03:35 UTC，仅重启Manager以发布跨所账户今日盈利汇总修复，账户
 展示名改为 `okex_binace_cross`。交易进程、所有local_ips、ENI/EIP、路由和

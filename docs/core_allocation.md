@@ -1,7 +1,22 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-04 03:36 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-04 06:32 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-04 06:32 UTC，JP `~/delist_risk_server` 发布 FR 敞口检查（源码 `c5f52f66`）。
+从同步 `origin/arbmm` 的已提交树在活跃本地工作区 `data/ops/fr_exposure_check_20261104/build-source`
+隔离构建，1,770个源码文件逐项核对 Git blob，保留另一项正在进行的 Gate ADL 修改。
+本地 release 构建、40项 Delist 测试、鉴权/自动刷新/缺价与恢复及桌面/手机浏览器验证通过；
+SCP临时路径上传、SHA-256核对及原子安装后，使用环境本地启动脚本重启 Delist 与既有 SG 隧道。
+Delist PID `2469971`、SG隧道 PID `2469945`，CPU均为 `0-5`；
+92个既有交易/行情/CTA进程的 PID、归属与CPU mask均保持。
+鉴权与服务配置、原有自动下架处理参数保持；敞口模块仅并发读取11个 FR 的本机网关快照，
+不产生交易或外部通知。默认10秒检查，单币100U/单账户500U持续30秒提示，过期或缺价保持未知。
+06:32验收 Gate04 已定价绝对净敞口合计1854.24U并持续超限，Gate01/02及Bybit存在缺价项，
+其余7个FR在提示阈值内；数值会随交易变化。无源IP、端口或核心分配变化。
+原文件备份 `~/delist_risk_server/run/fr_exposure_20261104_1cb089b7/`，本次修正版前备份
+`~/delist_risk_server/run/fr_exposure_20261104_c5f52f66/`；说明与验收见
+`docs/delist_risk_server.md`、`../artifacts/fr_exposure_check_20261104/README.md`。
 
 2026-11-04 03:35 UTC，跨所账户展示名去掉固定频率后缀，改为
 `okex_binace_cross`；账户/source ID、Exec别名、策略及绑定保持。

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-03 15:39 UTC（当前共享 CTA 组合监控已部署，退役 RX 快照退出实时计数）
+最后更新：2026-11-04 06:32 UTC（11个FR只读敞口检查已上线，保留当前CTA与下架监控）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -43,6 +43,20 @@ All page and data endpoints require the `delist_session` cookie. Visit
 its separate operation token in addition to the login session.
 
 ## FR exposure checks
+
+Deployment verified 2026-11-04 06:32 UTC on JP: source `c5f52f66`, Delist PID `2469971`,
+CPU `0-5`, all 11 current FR accounts discovered. Binary SHA-256:
+`6315c7bc39ef90e2caf3b9de756814fa69eecad8b700cb24de4e87b111d65e7c`.
+Service/auth configuration and previous automatic-action arguments were unchanged;
+92 protected trading/market-data/CTA processes retained their PIDs and affinities.
+Loopback and gateway `/exposures` both returned 401 without a login. The deployed
+HTML and live report were replayed in Chromium at desktop/mobile sizes. Gate04
+had at least 1854.24 USDT absolute residual exposure at verification; the other
+seven fully valued accounts were within monitoring thresholds. Gate01, Gate02,
+Bybit and Gate04 had unpriced holdings and were explicitly marked incomplete.
+These are a point-in-time observation, not a guarantee about later positions.
+See `../artifacts/fr_exposure_check_20261104/README.md` and the private runtime
+backup `~/delist_risk_server/run/fr_exposure_20261104_c5f52f66/`.
 
 The board includes a permanent, read-only FR exposure section. `/exposures`
 returns the cached report under the same login protection. Account discovery
