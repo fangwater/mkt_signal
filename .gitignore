@@ -171,3 +171,23 @@ local_binance_ed25519_test/
 /artifacts/rx04_5min_slot05_20261023/activate_100/recovered.json
 /artifacts/rx04_5min_slot05_20261023/activate_100/exec_before_enable.json
 /artifacts/rx04_5min_slot05_20261023/activate_100/execution_*.json
+
+# Local diagnostics: raw exchange/order streams, capture binaries and duplicate
+# source/payload trees. Keep reviewed reports and release verification records.
+/artifacts/**/*.jsonl
+/artifacts/**/*.diff
+/artifacts/**/*.stderr
+/artifacts/**/*.stdout
+/artifacts/**/calculation/
+/artifacts/**/kafka_reprobe/**/*.value
+/artifacts/**/kafka_reprobe/**/*.pb
+/artifacts/**/kafka_reprobe/**/period_kafka_consumer
+/artifacts/**/kafka_reprobe/**/*.toml
+/artifacts/**/kafka_reprobe/**/messages.json
+/artifacts/**/kafka_reprobe/native_trades.json
+/artifacts/**/unit_audit/
+/artifacts/**/reanalysis/
+/artifacts/**/stage/
+/artifacts/**/payload/
+/artifacts/**/prior_scripts/
+/artifacts/**/source_before_current_mapping/
