@@ -76,6 +76,8 @@ pub struct Breach {
     pub last_observed_ms: i64,
     pub confirmed: bool,
     pub value_usdt: f64,
+    #[serde(skip)]
+    observation_interrupted: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -194,6 +196,9 @@ impl Monitor {
                     account.complete = false;
                     account.data_status = "unavailable";
                     account.errors = vec![format!("{err:#}")];
+                    for breach in account.breaches.values_mut() {
+                        breach.observation_interrupted = true;
+                    }
                     // Keep the last values and all prior risk evidence.
                 }
                 Ok(sample) => {
@@ -239,8 +244,31 @@ impl Monitor {
                     if account.abs_usdt.unwrap_or(0.0) > self.settings.account_limit_usdt {
                         above.insert("total".into(), (None, account.abs_usdt.unwrap()));
                     }
-                    if account.complete && advanced {
-                        account.breaches.retain(|key, _| above.contains_key(key));
+                    if advanced {
+                        let known_assets: BTreeSet<_> = sample
+                            .rows
+                            .iter()
+                            .filter(|row| row.net_usdt.is_some())
+                            .map(|row| row.asset.as_str())
+                            .collect();
+                        account.breaches.retain(|key, breach| {
+                            if above.contains_key(key) {
+                                return true;
+                            }
+                            // A complete valuation of this asset can prove its own
+                            // recovery even if another asset is unpriced. Account
+                            // totals need complete coverage before they can clear.
+                            if account.complete
+                                || breach
+                                    .asset
+                                    .as_deref()
+                                    .is_some_and(|a| known_assets.contains(a))
+                            {
+                                return false;
+                            }
+                            breach.observation_interrupted = true;
+                            true
+                        });
                     }
                     for (key, (asset, value)) in above {
                         if !advanced {
@@ -252,15 +280,18 @@ impl Monitor {
                             last_observed_ms: now,
                             confirmed: false,
                             value_usdt: value,
+                            observation_interrupted: false,
                         });
                         // A gap in observations cannot prove continuous excess.
                         if !breach.confirmed
-                            && now.saturating_sub(breach.last_observed_ms)
-                                > (self.settings.interval_secs * 3) as i64 * 1000
+                            && (breach.observation_interrupted
+                                || now.saturating_sub(breach.last_observed_ms)
+                                    > (self.settings.interval_secs * 3) as i64 * 1000)
                         {
                             breach.since_ms = now;
                         }
                         breach.last_observed_ms = now;
+                        breach.observation_interrupted = false;
                         breach.value_usdt = value;
                         breach.confirmed |= now.saturating_sub(breach.since_ms)
                             >= self.settings.persistence_secs as i64 * 1000;
@@ -427,6 +458,7 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut invalid_assets = BTreeSet::new();
     for value in values {
         if value["is_total"].as_bool() == Some(true) {
             continue;
@@ -435,6 +467,7 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
             Ok(row) => {
                 if !seen.insert(row.asset.clone()) {
                     errors.push(format!("{} 币种重复", row.asset));
+                    invalid_assets.insert(row.asset.clone());
                     continue;
                 }
                 if row.net_usdt.is_none() {
@@ -442,10 +475,18 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
                 }
                 rows.push(row);
             }
-            Err(err) => errors.push(format!(
-                "{}: {err:#}",
-                value["asset"].as_str().unwrap_or("未知币种")
-            )),
+            Err(err) => {
+                let asset = value["asset"].as_str().unwrap_or("未知币种");
+                invalid_assets.insert(asset.to_ascii_uppercase());
+                errors.push(format!("{asset}: {err:#}"));
+            }
+        }
+    }
+    for row in &mut rows {
+        if invalid_assets.contains(&row.asset) {
+            row.open_usdt = None;
+            row.hedge_usdt = None;
+            row.net_usdt = None;
         }
     }
     if rows.is_empty() && number(risk, "total_position")? > 1.0 {
@@ -645,11 +686,7 @@ mod tests {
         assert_eq!(a.risk_status, "alert");
         assert!(!a.complete);
         assert_eq!(a.abs_usdt, Some(160.0));
-        apply(
-            &mut m,
-            vec![row("BTC", 0.0), json!({"asset":"BAD"})],
-            NOW + 50_000,
-        );
+        apply(&mut m, vec![json!({"asset":"BTC"})], NOW + 50_000);
         assert_eq!(account(&m, NOW + 50_000).risk_status, "alert");
         apply(&mut m, vec![row("BTC", 0.0)], NOW + 60_000);
         assert_eq!(account(&m, NOW + 60_000).risk_status, "ok");
@@ -668,6 +705,35 @@ mod tests {
         assert_eq!(a.risk_status, "unknown");
         assert_eq!(a.rows[0].net_usdt, None);
         assert!(a.errors[0].contains("UNPRICED"));
+    }
+
+    #[test]
+    fn known_asset_recovers_independently_of_other_unpriced_holdings() {
+        let mut m = Monitor::new(Settings::default());
+        let mut unpriced = row("UNKNOWN", 10.0);
+        for key in ["open_usdt", "hedge_usdt", "net_usdt"] {
+            unpriced[key] = json!(0);
+        }
+        for t in [0, 10_000, 20_000, 30_000] {
+            apply(&mut m, vec![row("BTC", 160.0), unpriced.clone()], NOW + t);
+        }
+        assert_eq!(account(&m, NOW + 30_000).risk_status, "alert");
+        apply(&mut m, vec![row("BTC", 1.0), unpriced], NOW + 40_000);
+        let a = account(&m, NOW + 40_000);
+        assert!(a.breaches.is_empty());
+        assert_eq!(a.risk_status, "unknown");
+        assert!(!a.complete);
+    }
+
+    #[test]
+    fn unknown_observation_interrupts_pending_confirmation() {
+        let mut m = Monitor::new(Settings::default());
+        apply(&mut m, vec![row("BTC", 160.0)], NOW);
+        apply(&mut m, vec![json!({"asset":"BTC"})], NOW + 20_000);
+        apply(&mut m, vec![row("BTC", 160.0)], NOW + 30_000);
+        let a = account(&m, NOW + 30_000);
+        assert_eq!(a.risk_status, "pending");
+        assert_eq!(a.breaches["asset:BTC"].since_ms, NOW + 30_000);
     }
 
     #[test]

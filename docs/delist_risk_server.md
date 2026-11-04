@@ -68,7 +68,10 @@ must be no older than 90 seconds and at most five seconds in the future.
 Missing/invalid/duplicate data, nonzero holdings with zero valuation, unknown
 hosts and failed/stale account discovery cannot become healthy zero exposure.
 Partial valuations show a lower bound. Failed/incomplete refreshes retain prior
-breach evidence; only a complete fresh sample can clear it. A stopped collector
+breach evidence for unknown assets and account totals. A fresh valid valuation
+can clear that asset's own breach even when another asset is unpriced; clearing
+an account-total breach requires complete coverage. Unknown observations interrupt
+pending confirmation. A stopped collector
 invalidates results after three poll intervals. The same cached snapshot cannot
 advance breach confirmation; different assets have separate observation timers.
 Restarting the service restarts the observation window.

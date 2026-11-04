@@ -84,8 +84,13 @@ def main():
                     row = {'asset': 'TEST', 'open_qty': 1000+qty, 'hedge_qty': -1000,
                            'open_usdt': (1000+qty)*price, 'hedge_usdt': -1000*price,
                            'net_qty': qty, 'net_usdt': qty*price, 'is_total': False}
+                    rows = [row]
+                    if slug == slugs[0]:
+                        rows.append({'asset': 'UNPRICED', 'open_qty': 20, 'hedge_qty': 0,
+                                     'open_usdt': 0, 'hedge_usdt': 0, 'net_qty': 20,
+                                     'net_usdt': 0, 'is_total': False})
                     return self.respond({'entries': [
-                        {'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': [row]}},
+                        {'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
                         {'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000}}
                     ]})
                 # Other board sections have separate tests; avoid Redis/Manager in this fixture.
@@ -186,9 +191,9 @@ def main():
                 mode['gate'] = 'stale'
                 wait_account(lambda a: any('过期' in e for e in a['errors']))
                 mode['gate'] = 'recovered'
-                wait_account(lambda a: a['risk_status'] == 'ok')
+                wait_account(lambda a: a['risk_status'] == 'unknown' and a['abs_usdt'] == 1 and not a['breaches'])
                 # Wait for the page's real ten-second refresh, not a direct render call.
-                page.wait_for_function("document.querySelector('[data-exposure-account=gate_fr_arb01]').textContent.includes('阈值内')", timeout=15_000)
+                page.wait_for_function("document.querySelector('[data-exposure-account=gate_fr_arb01]').textContent.includes('无法确认') && !document.querySelector('#exposures .exposure__breach')", timeout=15_000)
                 assert '有持仓但缺少有效价格' in page.locator('#exposures').inner_text()
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
