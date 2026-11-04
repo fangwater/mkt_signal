@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 12:51 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 13:02 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 12:55–13:02 UTC，Gate arb01对冲收尾后完成最后一套ADL修复发布并恢复信号。
+三套`local_ips`全部保持：arb01/03为`.231/.231`，arb02为`.232/.233`；
+交易/账户WS沿用原绑定，REST等既有默认路由`.228`外连保持。env.sh、全部已采样配置、
+账户设置、CPU分配、监听端口、ENI/EIP和路由未改，Bitget/Gate arb04受保护进程保持。
+三套原生仓位、小数张数/乘数及主备ADL订阅均核验通过；当前CPU/PID和最终验收见
+`core_allocation.md`、`../artifacts/gate_fr_adl_release_20261104/README.md`。
 
 2026-11-04 12:44–12:49 UTC，待Gate arb02的既有对冲收尾后发布ADL修复并恢复信号。
 `local_ips`仍为`["172.31.35.232", "172.31.35.233"]`；实际引擎/账户连接可见

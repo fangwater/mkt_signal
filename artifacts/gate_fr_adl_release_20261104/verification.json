@@ -1,14 +1,13 @@
 {
   "host": "jp-meta-elvpn",
-  "verified_at_utc": "2026-11-04T12:51:29.718914+00:00",
-  "requested_rollout_complete": false,
+  "verified_at_utc": "2026-11-04T13:02:18.391348+00:00",
+  "requested_rollout_complete": true,
   "production_deployed_envs": [
+    "gate_fr_arb01",
     "gate_fr_arb02",
     "gate_fr_arb03"
   ],
-  "pending_envs": [
-    "gate_fr_arb01"
-  ],
+  "pending_envs": [],
   "source": {
     "commit": "038e1dac63ef639b0d8391fdd30419bd91b511b2",
     "branch": "arbmm",
@@ -23,6 +22,136 @@
   "bitget_redeployed": false,
   "environments": [
     {
+      "env": "gate_fr_arb01",
+      "native_before": {
+        "abs_net_u": 90.2772653524399,
+        "max_symbol_abs_net_u": 11.360437802065414,
+        "unpriced_qty": {},
+        "futures_position_count": 53
+      },
+      "native_after": {
+        "abs_net_u": 95.008210571116,
+        "max_symbol_abs_net_u": 11.49717645160742,
+        "unpriced_qty": {},
+        "futures_position_count": 52
+      },
+      "native_drained_before_stop": {
+        "abs_net_u": 94.928518190721,
+        "max_symbol_abs_net_u": 11.474916671449419,
+        "unpriced_qty": {},
+        "futures_position_count": 52
+      },
+      "open_orders": {
+        "futures": 0,
+        "spot": 0
+      },
+      "source_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "config_and_account_settings_unchanged": true,
+      "binary_sha256": {
+        "trade_engine": "2c43f9dd91492a596821e60b1ef1a2dfdb6a4a6198d3bc19248a66caf2b0a796",
+        "pre_trade": "d97352fba42f29cb04cb993cad8d5394354bb7ba679998ec800b80c36cd592e2",
+        "account_monitor": "a8544e7320a75fb6d71a02563f90a6627b78d9304cde92694c0ba5ab87c0484b",
+        "trade_signal": "6f86bf3b76740bf5bf6b730c6b7157ad0fcdd737275ae3b6e294cd2f89304d9b",
+        "viz_server": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de",
+        "persist_manager": "12cbefb582c388014d75740f708b4391984071a479a72fac3deaf60eb1aab002"
+      },
+      "processes": [
+        {
+          "service": "fr_signal_dashb",
+          "pid": 61710,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "config_server",
+          "pid": 3354192,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "viz_server",
+          "pid": 3354337,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "persist_manager",
+          "pid": 3356694,
+          "cpu": "15"
+        },
+        {
+          "service": "trade_engine",
+          "pid": 3357145,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "pre_trade",
+          "pid": 3357408,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "account_monitor",
+          "pid": 3359755,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "service": "trade_signal",
+          "pid": 3360357,
+          "cpu": "0-5,48-95"
+        }
+      ],
+      "signal_decisions_last60s": 243,
+      "unexpected_runtime_errors_last60s": 0,
+      "preexisting_leverage_blocks_in_recent_log_window": 64,
+      "probe_start_minus_exposure_ts_ms": 939,
+      "engine_connections_from": [
+        "172.31.35.228",
+        "172.31.35.231"
+      ],
+      "monitor_connections_from": [
+        "172.31.35.228",
+        "172.31.35.231"
+      ],
+      "startup_engine_logins": 4,
+      "startup_monitor_subscription_completions": 6,
+      "startup_adl_usertrades_subscriptions_sent": 2,
+      "signal_restored_utc": "2026-11-04T13:00:32.354647+00:00",
+      "backup": "/home/ubuntu/gate_fr_arb01/run/adl_release_20261104T121136Z/",
+      "steps": {
+        "stop_signal": {
+          "tag": "arb01_stop_signal",
+          "started": "2026-11-04T12:55:24.864662+00:00",
+          "ended": "2026-11-04T12:55:29.841121+00:00",
+          "exit_code": 0
+        },
+        "stop": {
+          "tag": "arb01_stop",
+          "started": "2026-11-04T12:55:43.896915+00:00",
+          "ended": "2026-11-04T12:57:43.717174+00:00",
+          "exit_code": 0
+        },
+        "publish": {
+          "tag": "arb01_publish",
+          "started": "2026-11-04T12:57:44.588527+00:00",
+          "ended": "2026-11-04T12:58:03.706424+00:00",
+          "exit_code": 0
+        },
+        "start": {
+          "tag": "arb01_start",
+          "started": "2026-11-04T12:58:14.402384+00:00",
+          "ended": "2026-11-04T13:00:07.378351+00:00",
+          "exit_code": 0
+        },
+        "start_signal": {
+          "tag": "arb01_start_signal",
+          "started": "2026-11-04T13:00:27.431446+00:00",
+          "ended": "2026-11-04T13:00:32.354647+00:00",
+          "exit_code": 0
+        }
+      },
+      "arb_mode": "funding_arb"
+    },
+    {
       "env": "gate_fr_arb02",
       "native_before": {
         "abs_net_u": 868.8646580818847,
@@ -34,8 +163,8 @@
         "futures_position_count": 52
       },
       "native_after": {
-        "abs_net_u": 122.94388630656236,
-        "max_symbol_abs_net_u": 15.188951399999837,
+        "abs_net_u": 122.70447715332759,
+        "max_symbol_abs_net_u": 15.096488399999837,
         "unpriced_qty": {
           "FTM": 3.281e-09,
           "MATIC": 8.36e-09
@@ -53,7 +182,7 @@
       },
       "open_orders": {
         "futures": 0,
-        "spot": 10
+        "spot": 0
       },
       "source_ips": [
         "172.31.35.232",
@@ -110,10 +239,10 @@
           "cpu": "0-5,48-95"
         }
       ],
-      "signal_decisions_last60s": 91,
+      "signal_decisions_last60s": 184,
       "unexpected_runtime_errors_last60s": 0,
-      "preexisting_leverage_blocks_in_recent_log_window": 14,
-      "probe_start_minus_exposure_ts_ms": 675,
+      "preexisting_leverage_blocks_in_recent_log_window": 316,
+      "probe_start_minus_exposure_ts_ms": -1177,
       "engine_connections_from": [
         "172.31.35.228",
         "172.31.35.232",
@@ -160,7 +289,8 @@
           "ended": "2026-11-04T12:49:10.524641+00:00",
           "exit_code": 0
         }
-      }
+      },
+      "arb_mode": "funding_arb"
     },
     {
       "env": "gate_fr_arb03",
@@ -171,8 +301,8 @@
         "futures_position_count": 31
       },
       "native_after": {
-        "abs_net_u": 65.13686019821921,
-        "max_symbol_abs_net_u": 22.709915373599998,
+        "abs_net_u": 64.97564159700346,
+        "max_symbol_abs_net_u": 22.615399365299993,
         "unpriced_qty": {},
         "futures_position_count": 31
       },
@@ -241,10 +371,10 @@
           "cpu": "0-5,48-95"
         }
       ],
-      "signal_decisions_last60s": 48,
+      "signal_decisions_last60s": 126,
       "unexpected_runtime_errors_last60s": 0,
       "preexisting_leverage_blocks_in_recent_log_window": 0,
-      "probe_start_minus_exposure_ts_ms": -28,
+      "probe_start_minus_exposure_ts_ms": 1533,
       "engine_connections_from": [
         "172.31.35.228",
         "172.31.35.231"
@@ -289,15 +419,16 @@
           "ended": "2026-11-04T12:35:49.400176+00:00",
           "exit_code": 0
         }
-      }
+      },
+      "arb_mode": "funding_arb"
     }
   ],
   "protected_bitget_and_gate04_process_count": 24,
   "raw_evidence_directory": "data/ops/gate_fr_adl_release_20261104",
   "evidence_sha256": {
     "preflight.jsonl": "7e02dc0ca31cacc0db9e61f0f84802f1bc4f3c50200e938b9cc832d466e968f5",
-    "build.log": "5d4b46c560ea9fbe90520c7944c6fefc1c0ff446027f1537979dda1568a3be39",
-    "arb02_03_verified_probe.jsonl": "1441e54a3e1a73a7a31d72f5782e7c53a31f52b13b8f285b2f823cd9cc44008b",
-    "arb02_03_verified_runtime.jsonl": "2daa6c36f4f69bc60133ab5fa1a7ee57c6728e5ab34e34072ea7e55266c047af"
+    "final_probe.jsonl": "7e0b598bbc42ace72b333f669d015f464fc6c8b5f7b6c2385f14b09903ce843c",
+    "final_runtime.jsonl": "1112e10ba12c52ac14450627ab26a89ce7d9d6fc72e29465a728ff4e656a076b",
+    "build.log": "5d4b46c560ea9fbe90520c7944c6fefc1c0ff446027f1537979dda1568a3be39"
   }
 }
