@@ -1158,6 +1158,19 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
 
+            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::check_open(
+                opening_venue,
+                side,
+                &symbol,
+                open_ctx.amount_value() * open_ctx.price_value(),
+            ) {
+                debug!(
+                    "ArbOpen: blocked by Binance PM buying power symbol={} reason={}",
+                    symbol, reason
+                );
+                return;
+            }
+
             if UnimmrOpenLock::is_locked()
                 && !arb_open_is_account_throttle_reducing(
                     &symbol,

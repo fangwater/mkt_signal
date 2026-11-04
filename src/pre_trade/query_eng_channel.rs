@@ -575,6 +575,13 @@ impl QueryEngChannel {
                                 );
                             }
                             if let Some(req_type) = req_type {
+                                if crate::pre_trade::binance_pm_buy_capacity::handle_query_response(
+                                    req_type,
+                                    resp.client_query_id(),
+                                    resp.body_bytes(),
+                                ) {
+                                    continue;
+                                }
                                 if handle_account_open_block_query_response(
                                     req_type,
                                     resp.client_query_id(),

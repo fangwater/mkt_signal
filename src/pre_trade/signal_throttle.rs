@@ -100,6 +100,7 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED => {
             matches!(exchange, Some(Exchange::Binance))
         }
+        binance::ASSET_NOT_BORROWABLE => matches!(exchange, Some(Exchange::Binance)),
         SIGNAL_THROTTLE_ERROR_CODE_LOANABLE_ASSET_UNAVAILABLE => {
             matches!(exchange, Some(Exchange::Binance))
         }
@@ -163,7 +164,9 @@ fn signal_throttle_ttl_us(exchange: Option<Exchange>) -> i64 {
 }
 
 fn signal_throttle_ttl_us_for_error(exchange: Option<Exchange>, error_code: i32) -> i64 {
-    if is_gate_market_forbidden_error(exchange, error_code) {
+    if exchange == Some(Exchange::Binance) && error_code == binance::ASSET_NOT_BORROWABLE {
+        60_000_000
+    } else if is_gate_market_forbidden_error(exchange, error_code) {
         GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
     } else {
         signal_throttle_ttl_us(exchange)
@@ -209,8 +212,10 @@ pub fn register_signal_throttle_for_mode(
         exchange,
         error_code,
         now_us,
-        if is_gate_market_forbidden_error(exchange, error_code) {
-            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
+        if is_gate_market_forbidden_error(exchange, error_code)
+            || (exchange == Some(Exchange::Binance) && error_code == binance::ASSET_NOT_BORROWABLE)
+        {
+            signal_throttle_ttl_us_for_error(exchange, error_code)
         } else {
             signal_throttle_ttl_us_for_mode(exchange, arb_mode)
         },
@@ -519,6 +524,27 @@ mod tests {
     fn clear_all() {
         SIGNAL_THROTTLE_MAP.with(|map| map.borrow_mut().clear());
         ACCOUNT_SIGNAL_THROTTLE.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    #[test]
+    fn binance_borrow_unavailable_uses_short_symbol_cooldown_in_fr() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            binance::ASSET_NOT_BORROWABLE
+        ));
+        assert!(register_signal_throttle_for_mode(
+            "SYRUPUSDT",
+            Side::Buy,
+            Some(Exchange::Binance),
+            binance::ASSET_NOT_BORROWABLE,
+            ArbMode::FundingArb,
+        ));
+        let hit = check_signal_throttle("SYRUPUSDT", Side::Buy).unwrap();
+        assert!(hit.remaining_us > 0 && hit.remaining_us <= 60_000_000);
+        assert!(check_signal_throttle("SYRUPUSDT", Side::Sell).is_none());
+        clear_all();
     }
 
     #[test]

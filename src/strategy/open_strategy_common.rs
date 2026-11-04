@@ -1276,6 +1276,17 @@ pub trait OpenStrategyCommon {
         // - Binance STANDARD 在 FR / Cross arb 等非 intra 场景仍独立兜底。
         // - FR / Cross arb（非 intra）下不受此白名单影响。
         let binance_is_standard = order_manager.borrow().binance_is_standard();
+        if is_arb_open && !input.reduce_only && !skip_position_risk_checks {
+            if let Err(reason) = crate::pre_trade::binance_pm_buy_capacity::check_open(
+                venue,
+                side,
+                &symbol,
+                order_qty * order_price,
+            ) {
+                self.mark_open_strategy_inactive(reason.to_string());
+                return None;
+            }
+        }
         let order_query_watchdog_delay_us =
             order_query_watchdog_delay_us_for_venue(venue, binance_is_standard);
         let venue_is_margin = matches!(
@@ -1695,6 +1706,12 @@ pub trait OpenStrategyCommon {
             );
         }
         if is_arb_open {
+            crate::pre_trade::binance_pm_buy_capacity::record_submission(
+                venue,
+                side,
+                &symbol,
+                order_qty * order_price,
+            );
             record_arb_open_latency(
                 "pt_open_publish_request",
                 get_timestamp_us().saturating_sub(publish_start_us),
@@ -2848,6 +2865,15 @@ pub trait OpenStrategyCommon {
         let Some(side) = side else {
             return;
         };
+
+        if let Some(venue) = self.open_state().open_venue {
+            crate::pre_trade::binance_pm_buy_capacity::record_rejection(
+                venue,
+                side,
+                &symbol,
+                response.error_code(),
+            );
+        }
 
         if register_signal_throttle_for_mode(
             &symbol,

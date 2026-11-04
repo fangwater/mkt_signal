@@ -1,6 +1,8 @@
 pub const MAX_LEVERAGE_RATIO: i32 = -2027;
 pub const UNEXPECTED_RESP: i32 = -1006;
 pub const TIMEOUT: i32 = -1007;
+pub const ASSET_NOT_BORROWABLE: i32 = 51014;
+pub const OPERATION_TOO_FREQUENT: i32 = 51042;
 
 /// Binance trade/rest/ws error codes to short descriptions.
 pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
@@ -23,6 +25,8 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         -4118 => Some("Reduce only margin check failed"),
         -4131 => Some("Market order rejected: price outside percent-price filter"),
         51006 => Some("Exceeds maximum borrowable amount"),
+        ASSET_NOT_BORROWABLE => Some("Asset is currently not available for borrowing"),
+        OPERATION_TOO_FREQUENT => Some("Operation performed too frequently"),
         51061 => Some("Insufficient loanable assets"),
         51169 => Some("Token pledged collateral limit reached"),
         -4060 => Some("Invalid position side"),

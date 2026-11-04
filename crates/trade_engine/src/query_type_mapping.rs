@@ -16,6 +16,8 @@ impl QueryTypeMapping {
                 | QueryRequestType::BinanceUmAccountSnapshotStd
                 | QueryRequestType::BinanceSpotAccountSnapshotStd
                 | QueryRequestType::BinancePmAccountSnapshot
+                | QueryRequestType::BinancePmUsdtCash
+                | QueryRequestType::BinancePmUsdtMaxBorrowable
                 | QueryRequestType::BinanceCmQuery
                 | QueryRequestType::BinanceCmBalanceSnapshotStd
                 | QueryRequestType::BinanceCmAccountSnapshotStd
@@ -94,6 +96,8 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmAccountSnapshotStd => "/fapi/v2/account",
             QueryRequestType::BinanceSpotAccountSnapshotStd => "/api/v3/account",
             QueryRequestType::BinancePmAccountSnapshot => "/papi/v1/account",
+            QueryRequestType::BinancePmUsdtCash => "/papi/v1/balance",
+            QueryRequestType::BinancePmUsdtMaxBorrowable => "/papi/v1/margin/maxBorrowable",
             QueryRequestType::BinanceCmQuery => "/dapi/v1/order",
             QueryRequestType::BinanceCmBalanceSnapshotStd => "/dapi/v1/balance",
             QueryRequestType::BinanceCmAccountSnapshotStd => "/dapi/v1/account",
@@ -146,6 +150,8 @@ impl QueryTypeMapping {
             | QueryRequestType::BinanceUmAccountSnapshotStd
             | QueryRequestType::BinanceSpotAccountSnapshotStd
             | QueryRequestType::BinancePmAccountSnapshot
+            | QueryRequestType::BinancePmUsdtCash
+            | QueryRequestType::BinancePmUsdtMaxBorrowable
             | QueryRequestType::BinanceCmQuery
             | QueryRequestType::BinanceCmBalanceSnapshotStd
             | QueryRequestType::BinanceCmAccountSnapshotStd
@@ -202,6 +208,8 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmAccountSnapshotStd => 5,
             QueryRequestType::BinanceSpotAccountSnapshotStd => 20,
             QueryRequestType::BinancePmAccountSnapshot => 20,
+            QueryRequestType::BinancePmUsdtCash => 20,
+            QueryRequestType::BinancePmUsdtMaxBorrowable => 100,
             QueryRequestType::BinanceCmQuery => 1,
             QueryRequestType::BinanceCmBalanceSnapshotStd
             | QueryRequestType::BinanceCmAccountSnapshotStd => 5,
@@ -263,6 +271,24 @@ impl QueryTypeMapping {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn binance_pm_buying_power_queries_keep_raw_json_and_use_private_get() {
+        use super::*;
+        for (kind, path) in [
+            (QueryRequestType::BinancePmUsdtCash, "/papi/v1/balance"),
+            (
+                QueryRequestType::BinancePmUsdtMaxBorrowable,
+                "/papi/v1/margin/maxBorrowable",
+            ),
+        ] {
+            assert_eq!(QueryRequestType::try_from(kind as u32), Ok(kind));
+            assert!(QueryTypeMapping::is_binance_rest(kind));
+            assert!(!QueryTypeMapping::is_binance_snapshot(kind));
+            assert_eq!(QueryTypeMapping::get_method(kind), "GET");
+            assert_eq!(QueryTypeMapping::get_endpoint(kind), path);
+        }
+    }
+
     use super::QueryTypeMapping;
     use crate::config::RestConstants;
     use crate::query_request::QueryRequestType;

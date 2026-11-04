@@ -284,6 +284,7 @@ pub fn latest_usdt_max_available_margin_snapshot() -> Option<UsdtMaxAvailableMar
 pub fn drive_account_open_block_capacity_poll(now_us: i64) {
     if binance_pm_capacity_poll_enabled() {
         drive_capacity_poll(CapacityVenue::BinancePm, now_us);
+        crate::pre_trade::binance_pm_buy_capacity::drive_poll(now_us);
     }
     if okex_unified_capacity_poll_enabled() {
         drive_capacity_poll(CapacityVenue::OkexUnified, now_us);
