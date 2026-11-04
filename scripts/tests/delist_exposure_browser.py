@@ -118,7 +118,9 @@ def main():
                     'risk': {'tone': 'ok', 'config_url': config_url, 'universe_n': 42},
                     'accounts': [{'source_id': 'binance_exec_rx01', 'alias': 'CTA execution account',
                                   'site': 'jp', 'active': True, 'viz_url': '/exec/rx01/viz/'}]}]}
-                fixtures = {'/delist/accounts': {'accounts': accounts, 'summary': {}, 'as_of_ms': int(time.time()*1000)},
+                other = {**accounts[0], 'slug': 'fixture_intra', 'alias': '所内测试账户', 'kind': 'intra_exchange'}
+                legacy_cta = {**accounts[0], 'slug': 'fixture_cta', 'alias': '旧 CTA 账户', 'kind': 'cta'}
+                fixtures = {'/delist/accounts': {'accounts': accounts+[other, legacy_cta], 'summary': {}, 'as_of_ms': int(time.time()*1000)},
                             '/delist/flatten-candidates': {'items': []}, '/delist/cta-strategies': cta,
                             '/delist/status': {'sources': []}}
                 if self.path in fixtures:
@@ -174,7 +176,9 @@ def main():
                 context = browser.new_context(viewport={'width': 1440, 'height': 1000})
                 page = context.new_page()
                 errors = []
+                requests = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('request', lambda request: requests.append(request.url))
                 assert page.request.get(origin+'/delist/exposures').status == 401
                 response = page.request.post(origin+'/delist/login', form={'username': 'fixture', 'password': 'fixture-password'}, headers={'Origin': origin})
                 assert response.ok, response.text()
@@ -204,7 +208,10 @@ def main():
                 page.goto(origin+'/delist/')
                 page.wait_for_selector('#exchange-list .backup-action')
                 assert not page.locator('#exposure-panel').evaluate('e => e.open')
-                assert page.locator('#cta-strategies').bounding_box()['y'] < 500
+                assert page.locator('#cta-strategies, #cta-config-entries').count() == 0
+                assert not any(url.endswith('/cta-strategies') for url in requests)
+                assert page.locator('#exchange-list').bounding_box()['y'] < 550
+                assert page.locator('#metrics strong').first.inner_text() == '3'
                 assert page.locator('#exchange-list .backup-action').count() == 3
                 assert page.locator('#exchange-list .config-link').count() == 6
                 for width in (1440, 1024, 768, 390, 320):
@@ -220,17 +227,44 @@ def main():
                     for button in page.locator('#exchange-list .backup-action').all():
                         button.click(trial=True)
                 page.set_viewport_size({'width': 1440, 'height': 1000})
+                page.locator('[data-announcement="gate"] > summary').click()
                 page.once('dialog', lambda dialog: dialog.accept())
                 page.locator('#exchange-list .backup-action').first.click()
                 page.wait_for_function("document.querySelector('#exchange-list .backup-action').textContent === '立即备份'")
                 assert backups == [{'kind': 'funding_rate', 'env': slugs[0]}]
-                page.locator('[data-filter="funding_rate"]').click()
-                assert page.locator('#cta-strategies .cta-table').count() == 0
+                assert page.locator('[data-announcement="gate"]').evaluate('e => e.open')
                 assert page.locator('#exchange-list .backup-action').count() == 3
                 page.locator('[data-filter="all"]').click()
+                assert page.locator('#metrics strong').first.inner_text() == '4'
+                assert '所内测试账户' in page.locator('#exchange-list').inner_text()
+                assert '旧 CTA 账户' not in page.locator('#exchange-list').inner_text()
+                page.locator('[data-filter="funding_rate"]').click()
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'board-desktop.png'), full_page=True)
+                requests.clear()
+                page.locator('.page-nav [data-page="cta"]').click()
+                page.wait_for_selector('#cta-strategies .cta-table')
+                assert page.url == origin+'/delist/?view=cta'
+                assert page.title() == 'CTA 策略与因子 · Risk Monitor'
+                assert page.locator('#exchange-list, #exposure-panel, #filters').count() == 0
+                assert page.locator('#metrics strong').first.inner_text() == '1'
+                assert page.locator('#cta-config-entries a').count() == 2
+                assert not any(url.endswith(('/accounts', '/exposures', '/flatten-candidates', '/notifications')) for url in requests)
+                for width in (1440, 1024, 768, 390, 320):
+                    page.set_viewport_size({'width': width, 'height': 1000})
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+                    assert page.locator('#cta-strategies a').evaluate_all('nodes => nodes.every(e => e.getBoundingClientRect().right <= innerWidth)'), width
+                if args.screenshot_dir:
+                    page.screenshot(path=str(args.screenshot_dir/'cta-mobile.png'), full_page=True)
+                page.set_viewport_size({'width': 1440, 'height': 1000})
+                page.reload()
+                page.wait_for_selector('#cta-strategies .cta-table')
+                if args.screenshot_dir:
+                    page.screenshot(path=str(args.screenshot_dir/'cta-desktop.png'), full_page=True)
+                page.locator('.page-nav [data-page="fr"]').click()
+                page.wait_for_selector('#exchange-list .backup-action')
+                assert page.locator('#metrics strong').first.inner_text() == '3'
                 page.locator('#exposure-panel > summary').click()
                 page.wait_for_selector('[data-exposure-account="gate_fr_arb01"]')
                 assert page.locator('[data-exposure-account]').count() == 3
@@ -265,7 +299,7 @@ def main():
                     page.screenshot(path=str(args.screenshot_dir/'exposure-mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-            print('PASS: populated CTA/FR board, navigation and backup containment at 320–1440px, manual backup request, filters, exposure expand/refresh, authenticated collection, alerts, recovery, escaping')
+            print('PASS: independent FR/CTA pages and API loading, navigation and backup containment at 320–1440px, manual backup request, filters/counts, announcement state, exposure expand/refresh, alerts, recovery, escaping')
         finally:
             server.terminate()
             server.wait(timeout=10)

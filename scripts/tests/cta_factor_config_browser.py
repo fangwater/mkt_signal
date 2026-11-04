@@ -117,7 +117,7 @@ def main():
                     if self.path.startswith(config_path): return self.proxy()
                     if self.path in ('/cta/cta-factor-spread/config','/cta/cta-factor-spread/config/'):
                         self.send_response(303);self.send_header('Location',config_path+'?worker=cta-factor-spread');self.end_headers();return
-                    if self.path=='/delist/': payload=(ROOT/'web/delist_risk/index.html').read_bytes();kind='text/html; charset=utf-8'
+                    if self.path.split('?',1)[0]=='/delist/': payload=(ROOT/'web/delist_risk/index.html').read_bytes();kind='text/html; charset=utf-8'
                     else:
                         values={'/delist/cta-strategies':cta,'/delist/accounts':{'accounts':[],'summary':{},'as_of_ms':int(time.time()*1000)},'/delist/flatten-candidates':{'items':[]},'/delist/status':{'sources':[]},'/delist/exposures':{'accounts':[],'errors':[],'checked_ms':int(time.time()*1000),'settings':{'interval_secs':10,'max_age_secs':90,'persistence_secs':30,'asset_limit_usdt':100,'account_limit_usdt':500}}}
                         if self.path not in values: self.send_error(404);return
@@ -137,7 +137,7 @@ def main():
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('dialog', lambda dialog: dialog.accept())
-                page.goto(gateway_base+'/delist/')
+                page.goto(gateway_base+'/delist/?view=cta')
                 page.wait_for_selector('#cta-strategies .cta-table')
                 assert page.locator('#cta-config-entries a').count()==2
                 assert page.locator('#cta-strategies tr[data-strategy]').count()==13
@@ -152,6 +152,7 @@ def main():
                 assert len(json.loads(page.locator('#factor-json').input_value()))==34
                 assert '34 条规则' in page.locator('#factor-count').inner_text()
                 page.get_by_role('link',name='返回 Delist').click()
+                page.locator('.page-nav [data-page="cta"]').click()
                 page.wait_for_selector('#cta-strategies .cta-table')
                 page.get_by_role('link',name='CTA Prep 统一配置').click()
                 page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#factor-json').value!==''")
