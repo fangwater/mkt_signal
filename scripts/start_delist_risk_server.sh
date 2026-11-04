@@ -25,6 +25,16 @@ if [[ -f "$CTA_DB_FILE" ]]; then
   source "$CTA_DB_FILE"
 fi
 
+FR_DINGTALK_FILE="${BASE_DIR}/config/fr_dingtalk.env"
+if [[ -f "$FR_DINGTALK_FILE" ]]; then
+  if [[ "$(stat -c '%u:%a' "$FR_DINGTALK_FILE")" != "$(id -u):600" ]]; then
+    echo "[ERROR] FR DingTalk config must be owned by the service user and mode 600" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$FR_DINGTALK_FILE"
+fi
+
 BIN_CANDIDATES=(
   "${BASE_DIR}/delist_risk_server"
   "${BASE_DIR}/target/release/delist_risk_server"
@@ -110,6 +120,9 @@ ARGS=(
   --llm-max "${DELIST_LLM_MAX:-0}"
   --web-dir "${BASE_DIR}/web/delist_risk"
 )
+if [[ "${DELIST_FR_NOTIFY_ENABLED:-1}" == "1" && -n "${FR_DINGTALK_WEBHOOK_URL:-}" ]]; then
+  ARGS+=(--fr-notify)
+fi
 if [[ -n "${DELIST_FORCE_LLM_IDS:-}" ]]; then
   ARGS+=(--force-llm-ids "${DELIST_FORCE_LLM_IDS}")
 fi
@@ -230,6 +243,8 @@ echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} 
   PRE_TRADE_NOTIFICATION_URL="${PRE_TRADE_NOTIFICATION_URL:-}" \
   PRE_TRADE_NOTIFICATION_TIMEOUT_MS="${PRE_TRADE_NOTIFICATION_TIMEOUT_MS:-}" \
   NOTIFICATION_API_TOKEN="${NOTIFICATION_API_TOKEN:-}" \
+  FR_DINGTALK_WEBHOOK_URL="${FR_DINGTALK_WEBHOOK_URL:-}" \
+  FR_DINGTALK_SECRET="${FR_DINGTALK_SECRET:-}" \
   BINANCE_API_KEY="${BINANCE_API_KEY:-}" \
   BINANCE_API_SECRET="${BINANCE_API_SECRET:-}" \
   BITGET_PUBLIC_API_BASE="${BITGET_PUBLIC_API_BASE:-}" \

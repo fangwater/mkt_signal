@@ -359,6 +359,7 @@ impl Monitor {
 }
 
 pub struct Sample {
+    pub risk: Value,
     snapshot_ms: i64,
     account_ms: i64,
     rows: Vec<Row>,
@@ -508,6 +509,7 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
             .then_with(|| a.asset.cmp(&b.asset))
     });
     Ok(Sample {
+        risk: risk.clone(),
         snapshot_ms,
         account_ms,
         rows,

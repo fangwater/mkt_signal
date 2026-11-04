@@ -74,8 +74,9 @@ board. Mobile summaries are stacked; detailed position tables scroll locally.
 Default monitoring thresholds are **100 USDT per asset**, **500 USDT per account**,
 and **30 seconds** of observed excess before a persistent warning. Initial excess
 is shown immediately as pending. These are display thresholds, independent of
-trading, delisting, automatic dump and flatten thresholds. This module neither
-changes Redis lists nor submits orders or external notifications.
+trading, delisting, automatic dump and flatten thresholds. The collector itself
+neither changes Redis lists nor submits orders; the independently configured FR
+DingTalk channel below consumes its observations.
 
 The exposure entry, risk entry and every underlying account-monitor timestamp
 must be no older than 90 seconds and at most five seconds in the future.
@@ -109,6 +110,55 @@ Validation: `cargo test --bin delist_risk_server` and
 The browser test runs a disposable authenticated service with synthetic NAV and
 account snapshots; it checks Gate04/SG discovery, persistent warnings, recovery,
 stale/read-failure retention, escaping, automatic refresh and desktop/mobile UI.
+
+## Independent FR DingTalk
+
+The FR channel uses its own robot URL and signing secret, independently of CTA.
+The environment-local wrapper reads `config/fr_dingtalk.env` (owned by the service
+user, mode 0600), containing `FR_DINGTALK_WEBHOOK_URL` and optional
+`FR_DINGTALK_SECRET`. A populated URL enables `--fr-notify` unless
+`DELIST_FR_NOTIFY_ENABLED=0`. Credentials are never arguments, API fields or logs.
+`--fr-notify-check` validates configuration only; `--fr-notify-send-check` sends
+one explicit setup test and exits. No extra scheduler or GPT model is introduced.
+
+- Every actual Luna announcement processing attempt queues its outcome, including
+  a successful analysis with no delisting action or a failed attempt. Primary /
+  fallback calls belong to one processing attempt. Successful unchanged-article
+  cache reuse does not send again. Queuing precedes the durable success marker.
+- The existing 24-hour announcement scan queues a summary heartbeat after it
+  completes. It states actual Luna successes/failures, coverage/data gaps, risk
+  transitions, listing changes and recorded operations since the prior summary.
+  It never claims that Luna ran when only cached results were used. A 23-hour
+  guard prevents restart-driven heartbeat repetition.
+- Complete official product catalogs retain a durable baseline and report
+  newly/recurrently tradable and removed/inactive symbols. The initial baseline
+  and an absent venue never manufacture mass listing/delisting notices. No new
+  symbols are automatically added to strategies.
+- UniMMR uses the live account state and configured trigger/recovery lines;
+  the gap between those lines is unknown for recovery. Confirmed asset/account
+  exposure, incomplete data, provider failures and empty UniMMR close lists send
+  once on first detection and once on confirmed recovery. There is no periodic
+  repeat or severity-change repeat. Unknown/missing/stale data never recover a
+  prior issue. A fully closed asset requires complete fresh coverage to recover.
+- Actual successful dump/list-removal mutations and completed flatten-script
+  outcomes queue operation logs. The notification module itself submits no order
+  and does not change trading settings. It reports these service operations,
+  rather than claiming to audit every external operator or trading log.
+
+`data/fr_notifications.json` holds the private atomic outbox, acknowledged issue
+states, product baseline and a bounded processing/operation journal. Pending sends
+retry with bounded backoff; HTTP success plus DingTalk `errcode=0` is required for
+acknowledgement. Risk messages precede announcement backlog. Messages are spaced
+four seconds apart to respect one robot's rate limit. Ordinary restarts preserve
+delivery history. As with any webhook without receiver idempotency, a crash or
+lost response at the acceptance/acknowledgement boundary can still duplicate a
+delivery; it does not cause periodic resends of acknowledged issues.
+
+Protected `GET /notifications` exposes enablement, pending count, acknowledged
+delivery count, last send/error, last Luna processing and last summary enqueue.
+The board displays channel status next to the exposure check. When FR DingTalk is
+enabled, UniMMR-list alerts use this channel instead of the former Telegram watch.
+Other pre-existing Telegram flatten notifications keep their own behavior.
 
 ## Login and FR panel access
 
@@ -755,12 +805,12 @@ the tone is already `error`. This is a dedicated watch, not a delist event:
 when UniMMR drops below the trigger line the env would have no algorithmic
 close candidates.
 
-A background scan runs every `DELIST_UNIMMR_LIST_INTERVAL_SECS` (60s). On a
-confirmed empty transition it pushes a `critical` Telegram (`UniMMR平仓列表为空`),
-repeats every hour while the list stays empty, and sends one `info`
-`UniMMR平仓列表恢复` when the list becomes non-empty again. Telegram requires
-`PRE_TRADE_NOTIFICATION_URL`; without it the finding is still visible in
-`/accounts` and `/status` (source `fr_unimmr_close_list`).
+A background scan runs every `DELIST_UNIMMR_LIST_INTERVAL_SECS` (60s). The independent
+FR DingTalk channel sends the first confirmed empty-list alert and its recovery;
+read failures do not recover it. Without FR DingTalk, the legacy Telegram watch
+uses `PRE_TRADE_NOTIFICATION_URL` and also sends only first/recovery, with no hourly
+repeat. Findings remain visible in `/accounts` and `/status` (source
+`fr_unimmr_close_list`) independently of delivery availability.
 
 ### `GET /removal-candidates`
 

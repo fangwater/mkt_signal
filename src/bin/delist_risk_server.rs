@@ -88,6 +88,8 @@ mod cta_factors;
 mod cta_mapping;
 #[path = "delist_risk_server/exposure.rs"]
 mod exposure;
+#[path = "delist_risk_server/notifications.rs"]
+mod notifications;
 #[path = "delist_risk_server/upload.rs"]
 mod upload;
 
@@ -96,8 +98,6 @@ use mkt_signal::pre_trade::notification_client::{
 };
 
 const POSITION_CLOSED_THRESHOLD_USDT: f64 = 100.0;
-/// Repeat the empty `fr_unimmr_close_symbols` alert while the list stays empty.
-const UNIMMR_EMPTY_REPEAT_SECS: u64 = 3_600;
 
 #[derive(Parser)]
 #[command(name = "delist_risk_server")]
@@ -178,6 +178,18 @@ struct Args {
     exposure_asset_limit_usdt: f64,
     #[arg(long, default_value_t = 500.0)]
     exposure_account_limit_usdt: f64,
+
+    /// Enable the independent FR DingTalk channel (FR_DINGTALK_* only).
+    #[arg(long)]
+    fr_notify: bool,
+
+    /// Validate the FR DingTalk configuration without starting services or sending.
+    #[arg(long)]
+    fr_notify_check: bool,
+
+    /// Send one explicitly requested FR channel setup test, then exit.
+    #[arg(long)]
+    fr_notify_send_check: bool,
 
     /// Clear small FR positions during the final delist window.
     #[arg(long)]
@@ -305,6 +317,7 @@ struct AppState {
     accounts: Arc<RwLock<Vec<AccountSpec>>>,
     exposure: Arc<RwLock<exposure::Monitor>>,
     exposure_settings: exposure::Settings,
+    fr_notifications: Option<Arc<notifications::Notifications>>,
     store: Option<Arc<DelistStore>>,
     book_path: PathBuf,
     web_dir: PathBuf,
@@ -359,6 +372,14 @@ struct RiskParams {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    if args.fr_notify_check || args.fr_notify_send_check {
+        let sender = notifications::DingTalk::from_env()?;
+        if args.fr_notify_send_check {
+            sender.send("[接入验证] FR 独立钉钉通道签名验证\n将接收 Luna 每次实际公告处理结果、每日扫描汇总心跳，以及 UniMMR/敞口等风险的首次异常与恢复通知。\n本条仅验证通知通道，没有交易、名单或仓位变更。").await?;
+        }
+        println!("Independent FR DingTalk configuration is valid");
+        return Ok(());
+    }
     if args.cta_mapping_check {
         let settings = cta_mapping::Settings {
             env_root: args.redis_backup_env_root.clone(),
@@ -499,6 +520,17 @@ async fn main() -> Result<()> {
         catalog_max_age_secs: args.nav_strategy_interval_secs.saturating_mul(3).max(90),
     };
     exposure_settings.validate()?;
+    let fr_notifications = if args.fr_notify {
+        Some(
+            notifications::Notifications::open(
+                args.book.with_file_name("fr_notifications.json"),
+                notifications::DingTalk::from_env()?,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let state = AppState {
         book: Arc::new(RwLock::new(book)),
         status: Arc::new(RwLock::new(status)),
@@ -510,6 +542,7 @@ async fn main() -> Result<()> {
             exposure_settings.clone(),
         ))),
         exposure_settings,
+        fr_notifications,
         store,
         book_path: args.book.clone(),
         web_dir: args.web_dir.clone(),
@@ -1002,6 +1035,9 @@ async fn main() -> Result<()> {
         }
     });
 
+    if let Some(notifications) = state.fr_notifications.clone() {
+        tokio::spawn(notifications.run());
+    }
     let exposure_state = state.clone();
     let exposure_client = Client::builder()
         .no_proxy()
@@ -1024,11 +1060,49 @@ async fn main() -> Result<()> {
             .await;
             let current = exposure_catalog_current(&exposure_state).await;
             let now = Utc::now().timestamp_millis();
+            let risk_observations = samples
+                .iter()
+                .map(|(slug, sample)| {
+                    notifications::unimmr_observation(slug, sample.as_ref().ok().map(|s| &s.risk))
+                })
+                .collect::<Vec<_>>();
             let report = {
                 let mut monitor = exposure_state.exposure.write().await;
                 monitor.apply(&specs, samples, now, current);
                 monitor.report(now, current)
             };
+            if !specs.is_empty() {
+                if let Some(notifier) = &exposure_state.fr_notifications {
+                    let mut observations = notifier.exposure_observations(&report).await;
+                    observations.extend(risk_observations);
+                    let sources = exposure_state
+                        .status
+                        .read()
+                        .await
+                        .snapshot(exposure_state.store.is_some());
+                    observations.extend(
+                        sources
+                            .sources
+                            .iter()
+                            .filter(|s| {
+                                !matches!(s.source.as_str(), "llm" | "fr_unimmr_close_list")
+                            })
+                            .map(|s| notifications::Observation {
+                                key: format!("source/{}", s.source),
+                                title: format!("监控数据源 {}", s.source),
+                                problem: Some(!s.ok),
+                                detail: if s.ok {
+                                    "数据源检查已恢复".into()
+                                } else {
+                                    "数据源检查失败；错误详情见 Delist 状态页与服务日志".into()
+                                },
+                            }),
+                    );
+                    if let Err(err) = notifier.observe(observations).await {
+                        warn!("queue FR observations failed: {err}");
+                    }
+                }
+            }
             // Same report as /exposures, retained locally for operator diagnostics.
             let path = exposure_state
                 .book_path
@@ -1056,6 +1130,7 @@ async fn main() -> Result<()> {
         .route("/status", get(query_status))
         .route("/accounts", get(query_accounts))
         .route("/exposures", get(query_exposures))
+        .route("/notifications", get(query_notifications))
         .route("/cta-strategies", get(query_cta_strategies))
         .route("/backup-now", post(manual_backup))
         .route("/removal-candidates", get(query_removal_candidates))
@@ -1938,6 +2013,46 @@ async fn query_exposures(State(state): State<AppState>) -> Json<exposure::Report
     )
 }
 
+async fn query_notifications(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(match &state.fr_notifications {
+        Some(notifier) => notifier.status().await,
+        None => json!({"enabled":false}),
+    })
+}
+
+async fn fr_event(state: &AppState, kind: &str, message: String) -> bool {
+    if let Some(notifier) = &state.fr_notifications {
+        if let Err(err) = notifier.event(kind, message).await {
+            warn!("queue FR event failed kind={kind}: {err}");
+            return false;
+        }
+    }
+    true
+}
+
+async fn fr_heartbeat(state: &AppState) {
+    let Some(notifier) = &state.fr_notifications else {
+        return;
+    };
+    let current = exposure_catalog_current(state).await;
+    let report = state
+        .exposure
+        .read()
+        .await
+        .report(Utc::now().timestamp_millis(), current);
+    let sources = state.status.read().await.snapshot(state.store.is_some());
+    let failures = sources
+        .sources
+        .iter()
+        .filter(|s| !s.ok)
+        .map(|s| s.source.as_str())
+        .collect::<Vec<_>>();
+    let summary = format!("FR 覆盖 {} 个：敞口告警 {}，数据不完整 {}\n公告及监控源：{}\n本轮按现有配置检查；没有新增策略、手工下单或调仓。自动风控实际操作列在下方日志中。", report.accounts.len(), report.accounts.iter().filter(|a| a.risk_status == "alert").count(), report.accounts.iter().filter(|a| !a.complete).count(), if failures.is_empty() { "全部已报告成功".into() } else { format!("存在失败/未知：{}", failures.join(", ")) });
+    if let Err(err) = notifier.heartbeat(&summary).await {
+        warn!("queue FR heartbeat failed: {err}");
+    }
+}
+
 async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let public = public_http_client()?;
     let nav_client = Client::builder()
@@ -2027,6 +2142,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 )
                 .await;
                 persist(&ann_state).await;
+                fr_heartbeat(&ann_state).await;
             }
         });
     }
@@ -2171,6 +2287,11 @@ async fn refresh_official(state: &AppState, public: &Client, binance: &Client, d
 async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIndex> {
     let (index, errors) = fetch_listing_index(public).await;
     if errors.is_empty() {
+        if let Some(notifier) = &state.fr_notifications {
+            if let Err(err) = notifier.listings(&index.snapshot_rows()).await {
+                warn!("queue listing changes failed: {err}");
+            }
+        }
         *state.listings.write().await = index.clone();
         mark_ok(state, "exchange_info", "fetch").await;
         info!("official exchange_info refreshed");
@@ -2786,6 +2907,15 @@ async fn execute_flatten_with_audit(
         "delist flatten finished audit_id={} trigger={} account={} symbol={} status={}",
         audit_id, trigger, candidate.account_slug, candidate.symbol, status
     );
+    fr_event(
+        state,
+        "operation",
+        format!(
+            "[操作日志] 下架清仓脚本执行结果\n{} {} | 触发方式 {} | 脚本状态 {} | 审计 {}",
+            candidate.account_slug, candidate.symbol, trigger, status, audit_id
+        ),
+    )
+    .await;
     Ok(Some((audit_id, output)))
 }
 
@@ -2872,13 +3002,47 @@ async fn run_unimmr_list_scan(state: &AppState, watch: &mut UnimmrListWatch) {
     .await;
 
     let now = Instant::now();
+    if let Some(notifier) = &state.fr_notifications {
+        let mut observations: Vec<_> = lists
+            .iter()
+            .map(|(slug, result)| notifications::Observation {
+                key: format!("unimmr-list/{slug}"),
+                title: format!("{slug} UniMMR 平仓列表"),
+                problem: result.as_ref().ok().map(|list| list.symbols.is_empty()),
+                detail: match result {
+                    Ok(list) if list.symbols.is_empty() => {
+                        "fr_unimmr_close_symbols 为空或未配置，风险触发时没有算法平仓候选".into()
+                    }
+                    Ok(list) => format!("列表已有 {} 个币对", list.symbols.len()),
+                    Err(_) => "列表读取失败，不能确认恢复".into(),
+                },
+            })
+            .collect();
+        observations.extend(
+            lists
+                .iter()
+                .map(|(slug, result)| notifications::Observation {
+                    key: format!("unimmr-list-data/{slug}"),
+                    title: format!("{slug} UniMMR 列表数据"),
+                    problem: Some(result.is_err()),
+                    detail: if result.is_ok() {
+                        "列表读取已恢复".into()
+                    } else {
+                        "Redis列表读取失败；无法确认原列表风险已恢复".into()
+                    },
+                }),
+        );
+        if let Err(err) = notifier.observe(observations).await {
+            warn!("queue UniMMR list observation failed: {err}");
+        }
+    }
     let mut empty: Vec<(&String, &FrSymbolListState)> = Vec::new();
     let mut read_errors = Vec::new();
     for (slug, result) in &lists {
         match result {
             Ok(list) if list.symbols.is_empty() => empty.push((slug, list)),
             Ok(list) => {
-                if watch.empty_notified.remove(slug).is_some() {
+                if watch.empty_notified.remove(slug).is_some() && state.fr_notifications.is_none() {
                     if let Err(err) = send_unimmr_list_notification(state, slug, list, true).await {
                         warn!("UniMMR list recovery notification failed account={slug}: {err:#}");
                     }
@@ -2888,9 +3052,7 @@ async fn run_unimmr_list_scan(state: &AppState, watch: &mut UnimmrListWatch) {
         }
     }
     for (slug, list) in &empty {
-        let due = watch.empty_notified.get(*slug).is_none_or(|last| {
-            now.saturating_duration_since(*last) >= Duration::from_secs(UNIMMR_EMPTY_REPEAT_SECS)
-        });
+        let due = state.fr_notifications.is_none() && !watch.empty_notified.contains_key(*slug);
         if !due {
             continue;
         }
@@ -3015,6 +3177,7 @@ async fn dump_position_candidate(
     match apply_redis_dump(redis_url, &plan).await {
         Ok(()) => {
             store.finish_redis_dump(audit_id, "success", None).await?;
+            fr_event(state, "operation", format!("[操作日志] 下架仓位转入 dump\n{} {} | 影响持仓 {:.2}U | 审计 {}\n已更新该币对的开仓/dump名单，未在此步骤下单。", candidate.account_slug, candidate.symbol, candidate.impacted_position_usdt, audit_id)).await;
             info!(
                 "Redis delist dump success audit_id={} account={} symbol={} changes={}",
                 audit_id,
@@ -3124,6 +3287,7 @@ async fn prune_candidate(
             store
                 .finish_redis_removal(audit_id, "success", None)
                 .await?;
+            fr_event(state, "operation", format!("[操作日志] 确认下架后移出策略名单\n{} {} | 审计 {}\n该币对仓位已通过现有清空校验；已更新Redis名单。", candidate.account_slug, candidate.symbol, audit_id)).await;
             info!(
                 "Redis delist removal success audit_id={} account={} symbol={} changes={}",
                 audit_id,
@@ -3484,6 +3648,28 @@ async fn extract_announcement(
             // Save events before the durable success marker so restart dedup cannot lose a result.
             if !persist(state).await {
                 mark_llm(state, input, false, Some("save extracted risk book failed")).await;
+                fr_event(
+                    state,
+                    "luna_failed",
+                    notifications::luna_message(input, Some(&value), false),
+                )
+                .await;
+                return false;
+            }
+            if !fr_event(
+                state,
+                "luna_ok",
+                notifications::luna_message(input, Some(&value), true),
+            )
+            .await
+            {
+                mark_llm(
+                    state,
+                    input,
+                    false,
+                    Some("FR notification outbox persistence failed"),
+                )
+                .await;
                 return false;
             }
             mark_llm(state, input, true, None).await;
@@ -3491,6 +3677,12 @@ async fn extract_announcement(
         }
         Err(err) => {
             mark_llm(state, input, false, Some(&format!("{err:#}"))).await;
+            fr_event(
+                state,
+                "luna_failed",
+                notifications::luna_message(input, None, false),
+            )
+            .await;
             false
         }
     }
@@ -3713,6 +3905,14 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let dir = std::env::temp_dir().join(format!("delist-llm-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let fr_notifier = notifications::Notifications::open(
+            dir.join("notifications.json"),
+            notifications::DingTalk::test_sender(
+                reqwest::Url::parse("http://127.0.0.1:1/unused").unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
         let state = AppState {
             book: Arc::new(RwLock::new(RiskBook::default())),
             status: Arc::new(RwLock::new(StatusBook::default())),
@@ -3722,6 +3922,7 @@ mod tests {
                 exposure::Settings::default(),
             ))),
             exposure_settings: exposure::Settings::default(),
+            fr_notifications: Some(fr_notifier.clone()),
             llm_locks: Arc::new(Mutex::new(BTreeMap::new())),
             llm_slots: Arc::new(Semaphore::new(2)),
             store: None,
@@ -3783,6 +3984,7 @@ mod tests {
         assert!(first);
         assert!(second);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fr_notifier.status().await["queued"], 1);
         input.published_ms = 2;
         assert!(maybe_extract(&state, Some(&llm), Some(&client), &budget, &input).await);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -3799,6 +4001,7 @@ mod tests {
         );
         assert!(revised_ok && latest_ok);
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(fr_notifier.status().await["queued"], 4);
         assert_eq!(
             state
                 .status
