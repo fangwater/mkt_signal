@@ -494,9 +494,24 @@ pub fn build_account_views(
     listings: &ListingIndex,
     universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
 ) -> Vec<AccountRiskView> {
+    build_account_views_for_venues(accounts, risk, listings, universes, &BTreeMap::new())
+}
+
+/// Explicit market scopes for multi-leg CTA signals. Coverage remains unknown
+/// for a venue without a current supported exchange listing catalog.
+pub fn build_account_views_for_venues(
+    accounts: &[AccountSpec],
+    risk: &RiskQueryResponse,
+    listings: &ListingIndex,
+    universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
+    venue_scopes: &BTreeMap<String, Vec<String>>,
+) -> Vec<AccountRiskView> {
     let mut out = Vec::new();
     for spec in accounts {
-        let (_keys, venues) = redis_keys(spec);
+        let venues = venue_scopes
+            .get(&spec.slug)
+            .cloned()
+            .unwrap_or_else(|| redis_keys(spec).1);
         let host = match spec.site {
             RedisSite::Jp => "jp",
             RedisSite::Sg => "sg",
@@ -1049,6 +1064,37 @@ mod tests {
         assert_eq!(view.hits.len(), 1);
         assert_eq!(view.hits[0].symbol, "SCORUSDT");
         assert_eq!(view.hits[0].events[0].venue, "bybit-margin");
+    }
+
+    #[test]
+    fn explicit_cta_markets_check_the_spot_leg_without_changing_existing_futures_scope() {
+        let account = AccountSpec {
+            slug: "spread".into(),
+            alias: "spread".into(),
+            exchange: "binance".into(),
+            kind: "cta".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        };
+        let universe = BTreeMap::from([("spread".into(), Ok(BTreeSet::from(["BTCUSDT".into()])))]);
+        let risk = RiskBook::default().query(&Default::default());
+        let mut listings = ListingIndex::default();
+        listings.insert_test("binance-futures", "BTCUSDT");
+        listings.insert_test("binance-margin", "ETHUSDT");
+        assert_eq!(
+            build_account_views(std::slice::from_ref(&account), &risk, &listings, &universe)[0]
+                .tone,
+            "ok"
+        );
+        let scope = BTreeMap::from([(
+            "spread".into(),
+            vec!["binance-margin".into(), "binance-futures".into()],
+        )]);
+        let view = build_account_views_for_venues(&[account], &risk, &listings, &universe, &scope)
+            .remove(0);
+        assert_eq!(view.tone, "risk");
+        assert_eq!(view.hits[0].events[0].venue, "binance-margin");
     }
 
     fn event(symbols: &[&str], assets: &[&str]) -> RiskEventView {

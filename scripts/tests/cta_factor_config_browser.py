@@ -3,12 +3,15 @@
 import argparse
 import json
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import shutil
 import socket
 import subprocess
 import tempfile
 import time
+import threading
+import urllib.error
 import urllib.request
 
 from playwright.sync_api import sync_playwright
@@ -18,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--browser-binary', type=Path, required=True)
+    parser.add_argument('--delist-binary', type=Path, default=ROOT/'target/debug/delist_risk_server')
     parser.add_argument('--screenshot-dir', type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='cta-unified-browser-') as temporary:
@@ -43,6 +47,8 @@ def main():
         ], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         base = f'http://127.0.0.1:{port}/'
+        gateway = None
+        gateway_thread = None
         def api(path, body=None):
             data = None if body is None else json.dumps(body).encode()
             request = urllib.request.Request(base+'api/'+path, data=data, headers={'Content-Type':'application/json'})
@@ -58,13 +64,98 @@ def main():
                     if server.poll() is not None or time.monotonic()>deadline:
                         raise RuntimeError('fixture configuration server failed to start')
                     time.sleep(.05)
+            for worker, history_name in [('cta-prep-binance-futures','cta_prep_binance_futures'),('cta-factor-spread','cta_factor_spread')]:
+                current=api('config?worker='+worker)
+                plan=current['plan']
+                tables=[]
+                for combination in plan['combinations'].values():
+                    spread=worker=='cta-factor-spread'
+                    group=combination['strategy_group']
+                    strategy=f"cta-{group}-{'okx-bn' if spread else 'bn'}-{combination['interval']}-pos"
+                    tables.append({'strategy_name':strategy,'combination_name':combination['name'],
+                        'interval':combination['interval'],'enabled':combination.get('signal',{}).get('enabled',False),
+                        'targets':{'ETHUSDT':{'qty':1.25,'signal':0}}})
+                history=root/'data'/history_name
+                history.mkdir(parents=True,exist_ok=True)
+                (history/'state.json').write_text(json.dumps({'worker':worker,'updated_ms':int(time.time()*1000),
+                    'warming':False,'plan':plan,'positions_error':None,
+                    'position_tables':{'tables':tables,'publication_error':None,
+                        'manager_publications':[{'manager_url':'http://127.0.0.1:18201/api'}]}}))
+            for rx in ('rx01','rx03','rx04'):
+                run=root/('binance-cta-perp-'+rx)/'run'
+                run.mkdir(parents=True)
+                (run/'cta_perp_status.json').write_text('{}')
+            environment=dict(os.environ)
+            environment.pop('DELIST_CTA_JP_DATABASE_URL',None)
+            cta=json.loads(subprocess.check_output([
+                str(args.delist_binary),'--cta-mapping-check',
+                '--redis-backup-env-root',str(root),'--cta-factor-env',str(root),
+                '--cta-spread-factor-env',str(root)
+            ],env=environment))
+            assert len(cta['factor_processes'])==2
+            assert len(cta['strategies'])==7
+            assert all(not row['stale'] and not row['errors'] for row in cta['strategies'])
+            # SQL bindings are checked separately against the deployed reader;
+            # this disposable web fixture has no Manager database.
+            cta['managers']=[{'site':'jp','ok':True,'error':None}]
+            config_path='/cta/cta-prep-binance-futures/config/'
+            class Gateway(BaseHTTPRequestHandler):
+                def log_message(self, *unused):
+                    pass
+                def proxy(self):
+                    path=self.path[len(config_path):]
+                    body=self.rfile.read(int(self.headers.get('Content-Length','0'))) or None
+                    headers={key:self.headers[key] for key in ('Host','Origin','Content-Type','Sec-Fetch-Site') if key in self.headers}
+                    request=urllib.request.Request(base+path,data=body,headers=headers,method=self.command)
+                    try: response=opener.open(request,timeout=5)
+                    except urllib.error.HTTPError as error: response=error
+                    payload=response.read()
+                    self.send_response(response.status)
+                    self.send_header('Content-Type',response.headers.get('Content-Type','application/json'))
+                    self.send_header('Content-Length',str(len(payload)))
+                    self.end_headers();self.wfile.write(payload)
+                    response.close()
+                def do_GET(self):
+                    if self.path.startswith(config_path): return self.proxy()
+                    if self.path in ('/cta/cta-factor-spread/config','/cta/cta-factor-spread/config/'):
+                        self.send_response(303);self.send_header('Location',config_path+'?worker=cta-factor-spread');self.end_headers();return
+                    if self.path=='/delist/': payload=(ROOT/'web/delist_risk/index.html').read_bytes();kind='text/html; charset=utf-8'
+                    else:
+                        values={'/delist/cta-strategies':cta,'/delist/accounts':{'accounts':[],'summary':{},'as_of_ms':int(time.time()*1000)},'/delist/flatten-candidates':{'items':[]},'/delist/status':{'sources':[]}}
+                        if self.path not in values: self.send_error(404);return
+                        payload=json.dumps(values[self.path]).encode();kind='application/json'
+                    self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
+                def do_POST(self):
+                    if self.path.startswith(config_path): return self.proxy()
+                    self.send_error(405)
+                do_DELETE=do_POST
+            gateway=ThreadingHTTPServer(('127.0.0.1',0),Gateway)
+            gateway_thread=threading.Thread(target=gateway.serve_forever,daemon=True)
+            gateway_thread.start()
+            gateway_base=f'http://127.0.0.1:{gateway.server_port}'
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(executable_path=str(args.browser_binary), headless=True, args=['--no-sandbox','--disable-dev-shm-usage'])
                 page = browser.new_page(viewport={'width':1440,'height':1000})
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.on('dialog', lambda dialog: dialog.accept())
-                page.goto(base)
+                page.goto(gateway_base+'/delist/')
+                page.wait_for_selector('#cta-strategies .cta-table')
+                assert page.locator('#cta-config-entries a').count()==2
+                assert page.locator('#cta-strategies tr[data-strategy]').count()==7
+                assert page.locator('#cta-strategies .account-slug').filter(has_text='binance-cta-perp-').count()==0
+                assert '异常' not in page.locator('#system-state').inner_text()
+                if args.screenshot_dir:
+                    args.screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(args.screenshot_dir/'delist-desktop.png'), full_page=True)
+                page.get_by_role('link',name='CTA Spread 统一配置').click()
+                page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#strategy-type').value==='cta-factor-spread'")
+                assert page.locator('#current-frequency').inner_text()=='1min'
+                assert len(json.loads(page.locator('#factor-json').input_value()))==34
+                assert '34 条规则' in page.locator('#factor-count').inner_text()
+                page.get_by_role('link',name='返回 Delist').click()
+                page.wait_for_selector('#cta-strategies .cta-table')
+                page.get_by_role('link',name='CTA Prep 统一配置').click()
                 page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#factor-json').value!==''")
                 assert page.locator('#parameters,#position-targets,#rows,#import-json').count()==0
                 assert page.locator('textarea').count()==1
@@ -108,7 +199,7 @@ def main():
                 page.locator('#strategy-group').select_option('prep02')
                 page.locator('[data-interval="15min"]').click()
                 rows=json.loads(page.locator('#factor-json').input_value())
-                assert len(rows)==33
+                assert len(rows)==31
                 assert any(row['因子']=='TD_MT_040' and row['nq']=='0.2/0.8' for row in rows)
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -119,8 +210,11 @@ def main():
                     page.screenshot(path=str(args.screenshot_dir/'mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-                print('Frequency JSON editor passed: factor row JSON, isolated save, conflict, single format and mobile layout')
+                print('Delist navigation and frequency JSON editor passed: factor row JSON, isolated save, conflict, single format and mobile layout')
         finally:
+            if gateway:
+                gateway.shutdown();gateway.server_close()
+            if gateway_thread: gateway_thread.join(timeout=3)
             server.terminate()
             try:
                 server.wait(timeout=5)

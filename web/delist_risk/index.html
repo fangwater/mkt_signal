@@ -171,6 +171,8 @@
         .account-table td:nth-child(3)::before { content: "标的："; color: var(--quiet); }
         .account-table td:nth-child(4) { float: right; }
         .account-table td:last-child { display: block; clear: both; margin-top: 8px; text-align: left; }
+        .cta-table td:nth-child(2)::before { content: "状态："; }
+        .cta-table td:nth-child(4)::before { content: "风险："; color: var(--quiet); }
         .account-nav { display: flex; justify-content: flex-start; }
         .hit-row { padding-top: 0 !important; }
         .hit-row td { display: block; padding: 0; background: transparent; }
@@ -196,7 +198,12 @@
         <div class="filters" id="filters" aria-label="策略类型筛选"></div>
       </section>
       <section class="metrics" id="metrics" aria-label="风险摘要"></section>
+      <nav class="filters" id="cta-config-entries" aria-label="CTA 统一配置入口" style="margin:0 0 20px;gap:12px">
+        <a class="config-link" href="/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures">CTA Prep 统一配置 ↗</a>
+        <a class="config-link" href="/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread">CTA Spread 统一配置 ↗</a>
+      </nav>
       <div id="error"></div>
+      <section class="exchange-list" id="cta-strategies" aria-label="CTA 组合与执行账户"></section>
       <section class="exchange-list" id="exchange-list" aria-label="交易所风险明细"></section>
     </main>
     <script>
@@ -207,6 +214,8 @@
       let filter = 'all';
       let payload = null;
       let flattenPayload = null;
+      let ctaPayload = null;
+      let backupStatus = null;
       let flattenByKey = new Map();
       let positionStatusByKey = new Map();
 
@@ -243,11 +252,23 @@
         document.getElementById('metrics').innerHTML = [['已接入', data.accounts || 0, ''], ['需处理', data.risk || 0, 'risk'], ['数据读取失败', data.error || 0, 'error'], ['正常', data.ok || 0, '']]
           .map(([label, value, tone]) => `<div class="metric ${tone ? `metric--${tone}` : ''}"><span>${label}</span><strong>${value}</strong></div>`).join('');
       }
+      function combinedSummary() {
+        const summary = { ...(payload?.summary || {}) };
+        const strategies = ctaPayload?.strategies || [];
+        const managerFailed = (ctaPayload?.managers || []).some(m => !m.ok) || (ctaPayload?.errors || []).length > 0;
+        const factorFailed = (ctaPayload?.factor_processes || []).filter(p => (p.errors || []).length > 0).length;
+        summary.accounts = Number(summary.accounts || 0) + strategies.length;
+        summary.risk = Number(summary.risk || 0) + strategies.filter(s => (s.risk?.risk_n || 0) > 0).length;
+        summary.error = Number(summary.error || 0) + strategies.filter(s => s.stale || (s.errors || []).length > 0 || s.risk?.tone === 'error').length + (managerFailed ? 1 : 0) + factorFailed;
+        summary.ok = Number(summary.ok || 0) + strategies.filter(s => !s.stale && !(s.errors || []).length && s.risk?.tone === 'ok').length;
+        return summary;
+      }
       const VENUES = {
         'binance-margin': 'Binance 现货／杠杆', 'binance-futures': 'Binance U 本位合约', 'binance-coin-futures': 'Binance 币本位合约',
         'bitget-margin': 'Bitget 现货／杠杆', 'bitget-futures': 'Bitget U 本位合约', 'bitget-coin-futures': 'Bitget 币本位合约',
         'gate-margin': 'Gate 现货／杠杆', 'gate-futures': 'Gate U 本位合约', 'gate-coin-futures': 'Gate 币本位合约',
         'bybit-margin': 'Bybit 现货／杠杆／借贷', 'bybit-futures': 'Bybit U 本位合约',
+        'okex-margin': 'OKX 现货／统一账户', 'okex-futures': 'OKX 永续／统一账户',
       };
       function announcementBlock(exchange) {
         const item = (payload.latest_announcements || {})[exchange];
@@ -388,13 +409,26 @@
         const configLink = account.config_url
           ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无配置入口</span>';
-        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td><span class="account-nav">${vizLink}${configLink}</span></td></tr>`;
+        const backupButton = account.kind === 'funding_rate' ? `<button class="refresh backup-action" type="button" data-kind="funding_rate" data-env="${escapeHtml(account.slug)}">立即备份</button>${backupState('funding_rate', account.slug)}` : '';
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td><span class="account-nav">${vizLink}${configLink}${backupButton}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
           return `<div class="hit ${positionStatus && positionStatus.closed ? 'hit--closed' : ''}"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`;
         }).join('');
         return `${row}<tr class="hit-row"><td colspan="7"><div class="hit-list">${hits}</div></td></tr>`;
+      }
+      function backupState(kind, env) {
+        const sources = backupStatus?.sources || [];
+        const prefix = ['cta_perp','cta_spread'].includes(kind) ? 'cos_cta_backup_' : 'cos_fr_backup_';
+        const row = sources.find(item => item.source === prefix + env);
+        const quality = ['cta_perp','cta_spread'].includes(kind) ? sources.find(item => item.source === `cta_backup_quality_${env}`) : null;
+        if (!row) return '<span class="account-venues">备份状态待检查</span>';
+        if (!row.ok) return `<span class="account-value--risk" title="${escapeHtml(row.last_error || '上传失败')}">云备份异常</span>`;
+        const today = new Date().toISOString().slice(0, 10);
+        const current = row.last_success_ms && new Date(row.last_success_ms).toISOString().slice(0, 10) === today;
+        const note = quality && !quality.ok ? `<span class="account-value--risk" title="${escapeHtml(quality.last_error || '')}">配置待核对</span>` : '';
+        return `<span class="account-venues">${current ? '今日云备份已校验' : '今日备份待完成'}</span>${note}`;
       }
       function exchangeBlock(exchange, accounts) {
         const riskN = accounts.reduce((sum, account) => sum + (account.risk_n || 0), 0);
@@ -415,11 +449,61 @@
         const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0) + (item.unimmr_empty ? 50 : 0), 0);
         root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
         root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
+        root.querySelectorAll('.backup-action').forEach((button) => button.addEventListener('click', () => executeBackup(button)));
+      }
+      function renderCta() {
+        const root = document.getElementById('cta-strategies');
+        if (filter !== 'all' && filter !== 'cta') { root.innerHTML = ''; return; }
+        if (!ctaPayload) { root.innerHTML = ''; return; }
+        const managers = (ctaPayload.managers || []).map(m => `${m.site.toUpperCase()} Manager：${m.ok ? '已连接' : '读取失败'}`).join(' · ');
+        const errors = [...(ctaPayload.errors || []), ...(ctaPayload.managers || []).filter(m => !m.ok).map(m => `${m.site.toUpperCase()} Manager：${m.error || '读取失败'}`)];
+        const factorBlock = (ctaPayload.factor_processes || []).map(factor => {
+        const factorState = !factor?.configured ? '配置不可用' : factor.stale ? '运行状态不可用或过期' : factor.warming ? '正在回放新计划' : !factor.plan_matches_config ? '计划待同步' : '状态已更新';
+        const factorCombinations = (factor?.combinations || []).map(c => `<div class="account-nav"><a class="config-link" href="${escapeHtml(c.config_url)}"><code>${escapeHtml(c.name)}</code></a><span>${c.factor_count} 项因子 · ${c.symbols.length} 个标的 · ${c.position_strategies.length ? `仓位策略 ${c.position_strategies.map(escapeHtml).join('、')}` : '未配置仓位策略'}</span></div>`).join('');
+        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · <a class="config-link" href="${escapeHtml(factor.config_url)}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="account-nav">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
+        }).join('');
+        const rows = (ctaPayload.strategies || []).map(s => {
+          const title = s.name;
+          const factorCount = s.factor_count == null ? '共享因子配置未关联' : `${s.factor_count} 项因子`;
+          const status = s.stale ? '计算状态过期或仓位表未就绪' : s.enabled ? '仓位计算已启用' : '仓位计算已暂停';
+          const execs = (s.accounts || []).map(a => {
+            const label = `${a.alias || a.source_id} (${a.site.toUpperCase()} / ${a.source_id})`;
+            const link = a.viz_url ? `<a class="config-link viz-link" href="${escapeHtml(a.viz_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin">执行面板 ↗</a>` : '<span>无面板入口</span>';
+            const state = a.pending ? '绑定待同步' : a.active ? '执行绑定生效' : '执行绑定未启用';
+            return `<div class="account-nav"><span>${escapeHtml(label)} · ${escapeHtml(state)}</span> ${link}</div>`;
+          }).join('') || `<span class="account-venues">${(ctaPayload.managers || []).some(m => !m.ok) ? '暂未发现执行账户；部分 Manager 读取失败' : '没有发现关联执行账户'}</span>`;
+          const warnings = (s.errors || []).map(e => `<div class="account-value--risk">${escapeHtml(e)}</div>`).join('');
+          const hits = (s.risk?.hits || []).map(hit => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
+          const signalLink = s.risk?.viz_url ? `<a class="config-link" href="${escapeHtml(s.risk.viz_url)}" target="_blank" rel="noopener">信号面板 ↗</a>` : '';
+          const configLink = s.risk?.config_url ? `<a class="config-link" href="${escapeHtml(s.risk.config_url)}" target="_blank" rel="noopener">策略配置 ↗</a>` : '';
+          const backupKind = s.kind === 'spread' ? 'cta_spread' : 'cta_perp';
+          const backupButton = s.backup_env ? `<button class="refresh backup-action" type="button" data-kind="${backupKind}" data-env="${escapeHtml(s.backup_env)}">立即备份</button>${backupState(backupKind, s.backup_env)}` : '';
+          const riskLabel = s.risk?.tone === 'uncovered' ? '风险源待接入' : String(s.risk?.risk_n || 0);
+          return `<tr data-strategy="${escapeHtml(s.slug)}"><td><span class="account-name">${escapeHtml(title)}</span><code class="account-slug">${escapeHtml(s.slug)}</code><span class="account-venues">${escapeHtml(factorCount)}</span>${signalLink} ${configLink} ${backupButton}</td><td>${escapeHtml(status)}${warnings}</td><td>${s.risk?.universe_n || 0}</td><td>${escapeHtml(riskLabel)}</td><td>${execs}</td></tr>${hits ? `<tr class="hit-row"><td colspan="5"><div class="hit-list">${hits}</div></td></tr>` : ''}`;
+        }).join('');
+        root.innerHTML = `<section class="exchange"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">CTA 策略与因子</span><span class="exchange__site">${escapeHtml(managers)}</span></div></div>${factorBlock}${errors.map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}<div class="exchange__body"><table class="account-table cta-table"><thead><tr><th>组合仓位策略</th><th>状态</th><th>标的</th><th>风险</th><th>关联执行账户</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+        root.querySelectorAll('.backup-action').forEach((button) => button.addEventListener('click', () => executeBackup(button)));
+      }
+      async function executeBackup(button) {
+        button.disabled = true;
+        button.textContent = '备份中';
+        try {
+          const result = await api('backup-now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: button.dataset.kind, env: button.dataset.env }) });
+          const notes = [...(result.warnings || []), ...(result.retention_warning ? [result.retention_warning] : [])];
+          window.alert(`备份已上传并校验：${result.filename}${notes.length ? `\n\n注意：\n${notes.join('\n')}` : ''}`);
+        } catch (error) {
+          window.alert(`备份未完成：${error.message || '未知错误'}`);
+        } finally {
+          button.disabled = false;
+          button.textContent = '立即备份';
+          await load();
+        }
       }
       function render() {
         if (!payload) return;
         renderFilters();
-        renderMetrics(payload.summary);
+        renderMetrics(combinedSummary());
+        renderCta();
         document.getElementById('as-of').textContent = formatTime(payload.as_of_ms);
         renderList((payload.accounts || []).filter((account) => filter === 'all' || account.kind === filter));
       }
@@ -427,14 +511,15 @@
         document.getElementById('error').textContent = '';
         setSystem('risk', '正在同步');
         try {
-          [payload, flattenPayload] = await Promise.all([api('accounts'), api('flatten-candidates')]);
+          [payload, flattenPayload, backupStatus] = await Promise.all([api('accounts'), api('flatten-candidates'), api('status').catch(() => null)]);
+          ctaPayload = await api('cta-strategies').catch(error => ({ managers: [], strategies: [], errors: [`CTA 映射读取失败：${error.message || '未知错误'}`] }));
           flattenByKey = new Map((flattenPayload.items || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
           positionStatusByKey = new Map((flattenPayload.position_statuses || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
-          const summary = payload.summary || {};
+          const summary = combinedSummary();
           const flattenErrors = (flattenPayload.snapshot_errors || []).length;
           const dumpErrors = (flattenPayload.dump_errors || []).length;
           const tone = summary.error || flattenErrors || dumpErrors ? 'error' : summary.risk ? 'risk' : 'ok';
-          const text = summary.error ? `${summary.error} 个 Redis 连接异常` : flattenErrors ? `${flattenErrors} 个持仓快照异常` : dumpErrors ? `${dumpErrors} 个 dump 状态异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
+          const text = summary.error ? `${summary.error} 个数据源或策略状态异常` : flattenErrors ? `${flattenErrors} 个持仓快照异常` : dumpErrors ? `${dumpErrors} 个 dump 状态异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
           setSystem(tone, text);
           render();
         } catch (error) {

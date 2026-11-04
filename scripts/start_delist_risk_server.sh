@@ -15,6 +15,15 @@ if [[ -f "$CFG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CFG_FILE"
 fi
+CTA_DB_FILE="${BASE_DIR}/config/cta_manager_reader.env"
+if [[ -f "$CTA_DB_FILE" ]]; then
+  if [[ "$(stat -c '%u:%a' "$CTA_DB_FILE")" != "$(id -u):600" ]]; then
+    echo "[ERROR] CTA Manager reader config must be owned by the service user and mode 600" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$CTA_DB_FILE"
+fi
 
 BIN_CANDIDATES=(
   "${BASE_DIR}/delist_risk_server"
@@ -86,6 +95,13 @@ ARGS=(
   --flatten-env-root "${DELIST_FLATTEN_ENV_ROOT:-/home/ubuntu}"
   --flatten-timeout-secs "${DELIST_FLATTEN_TIMEOUT_SECS:-300}"
   --snapshot-base-url "${DELIST_SNAPSHOT_BASE_URL:-http://127.0.0.1:4191}"
+  --redis-backup-dir "${DELIST_REDIS_BACKUP_DIR:-${BASE_DIR}/data/redis_backups}"
+  --redis-backup-keep "${DELIST_REDIS_BACKUP_KEEP:-30}"
+  --redis-backup-env-root "${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}"
+  --redis-backup-sg-ssh-host "${DELIST_SG_REDIS_SSH_HOST:-sg}"
+  --cta-backup-dir "${DELIST_CTA_BACKUP_DIR:-${BASE_DIR}/data/cta_backups}"
+  --cta-factor-env "${DELIST_CTA_FACTOR_ENV:-${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}/cta-prep-binance-futures}"
+  --cta-spread-factor-env "${DELIST_CTA_SPREAD_FACTOR_ENV:-${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}/cta-factor-spread}"
   --llm-max "${DELIST_LLM_MAX:-0}"
   --web-dir "${BASE_DIR}/web/delist_risk"
 )
@@ -165,6 +181,18 @@ fi
 if [[ "${DELIST_SKIP_WS:-0}" == "1" ]]; then
   ARGS+=(--skip-ws)
 fi
+if [[ "${DELIST_SKIP_REDIS_BACKUP:-0}" == "1" ]]; then
+  ARGS+=(--skip-redis-backup)
+fi
+if [[ -n "${DELIST_REDIS_BACKUP_COS_TARGET:-}" ]]; then
+  ARGS+=(--redis-backup-cos-target "${DELIST_REDIS_BACKUP_COS_TARGET}")
+fi
+if [[ -n "${DELIST_CTA_BACKUP_COS_TARGET:-}" ]]; then
+  ARGS+=(--cta-backup-cos-target "${DELIST_CTA_BACKUP_COS_TARGET}")
+fi
+if [[ -n "${DELIST_REDIS_BACKUP_COS_TARGET:-}${DELIST_CTA_BACKUP_COS_TARGET:-}" ]]; then
+  ARGS+=(--redis-backup-cos-config "${DELIST_REDIS_BACKUP_COS_CONFIG:-${HOME}/.config/rclone/fr-cos.conf}")
+fi
 if [[ "${DELIST_AUTO_REMOVE_REDIS:-0}" == "1" ]]; then
   ARGS+=(--auto-remove-redis)
 fi
@@ -183,6 +211,7 @@ echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} 
 (
   cd "$BASE_DIR"
   DELIST_PG_URL="${DELIST_PG_URL:-}" \
+  DELIST_CTA_JP_DATABASE_URL="${DELIST_CTA_JP_DATABASE_URL:-}" \
   DELIST_LLM_API_URL="${DELIST_LLM_API_URL:-}" \
   DELIST_LLM_API_KEY="${DELIST_LLM_API_KEY:-}" \
   DELIST_LLM_MODEL="${DELIST_LLM_MODEL:-gpt-5.6-luna}" \

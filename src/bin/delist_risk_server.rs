@@ -78,6 +78,16 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[path = "delist_risk_server/access.rs"]
 mod access;
+#[path = "delist_risk_server/backup.rs"]
+mod backup;
+#[path = "delist_risk_server/cta_backup.rs"]
+mod cta_backup;
+#[path = "delist_risk_server/cta_factors.rs"]
+mod cta_factors;
+#[path = "delist_risk_server/cta_mapping.rs"]
+mod cta_mapping;
+#[path = "delist_risk_server/upload.rs"]
+mod upload;
 
 use mkt_signal::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
@@ -118,6 +128,10 @@ struct Args {
 
     #[arg(long)]
     skip_postgres: bool,
+
+    /// Read CTA signal/Manager mapping once and print JSON; do not start the service.
+    #[arg(long)]
+    cta_mapping_check: bool,
 
     /// Official market / offTime / schedule snapshot interval. Default 24h.
     #[arg(long, default_value_t = 86_400)]
@@ -219,6 +233,50 @@ struct Args {
     #[arg(long)]
     sg_redis: Option<String>,
 
+    /// Directory for daily FR configuration archives.
+    #[arg(long, default_value = "data/redis_backups")]
+    redis_backup_dir: PathBuf,
+
+    /// Number of daily archives retained for each FR environment.
+    #[arg(long, default_value_t = 30)]
+    redis_backup_keep: usize,
+
+    /// Parent directory containing JP FR environments.
+    #[arg(long, default_value = "/home/ubuntu")]
+    redis_backup_env_root: PathBuf,
+
+    /// SSH host for reading SG FR environment configuration.
+    #[arg(long, default_value = "sg")]
+    redis_backup_sg_ssh_host: String,
+
+    /// Environment owning the shared cta-prep-binance-futures configuration.
+    /// Defaults to <redis-backup-env-root>/cta-prep-binance-futures.
+    #[arg(long)]
+    cta_factor_env: Option<PathBuf>,
+    /// Environment owning the independent cta-factor-spread catalog.
+    #[arg(long)]
+    cta_spread_factor_env: Option<PathBuf>,
+
+    /// Local CTA configuration archive directory.
+    #[arg(long, default_value = "data/cta_backups")]
+    cta_backup_dir: PathBuf,
+
+    /// COS destination for CTA archives, using the private rclone config.
+    #[arg(long, requires = "redis_backup_cos_config")]
+    cta_backup_cos_target: Option<String>,
+
+    /// rclone COS destination, e.g. remote:bucket/prefix.
+    #[arg(long, requires = "redis_backup_cos_config")]
+    redis_backup_cos_target: Option<String>,
+
+    /// Private rclone configuration containing the COS remote.
+    #[arg(long)]
+    redis_backup_cos_config: Option<PathBuf>,
+
+    /// Disable daily FR configuration backups.
+    #[arg(long)]
+    skip_redis_backup: bool,
+
     #[arg(long, default_value = "web/delist_risk")]
     web_dir: PathBuf,
 }
@@ -255,6 +313,21 @@ struct AppState {
     nav_username: Option<String>,
     nav_password: Option<String>,
     nav_session: Arc<RwLock<Option<String>>>,
+    cta_mapping: cta_mapping::Settings,
+    backups: ManualBackupSettings,
+    backup_lock: Arc<AsyncMutex<()>>,
+}
+
+#[derive(Clone)]
+struct ManualBackupSettings {
+    enabled: bool,
+    fr_dir: PathBuf,
+    cta_dir: PathBuf,
+    env_root: PathBuf,
+    sg_ssh_host: String,
+    keep: usize,
+    fr_cos: Option<upload::UploadConfig>,
+    cta_cos: Option<upload::UploadConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,6 +343,32 @@ struct RiskParams {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    if args.cta_mapping_check {
+        let settings = cta_mapping::Settings {
+            env_root: args.redis_backup_env_root.clone(),
+            factor_env: args.cta_factor_env.clone().unwrap_or_else(|| {
+                args.redis_backup_env_root
+                    .join(cta_factors::Worker::Perp.name())
+            }),
+            spread_factor_env: args.cta_spread_factor_env.clone().unwrap_or_else(|| {
+                args.redis_backup_env_root
+                    .join(cta_factors::Worker::Spread.name())
+            }),
+            jp_database: std::env::var("DELIST_CTA_JP_DATABASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        };
+        let params = RiskParams {
+            venue: None,
+            exchange: None,
+            days: None,
+            include_past: false,
+        };
+        let risk = RiskBook::default().query(&to_query(&params, args.days));
+        let result = cta_mapping::load(&settings, &risk, &ListingIndex::default()).await;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
     let access = access::Access::load(&args.access_config)?;
     let mut book = RiskBook::load(&args.book).unwrap_or_else(|err| {
         warn!("load risk book failed, start empty: {err:#}");
@@ -338,6 +437,9 @@ async fn main() -> Result<()> {
         .clone()
         .or_else(|| std::env::var("DELIST_SG_REDIS_URL").ok())
         .filter(|url| !url.trim().is_empty());
+    if args.redis_backup_keep == 0 {
+        anyhow::bail!("--redis-backup-keep must be positive");
+    }
     if sg_redis.is_some() {
         info!("sg redis enabled for bybit books");
     } else {
@@ -413,7 +515,441 @@ async fn main() -> Result<()> {
         nav_username: args.nav_username.clone().filter(|u| !u.is_empty()),
         nav_password: args.nav_password.clone().filter(|p| !p.is_empty()),
         nav_session: Arc::new(RwLock::new(None)),
+        cta_mapping: cta_mapping::Settings {
+            env_root: args.redis_backup_env_root.clone(),
+            factor_env: args.cta_factor_env.clone().unwrap_or_else(|| {
+                args.redis_backup_env_root
+                    .join(cta_factors::Worker::Perp.name())
+            }),
+            spread_factor_env: args.cta_spread_factor_env.clone().unwrap_or_else(|| {
+                args.redis_backup_env_root
+                    .join(cta_factors::Worker::Spread.name())
+            }),
+            jp_database: std::env::var("DELIST_CTA_JP_DATABASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        },
+        backups: ManualBackupSettings {
+            enabled: !args.skip_redis_backup,
+            fr_dir: args.redis_backup_dir.clone(),
+            cta_dir: args.cta_backup_dir.clone(),
+            env_root: args.redis_backup_env_root.clone(),
+            sg_ssh_host: args.redis_backup_sg_ssh_host.clone(),
+            keep: args.redis_backup_keep,
+            fr_cos: args
+                .redis_backup_cos_target
+                .clone()
+                .zip(args.redis_backup_cos_config.clone())
+                .map(|(target, config_path)| upload::UploadConfig {
+                    target,
+                    config_path,
+                }),
+            cta_cos: args
+                .cta_backup_cos_target
+                .clone()
+                .zip(args.redis_backup_cos_config.clone())
+                .map(|(target, config_path)| upload::UploadConfig {
+                    target,
+                    config_path,
+                }),
+        },
+        backup_lock: Arc::new(AsyncMutex::new(())),
     };
+
+    if !args.skip_redis_backup {
+        let backup_state = state.clone();
+        let backup_dir = args.redis_backup_dir.clone();
+        let env_root = args.redis_backup_env_root.clone();
+        let sg_ssh_host = args.redis_backup_sg_ssh_host.clone();
+        let keep = args.redis_backup_keep;
+        let cos = args
+            .redis_backup_cos_target
+            .clone()
+            .zip(args.redis_backup_cos_config.clone())
+            .map(|(target, config_path)| upload::UploadConfig {
+                target,
+                config_path,
+            });
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(300));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let mut completed = BTreeMap::new();
+            let mut cleaned = BTreeMap::new();
+            loop {
+                interval.tick().await;
+                if !nav_accounts_ready(&backup_state).await {
+                    mark_err(
+                        &backup_state,
+                        "redis_fr_backup_catalog",
+                        "backup",
+                        "NAV strategy catalog is unavailable",
+                    )
+                    .await;
+                    // The NAV refresh starts in a separate task. Do not delay
+                    // the first backup by five minutes on a normal startup.
+                    let deadline = Instant::now() + Duration::from_secs(300);
+                    while Instant::now() < deadline {
+                        time::sleep(Duration::from_secs(5)).await;
+                        if nav_accounts_ready(&backup_state).await {
+                            interval.reset_immediately();
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                mark_ok(&backup_state, "redis_fr_backup_catalog", "backup").await;
+                let accounts = backup_state.accounts.read().await.clone();
+                for account in accounts.iter().filter(|a| a.kind == "funding_rate") {
+                    let _backup_guard = backup_state.backup_lock.lock().await;
+                    let today = Utc::now().date_naive();
+                    let id = format!("{}:{}:{}", account.host, account.slug, account.exchange);
+                    let source = format!("redis_fr_backup_{}", account.slug);
+                    let target = match account.site {
+                        mkt_signal::common::delist_accounts::RedisSite::Jp => {
+                            Some(("jp", backup_state.jp_redis.as_str()))
+                        }
+                        mkt_signal::common::delist_accounts::RedisSite::Sg => {
+                            backup_state.sg_redis.as_deref().map(|url| ("sg", url))
+                        }
+                        mkt_signal::common::delist_accounts::RedisSite::Unsupported => None,
+                    };
+                    if completed.get(&id) != Some(&today) {
+                        let result = if let Some((site, url)) = target {
+                            backup::backup_today(
+                                &backup_dir,
+                                site,
+                                url,
+                                account,
+                                keep,
+                                &env_root,
+                                &sg_ssh_host,
+                                cos.is_some(),
+                            )
+                            .await
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "FR account Redis site is unsupported or unavailable"
+                            ))
+                        };
+                        match result {
+                            Ok(backup::Outcome::Created(path)) => {
+                                info!(
+                                    "FR Redis backup completed env={} path={}",
+                                    account.slug,
+                                    path.display()
+                                );
+                                completed.insert(id.clone(), today);
+                                mark_ok(&backup_state, &source, "backup").await;
+                            }
+                            Ok(backup::Outcome::AlreadyExists) => {
+                                completed.insert(id.clone(), today);
+                                mark_ok(&backup_state, &source, "backup").await;
+                            }
+                            Err(err) => {
+                                let message = format!("{err:#}");
+                                warn!("FR Redis backup failed env={}: {message}", account.slug);
+                                mark_err(&backup_state, &source, "backup", &message).await;
+                            }
+                        }
+                    }
+                    if let Some(cos) = cos.as_ref() {
+                        let source = format!("cos_fr_backup_{}", account.slug);
+                        let result = if let Some((site, _)) = target {
+                            upload::sync_archives(cos, &backup_dir, site, account, keep).await
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "FR account backup site is unsupported or unavailable"
+                            ))
+                        };
+                        match result {
+                            Ok(count) => {
+                                if count > 0 {
+                                    info!(
+                                        "COS backup verified env={} uploaded={count}",
+                                        account.slug
+                                    );
+                                }
+                                mark_ok(&backup_state, &source, "upload").await;
+                                if cleaned.get(&id) != Some(&today) {
+                                    let cleanup_source =
+                                        format!("cos_fr_retention_{}", account.slug);
+                                    let result = if let Some((site, _)) = target {
+                                        upload::prune_remote(cos, &backup_dir, site, account, keep)
+                                            .await
+                                    } else {
+                                        Err(anyhow::anyhow!(
+                                            "FR account backup site is unsupported or unavailable"
+                                        ))
+                                    };
+                                    match result {
+                                        Ok(deleted) => {
+                                            if deleted > 0 {
+                                                info!("COS retention completed env={} deleted={deleted}", account.slug);
+                                            }
+                                            cleaned.insert(id.clone(), today);
+                                            mark_ok(&backup_state, &cleanup_source, "retention")
+                                                .await;
+                                        }
+                                        Err(err) => {
+                                            let message = format!("{err:#}");
+                                            warn!(
+                                                "COS retention failed env={}: {message}",
+                                                account.slug
+                                            );
+                                            mark_err(
+                                                &backup_state,
+                                                &cleanup_source,
+                                                "retention",
+                                                &message,
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                let message = format!("{err:#}");
+                                warn!("COS backup failed env={}: {message}", account.slug);
+                                mark_err(&backup_state, &source, "upload", &message).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    if !args.skip_redis_backup {
+        let backup_state = state.clone();
+        let backup_dir = args.cta_backup_dir.clone();
+        let env_root = args.redis_backup_env_root.clone();
+        let keep = args.redis_backup_keep;
+        let cos = args
+            .cta_backup_cos_target
+            .clone()
+            .zip(args.redis_backup_cos_config.clone())
+            .map(|(target, config_path)| upload::UploadConfig {
+                target,
+                config_path,
+            });
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(300));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let mut completed = BTreeMap::new();
+            let mut cleaned = BTreeMap::new();
+            loop {
+                interval.tick().await;
+                let (signals, errors) = match cta_mapping::read_signals(&env_root) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        mark_err(
+                            &backup_state,
+                            "cta_backup_catalog",
+                            "backup",
+                            &format!("{err:#}"),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                if errors.is_empty() {
+                    mark_ok(&backup_state, "cta_backup_catalog", "backup").await;
+                } else {
+                    mark_err(
+                        &backup_state,
+                        "cta_backup_catalog",
+                        "backup",
+                        &errors.join("; "),
+                    )
+                    .await;
+                }
+                let mut name_counts = BTreeMap::<String, usize>::new();
+                for signal in &signals {
+                    for name in &signal.names {
+                        *name_counts.entry(name.clone()).or_default() += 1;
+                    }
+                }
+                for signal in signals {
+                    let _backup_guard = backup_state.backup_lock.lock().await;
+                    let today = Utc::now().date_naive();
+                    let account = AccountSpec {
+                        slug: signal.slug.clone(),
+                        alias: signal.slug.clone(),
+                        exchange: signal.exchange().into(),
+                        kind: signal.kind().into(),
+                        host: "jp".into(),
+                        site: mkt_signal::common::delist_accounts::RedisSite::Jp,
+                        config_url: String::new(),
+                    };
+                    let slug = &signal.slug;
+                    if signal
+                        .names
+                        .iter()
+                        .any(|name| name_counts.get(name).copied().unwrap_or(0) > 1)
+                    {
+                        mark_err(
+                            &backup_state,
+                            &format!("cta_backup_{slug}"),
+                            "backup",
+                            "duplicate CTA strategy identifier; backup scope is ambiguous",
+                        )
+                        .await;
+                        continue;
+                    }
+                    if completed.get(slug) != Some(&today) {
+                        let result = match backup_state.cta_mapping.jp_database.as_deref() {
+                            Some(url) => {
+                                cta_backup::backup_today(
+                                    &backup_dir,
+                                    &env_root,
+                                    &backup_state.jp_redis,
+                                    url,
+                                    backup_state.cta_mapping.factor_environment(signal.worker),
+                                    &signal,
+                                    &account,
+                                )
+                                .await
+                            }
+                            None => Err(anyhow::anyhow!(
+                                "CTA Manager read-only database is not configured"
+                            )),
+                        };
+                        match result {
+                            Ok(created) => {
+                                if let backup::Outcome::Created(path) = created.outcome {
+                                    info!(
+                                        "CTA configuration backup created env={} path={}",
+                                        slug,
+                                        path.display()
+                                    );
+                                }
+                                completed.insert(slug.clone(), today);
+                                mark_ok(&backup_state, &format!("cta_backup_{slug}"), "backup")
+                                    .await;
+                                if created.warnings.is_empty() {
+                                    mark_ok(
+                                        &backup_state,
+                                        &format!("cta_backup_quality_{slug}"),
+                                        "backup",
+                                    )
+                                    .await;
+                                } else {
+                                    mark_err(
+                                        &backup_state,
+                                        &format!("cta_backup_quality_{slug}"),
+                                        "backup",
+                                        &created.warnings.join("; "),
+                                    )
+                                    .await;
+                                }
+                            }
+                            Err(err) => {
+                                mark_err(
+                                    &backup_state,
+                                    &format!("cta_backup_{slug}"),
+                                    "backup",
+                                    &format!("{err:#}"),
+                                )
+                                .await
+                            }
+                        }
+                    }
+                    if let Some(cos) = cos.as_ref() {
+                        let source = format!("cos_cta_backup_{slug}");
+                        match upload::sync_archives(cos, &backup_dir, "jp", &account, keep).await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    info!("CTA COS backup verified env={} uploaded={count}", slug);
+                                }
+                                mark_ok(&backup_state, &source, "upload").await;
+                                let latest = backup::archive_paths(&backup_dir, "jp", &account)
+                                    .ok()
+                                    .and_then(|paths| paths.into_iter().last())
+                                    .filter(|path| {
+                                        path.file_name()
+                                            .and_then(|name| name.to_str())
+                                            .and_then(|name| name.strip_suffix(".tar.gz"))
+                                            .and_then(backup::parse_archive_stem)
+                                            .is_some_and(|stamp| stamp.date() == today)
+                                    });
+                                if let Some(path) = latest {
+                                    match cta_backup::validated_warnings(&path, &account) {
+                                        Ok(warnings) if warnings.is_empty() => {
+                                            mark_ok(
+                                                &backup_state,
+                                                &format!("cta_backup_quality_{slug}"),
+                                                "backup",
+                                            )
+                                            .await
+                                        }
+                                        Ok(warnings) => {
+                                            mark_err(
+                                                &backup_state,
+                                                &format!("cta_backup_quality_{slug}"),
+                                                "backup",
+                                                &warnings.join("; "),
+                                            )
+                                            .await
+                                        }
+                                        Err(err) => {
+                                            mark_err(
+                                                &backup_state,
+                                                &format!("cta_backup_quality_{slug}"),
+                                                "backup",
+                                                &format!("{err:#}"),
+                                            )
+                                            .await
+                                        }
+                                    }
+                                }
+                                if cleaned.get(slug) != Some(&today) {
+                                    let cleanup = format!("cos_cta_retention_{slug}");
+                                    match upload::prune_remote(
+                                        cos,
+                                        &backup_dir,
+                                        "jp",
+                                        &account,
+                                        keep,
+                                    )
+                                    .await
+                                    {
+                                        Ok(deleted) => {
+                                            if deleted > 0 {
+                                                info!("CTA COS retention completed env={} deleted={deleted}", slug);
+                                            }
+                                            cleaned.insert(slug.clone(), today);
+                                            mark_ok(&backup_state, &cleanup, "retention").await;
+                                        }
+                                        Err(err) => {
+                                            mark_err(
+                                                &backup_state,
+                                                &cleanup,
+                                                "retention",
+                                                &format!("{err:#}"),
+                                            )
+                                            .await
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                mark_err(&backup_state, &source, "upload", &format!("{err:#}"))
+                                    .await
+                            }
+                        }
+                    } else {
+                        mark_err(
+                            &backup_state,
+                            &format!("cos_cta_backup_{slug}"),
+                            "upload",
+                            "CTA COS target is not configured",
+                        )
+                        .await;
+                    }
+                }
+            }
+        });
+    }
 
     let refresh = state.clone();
     let refresh_args = RefreshArgs {
@@ -446,6 +982,8 @@ async fn main() -> Result<()> {
         .route("/announcements", get(query_announcements))
         .route("/status", get(query_status))
         .route("/accounts", get(query_accounts))
+        .route("/cta-strategies", get(query_cta_strategies))
+        .route("/backup-now", post(manual_backup))
         .route("/removal-candidates", get(query_removal_candidates))
         .route("/removals", get(query_removals))
         .route("/dump-candidates", get(query_dump_candidates))
@@ -604,6 +1142,235 @@ async fn query_accounts(
         accounts,
         latest_announcements,
     })
+}
+
+async fn query_cta_strategies(
+    State(state): State<AppState>,
+    Query(params): Query<RiskParams>,
+) -> impl IntoResponse {
+    let book = state.book.read().await;
+    let mut risk = book.query(&to_query(&params, state.default_days));
+    let listings = state.listings.read().await.clone();
+    listings.decorate(&mut risk);
+    drop(book);
+    Json(cta_mapping::load(&state.cta_mapping, &risk, &listings).await)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualBackupRequest {
+    kind: String,
+    env: String,
+}
+
+async fn manual_backup(
+    State(state): State<AppState>,
+    Json(request): Json<ManualBackupRequest>,
+) -> Response {
+    let fail = |code: StatusCode, message: String| {
+        (code, Json(json!({"ok": false, "error": message}))).into_response()
+    };
+    if !state.backups.enabled {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "备份功能已关闭".into());
+    }
+    let Ok(_guard) = state.backup_lock.try_lock() else {
+        return fail(StatusCode::CONFLICT, "备份正在进行，请稍后重试".into());
+    };
+    let (account, site, dir, cos, created, warnings) = match request.kind.as_str() {
+        "funding_rate" => {
+            if !nav_accounts_ready(&state).await {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "策略名单暂不可用".into());
+            }
+            let Some(account) = state
+                .accounts
+                .read()
+                .await
+                .iter()
+                .find(|a| a.kind == "funding_rate" && a.slug == request.env)
+                .cloned()
+            else {
+                return fail(StatusCode::NOT_FOUND, "未找到该 FR 策略".into());
+            };
+            let (site, redis) = match account.site {
+                mkt_signal::common::delist_accounts::RedisSite::Jp => {
+                    ("jp", Some(state.jp_redis.as_str()))
+                }
+                mkt_signal::common::delist_accounts::RedisSite::Sg => {
+                    ("sg", state.sg_redis.as_deref())
+                }
+                mkt_signal::common::delist_accounts::RedisSite::Unsupported => ("", None),
+            };
+            let Some(redis) = redis else {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "策略 Redis 不可用".into());
+            };
+            let Some(cos) = state.backups.fr_cos.as_ref() else {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "FR 云端备份未配置".into());
+            };
+            let result = backup::backup_manual(
+                &state.backups.fr_dir,
+                site,
+                redis,
+                &account,
+                state.backups.keep,
+                &state.backups.env_root,
+                &state.backups.sg_ssh_host,
+                true,
+            )
+            .await;
+            let path = match result {
+                Ok(backup::Outcome::Created(path)) => path,
+                Ok(backup::Outcome::AlreadyExists) => {
+                    return fail(StatusCode::CONFLICT, "备份版本冲突，请重试".into())
+                }
+                Err(err) => {
+                    return fail(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("本地备份失败：{err:#}"),
+                    )
+                }
+            };
+            (
+                account,
+                site,
+                state.backups.fr_dir.clone(),
+                cos.clone(),
+                path,
+                Vec::new(),
+            )
+        }
+        "cta_perp" | "cta_spread" => {
+            if !cta_mapping::valid_slug(&request.env) {
+                return fail(StatusCode::BAD_REQUEST, "无效的 CTA 策略".into());
+            }
+            let (signals, _) = match cta_mapping::read_signals(&state.backups.env_root) {
+                Ok(value) => value,
+                Err(err) => {
+                    return fail(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("读取策略失败：{err:#}"),
+                    )
+                }
+            };
+            let Some(signal) = signals.iter().find(|s| s.slug == request.env) else {
+                return fail(
+                    StatusCode::NOT_FOUND,
+                    "未找到 CTA 策略或信号状态不可用".into(),
+                );
+            };
+            if signal
+                .names
+                .iter()
+                .any(|name| signals.iter().filter(|s| s.names.contains(name)).count() > 1)
+            {
+                return fail(
+                    StatusCode::CONFLICT,
+                    "策略标识重复，无法安全确定备份范围".into(),
+                );
+            }
+            let Some(url) = state.cta_mapping.jp_database.as_deref() else {
+                return fail(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Manager 数据库未配置".into(),
+                );
+            };
+            let Some(cos) = state.backups.cta_cos.as_ref() else {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "CTA 云端备份未配置".into());
+            };
+            let account = AccountSpec {
+                slug: signal.slug.clone(),
+                alias: signal.slug.clone(),
+                exchange: signal.exchange().into(),
+                kind: signal.kind().into(),
+                host: "jp".into(),
+                site: mkt_signal::common::delist_accounts::RedisSite::Jp,
+                config_url: String::new(),
+            };
+            let result = cta_backup::backup_manual(
+                &state.backups.cta_dir,
+                &state.backups.env_root,
+                &state.jp_redis,
+                url,
+                state.cta_mapping.factor_environment(signal.worker),
+                signal,
+                &account,
+            )
+            .await;
+            let created = match result {
+                Ok(created) => created,
+                Err(err) => {
+                    return fail(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("本地备份失败：{err:#}"),
+                    )
+                }
+            };
+            let path = match created.outcome {
+                backup::Outcome::Created(path) => path,
+                backup::Outcome::AlreadyExists => {
+                    return fail(StatusCode::CONFLICT, "备份版本冲突，请重试".into())
+                }
+            };
+            (
+                account,
+                "jp",
+                state.backups.cta_dir.clone(),
+                cos.clone(),
+                path,
+                created.warnings,
+            )
+        }
+        _ => return fail(StatusCode::BAD_REQUEST, "不支持的策略类型".into()),
+    };
+    let filename = created
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or("backup.tar.gz")
+        .to_string();
+    let is_cta = matches!(account.kind.as_str(), "cta_perp" | "cta_spread");
+    let local_source = if is_cta {
+        format!("cta_backup_{}", account.slug)
+    } else {
+        format!("redis_fr_backup_{}", account.slug)
+    };
+    let cloud_source = if is_cta {
+        format!("cos_cta_backup_{}", account.slug)
+    } else {
+        format!("cos_fr_backup_{}", account.slug)
+    };
+    let retention_source = if is_cta {
+        format!("cos_cta_retention_{}", account.slug)
+    } else {
+        format!("cos_fr_retention_{}", account.slug)
+    };
+    mark_ok(&state, &local_source, "backup").await;
+    if is_cta {
+        let quality = format!("cta_backup_quality_{}", account.slug);
+        if warnings.is_empty() {
+            mark_ok(&state, &quality, "backup").await;
+        } else {
+            mark_err(&state, &quality, "backup", &warnings.join("; ")).await;
+        }
+    }
+    if let Err(err) = upload::sync_archives(&cos, &dir, site, &account, state.backups.keep).await {
+        mark_err(&state, &cloud_source, "upload", &format!("{err:#}")).await;
+        return fail(
+            StatusCode::BAD_GATEWAY,
+            format!("本地备份已保存，但云端上传或校验失败；后台会重试：{err:#}"),
+        );
+    }
+    mark_ok(&state, &cloud_source, "upload").await;
+    let retention_warning =
+        match upload::prune_remote(&cos, &dir, site, &account, state.backups.keep).await {
+            Ok(_) => {
+                mark_ok(&state, &retention_source, "retention").await;
+                None
+            }
+            Err(err) => {
+                mark_err(&state, &retention_source, "retention", &format!("{err:#}")).await;
+                Some(format!("备份已上传并校验，但旧备份清理失败：{err:#}"))
+            }
+        };
+    Json(json!({"ok":true,"environment":account.slug,"filename":filename,"verified":true,"warnings":warnings,"retention_warning":retention_warning})).into_response()
 }
 
 async fn query_removal_candidates(State(state): State<AppState>) -> impl IntoResponse {
@@ -2875,6 +3642,23 @@ mod tests {
             nav_username: None,
             nav_password: None,
             nav_session: Arc::new(RwLock::new(None)),
+            cta_mapping: cta_mapping::Settings {
+                env_root: dir.clone(),
+                factor_env: dir.join(cta_factors::Worker::Perp.name()),
+                spread_factor_env: dir.join(cta_factors::Worker::Spread.name()),
+                jp_database: None,
+            },
+            backups: ManualBackupSettings {
+                enabled: false,
+                fr_dir: dir.clone(),
+                cta_dir: dir.clone(),
+                env_root: dir.clone(),
+                sg_ssh_host: "sg".into(),
+                keep: 30,
+                fr_cos: None,
+                cta_cos: None,
+            },
+            backup_lock: Arc::new(AsyncMutex::new(())),
         };
         let client = Client::builder().no_proxy().build().unwrap();
         let budget = Mutex::new(LlmBudget::new(0));

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-10-23 10:49 UTC
+最后更新：2026-11-03 15:39 UTC（当前共享 CTA 组合监控已部署，退役 RX 快照退出实时计数）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -43,11 +43,13 @@ its separate operation token in addition to the login session.
 
 ## Login and FR panel access
 
-Delist is the entry point for the nine active JP FR environments: Binance arb02/03/04,
-Gate arb01/02/03, and Bitget arb01/02/03, plus the active SG
+Delist is the entry point for JP FR environments: Binance arb02/03/04,
+Gate arb01/02/03/04, and Bitget arb01/02/03, plus the active SG
 `bybit_fr_arb01` after its 2026-10-23 trading cutover. After login, use the account row's Viz
 or Config link. `/delist/open?env=<slug>&panel=viz|config` grants that environment
 to the current session and redirects to its existing `/fr/<slug>/` route.
+Gate arb04 Config listens on port 20024; its Viz and trading services were started
+on 2026-11-03. See `docs/core_allocation.md` for the live deployment record.
 The launch link must originate from the delist board. A direct panel URL without
 a grant redirects to the board, including when the user has already logged in.
 Refreshes and navigation within an opened environment keep working.
@@ -846,6 +848,299 @@ Source names:
 - ws: `gate_ws`
 - llm: `llm` plus per-announcement rows in `llm_failures`
 
+## FR Redis configuration backups
+
+On 2026-11-02 05:19 UTC, the JP service was updated to create and upload these
+archives. The private rclone remote targets the Tokyo COS bucket and keeps the
+existing Google Drive remote separate. The initial run produced verified
+receipts for ten NAV FR environments (nine JP and one SG); one object from
+each site was independently read back and SHA-256 checked, and anonymous
+reads of those two objects returned 403. The installed server artifact SHA-256
+was `d880efdf0a0a818885e4ecf00c6b92019cda0ef464c21d20a1316d490d3efbf2`.
+The prior binary, startup script and configuration were preserved under
+`~/delist_risk_server/run/cos-backup-deploy-20261102T051943Z/`.
+
+On 2026-11-02 05:35 UTC, the JP server was updated with COS retention.
+The locally built artifact SHA-256 is
+`c82f2e9b26a1385fbf807d434a05b881ced6967279ec700fdd3846ad3f6ab27c`;
+the previous binary is `run/delist-before-retention-20261102`. After restart,
+retention reported success for all ten FR environments.
+
+The server reads the current NAV catalog and creates one daily archive per
+`funding_rate` environment on JP or SG. Each archive contains the selected
+Redis configuration, the environment's `env.sh`, `trade_engine.toml` (or
+`trade engine.toml`), and regular files under its `config/` directory, excluding
+historical `.bak`, `.bk`, and `.backup` files and their dated variants.
+It reads JP files locally and SG files through the SSH host configured by
+`DELIST_SG_REDIS_SSH_HOST` (default `sg`). It uses the configured JP Redis and
+the existing SG Redis tunnel, and takes each environment's selected keys in a
+single read-only Redis transaction. No Redis replication or restore command is
+used. On startup it backs up the current UTC day if needed; it checks again
+every five minutes, including after a failed attempt or NAV outage. A fresh
+NAV catalog is required; unsupported hosts, unavailable Redis or SSH access,
+missing required files, and symlinks in the selected files are failures rather
+than silently skipped.
+
+The default path is `data/redis_backups/<jp|sg>/<env>/YYYY-MM-DD.tar.gz`,
+relative to the deployed delist server directory. Each environment retains its
+latest 30 successful daily archives by default, configurable with
+`DELIST_REDIS_BACKUP_DIR` and `DELIST_REDIS_BACKUP_KEEP`. Set
+`DELIST_SKIP_REDIS_BACKUP=1` to disable the task. Successful snapshots are
+published only after gzip, tar, metadata, and per-key SHA-256 validation. Older
+archives are deleted only after the current archive is validated; when COS is
+enabled, they are retained until the corresponding uploads are verified. The archive
+directory is private (0700) and files are mode 0600. Archives contain
+credentials from `env.sh` and possibly `config/`; they are not encrypted.
+The JP environment parent defaults to `/home/ubuntu` and can be changed via
+`DELIST_REDIS_BACKUP_ENV_ROOT`.
+
+`config.json` identifies the environment, site, exchange, capture time and every
+selected key; missing keys are recorded explicitly. Present strings and hashes
+have a readable value, remaining TTL, and a `keys/*.dump` Redis DUMP payload
+with its SHA-256. Environment files are under `files/`; their original modes,
+sizes and SHA-256 values are recorded in `config.json`. File capture and the
+Redis transaction are sequential, so changes made during a capture are not a
+single cross-system point-in-time snapshot. The key set covers FR symbol lists (including position dump),
+per-environment risk and funding parameters, per-symbol overrides, and the
+corresponding shared FR strategy, rolling-parameter and spread configuration.
+Shared venue keys are marked `shared`; restoring one affects every strategy that
+uses it. A snapshot is rejected if risk parameters, shared strategy parameters,
+or all three open/dump lists are absent. The backup cannot establish that the
+captured values are correct or protect against a compromised host; arrange an
+independent copy if protection against host loss or tampering is required.
+
+Optional COS upload uses a private, service-user-owned rclone configuration
+(`0600`) and a configured `remote:bucket/prefix`. The deployment-specific
+destination is `tencent-fr:jp-fr-config-1307417638/fr-config-backups` in the
+Tokyo region. Set `DELIST_REDIS_BACKUP_COS_TARGET` and
+`DELIST_REDIS_BACKUP_COS_CONFIG` in the environment-local config. The existing
+Google Drive rclone configuration is not changed. For Tencent COS, use the
+`TencentCOS` S3 provider and endpoint `cos.ap-tokyo.myqcloud.com`; do not put
+credentials in repo files, command arguments or logs. The credential helper
+`scripts/configure_fr_cos_rclone.sh` accepts both values interactively without
+terminal echo and creates a separate private configuration.
+
+After a validated local backup, rclone uploads to
+`<prefix>/<jp|sg>/<env>/<YYYY-MM-DD>-<sha256>.tar.gz`. It does not overwrite
+an existing differing object, and reads the exact uploaded object back to check
+its SHA-256 before recording a private local receipt. Failed or interrupted
+uploads are retried every five minutes, including older pending archives; local
+retention does not delete an archive until it has been verified for the current
+destination. COS retention keeps the latest `DELIST_REDIS_BACKUP_KEEP` daily
+archives and the same number of independently timestamped manual archives per
+site/environment (30 of each by default), and only deletes matching dated archives
+after verifying the current day's uploaded object. Other object names and
+future-dated objects are ignored. `/status` reports `cos_fr_retention_<env>`
+and `cos_fr_backup_<env>` separately from local backup status. The COS bucket must
+be private: archives include account credentials and are not client-side
+encrypted. COS availability and policy are external dependencies.
+
+The Redis user needs `MULTI`, `EXEC`, `DUMP`, `PTTL`, `GET`, and `HGETALL` for
+these keys. `/status` exposes `redis_fr_backup_catalog` and
+`redis_fr_backup_<env>` success/error states. No live restore is performed:
+inspect the archive and reconcile its values, shared keys, TTLs, positions and
+orders before any separately authorized restoration.
+
+## CTA combinations, shared factors and Exec mapping
+
+Delist is the common navigation entry for CTA Prep and CTA Spread. The page
+always displays **CTA Prep 统一配置** and **CTA Spread 统一配置**, including when
+no signal is running or one catalog is missing. They open the same editor with
+an explicit worker selection:
+
+| Entry | URL |
+|---|---|
+| CTA Prep | `/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures` |
+| CTA Spread | `/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread` |
+
+The editor reads that selection on initial navigation and includes a return
+link to `/delist/`. `/cta/cta-factor-spread/config/` is a gateway redirect to
+the Spread selection in this editor. The old Prep and Spread editable config
+locations return 410. The unified gateways were already cut over before the 2026-11-03 current-worker monitoring publish; this publish did not change Nginx routes.
+
+The service independently inventories `cta-prep-binance-futures` and
+`cta-factor-spread`. `DELIST_CTA_FACTOR_ENV` / `--cta-factor-env` and
+`DELIST_CTA_SPREAD_FACTOR_ENV` / `--cta-spread-factor-env` select their environment
+directories; defaults are the corresponding names beneath
+`<redis-backup-env-root>`. It reads each worker's TOML, combination directory and
+`state.json`, reusing the factor core's validation without Kafka or IPC.
+`/cta-strategies` exposes one current `factor_processes` array, with worker and
+combination configuration URLs. A missing Spread catalog does not discard the
+Prep inventory or either navigation link. The shared editor must be configured
+with both catalogs and the gateway's configure-permission scope must cover all
+affected Prep and Spread accounts.
+
+The current page reads six Prep combinations (Prep01/Prep02 at 1min, 5min and
+15min) and Spread01 from the two shared workers. At the 2026-11-03 15:36 UTC
+verification, Prep had 404 unique jobs and Spread had 50. These are observations,
+not hard-coded inventories.
+The authoritative combination format keeps the four columns `标的`, `nq`,
+`符号`, `因子`, with top-level `venue`, `interval` and signal controls. NQ
+dependencies are derived from those rows. Every CTA configuration link points
+to `/cta/cta-prep-binance-futures/config/?worker=<worker>#<combination>`; no per-signal factor
+Redis key or old editable Config URL is used by the new configuration flow.
+Counts come from the deployed nonzero references, rather than hard-coded RX
+lists. Deleting a combination or its last reference changes the next read.
+Each process is shown once with its configured combinations, active-plan match,
+replay and snapshot freshness. A missing configuration, missing runtime status,
+stale status, and a plan waiting to become active remain distinct from a live
+signal's enabled flag. Configuration alone is not evidence of a running process.
+
+The delist page discovers current combinations from each shared worker's plan
+and matches their Manager strategy identities to its runtime `position_tables`.
+Retired `binance-cta-perp-rx*` directories are not part of live monitoring.
+The worker heartbeat controls freshness: a 15-minute table legitimately retains
+its decision between bars. Missing or mismatched tables still report an error.
+It combines the current published Manager strategy identifiers with
+the JP Manager catalog's current account bindings and virtual-account follows.
+This supports multiple Exec sources per combination. Links come from each source's
+configured Manager gateway prefix; account identity is the Manager source ID,
+not its display alias or a guessed Exec number. The endpoint is read-only and
+does not change Manager, Redis, positions, or orders. CTA checking does not
+enable the FR-specific automatic removal or flatten actions.
+
+The strategy universe combines its own configured factor references and runtime
+targets, including symbols retained for position handling. Another combination's
+symbols are not inherited.
+The existing delist book and Binance futures listing catalog provide risk
+matches. The page reports an unavailable Manager, missing gateway, ambiguous
+strategy name, unsynchronized followed binding, and worker state older than
+three minutes. A stale runtime snapshot is explicitly marked; it is not proof of
+current trading or that every position has been included. CTA counts are included
+in the page summary.
+
+Spread uses the shared Spread worker's current tables, Manager strategy identity
+and Exec bindings. Each leg has an explicit market scope;
+Binance cash delisting is checked independently of Binance perpetuals. OKX
+listing coverage remains explicitly unavailable until its risk catalog is
+connected; known Binance hits are retained. CTA monitoring never invokes FR
+automatic removal or flatten actions.
+
+`config/cta_manager_reader.env` is a service-user-owned 0600 file containing
+`DELIST_CTA_JP_DATABASE_URL`; its role can only SELECT the mapping tables. The
+Manager configuration file is read locally for source IDs and gateway paths.
+Database reads use a read-only repeatable-read transaction. The service checks
+JP only; the existing SG connection for FR remains independent. On 2026-11-02,
+read-only verification found RX01/15m → Exec06, RX02/1m → Exec08,
+RX03/1m → Exec07, and RX04/5m → Exec05. These are a snapshot, not static
+configuration; Manager changes appear on the next page refresh. The 2026-11-02
+binary SHA-256 was `b559a14451555dd7a8fb31d3b403b73f3e993e0757902f393d7c65b520542f59`;
+rollback copies are in `run/cta-mapping-deploy-20261102/` on JP.
+
+## CTA configuration backups and manual backups
+
+JP CTA Prep and Spread signal environments are discovered independently of NAV and backed
+up individually. The startup pass and subsequent five-minute retries create one
+archive per UTC day under `data/cta_backups/jp/<signal>/YYYY-MM-DD.tar.gz`;
+midnight UTC is 08:00 Shanghai time. The optional COS target is configured by
+`DELIST_CTA_BACKUP_COS_TARGET`; the configured Tokyo destination is
+`tencent-fr:jp-fr-config-1307417638/lgq-cta-backup`. The existing private rclone
+config and `DELIST_REDIS_BACKUP_KEEP` are shared with FR.
+
+Each CTA archive contains the signal `env.sh`, regular files under `config/`,
+available release metadata, the runtime status and, when readable, position
+flags. When the shared factor catalog contains that signal's combination, the
+archive also includes the worker TOML, all combination JSON files, available
+`env.sh` and release metadata, a resolved
+merged plan, and the available runtime state under
+`files/factor/<worker>/`. Saving the complete shared catalog
+preserves other strategies' dependencies during a reviewed restoration. Factor
+history, Kafka records and a fabricated factor Redis key are not captured.
+Missing shared configuration/status or a config/active-plan mismatch is a
+completeness warning; existing archives without the shared dependency are also
+labelled incomplete. No existing archive is overwritten. Manifest checks reject
+missing, duplicate or corrupt shared-factor members.
+It includes each dynamically associated JP Exec's `env.sh`,
+`trade_engine.toml`, configuration directory and release metadata. A
+repeatable-read Manager snapshot contains the associated virtual accounts,
+bindings, follows, position and order strategies, source metadata, leverage,
+grants, and user IDs/names; user password hashes are excluded. The shared
+`cta-manager.toml` is included and can reference other accounts. Redis DUMP
+payloads cover each associated Exec's strategy
+indexes/configurations, risk parameters, algorithm-switch state, leverage-init
+state and position-allocation evidence;
+missing selected keys are recorded. `.bk`, `.bak`, `.backup` and dated variants
+are excluded. All captured file and dump payloads have SHA-256 checksums in the
+archive manifest. The files can contain account credentials and Manager tokens;
+local archives are 0600 in private directories and the COS bucket must remain
+private. These archives are not client-side encrypted.
+
+Spread archives use `cta-factor-spread` dependencies and the corresponding
+Spread runtime status, position flags and ownership ledger. Exec Redis captures
+follow each source's configured venue, including native OKX unified cash and
+perpetual scopes; Binance and OKX keys are not mixed. An unregistered Spread
+combination is reported as incomplete rather than associated with another
+combination by guessing its symbols.
+
+The FR and CTA rows provide an authenticated, same-origin **立即备份** action.
+Each click captures a new `YYYY-MM-DDTHHMMSSnnnnnnnnnZ.tar.gz` version, uploads
+it and verifies the exact cloud object by reading it back and hashing it. The
+page reports failure or completeness warnings. Daily and manual versions each
+retain their own 30 most recent objects by default, so manual backups do not
+evict daily backups. A backup or read-back failure retains unverified local
+archives for retry and prevents cloud cleanup. Retention is scoped to the exact
+site/environment and destination prefix. `/status` includes
+`cta_backup_<env>`, `cta_backup_quality_<env>`, `cos_cta_backup_<env>` and
+`cos_cta_retention_<env>`; the quality entry reports absent Exec Redis keys or
+differences between the unified combination and the signal's active snapshot.
+Signal snapshots written before this cutover are explicitly identified.
+
+On 2026-11-02, the JP service was updated with this backup and manual action;
+the final server SHA-256 is
+`fb7f148b01716e53851397e8891a924a3b8c4be171167c0bb0ee170ec7fcda8f`.
+The first four CTA daily archives were uploaded and read back with matching
+hashes. At the initial verification, RX01–RX03's factor Redis keys and Exec06–08's
+`binance-futures:pre_trade_risk_params` keys were absent; RX02's runtime factor
+table was empty and RX03's runtime table differed from its disk file. Both
+available tables were retained. The pre-trade logs independently showed failed
+risk-parameter refreshes for Exec06–08. Existing startup-table logs and older
+snapshots are historical evidence, not proof of the latest active risk values.
+At 06:49:43 UTC, after explicitly choosing each process's startup-log values,
+the operator authorized restoration of the three missing Exec risk hashes:
+pending order limit 10, buy/sell limits 10 each, 400 orders/minute and 300
+orders/10 seconds. A WATCH/MULTI transaction created only absent keys and
+verified every field; all three pre-trade PIDs remained unchanged and no later
+missing-risk refresh warnings appeared during the next refresh cycle. The audit
+is in `run/exec-risk-restore-20261102-evidence/`. New timestamped CTA manual
+archives were uploaded and verified for RX01–RX03, each containing the restored
+hash. All three restored DUMP payloads were independently downloaded and
+restored into an isolated Redis, and their five fields matched the selected
+values. Backup quality now reports the newest verified archive, so the old
+daily snapshots do not continue to report the resolved missing risk hashes.
+Their factor-key/runtime-table warnings remain. The initial RX01/RX04
+archives had a false difference warning caused by integer versus floating-point
+JSON representation; originals were preserved under
+`run/cta-factor-compare-fix-20261102/` and as COS objects, and new daily
+archives were generated after the comparison fix. The current CTA archives
+and their completeness warnings must be reviewed before any live recovery.
+The final archives additionally cover Chase allocation, leverage-init and
+execution-family switch evidence; the preceding cloud-verified archives are
+preserved under `run/cta-exec-state-fix-20261102/` and in COS. RX03's runtime
+factor table passed the deployed publisher's universe validation, while its
+disk factor table did not; this is evidence to review, not authorization to
+write either table into Redis or resume a trading process.
+
+On 2026-11-02, the operator subsequently chose to repopulate the missing factor
+keys from running snapshots. RX01's 38-symbol and RX03's 16-symbol tables were
+each unchanged from the preceding verified manual archive, matched their live
+rule configurations, and were within the deployed publisher's symbol/factor
+universe. A WATCH/MULTI transaction created both keys only while absent, and
+read-back matched the captured tables. The signal process identities were
+unchanged. These tables represent the running rule-derived state, not evidence
+of the original lost Redis values. The private audit is in
+`run/cta-factor-restore-20261102-evidence/` on JP. RX02's running table was
+empty and its missing key was not restored; its disk table is a separate,
+unverified candidate. The snapshots and current Redis state still require
+independent review before live recovery.
+
+Redis, files and the Manager database are sampled sequentially, so the package
+is not a single cross-system transaction. Position flags, allocation ledgers,
+and targets are point-in-time evidence and must not be blindly replayed into a
+live account. Runtime binaries, market-data history, exchange positions and
+open orders are not backed up. Restoring trading requires the matching software
+and independent reconciliation of actual positions, orders and account access;
+the archive alone is not an automatic live-trading restore.
+
 ## Postgres
 
 Database `delist_risk` on `127.0.0.1:5432` stores:
@@ -961,3 +1256,13 @@ cargo run --release --bin delist_risk_server -- \
   --bind 127.0.0.1:8787 \
   --postgres 'postgres://delist_risk:@127.0.0.1:5432/delist_risk'
 ```
+
+2026-11-03 15:33 UTC current-worker monitoring publish: binary SHA-256
+`a3096488dfad952bfc06f049731ba222ee8f3bd3edfb0688f29764bf0bfa97f5`, PID580273,
+CPU `0-5,48-95`. Configuration/auth hashes and existing automatic-action switches
+were retained. The local arbmm release build, 26 binary tests, browser checks and
+read-only production mapping checks passed. The seven tables have no mapping
+errors; retired RX01/03/04 no longer contribute stale warnings. Backup and
+verification: `~/delist_risk_server/run/current_cta_mapping_20261103T1533Z/` and
+`artifacts/delist_strategy_alerts_20261103/`. Monitoring uses the shared workers;
+legacy signal-directory archive controls are not shown for these current tables.
