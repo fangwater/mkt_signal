@@ -203,8 +203,24 @@ async fn main() -> Result<()> {
     // 创建 PM 转发器 (account_pubs/okex/pm)
     init_direct_forwarder("okex")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
-    let mut interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
-    let mut positions_poll = spawn_positions_poll(credentials.clone(), shutdown_rx.clone());
+    let rest_client = if runtime_common::exec_market::configured_venue()?
+        == Some(order_common::TradingVenue::OkexFutures)
+    {
+        // Reuse the explicit account-IP client for every authenticated Exec poll.
+        trade_engine::native_uta_exec::account_client()?
+    } else {
+        Client::new()
+    };
+    let mut interest_poll = spawn_borrow_interest_poll(
+        rest_client.clone(),
+        credentials.clone(),
+        shutdown_rx.clone(),
+    );
+    let mut positions_poll = spawn_positions_poll(
+        rest_client.clone(),
+        credentials.clone(),
+        shutdown_rx.clone(),
+    );
 
     // 启动主备双路连接
     let mut primary = spawn_okex_stream_path(
@@ -244,7 +260,7 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("interest poll task join error: {}; restarting", e),
                 }
                 if !*shutdown_rx.borrow() {
-                    interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
+                    interest_poll = spawn_borrow_interest_poll(rest_client.clone(), credentials.clone(), shutdown_rx.clone());
                 }
             }
             res = &mut positions_poll => {
@@ -253,7 +269,7 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("positions poll task join error: {}; restarting", e),
                 }
                 if !*shutdown_rx.borrow() {
-                    positions_poll = spawn_positions_poll(credentials.clone(), shutdown_rx.clone());
+                    positions_poll = spawn_positions_poll(rest_client.clone(), credentials.clone(), shutdown_rx.clone());
                 }
             }
             res = &mut primary => {
@@ -311,11 +327,11 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
 }
 
 fn spawn_borrow_interest_poll(
+    client: Client,
     credentials: OkexCredentials,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let client = Client::new();
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
         loop {
             tokio::select! {
@@ -354,11 +370,11 @@ fn spawn_borrow_interest_poll(
 }
 
 fn spawn_positions_poll(
+    client: Client,
     credentials: OkexCredentials,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let client = Client::new();
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
         let mut previous_positions: HashSet<(String, char)> = HashSet::new();
         loop {

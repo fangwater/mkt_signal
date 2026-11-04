@@ -5277,7 +5277,13 @@ impl MonitorChannel {
                     tradable_symbols,
                 );
 
-            for leg in [&inner.open_leg, &inner.hedge_leg] {
+            for (leg_venue, leg) in [
+                (inner.open_venue, &inner.open_leg),
+                (inner.hedge_venue, &inner.hedge_leg),
+            ] {
+                if leg_venue != venue {
+                    continue;
+                }
                 let LegMgr::Futures { min_qty_table, .. } = leg else {
                     continue;
                 };
@@ -9422,6 +9428,10 @@ mod tests {
 
         let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
         venue_min_qty_tables.insert(TradingVenue::OkexFutures, Rc::new(okx_table));
+        venue_min_qty_tables.insert(
+            TradingVenue::OkexMargin,
+            Rc::new(VenueMinQtyTable::new(TradingVenue::OkexMargin)),
+        );
 
         let mut usdt_mgrs: HashMap<BasicAccountScope, Rc<RefCell<UsdtBalanceManager>>> =
             HashMap::new();
@@ -9432,7 +9442,7 @@ mod tests {
 
         let inner = MonitorChannelInner {
             open_venue: TradingVenue::OkexFutures,
-            hedge_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::OkexMargin,
             arb_mode: ArbMode::CrossArb,
             binance_account_mode: Some(BinanceAccountMode::Unified),
             hyperliquid_account_mode: None,
@@ -9498,6 +9508,37 @@ mod tests {
             LegMgr::Margin { .. } => unreachable!(),
         });
         assert_eq!(legacy_multiplier, 0.2);
+
+        // OKX unified Exec also reloads cash rules. A cash snapshot must not
+        // erase the futures contract multiplier used for account positions.
+        MonitorChannel::replace_manager_order_rules(
+            TradingVenue::OkexMargin,
+            signal_common::min_qty_table::MarketType::Spot,
+            HashMap::new(),
+            HashMap::new(),
+            std::collections::HashSet::new(),
+        )
+        .unwrap();
+        MonitorChannel::with_inner(|inner| match &inner.open_leg {
+            LegMgr::Futures {
+                um, min_qty_table, ..
+            } => {
+                um.borrow_mut().apply_position(&BasicPositionMsg::create(
+                    1,
+                    "FIL-USDT-SWAP".to_string(),
+                    'N',
+                    -62.0,
+                ));
+                assert_eq!(min_qty_table.borrow().contract_multiplier("FILUSDT"), 0.2);
+            }
+            LegMgr::Margin { .. } => unreachable!(),
+        });
+        assert!(
+            (MonitorChannel::instance().get_position_qty("FILUSDT", TradingVenue::OkexFutures)
+                + 12.4)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
