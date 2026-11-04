@@ -5,7 +5,7 @@ use anyhow::{bail, ensure, Context, Result};
 use futures_util::stream::{self, StreamExt};
 use mkt_signal::common::delist_accounts::{AccountSpec, RedisSite};
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -18,6 +18,24 @@ pub struct Settings {
     pub asset_limit_usdt: f64,
     pub account_limit_usdt: f64,
     pub catalog_max_age_secs: u64,
+    pub ignored_spot_tails: BTreeMap<String, BTreeMap<String, SpotTailRule>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotTailRule {
+    pub max_abs_qty: f64,
+    pub max_abs_usdt: f64,
+}
+
+pub fn load_ignored_spot_tails(
+    path: &std::path::Path,
+) -> Result<BTreeMap<String, BTreeMap<String, SpotTailRule>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("parse ignored spot tail rules"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(err) => Err(err).context("read ignored spot tail rules"),
+    }
 }
 
 impl Default for Settings {
@@ -29,6 +47,7 @@ impl Default for Settings {
             asset_limit_usdt: 100.0,
             account_limit_usdt: 500.0,
             catalog_max_age_secs: 180,
+            ignored_spot_tails: BTreeMap::new(),
         }
     }
 }
@@ -53,7 +72,34 @@ impl Settings {
                 "exposure limits must be finite and positive"
             );
         }
+        for rules in self.ignored_spot_tails.values() {
+            for rule in rules.values() {
+                ensure!(
+                    rule.max_abs_qty.is_finite()
+                        && rule.max_abs_qty > 0.0
+                        && rule.max_abs_usdt.is_finite()
+                        && rule.max_abs_usdt > 0.0,
+                    "ignored spot tail caps must be finite and positive"
+                );
+            }
+        }
         Ok(())
+    }
+
+    fn ignores_spot_tail(&self, exchange: &str, row: &Row) -> bool {
+        let Some(rule) = self
+            .ignored_spot_tails
+            .get(exchange)
+            .and_then(|rules| rules.get(&row.asset))
+        else {
+            return false;
+        };
+        row.hedge_qty.abs() <= 1e-12
+            && row.open_qty.abs() > 1e-12
+            && row.open_qty.abs() <= rule.max_abs_qty
+            && row
+                .net_usdt
+                .is_none_or(|value| value.abs() <= rule.max_abs_usdt)
     }
 }
 
@@ -69,6 +115,7 @@ pub struct Row {
     pub hedge_plan_qty: Option<f64>,
     pub uncovered_qty: Option<f64>,
     pub uncovered_usdt: Option<f64>,
+    pub ignored_spot_tail: bool,
     pub pending_hedge_qty: Option<f64>,
 }
 
@@ -97,6 +144,7 @@ pub struct Account {
     pub complete: bool,
     pub abs_usdt: Option<f64>,
     pub risk_abs_usdt: Option<f64>,
+    pub ignored_spot_tail_n: usize,
     pub net_usdt: Option<f64>,
     pub largest_asset: Option<String>,
     pub largest_usdt: Option<f64>,
@@ -120,6 +168,7 @@ impl Account {
             complete: false,
             abs_usdt: None,
             risk_abs_usdt: None,
+            ignored_spot_tail_n: 0,
             net_usdt: None,
             largest_asset: None,
             largest_usdt: None,
@@ -211,6 +260,8 @@ impl Monitor {
                     account.snapshot_ms = Some(sample.snapshot_ms);
                     account.account_ms = Some(sample.account_ms);
                     account.complete = sample.errors.is_empty();
+                    account.ignored_spot_tail_n =
+                        sample.rows.iter().filter(|r| r.ignored_spot_tail).count();
                     account.data_status = if account.complete { "fresh" } else { "partial" };
                     account.abs_usdt = Some(
                         sample
@@ -225,6 +276,7 @@ impl Monitor {
                         sample
                             .rows
                             .iter()
+                            .filter(|r| !r.ignored_spot_tail)
                             .filter_map(|r| r.uncovered_usdt)
                             .map(f64::abs)
                             .sum(),
@@ -232,7 +284,7 @@ impl Monitor {
                     let largest = sample
                         .rows
                         .iter()
-                        .filter(|r| r.uncovered_usdt.is_some())
+                        .filter(|r| !r.ignored_spot_tail && r.uncovered_usdt.is_some())
                         .max_by(|a, b| {
                             a.uncovered_usdt
                                 .unwrap()
@@ -243,6 +295,9 @@ impl Monitor {
                     account.largest_usdt = largest.and_then(|r| r.uncovered_usdt);
                     let mut above = BTreeMap::new();
                     for row in &sample.rows {
+                        if row.ignored_spot_tail {
+                            continue;
+                        }
                         if let Some(value) = row
                             .uncovered_usdt
                             .filter(|v| v.abs() > self.settings.asset_limit_usdt)
@@ -477,13 +532,24 @@ fn parse_row(value: &Value) -> Result<Row> {
         hedge_plan_qty,
         uncovered_qty,
         uncovered_usdt,
+        ignored_spot_tail: false,
         pending_hedge_qty: value["arb_pending_hedge_qty"]
             .as_f64()
             .filter(|v| v.is_finite()),
     })
 }
 
+#[cfg(test)]
 fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
+    parse_for_exchange(snapshot, now, settings, "gate")
+}
+
+fn parse_for_exchange(
+    snapshot: &Value,
+    now: i64,
+    settings: &Settings,
+    exchange: &str,
+) -> Result<Sample> {
     let exposure = entry(snapshot, "pre_trade_exposure")?;
     let risk = entry(snapshot, "pre_trade_risk")?;
     let timestamp = |v: &Value| -> Result<i64> {
@@ -513,16 +579,18 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
             continue;
         }
         match parse_row(value) {
-            Ok(row) => {
+            Ok(mut row) => {
                 if !seen.insert(row.asset.clone()) {
                     errors.push(format!("{} 币种重复", row.asset));
                     invalid_assets.insert(row.asset.clone());
                     continue;
                 }
-                if row.net_usdt.is_none() {
+                row.ignored_spot_tail = settings.ignores_spot_tail(exchange, &row);
+                if row.net_usdt.is_none() && !row.ignored_spot_tail {
                     errors.push(format!("{} 有持仓但缺少有效价格", row.asset));
                 }
-                if row.net_usdt.is_some() && row.uncovered_usdt.is_none() {
+                if row.net_usdt.is_some() && row.uncovered_usdt.is_none() && !row.ignored_spot_tail
+                {
                     errors.push(format!(
                         "{} 缺少对冲计划元数据，不能判定异常敞口",
                         row.asset
@@ -543,6 +611,7 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
             row.hedge_usdt = None;
             row.net_usdt = None;
             row.uncovered_usdt = None;
+            row.ignored_spot_tail = false;
         }
     }
     if rows.is_empty() && number(risk, "total_position")? > 1.0 {
@@ -609,7 +678,12 @@ pub async fn collect(
                     .json::<Value>()
                     .await
                     .map_err(|_| anyhow::anyhow!("解析持仓快照失败"))?;
-                parse(&snapshot, chrono::Utc::now().timestamp_millis(), settings)
+                parse_for_exchange(
+                    &snapshot,
+                    chrono::Utc::now().timestamp_millis(),
+                    settings,
+                    &spec.exchange,
+                )
             }
             .await;
             (spec.slug, result)
@@ -742,6 +816,76 @@ mod tests {
         assert_eq!(sample.rows[0].uncovered_usdt, None);
         value["arb_hedge_net_qty"] = Value::Null;
         assert_eq!(parse_row(&value).unwrap().uncovered_usdt, Some(160.0));
+    }
+
+    #[test]
+    fn approved_spot_tails_do_not_create_incompleteness_but_keep_unknown_prices_visible() {
+        let mut settings = Settings::default();
+        settings.ignored_spot_tails.insert(
+            "gate".into(),
+            BTreeMap::from([(
+                "SLVON".into(),
+                SpotTailRule {
+                    max_abs_qty: 0.01,
+                    max_abs_usdt: 1.0,
+                },
+            )]),
+        );
+        settings.validate().unwrap();
+        let tail = |asset: &str, open: f64, hedge: f64| json!({"asset":asset,"open_qty":open,"hedge_qty":hedge,"net_qty":open+hedge,"open_usdt":0.0,"hedge_usdt":0.0,"net_usdt":0.0,"is_total":false,"arb_hedge_net_qty":null});
+        let sample = parse_for_exchange(
+            &snapshot(vec![tail("SLVON", 0.009, 0.0)], NOW),
+            NOW,
+            &settings,
+            "gate",
+        )
+        .unwrap();
+        assert!(sample.errors.is_empty());
+        assert!(sample.rows[0].ignored_spot_tail);
+        assert_eq!(sample.rows[0].net_usdt, None);
+        let mut monitor = Monitor::new(settings.clone());
+        monitor.apply(
+            &[spec("gate_fr_arb04", RedisSite::Jp)],
+            vec![("gate_fr_arb04".into(), Ok(sample))],
+            NOW,
+            true,
+        );
+        let account = account(&monitor, NOW);
+        assert!(account.complete);
+        assert_eq!(account.ignored_spot_tail_n, 1);
+        assert!(account.breaches.is_empty());
+        for (exchange, row) in [
+            ("gate", tail("SLVON", 0.02, 0.0)),
+            ("gate", tail("SLVON", 0.009, -0.001)),
+            ("gate", tail("UNKNOWN", 0.009, 0.0)),
+            ("bybit", tail("SLVON", 0.009, 0.0)),
+        ] {
+            let sample =
+                parse_for_exchange(&snapshot(vec![row], NOW), NOW, &settings, exchange).unwrap();
+            assert!(!sample.errors.is_empty());
+            assert!(!sample.rows[0].ignored_spot_tail);
+        }
+        let mut valued = tail("SLVON", 0.009, 0.0);
+        valued["open_usdt"] = json!(2.0);
+        valued["net_usdt"] = json!(2.0);
+        let sample =
+            parse_for_exchange(&snapshot(vec![valued], NOW), NOW, &settings, "gate").unwrap();
+        assert!(!sample.rows[0].ignored_spot_tail);
+        assert_eq!(sample.rows[0].uncovered_usdt, Some(2.0));
+    }
+
+    #[test]
+    fn production_spot_tail_policy_has_only_finite_bounded_rules() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("config/fr_exposure_ignored_spot_tails.json");
+        let mut settings = Settings::default();
+        settings.ignored_spot_tails = load_ignored_spot_tails(&path).unwrap();
+        settings.validate().unwrap();
+        assert_eq!(settings.ignored_spot_tails.len(), 2);
+        assert_eq!(
+            settings.ignored_spot_tails["bybit"]["HFT"].max_abs_qty,
+            25.0
+        );
     }
 
     #[test]

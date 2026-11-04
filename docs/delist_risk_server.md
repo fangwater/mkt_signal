@@ -109,6 +109,18 @@ snapshot totals. Missing upstream positions cannot be reconstructed here.
 The board explicitly identifies this scope; unpriced holdings that are present
 in a snapshot are listed as incomplete instead of being treated as zero.
 
+Operator-confirmed special spot tails are explicitly excluded by
+`config/fr_exposure_ignored_spot_tails.json` (override with
+`--exposure-ignored-spot-tails`). Rules are exchange/asset scoped, require no
+futures-leg quantity, bound the spot quantity, and also bound notional when a
+price is known. Current rules cover the identified Gate stock/legacy-token tails
+and Bybit EUR/HFT leftovers. Larger balances, any futures leg, unlisted assets,
+and malformed records are checked normally. Missing prices stay null in the
+detail rows; exclusions do not manufacture zero-valued balances. The board shows
+each `ignored_spot_tail` and an ignored count; `complete` refers to the monitored
+scope after these explicit exclusions. Old incompleteness notices for newly
+excluded tails are retired as a policy change, not sent as price-data recoveries.
+
 The wrapper accepts `DELIST_EXPOSURE_INTERVAL_SECS`,
 `DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS`,
 `DELIST_EXPOSURE_ASSET_LIMIT_USDT` and `DELIST_EXPOSURE_ACCOUNT_LIMIT_USDT`.

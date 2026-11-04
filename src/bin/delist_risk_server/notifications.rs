@@ -571,6 +571,9 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
             },
         });
         for row in &account.rows {
+            if row.ignored_spot_tail {
+                continue;
+            }
             let key = format!("asset:{}", row.asset);
             let confirmed = account.breaches.get(&key).is_some_and(|b| b.confirmed);
             let problem = row.uncovered_usdt.filter(|_| fresh).and_then(|value| {
@@ -1030,6 +1033,7 @@ mod tests {
             complete: false,
             abs_usdt: Some(0.0),
             risk_abs_usdt: Some(0.0),
+            ignored_spot_tail_n: 0,
             net_usdt: Some(0.0),
             largest_asset: None,
             largest_usdt: None,

@@ -179,6 +179,10 @@ struct Args {
     #[arg(long, default_value_t = 500.0)]
     exposure_account_limit_usdt: f64,
 
+    /// Explicit bounded exceptions for operator-confirmed spot tails.
+    #[arg(long, default_value = "config/fr_exposure_ignored_spot_tails.json")]
+    exposure_ignored_spot_tails: PathBuf,
+
     /// Enable the independent FR DingTalk channel (FR_DINGTALK_* only).
     #[arg(long)]
     fr_notify: bool,
@@ -518,6 +522,7 @@ async fn main() -> Result<()> {
         asset_limit_usdt: args.exposure_asset_limit_usdt,
         account_limit_usdt: args.exposure_account_limit_usdt,
         catalog_max_age_secs: args.nav_strategy_interval_secs.saturating_mul(3).max(90),
+        ignored_spot_tails: exposure::load_ignored_spot_tails(&args.exposure_ignored_spot_tails)?,
     };
     exposure_settings.validate()?;
     let fr_notifications = if args.fr_notify {
