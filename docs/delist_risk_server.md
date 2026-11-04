@@ -22,6 +22,7 @@ http://<jp-host>:4191/delist/healthz
 http://<jp-host>:4191/delist/venues
 http://<jp-host>:4191/delist/risk
 http://<jp-host>:4191/delist/accounts
+http://<jp-host>:4191/delist/exposures
 http://<jp-host>:4191/delist/removal-candidates
 http://<jp-host>:4191/delist/removals
 http://<jp-host>:4191/delist/dump-candidates
@@ -40,6 +41,57 @@ http://127.0.0.1:8787/healthz
 All page and data endpoints require the `delist_session` cookie. Visit
 `/delist/` to log in; credentials never belong in URLs. Manual flatten retains
 its separate operation token in addition to the login session.
+
+## FR exposure checks
+
+The board includes a permanent, read-only FR exposure section. `/exposures`
+returns the cached report under the same login protection. Account discovery
+uses the current NAV catalog's `funding_rate` entries, including Gate arb04 and
+SG Bybit; directional CTA/Exec targets do not enter this check.
+
+Every 10 seconds, the service concurrently reads each account's existing
+`/fr/<env>/snapshot` through the loopback gateway (five-second request timeout).
+It sums **absolute per-asset net exposures** within each account; different
+assets and accounts cannot cancel each other's risk. The signed `TOTAL` row is
+ignored. Two-leg quantities/valuations, the largest residual, pending hedge
+quantity, timestamps and all nonzero snapshot positions are available on the
+board. Mobile summaries are stacked; detailed position tables scroll locally.
+
+Default monitoring thresholds are **100 USDT per asset**, **500 USDT per account**,
+and **30 seconds** of observed excess before a persistent warning. Initial excess
+is shown immediately as pending. These are display thresholds, independent of
+trading, delisting, automatic dump and flatten thresholds. This module neither
+changes Redis lists nor submits orders or external notifications.
+
+The exposure entry, risk entry and every underlying account-monitor timestamp
+must be no older than 90 seconds and at most five seconds in the future.
+Missing/invalid/duplicate data, nonzero holdings with zero valuation, unknown
+hosts and failed/stale account discovery cannot become healthy zero exposure.
+Partial valuations show a lower bound. Failed/incomplete refreshes retain prior
+breach evidence; only a complete fresh sample can clear it. A stopped collector
+invalidates results after three poll intervals. The same cached snapshot cannot
+advance breach confirmation; different assets have separate observation timers.
+Restarting the service restarts the observation window.
+
+This uses account-monitor-derived snapshots, **not independent exchange REST
+reconciliation**. Cash stablecoins and small nontrading holdings filtered by
+`pre_trade`'s existing `min_non_trading_position_usdt` setting are outside the
+snapshot totals. Missing upstream positions cannot be reconstructed here.
+The board explicitly identifies this scope; unpriced holdings that are present
+in a snapshot are listed as incomplete instead of being treated as zero.
+
+The wrapper accepts `DELIST_EXPOSURE_INTERVAL_SECS`,
+`DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS`,
+`DELIST_EXPOSURE_ASSET_LIMIT_USDT` and `DELIST_EXPOSURE_ACCOUNT_LIMIT_USDT`.
+The identical report is atomically saved beside the risk book as
+`data/fr_exposure_check.json` for private operator diagnostics. The protected API
+also reevaluates freshness at request time; an old file is historical evidence.
+
+Validation: `cargo test --bin delist_risk_server` and
+`scripts/tests/delist_exposure_browser.py --delist-binary <binary> --browser-binary <chromium>`.
+The browser test runs a disposable authenticated service with synthetic NAV and
+account snapshots; it checks Gate04/SG discovery, persistent warnings, recovery,
+stale/read-failure retention, escaping, automatic refresh and desktop/mobile UI.
 
 ## Login and FR panel access
 

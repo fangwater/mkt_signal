@@ -86,6 +86,8 @@ mod cta_backup;
 mod cta_factors;
 #[path = "delist_risk_server/cta_mapping.rs"]
 mod cta_mapping;
+#[path = "delist_risk_server/exposure.rs"]
+mod exposure;
 #[path = "delist_risk_server/upload.rs"]
 mod upload;
 
@@ -164,6 +166,18 @@ struct Args {
     /// Reject account snapshots older than this many seconds.
     #[arg(long, default_value_t = 120)]
     position_snapshot_max_age_secs: u64,
+
+    /// Read-only FR net exposure polling interval.
+    #[arg(long, default_value_t = 10)]
+    exposure_interval_secs: u64,
+    #[arg(long, default_value_t = 90)]
+    exposure_max_age_secs: u64,
+    #[arg(long, default_value_t = 30)]
+    exposure_persistence_secs: u64,
+    #[arg(long, default_value_t = 100.0)]
+    exposure_asset_limit_usdt: f64,
+    #[arg(long, default_value_t = 500.0)]
+    exposure_account_limit_usdt: f64,
 
     /// Clear small FR positions during the final delist window.
     #[arg(long)]
@@ -289,6 +303,8 @@ struct AppState {
     llm_locks: Arc<Mutex<BTreeMap<(String, String), Arc<AsyncMutex<()>>>>>,
     llm_slots: Arc<Semaphore>,
     accounts: Arc<RwLock<Vec<AccountSpec>>>,
+    exposure: Arc<RwLock<exposure::Monitor>>,
+    exposure_settings: exposure::Settings,
     store: Option<Arc<DelistStore>>,
     book_path: PathBuf,
     web_dir: PathBuf,
@@ -474,6 +490,15 @@ async fn main() -> Result<()> {
         anyhow::bail!("automatic delist flatten requires DELIST_FLATTEN_API_TOKEN");
     }
 
+    let exposure_settings = exposure::Settings {
+        interval_secs: args.exposure_interval_secs,
+        max_age_secs: args.exposure_max_age_secs,
+        persistence_secs: args.exposure_persistence_secs,
+        asset_limit_usdt: args.exposure_asset_limit_usdt,
+        account_limit_usdt: args.exposure_account_limit_usdt,
+        catalog_max_age_secs: args.nav_strategy_interval_secs.saturating_mul(3).max(90),
+    };
+    exposure_settings.validate()?;
     let state = AppState {
         book: Arc::new(RwLock::new(book)),
         status: Arc::new(RwLock::new(status)),
@@ -481,6 +506,10 @@ async fn main() -> Result<()> {
         llm_locks: Arc::new(Mutex::new(BTreeMap::new())),
         llm_slots: Arc::new(Semaphore::new(2)),
         accounts: Arc::new(RwLock::new(Vec::new())),
+        exposure: Arc::new(RwLock::new(exposure::Monitor::new(
+            exposure_settings.clone(),
+        ))),
+        exposure_settings,
         store,
         book_path: args.book.clone(),
         web_dir: args.web_dir.clone(),
@@ -973,6 +1002,50 @@ async fn main() -> Result<()> {
         }
     });
 
+    let exposure_state = state.clone();
+    let exposure_client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(
+            exposure_state.exposure_settings.interval_secs,
+        ));
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let specs = exposure_state.accounts.read().await.clone();
+            let samples = exposure::collect(
+                &exposure_client,
+                &exposure_state.snapshot_base_url,
+                &specs,
+                &exposure_state.exposure_settings,
+            )
+            .await;
+            let current = exposure_catalog_current(&exposure_state).await;
+            let now = Utc::now().timestamp_millis();
+            let report = {
+                let mut monitor = exposure_state.exposure.write().await;
+                monitor.apply(&specs, samples, now, current);
+                monitor.report(now, current)
+            };
+            // Same report as /exposures, retained locally for operator diagnostics.
+            let path = exposure_state
+                .book_path
+                .with_file_name("fr_exposure_check.json");
+            let temporary = path.with_extension("json.tmp");
+            let saved = async {
+                tokio::fs::write(&temporary, serde_json::to_vec(&report)?).await?;
+                tokio::fs::rename(&temporary, &path).await?;
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(err) = saved {
+                warn!("save FR exposure report failed: {err:#}");
+            }
+        }
+    });
+
     let app = Router::new()
         .route("/", get(index_page))
         .route("/index.html", get(index_page))
@@ -982,6 +1055,7 @@ async fn main() -> Result<()> {
         .route("/announcements", get(query_announcements))
         .route("/status", get(query_status))
         .route("/accounts", get(query_accounts))
+        .route("/exposures", get(query_exposures))
         .route("/cta-strategies", get(query_cta_strategies))
         .route("/backup-now", post(manual_backup))
         .route("/removal-candidates", get(query_removal_candidates))
@@ -1834,6 +1908,34 @@ async fn nav_accounts_ready(state: &AppState) -> bool {
         .source("nav_strategies")
         .is_some_and(|status| status.ok);
     source_ok && !state.accounts.read().await.is_empty()
+}
+
+async fn exposure_catalog_current(state: &AppState) -> bool {
+    let now = Utc::now().timestamp_millis();
+    state
+        .status
+        .read()
+        .await
+        .source("nav_strategies")
+        .is_some_and(|s| {
+            s.ok && s.last_success_ms.is_some_and(|ts| {
+                ts > 0
+                    && ts <= now + 5_000
+                    && now.saturating_sub(ts)
+                        <= state.exposure_settings.catalog_max_age_secs as i64 * 1_000
+            })
+        })
+}
+
+async fn query_exposures(State(state): State<AppState>) -> Json<exposure::Report> {
+    let current = exposure_catalog_current(&state).await;
+    Json(
+        state
+            .exposure
+            .read()
+            .await
+            .report(Utc::now().timestamp_millis(), current),
+    )
 }
 
 async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
@@ -3616,6 +3718,10 @@ mod tests {
             status: Arc::new(RwLock::new(StatusBook::default())),
             listings: Arc::new(RwLock::new(ListingIndex::default())),
             accounts: Arc::new(RwLock::new(Vec::new())),
+            exposure: Arc::new(RwLock::new(exposure::Monitor::new(
+                exposure::Settings::default(),
+            ))),
+            exposure_settings: exposure::Settings::default(),
             llm_locks: Arc::new(Mutex::new(BTreeMap::new())),
             llm_slots: Arc::new(Semaphore::new(2)),
             store: None,

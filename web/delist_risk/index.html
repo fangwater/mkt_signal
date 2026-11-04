@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>下架风险</title>
+    <title>下架与敞口风险</title>
     <style>
       :root {
         --ink: #1f2933;
@@ -138,6 +138,33 @@
       .chip--ok { color: var(--good); background: var(--good-soft); }
       .chip--risk { color: var(--danger); background: var(--danger-soft); }
       .chip--error, .chip--uncovered { color: var(--warn); background: var(--warn-soft); }
+      .exposure { margin: 22px 0; border: 1px solid var(--line); background: var(--surface); }
+      .exposure__heading { padding: 16px 18px 10px; }
+      .exposure h2 { margin: 0; font-size: 17px; }
+      .exposure__note { margin: 6px 0; color: var(--muted); font-size: 12px; }
+      .exposure__summary { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; font-size: 12px; }
+      .exposure__summary strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+      .exposure__scroll { overflow-x: auto; }
+      .exposure table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .exposure th, .exposure td { padding: 10px 16px; border-top: 1px solid var(--line); text-align: right; vertical-align: top; font-variant-numeric: tabular-nums; }
+      .exposure th { color: var(--muted); background: var(--surface-hover); font-weight: 500; white-space: nowrap; }
+      .exposure th:first-child, .exposure td:first-child { text-align: left; }
+      .exposure td small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+      .exposure .exposure__detail { padding-top: 0; border-top: 0; text-align: left; }
+      .exposure details summary { color: var(--muted); cursor: pointer; }
+      .exposure .exposure__issues { margin: 6px 0; color: var(--warn); overflow-wrap: anywhere; }
+      .exposure .exposure__breach { color: var(--danger); }
+      .exposure__detail table { min-width: 720px; margin: 10px 0; }
+      @media (max-width: 760px) {
+        .exposure__accounts > thead { display: none; }
+        .exposure__accounts, .exposure__accounts > tbody, .exposure__accounts > tbody > tr { display: block; width: 100%; }
+        .exposure__accounts > tbody > tr { padding: 10px 14px; border-top: 1px solid var(--line); }
+        .exposure__accounts > tbody > tr:has(.exposure__detail) { padding-top: 0; border-top: 0; }
+        .exposure__accounts > tbody > tr > td { display: block; padding: 3px 0; border: 0; text-align: left; }
+        .exposure__accounts > tbody > tr > td[data-label]::before { content: attr(data-label) '：'; color: var(--muted); }
+        .exposure__accounts > tbody > tr > td > small { display: inline; margin-left: 8px; }
+        .exposure__heading { padding: 14px; }
+      }
 
       @media (max-width: 760px) {
         .topbar { height: 54px; }
@@ -194,7 +221,7 @@
     </header>
     <main class="page">
       <section class="overview" aria-labelledby="page-title">
-        <div><h1 id="page-title">下架风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p></div>
+        <div><h1 id="page-title">下架与敞口风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p></div>
         <div class="filters" id="filters" aria-label="策略类型筛选"></div>
       </section>
       <section class="metrics" id="metrics" aria-label="风险摘要"></section>
@@ -203,6 +230,7 @@
         <a class="config-link" href="/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread">CTA Spread 统一配置 ↗</a>
       </nav>
       <div id="error"></div>
+      <section class="exposure" id="exposures" aria-label="FR 敞口检查" aria-live="polite"><div class="exposure__heading"><h2>FR 敞口检查</h2><p class="exposure__note">正在读取账户持仓</p></div></section>
       <section class="exchange-list" id="cta-strategies" aria-label="CTA 组合与执行账户"></section>
       <section class="exchange-list" id="exchange-list" aria-label="交易所风险明细"></section>
     </main>
@@ -216,6 +244,8 @@
       let flattenPayload = null;
       let ctaPayload = null;
       let backupStatus = null;
+      let exposurePayload = null;
+      let exposureError = '';
       let flattenByKey = new Map();
       let positionStatusByKey = new Map();
 
@@ -241,6 +271,72 @@
       }
       function setSystem(tone, text) {
         document.getElementById('system-state').innerHTML = `<span class="state-dot state-dot--${tone}"></span><span>${escapeHtml(text)}</span>`;
+      }
+      function exposureAccounts() {
+        const now = Date.now();
+        const settings = exposurePayload?.settings || {};
+        return (exposurePayload?.accounts || []).map(account => {
+          const stale = now - Number(account.checked_ms || 0) > Number(settings.interval_secs || 10) * 3000
+            || [account.snapshot_ms, account.account_ms].some(ts => ts && now - ts > Number(settings.max_age_secs || 90) * 1000);
+          return stale || exposureError ? { ...account, complete: false, data_status: 'stale', risk_status: account.risk_status === 'alert' ? 'alert' : 'unknown' } : account;
+        });
+      }
+      function updateSystem() {
+        if (!payload) return;
+        const summary = combinedSummary();
+        const accounts = exposureAccounts();
+        const alerts = accounts.filter(a => a.risk_status === 'alert').length;
+        const unknown = accounts.filter(a => !a.complete).length;
+        const exposureFailed = exposureError || (exposurePayload?.errors || []).length;
+        const flattenErrors = (flattenPayload?.snapshot_errors || []).length;
+        const dumpErrors = (flattenPayload?.dump_errors || []).length;
+        const errors = summary.error || flattenErrors || dumpErrors || unknown || exposureFailed;
+        const text = [alerts ? `${alerts} 个 FR 敞口超限` : '', unknown ? `${unknown} 个 FR 敞口数据不完整` : exposureFailed ? '敞口检查读取失败' : '', summary.error ? `${summary.error} 个数据源或策略状态异常` : '', flattenErrors ? `${flattenErrors} 个持仓快照异常` : '', dumpErrors ? `${dumpErrors} 个 dump 状态异常` : '', summary.risk ? `${summary.risk} 个盘子有下架风险` : ''].filter(Boolean).join(' · ');
+        setSystem(errors ? 'error' : alerts || summary.risk ? 'risk' : 'ok', text || '数据已同步');
+      }
+      function renderExposures() {
+        const root = document.getElementById('exposures');
+        if (!exposurePayload) {
+          root.innerHTML = `<div class="exposure__heading"><h2>FR 敞口检查</h2><p class="exposure__issues">${escapeHtml(exposureError || '正在读取账户持仓')}</p></div>`;
+          return;
+        }
+        const opened = new Set([...root.querySelectorAll('details[open]')].map(d => d.dataset.env));
+        const accounts = exposureAccounts();
+        const settings = exposurePayload.settings;
+        const money = value => Number.isFinite(value) ? `${(Math.abs(value) < .005 ? 0 : value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} U` : '未知';
+        const qty = value => Number.isFinite(value) ? value.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '未知';
+        const riskNames = { ok: '阈值内', pending: '超限观察中', alert: '持续超限', unknown: '无法确认' };
+        const dataNames = { fresh: '数据正常', partial: '估值不完整', stale: '数据过期', unavailable: '读取失败' };
+        const age = ms => ms ? `${Math.max(0, Math.round((Date.now() - ms) / 1000))} 秒前` : '未知';
+        const issues = [...(exposurePayload.errors || []), ...(exposureError ? [`读取失败：${exposureError}`] : [])];
+        root.innerHTML = `<div class="exposure__heading"><h2>FR 敞口检查</h2>
+          <p class="exposure__note">单币净敞口绝对值 &gt; ${money(settings.asset_limit_usdt)}，或单账户逐币绝对值合计 &gt; ${money(settings.account_limit_usdt)}，持续 ${settings.persistence_secs} 秒提示；每 ${settings.interval_secs} 秒检查。</p>
+          <p class="exposure__note">依据账户监控持仓与价格快照；现金稳定币及快照已过滤的小额非交易持仓不计入。缺价、过期和读取失败均无法确认；估值不完整时合计仅含已定价持仓。敞口提示不会触发交易。</p>
+          <p class="exposure__note">${escapeHtml(formatTime(exposurePayload.checked_ms))} · 持仓或价格快照超过 ${settings.max_age_secs} 秒视为过期</p>
+          ${issues.map(e => `<p class="exposure__issues">${escapeHtml(e)}</p>`).join('')}
+          <div class="exposure__summary"><span>覆盖 <strong>${accounts.length}</strong> 个 FR</span><span>持续超限 <strong class="account-value--risk">${accounts.filter(a => a.risk_status === 'alert').length}</strong></span><span>超限观察 <strong>${accounts.filter(a => a.risk_status === 'pending').length}</strong></span><span>数据不完整 <strong>${accounts.filter(a => !a.complete).length}</strong></span></div></div>
+          <div class="exposure__scroll"><table class="exposure__accounts"><thead><tr><th>账户</th><th>净敞口绝对值合计</th><th>最大单币净敞口</th><th>状态</th><th>持仓更新时间</th></tr></thead><tbody>${accounts.map(a => {
+            const tone = a.risk_status === 'alert' ? 'risk' : a.risk_status === 'ok' ? 'ok' : 'error';
+            const old = ['stale', 'unavailable'].includes(a.data_status);
+            const breaches = Object.values(a.breaches || {});
+            const rows = (a.rows || []).filter(r => Math.abs(r.open_qty) > 1e-12 || Math.abs(r.hedge_qty) > 1e-12 || Math.abs(r.net_qty) > 1e-12);
+            return `<tr data-exposure-account="${escapeHtml(a.slug)}"><td><span class="account-name">${escapeHtml(a.alias || a.slug)}</span><span class="account-slug">${escapeHtml(a.slug)}</span><small><a href="/delist/open?env=${encodeURIComponent(a.slug)}&panel=viz">查看盘子 ↗</a></small></td>
+              <td data-label="绝对敞口合计">${money(a.abs_usdt)}<small>${old ? '上次有效值' : a.complete ? '逐币绝对值相加' : '已定价部分，下界'}</small></td>
+              <td data-label="最大单币"><span class="symbol">${escapeHtml(a.largest_asset || '—')}</span> ${money(a.largest_usdt)}<small>${a.largest_usdt > 0 ? '净多' : a.largest_usdt < 0 ? '净空' : ''}</small></td>
+              <td data-label="状态"><span class="chip chip--${tone}">${riskNames[a.risk_status] || '无法确认'}</span><small>${dataNames[a.data_status] || '未知'}</small></td>
+              <td data-label="持仓更新">${age(a.account_ms)}<small>敞口快照 ${age(a.snapshot_ms)}</small></td></tr>
+              <tr><td class="exposure__detail" colspan="5">${breaches.map(b => `<p class="exposure__breach">${escapeHtml(b.asset || '账户合计')}：${money(b.value_usdt)} · ${b.confirmed ? '已确认持续超限' : '等待持续超限确认'} · 始于 ${escapeHtml(formatTime(b.since_ms).replace('更新于 ', ''))}${!a.complete ? '（数据不完整，保留异常记录）' : ''}</p>`).join('')}
+              ${(a.errors || []).map(e => `<p class="exposure__issues">${escapeHtml(e)}</p>`).join('')}
+              <details data-env="${escapeHtml(a.slug)}" ${opened.has(a.slug) ? 'open' : ''}><summary>查看 ${rows.length} 个持仓币种的两腿明细${old ? '（历史快照）' : ''}</summary>
+                <div class="exposure__scroll"><table><thead><tr><th>币种</th><th>开仓腿数量 / 估值</th><th>对冲腿数量 / 估值</th><th>净数量</th><th>净敞口</th><th>待对冲数量</th></tr></thead><tbody>${rows.map(r => `<tr><td class="symbol">${escapeHtml(r.asset)}</td><td>${qty(r.open_qty)}<small>${money(r.open_usdt)}</small></td><td>${qty(r.hedge_qty)}<small>${money(r.hedge_usdt)}</small></td><td>${qty(r.net_qty)}</td><td class="${Math.abs(r.net_usdt || 0) > settings.asset_limit_usdt ? 'account-value--risk' : ''}">${money(r.net_usdt)}</td><td>${qty(r.pending_hedge_qty)}</td></tr>`).join('')}</tbody></table></div>
+              </details></td></tr>`;
+          }).join('')}</tbody></table></div>`;
+      }
+      async function loadExposures() {
+        try { exposurePayload = await api('exposures'); exposureError = ''; }
+        catch (error) { exposureError = error.message || '未知错误'; }
+        renderExposures();
+        updateSystem();
       }
       function renderFilters() {
         const root = document.getElementById('filters');
@@ -515,12 +611,7 @@
           ctaPayload = await api('cta-strategies').catch(error => ({ managers: [], strategies: [], errors: [`CTA 映射读取失败：${error.message || '未知错误'}`] }));
           flattenByKey = new Map((flattenPayload.items || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
           positionStatusByKey = new Map((flattenPayload.position_statuses || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
-          const summary = combinedSummary();
-          const flattenErrors = (flattenPayload.snapshot_errors || []).length;
-          const dumpErrors = (flattenPayload.dump_errors || []).length;
-          const tone = summary.error || flattenErrors || dumpErrors ? 'error' : summary.risk ? 'risk' : 'ok';
-          const text = summary.error ? `${summary.error} 个数据源或策略状态异常` : flattenErrors ? `${flattenErrors} 个持仓快照异常` : dumpErrors ? `${dumpErrors} 个 dump 状态异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
-          setSystem(tone, text);
+          updateSystem();
           render();
         } catch (error) {
           setSystem('error', '加载失败');
@@ -554,14 +645,16 @@
           await load();
         }
       }
-      document.getElementById('refresh').addEventListener('click', load);
+      document.getElementById('refresh').addEventListener('click', () => { load(); loadExposures(); });
       document.getElementById('logout').addEventListener('click', async () => {
         await api('logout', { method: 'POST' });
         window.sessionStorage.removeItem('delistFlattenToken');
         location.replace('/delist/login');
       });
       load();
+      loadExposures();
       window.setInterval(load, 60_000);
+      window.setInterval(loadExposures, 10_000);
     </script>
   </body>
 </html>

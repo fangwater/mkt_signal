@@ -121,7 +121,7 @@ def main():
                         self.send_response(303);self.send_header('Location',config_path+'?worker=cta-factor-spread');self.end_headers();return
                     if self.path=='/delist/': payload=(ROOT/'web/delist_risk/index.html').read_bytes();kind='text/html; charset=utf-8'
                     else:
-                        values={'/delist/cta-strategies':cta,'/delist/accounts':{'accounts':[],'summary':{},'as_of_ms':int(time.time()*1000)},'/delist/flatten-candidates':{'items':[]},'/delist/status':{'sources':[]}}
+                        values={'/delist/cta-strategies':cta,'/delist/accounts':{'accounts':[],'summary':{},'as_of_ms':int(time.time()*1000)},'/delist/flatten-candidates':{'items':[]},'/delist/status':{'sources':[]},'/delist/exposures':{'accounts':[],'errors':[],'checked_ms':int(time.time()*1000),'settings':{'interval_secs':10,'max_age_secs':90,'persistence_secs':30,'asset_limit_usdt':100,'account_limit_usdt':500}}}
                         if self.path not in values: self.send_error(404);return
                         payload=json.dumps(values[self.path]).encode();kind='application/json'
                     self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
