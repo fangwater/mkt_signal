@@ -30,6 +30,14 @@ pub fn bybit_reason(value: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+pub fn okex_reason(category: &str) -> Option<&'static str> {
+    match category {
+        "adl" => Some("adl"),
+        "full_liquidation" | "partial_liquidation" => Some("liquidation"),
+        "delivery" => Some("delivery"),
+        _ => None,
+    }
+}
 pub fn bitget_reason(value: &str) -> Option<&'static str> {
     match value {
         "liquidation" => Some("liquidation"),
@@ -52,6 +60,56 @@ pub fn bitget_trade_side_reason(value: &str) -> Option<&'static str> {
 }
 
 impl ExternalFuturesFill {
+    /// OKX's VIP `fills` channel excludes ADL. Only actual `orders` fills
+    /// supply repair evidence; cumulative order quantities are not new fills.
+    pub fn from_okex_order_fill(row: &Value) -> Option<Self> {
+        let reason = okex_reason(row["category"].as_str()?)?;
+        if row["instType"].as_str()? != "SWAP" {
+            return None;
+        }
+        let base = row["instId"].as_str()?.strip_suffix("-USDT-SWAP")?;
+        if base.is_empty() || base.contains('-') {
+            return None;
+        }
+        let order_id = row["ordId"].as_str()?;
+        let trade_id = row["tradeId"].as_str()?;
+        // Forced-close native trade IDs may be negative. Zero/empty IDs do
+        // not identify a factual fill and must not be synthesized from times.
+        if order_id.parse::<u64>().ok()? == 0 || trade_id.parse::<i64>().ok()? == 0 {
+            return None;
+        }
+        let number = |key: &str| {
+            row[key]
+                .as_f64()
+                .or_else(|| row[key].as_str()?.parse().ok())
+        };
+        let timestamp = row["fillTime"]
+            .as_i64()
+            .or_else(|| row["fillTime"].as_str()?.parse::<i64>().ok())?;
+        let value = Self {
+            venue: 3,
+            symbol: format!("{base}USDT"),
+            order_id: order_id.to_owned(),
+            trade_id: trade_id.to_owned(),
+            timestamp_us: timestamp.checked_mul(1_000)?,
+            side: match row["side"].as_str()? {
+                "buy" => 1,
+                "sell" => 2,
+                _ => return None,
+            },
+            price: number("fillPx")?,
+            quantity: number("fillSz")?,
+            is_maker: match row["execType"].as_str() {
+                Some("M") => Some(true),
+                Some("T") => Some(false),
+                _ => None,
+            },
+            reason: Some(reason.to_owned()),
+        };
+        value.validate().ok()?;
+        Some(value)
+    }
+
     /// Gate user trades are authoritative fills; order notifications only carry
     /// cumulative quantities and must not create a second ADL fill.
     pub fn from_gate_adl(row: &Value) -> Option<Self> {
@@ -150,7 +208,7 @@ impl ExternalFuturesFill {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            matches!(self.venue, 1 | 5 | 7 | 9)
+            matches!(self.venue, 1 | 3 | 5 | 7 | 9)
                 && self.symbol.len() > 4
                 && self.symbol.ends_with("USDT"),
             "external fill market mismatch"
@@ -191,6 +249,7 @@ impl ExternalFuturesFill {
             // Binance retains its PM/standard scope on its existing native
             // order-update stream. Its local ADL adapter is not emitted here.
             1 => return false,
+            3 => BasicAccountScope::OkexUnified,
             5 => BasicAccountScope::BybitUnified,
             9 => BasicAccountScope::GateUnified,
             _ => BasicAccountScope::BitgetUnified,

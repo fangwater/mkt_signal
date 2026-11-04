@@ -685,9 +685,15 @@ pub fn build_new_ws_json_from_parts(
     push_i64_string_field(&mut out, "clOrdId", cl_id, false);
     if params.order_type == OkexOrderType::Market
         && req_type == TradeRequestType::OkexNewMarginOrder
-        && params.side.is_buy()
     {
-        push_json_field(&mut out, "tgtCcy", "base_ccy", false);
+        if params.side.is_buy() || params.reduce_only {
+            push_json_field(&mut out, "tgtCcy", "base_ccy", false);
+        }
+        if params.reduce_only {
+            // Keep factual repair size fixed; reject an insufficient-funds
+            // market order instead of letting the exchange amend its size.
+            push_bool_field(&mut out, "banAmend", true, false);
+        }
     }
     if req_type == TradeRequestType::OkexNewUMOrder {
         push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
@@ -1039,6 +1045,7 @@ mod tests {
                 assert_eq!(arg["sz"], "0.125");
                 assert_eq!(arg["tdMode"], "cross");
                 assert!(arg.get("reduceOnly").is_none());
+                assert!(arg.get("banAmend").is_none());
                 if order_type == OkexOrderType::Market {
                     assert!(arg.get("px").is_none());
                     if side == Side::Buy {
@@ -1048,6 +1055,32 @@ mod tests {
                     assert_eq!(arg["px"], "123.45");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn adl_spot_market_repair_uses_fixed_base_size_and_existing_cross_mode() {
+        for side in [Side::Buy, Side::Sell] {
+            let params = OkexNewOrderParams {
+                side,
+                order_type: OkexOrderType::Market,
+                reduce_only: true,
+                quantity_qv: QuantizedValue::from_decimal(0.07).unwrap(),
+                price_qv: QuantizedValue::zero(),
+                symbol: "BTC-USDT".into(),
+                client_order_id: 42,
+            };
+            let req = OkexNewOrderRequest::create_margin(1, 42, params).unwrap();
+            let payload: Value =
+                serde_json::from_str(&req.to_ws_json_string(123456, 99).unwrap()).unwrap();
+            let arg = &payload["args"][0];
+            assert_eq!(arg["ordType"], "market");
+            assert_eq!(arg["sz"], "0.07");
+            assert_eq!(arg["tgtCcy"], "base_ccy");
+            assert_eq!(arg["banAmend"], true);
+            assert_eq!(arg["tdMode"], "cross");
+            assert!(arg.get("reduceOnly").is_none());
+            assert!(arg.get("px").is_none());
         }
     }
 

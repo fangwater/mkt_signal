@@ -318,6 +318,26 @@ impl OkexAccountEventParser {
         };
 
         for order in arr {
+            use crate::msg::external_futures_fill::{okex_reason, ExternalFuturesFill};
+            if order["instType"] == "SWAP"
+                && order["instId"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with("-USDT-SWAP"))
+                && okex_reason(order["category"].as_str().unwrap_or("")).is_some()
+            {
+                if let Some(fill) = ExternalFuturesFill::from_okex_order_fill(order) {
+                    count += usize::from(fill.emit(tx));
+                } else if parse_f64_field(order.get("fillSz")) > 0.0 {
+                    warn!(
+                        "OKX forced-close update lacks valid factual fill fields: instId={} ordId={} tradeId={}; repair not queued",
+                        order["instId"], order["ordId"], order["tradeId"]
+                    );
+                }
+                // A documented exchange close has no strategy owner, even
+                // when its clOrdId is numeric. Never dispatch it a second
+                // time through the normal cumulative-order path.
+                continue;
+            }
             let inst_id = order
                 .get("instId")
                 .and_then(|v| v.as_str())
@@ -430,6 +450,15 @@ impl OkexAccountEventParser {
         };
 
         for fill in data {
+            if crate::msg::external_futures_fill::okex_reason(
+                fill["category"].as_str().unwrap_or(""),
+            )
+            .is_some()
+            {
+                // The venue excludes these non-order-book events from this
+                // channel. Only `orders` owns forced-close fill publication.
+                continue;
+            }
             let inst_id = fill.get("instId").and_then(|v| v.as_str()).unwrap_or("");
             if inst_id.is_empty() {
                 continue;
@@ -448,7 +477,9 @@ impl OkexAccountEventParser {
             };
 
             let trade_id = fill.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
-            if trade_id.is_empty() || trade_id == "0" {
+            // This channel only publishes matching events with tradeId > 0.
+            // Non-order-book ADL/liquidation fills belong to `orders`.
+            if trade_id.parse::<u64>().ok().is_none_or(|id| id == 0) {
                 continue;
             }
 
@@ -646,6 +677,102 @@ mod tests {
         split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
         BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
     };
+
+    fn adl_order() -> serde_json::Value {
+        serde_json::json!({"instType":"SWAP","instId":"BTC-USDT-SWAP","category":"adl",
+            "ordId":"9001","clOrdId":"","tradeId":"-101","side":"buy","ordType":"market",
+            "state":"partially_filled","fillPx":"50000","fillSz":"5","accFillSz":"5",
+            "fillTime":"1793355400797","uTime":"1793355400798","execType":"T"})
+    }
+
+    #[test]
+    fn adl_orders_preserve_native_negative_trade_id_and_contract_quantity() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        for client_id in ["", "exchange-owned", "12345"] {
+            let parser = OkexAccountEventParser::new();
+            let sink = TestAccountEventSink::new();
+            let mut row = adl_order();
+            row["clOrdId"] = serde_json::json!(client_id);
+            let event = serde_json::json!({"arg":{"channel":"orders"},"data":[row]});
+            assert_eq!(parser.parse(Bytes::from(event.to_string()), &sink), 1);
+            let raw = sink.recv().unwrap();
+            let (kind, scope, body) = split_basic_account_event(&raw).unwrap();
+            assert_eq!(kind, BasicAccountEventType::ExternalFuturesFill);
+            assert_eq!(scope, BasicAccountScope::OkexUnified);
+            let fill = ExternalFuturesFill::from_bytes(body).unwrap();
+            assert_eq!(fill.venue, TradingVenue::OkexFutures as u8);
+            assert_eq!(fill.symbol, "BTCUSDT");
+            assert_eq!(fill.order_id, "9001");
+            assert_eq!(fill.trade_id, "-101");
+            assert_eq!(fill.quantity, 5.0);
+            assert_eq!(fill.timestamp_us, 1_793_355_400_797_000);
+            assert_eq!(fill.is_maker, Some(false));
+            assert_eq!(fill.reason.as_deref(), Some("adl"));
+            assert!(sink.recv().is_none());
+        }
+    }
+
+    #[test]
+    fn adl_requires_factual_fill_fields_and_never_invents_aggregate_fills() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        for (field, value) in [
+            ("tradeId", ""),
+            ("tradeId", "0"),
+            ("ordId", "0"),
+            ("fillSz", "0"),
+            ("fillSz", "NaN"),
+            ("fillPx", "0"),
+            ("fillTime", "0"),
+            ("side", "unknown"),
+        ] {
+            let mut row = adl_order();
+            row[field] = serde_json::json!(value);
+            let event = serde_json::json!({"arg":{"channel":"orders"},"data":[row]});
+            assert_eq!(parser.parse(Bytes::from(event.to_string()), &sink), 0);
+        }
+        for (inst_type, inst_id) in [
+            ("SPOT", "BTC-USDT"),
+            ("FUTURES", "BTC-USDT-261225"),
+            ("SWAP", "BTC-USD-SWAP"),
+            ("SWAP", "BTC-USDC-SWAP"),
+            ("OPTION", "BTC-USD-261225-100000-C"),
+        ] {
+            let mut row = adl_order();
+            row["instType"] = serde_json::json!(inst_type);
+            row["instId"] = serde_json::json!(inst_id);
+            assert!(ExternalFuturesFill::from_okex_order_fill(&row).is_none());
+        }
+        assert!(sink.recv().is_none());
+    }
+
+    #[test]
+    fn only_documented_forced_close_categories_create_external_fills() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        for (category, reason) in [
+            ("adl", "adl"),
+            ("full_liquidation", "liquidation"),
+            ("partial_liquidation", "liquidation"),
+            ("delivery", "delivery"),
+        ] {
+            let mut row = adl_order();
+            row["category"] = serde_json::json!(category);
+            assert_eq!(
+                ExternalFuturesFill::from_okex_order_fill(&row)
+                    .unwrap()
+                    .reason
+                    .as_deref(),
+                Some(reason)
+            );
+        }
+        for category in ["normal", "twap", "ddh", "auto_conversion", "ADL"] {
+            let mut row = adl_order();
+            row["category"] = serde_json::json!(category);
+            row["cancelSource"] = serde_json::json!("6");
+            assert!(ExternalFuturesFill::from_okex_order_fill(&row).is_none());
+        }
+    }
 
     #[test]
     fn balance_and_position_ignores_cashbal_and_ws_upl() {

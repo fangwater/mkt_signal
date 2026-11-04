@@ -741,6 +741,7 @@ impl ArbHedgeStrategy {
             TradingVenue::BybitFutures => Some(TradingVenue::BybitMargin),
             TradingVenue::BinanceFutures => Some(TradingVenue::BinanceMargin),
             TradingVenue::BitgetFutures => Some(TradingVenue::BitgetMargin),
+            TradingVenue::OkexFutures => Some(TradingVenue::OkexMargin),
             _ => None,
         }
     }
@@ -4015,12 +4016,13 @@ mod tests {
     }
 
     #[test]
-    fn adl_spot_repair_routes_only_the_four_supported_linear_venues() {
+    fn adl_spot_repair_routes_only_the_five_supported_linear_venues() {
         for (futures, spot) in [
             (TradingVenue::GateFutures, TradingVenue::GateMargin),
             (TradingVenue::BybitFutures, TradingVenue::BybitMargin),
             (TradingVenue::BinanceFutures, TradingVenue::BinanceMargin),
             (TradingVenue::BitgetFutures, TradingVenue::BitgetMargin),
+            (TradingVenue::OkexFutures, TradingVenue::OkexMargin),
         ] {
             let mut strategy =
                 ArbHedgeStrategy::new_adl_spot(1, "BTCUSDT".to_string(), futures).unwrap();
@@ -4034,7 +4036,7 @@ mod tests {
             fill.order_id = "order-2".to_string();
             assert!(strategy.record_adl_spot_fill(&fill, 0.2, cumulative));
             assert_eq!(strategy.pending_hedge_qty(), 0.4);
-            fill.venue = TradingVenue::OkexFutures as u8;
+            fill.venue = TradingVenue::HyperliquidFutures as u8;
             assert!(!strategy.record_adl_spot_fill(&fill, 0.2, None));
             fill.venue = futures as u8;
             fill.order_id = "order-3".to_string();
@@ -4072,6 +4074,69 @@ mod tests {
         assert!(!strategy.record_adl_spot_fill(&fill, 0.2, Some(0.5)));
         assert!(!strategy.record_adl_spot_fill(&fill, 0.2, Some(f64::NAN)));
         assert_eq!(strategy.net_qty(), 0.5);
+    }
+
+    #[test]
+    fn okex_adl_orders_and_fills_replays_queue_each_native_fill_only_once() {
+        use mkt_parsers::account_event::{
+            okex_account_event_parser::OkexAccountEventParser, AccountEventSink, Parser,
+        };
+        use mkt_parsers::msg::basic_account_msg::{
+            split_basic_account_event, BasicAccountEventType,
+        };
+        use mkt_parsers::msg::external_futures_fill::ExternalFuturesFill;
+        // Deliberately bypass transport dedup to exercise the business guard.
+        #[derive(Default)]
+        struct Sink(std::cell::RefCell<Vec<bytes::Bytes>>);
+        impl AccountEventSink for Sink {
+            fn emit(&self, msg: bytes::Bytes) -> bool {
+                self.0.borrow_mut().push(msg);
+                true
+            }
+        }
+        let parser = OkexAccountEventParser::new();
+        let sink = Sink::default();
+        let mut first = serde_json::json!({"instType":"SWAP","instId":"BTC-USDT-SWAP",
+            "category":"adl","ordId":"9001","clOrdId":"12345","tradeId":"-101",
+            "side":"buy","fillPx":"50000","fillSz":"5","accFillSz":"5",
+            "fillTime":"1793355400797","uTime":"1793355400798","execType":"T"});
+        let mut second = first.clone();
+        second["tradeId"] = serde_json::json!("-102");
+        second["fillSz"] = serde_json::json!("2");
+        second["accFillSz"] = serde_json::json!("7");
+        let mut strategy =
+            ArbHedgeStrategy::new_adl_spot(1, "BTCUSDT".into(), TradingVenue::OkexFutures).unwrap();
+        for (channel, mut row) in [
+            ("orders", first.clone()),
+            ("fills", first.clone()),
+            ("orders", second.clone()),
+            ("fills", second),
+            ("orders", {
+                first["uTime"] = serde_json::json!("1793355400999");
+                first.clone()
+            }),
+            ("orders", first),
+        ] {
+            if channel == "fills" {
+                // The fills schema has no category. A negative native ID
+                // must still not turn the same ADL into a strategy fill.
+                row.as_object_mut().unwrap().remove("category");
+            }
+            let event = serde_json::json!({"arg":{"channel":channel},"data":[row]});
+            parser.parse(bytes::Bytes::from(event.to_string()), &sink);
+        }
+        let mut accepted = 0;
+        for raw in sink.0.into_inner() {
+            let (kind, _, body) = split_basic_account_event(&raw).unwrap();
+            assert_eq!(kind, BasicAccountEventType::ExternalFuturesFill);
+            let fill = ExternalFuturesFill::from_bytes(body).unwrap();
+            // Seven native contracts at a 0.01 base/contract multiplier.
+            accepted +=
+                usize::from(strategy.record_adl_spot_fill(&fill, fill.quantity * 0.01, None));
+        }
+        assert_eq!(accepted, 2);
+        assert!((strategy.pending_hedge_qty() - 0.07).abs() < 1e-12);
+        assert!((strategy.net_qty() - 0.07).abs() < 1e-12);
     }
 
     #[test]

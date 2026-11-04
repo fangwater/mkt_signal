@@ -1,0 +1,43 @@
+{
+  "scope": "OKX same-account USDT perpetual funding-rate ADL spot repair",
+  "validation": {
+    "mkt_parsers_library": {"passed": 190},
+    "order_common_library": {"passed": 49},
+    "trade_engine_library": {"passed": 385},
+    "root_library": {"passed": 1479, "ignored": 3},
+    "format_check": "passed",
+    "diff_whitespace_check": "passed",
+    "cargo_check_bins": {
+      "pre_trade": "passed",
+      "okex_account_monitor": "passed",
+      "gate_account_monitor": "passed",
+      "bybit_account_monitor": "passed",
+      "binance_account_monitor": "passed",
+      "bitget_account_monitor": "passed",
+      "trade_engine": "passed"
+    }
+  },
+  "coverage": [
+    "orders category=adl retains native order and trade IDs, including negative trade IDs and numeric or empty clOrdId",
+    "Only factual USDT SWAP fillSz, fillPx and fillTime create fill evidence; cumulative-only and zero-ID updates do not invent fills",
+    "The fills channel rejects non-positive trade IDs and forced-close categories",
+    "Cross-channel duplicate and reordered order replay bypasses transport dedup: native fills of 5 plus 2 contracts queue only 0.07 base at a 0.01 multiplier",
+    "Liquidation and delivery are recorded without triggering ADL repair; ordinary categories and cancellation source codes are not ADL fills",
+    "Shared repair routing supports the five same-venue FundingArb pairs while excluding Exec, cross-venue pairs and other modes",
+    "Spot market children use fixed base quantity, banAmend=true and the existing cross mode",
+    "New external forced-close uniform records use the canonical FILLED status code"
+  ],
+  "production_deployed": false,
+  "notes": [
+    "No live orders were submitted and no live OKX ADL event was observed during verification.",
+    "OKX VIP fills explicitly excludes ADL; existing orders subscription is the authoritative source.",
+    "OKX retains the account autoLoan setting; this patch does not change account configuration or promise a per-order no-borrow mode for cross SPOT.",
+    "Repair and deduplication state is process-local; a restart during repair requires reconciling outstanding orders and actual exposure.",
+    "Historical ADL records are not automatically replayed into orders."
+  ],
+  "external_contracts": [
+    "https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel",
+    "https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-fills-channel",
+    "https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-place-order"
+  ]
+}

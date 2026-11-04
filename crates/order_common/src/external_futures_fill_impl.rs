@@ -37,6 +37,7 @@ impl TradeUpdate for ExternalFuturesFill {
     fn trading_venue(&self) -> TradingVenue {
         match self.venue {
             1 => TradingVenue::BinanceFutures,
+            3 => TradingVenue::OkexFutures,
             5 => TradingVenue::BybitFutures,
             9 => TradingVenue::GateFutures,
             _ => TradingVenue::BitgetFutures,

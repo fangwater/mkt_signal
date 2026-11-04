@@ -7871,7 +7871,7 @@ fn build_uta_external_uniform_order(
         price_offset: 0.0,
         amount_init: fill.quantity,
         amount_update: fill.quantity,
-        status: order_common::OrderStatus::Filled as u8,
+        status: order_common::OrderStatus::Filled.to_u8(),
         from_key_len: 0,
         from_key: format!(
             "exchange_forced_close:{reason}:order={}:trade={}",
@@ -8157,6 +8157,7 @@ mod tests {
         let record = build_uta_external_uniform_order(&fill).unwrap();
         assert_eq!(record.client_order_id, 0);
         assert_eq!(record.venue, TradingVenue::GateFutures as u8);
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
         assert_eq!(record.amount_update, 4250.1);
         assert_eq!(
             record.from_key,
@@ -8172,6 +8173,7 @@ mod tests {
             (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
             (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
             (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
+            (TradingVenue::OkexMargin, TradingVenue::OkexFutures),
         ] {
             assert!(adl_spot_repair_enabled(
                 spot,
@@ -8207,6 +8209,27 @@ mod tests {
             ArbMode::FundingArb,
             false
         ));
+    }
+
+    #[test]
+    fn okex_adl_uniform_fill_retains_native_identity_and_filled_status() {
+        use mkt_parsers::msg::external_futures_fill::ExternalFuturesFill;
+        use order_common::TradeUpdate;
+        let row = serde_json::json!({"instType":"SWAP","instId":"BTC-USDT-SWAP","category":"adl",
+            "ordId":"9001","tradeId":"-101","side":"buy","fillPx":"50000","fillSz":"5",
+            "fillTime":"1793355400797","execType":"T"});
+        let fill = ExternalFuturesFill::from_okex_order_fill(&row).unwrap();
+        assert_eq!(fill.trading_venue(), TradingVenue::OkexFutures);
+        let record = build_uta_external_uniform_order(&fill).unwrap();
+        assert_eq!(record.symbol, b"BTCUSDT");
+        assert_eq!(record.client_order_id, 0);
+        assert_eq!(record.venue, TradingVenue::OkexFutures as u8);
+        assert_eq!(record.amount_update, 5.0);
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:adl:order=9001:trade=-101"
+        );
     }
 
     #[test]
