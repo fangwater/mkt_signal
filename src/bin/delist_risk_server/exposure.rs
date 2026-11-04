@@ -585,7 +585,10 @@ fn parse_for_exchange(
                     invalid_assets.insert(row.asset.clone());
                     continue;
                 }
-                row.ignored_spot_tail = settings.ignores_spot_tail(exchange, &row);
+                let cash_leg = risk["open_leg"]["venue"].as_str().is_some_and(|venue| {
+                    venue == format!("{exchange}-margin") || venue == format!("{exchange}-spot")
+                });
+                row.ignored_spot_tail = cash_leg && settings.ignores_spot_tail(exchange, &row);
                 if row.net_usdt.is_none() && !row.ignored_spot_tail {
                     errors.push(format!("{} 有持仓但缺少有效价格", row.asset));
                 }
@@ -720,7 +723,7 @@ mod tests {
     fn snapshot(rows: Vec<Value>, now: i64) -> Value {
         json!({"entries":[
             {"channel":"pre_trade_exposure","entry":{"ts_ms":now,"rows":rows}},
-            {"channel":"pre_trade_risk","entry":{"ts_ms":now,"account_risks":[{"ts_ms":now}],"total_position":0.0}}
+            {"channel":"pre_trade_risk","entry":{"ts_ms":now,"account_risks":[{"ts_ms":now}],"total_position":0.0,"open_leg":{"venue":"gate-margin"}}}
         ]})
     }
 
@@ -872,6 +875,14 @@ mod tests {
             parse_for_exchange(&snapshot(vec![valued], NOW), NOW, &settings, "gate").unwrap();
         assert!(!sample.rows[0].ignored_spot_tail);
         assert_eq!(sample.rows[0].uncovered_usdt, Some(2.0));
+        let mut futures = snapshot(vec![tail("SLVON", 0.009, 0.0)], NOW);
+        futures["entries"][1]["entry"]["open_leg"]["venue"] = json!("gate-futures");
+        assert!(
+            !parse_for_exchange(&futures, NOW, &settings, "gate")
+                .unwrap()
+                .rows[0]
+                .ignored_spot_tail
+        );
     }
 
     #[test]
