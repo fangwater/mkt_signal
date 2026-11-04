@@ -1,0 +1,64 @@
+{
+  "source": "binance_exec_rx03",
+  "ICX_position": 0,
+  "exchange_open_orders": 0,
+  "removed_rules": 3,
+  "before_factor_count": 408,
+  "after_factor_count": 404,
+  "strategy_count": 9,
+  "execute": true,
+  "audit": "/home/ubuntu/crypto_cta_manager/maintenance-backups/cta_icx_cleanup_20261104T121113Z",
+  "checked_at_ms": 1793794356105,
+  "workers": {
+    "cta-prep-binance-futures": {
+      "generation": "0bc52031-a5e6-4003-b2fa-c4ba5305d2c5",
+      "calculations": 404,
+      "latest_observations": 404,
+      "ICX_rules": 0,
+      "ICX_group_membership": false,
+      "replaying": false,
+      "errors": []
+    },
+    "cta-factor-spread": {
+      "generation": "7745578d-ede6-45f0-bccc-810879da8216",
+      "calculations": 50,
+      "latest_observations": 50,
+      "ICX_rules": 0,
+      "ICX_group_membership": false,
+      "replaying": false,
+      "errors": []
+    }
+  },
+  "execution": {
+    "position_ready": true,
+    "bindings": 9,
+    "template": "lgq_grid_prep",
+    "algorithm": "grid",
+    "shares": 1,
+    "pending_publishes": 0,
+    "open_orders": 0,
+    "active_batches": 0,
+    "ICX_position": 0,
+    "all_allocations_match_exchange": true,
+    "completion_reasons": {
+      "target_tolerance": 12,
+      "target_reached": 12,
+      "exchange_minimum": 13
+    },
+    "incomplete_rows": 0,
+    "confirmed_fills_since_cutover": {
+      "cta-last-20-prep02-bn-1min-pos": 20,
+      "cta-top-20-prep02-bn-1min-pos": 18,
+      "cta-top-5-prep02-bn-1min-pos": 1
+    }
+  },
+  "processes": {
+    "cta-prep-binanc": 2970444,
+    "cta-factor-spre": 2970968,
+    "exec-pre-trade": 3016803,
+    "trade_signal": 3016920,
+    "trade_engine": 3936910,
+    "rapidx_account_": 3685214
+  },
+  "processes_restarted": false
+}

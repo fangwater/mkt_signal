@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-04 10:45 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-04 12:13 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-04 12:11–12:13 UTC，按用户要求从Prep02 last-20的1min/15min删除ICX共3条规则，
+并从Prep/Spread券池定义移除ICX；Prep规则102→99、计算408→404，九策略身份保持。
+经既有Config API预览、revision并发校验和热加载，Prep/Spread代次及全部进程PID保持，
+无重启、重新回放或持仓迁移。ICX实际仓位及挂单0；RX03九条绑定沿用
+`lgq_grid_prep` / grid / shares=1，无pending publish，position_ready=true。
+交易所账户总数量与完整Exec分仓逐币一致；全部37行execution_complete，活动批次/委托0。
+新1min三券池切换后分别确认last-20/top-20/top-5成交20/18/1笔；低于交易所最小量及
+目标容差的尾差按既有完成口径保留。Prep404项和Spread50项均有观测，无因子/仓位错误，
+部分Prep窗口未就绪仍按现有规则跳过。没有修改env.sh、主TOML、执行参数、CPU或源IP。
+备份 `~/crypto_cta_manager/maintenance-backups/cta_icx_cleanup_20261104T121113Z/`；
+核验见 `../artifacts/cta_icx_cleanup_20261104/README.md`。
 
 2026-11-04 10:14–10:45 UTC，依次重发 JP `bitget_fr_arb01/02/03` 的 ADL 现货修复，
 三套基础组件及原有 trade_signal 均已恢复。源码为同步、干净的 `arbmm` 提交
@@ -1309,7 +1321,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | 原FR等及新okex_exec_trade01/binance_exec_spread01只读账户持久化；旧MM停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta-prep-binance-futures | PID2970444；Prep01三张+Prep02九张活动表、三张旧退役表、408项计算；全部线程CPU17，发布开启，RX01/RX03 shares=1；部分窗口未就绪，ICX无行情 |
+| 17 | cta-prep-binance-futures | PID2970444；Prep01三张+Prep02九张活动表、三张旧退役表、404项计算；全部线程CPU17，发布开启，RX01/RX03 shares=1；ICX已清理，部分窗口未就绪 |
 | 18 | cta-factor-spread | PID2970968；Spread01发布开启，两所绑定各1份，50项计算就绪；全部线程CPU18 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |

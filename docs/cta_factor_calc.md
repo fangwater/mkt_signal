@@ -1,6 +1,6 @@
 # CTA 因子计算与仓位表
 
-最后更新：2026-11-04 10:45 UTC（symbol group 已部署，Prep02九策略分仓完成）
+最后更新：2026-11-04 12:13 UTC（ICX已清理，Prep02九策略保持RX03执行）
 
 ## 券池维度
 
@@ -17,7 +17,7 @@ Spread 对应 `cta-top-5-spread01-okx-bn-1min-pos`。
 {
   "top-5": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"],
   "top-20": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "LTCUSDT", "ETCUSDT", "DOTUSDT", "BCHUSDT", "FILUSDT", "NEARUSDT", "AXSUSDT", "ATOMUSDT", "AAVEUSDT", "TRXUSDT", "UNIUSDT"],
-  "last-20": ["1INCHUSDT", "EGLDUSDT", "YFIUSDT", "KNCUSDT", "RSRUSDT", "KAVAUSDT", "ZENUSDT", "QTUMUSDT", "BELUSDT", "RLCUSDT", "DASHUSDT", "KSMUSDT", "ZRXUSDT", "IOTAUSDT", "ONTUSDT", "BANDUSDT", "SKLUSDT", "IOSTUSDT", "BATUSDT", "ICXUSDT"]
+  "last-20": ["1INCHUSDT", "EGLDUSDT", "YFIUSDT", "KNCUSDT", "RSRUSDT", "KAVAUSDT", "ZENUSDT", "QTUMUSDT", "BELUSDT", "RLCUSDT", "DASHUSDT", "KSMUSDT", "ZRXUSDT", "IOTAUSDT", "ONTUSDT", "BANDUSDT", "SKLUSDT", "IOSTUSDT", "BATUSDT"]
 }
 ```
 
@@ -33,21 +33,25 @@ Spread 对应 `cta-top-5-spread01-okx-bn-1min-pos`。
 Delist 的只读清单和备份也包含券池定义。
 
 2026-11-04 用户清单已写入 Prep02 模板并部署到 JP。20 项输入中两个空标的项不展开，
-跨券池重复规则分别保留，共 102 条规则、9 张表（3 券池 × 3 频率）：
+跨券池重复规则分别保留；12:11 UTC按用户要求删除ICX的3条规则后，
+现为99条规则、9张表（3券池 × 3频率）。`last-20`保留名称，成员现为19个：
 
 | 券池 | 1min 规则 | 5min 规则 | 15min 规则 |
 |---|---:|---:|---:|
 | `top-5` | 5 | 2 | 7 |
 | `top-20` | 27 | 0（保留空策略） | 10 |
-| `last-20` | 27 | 5 | 19 |
+| `last-20` | 26 | 5 | 17 |
 
 文件名示例 `top-5_prep02_binance-futures_1min.json`。所有模板发布开关为 false，
 金额和阈值沿用原 Prep02 同频段配置。原三张未分券池的 Prep02 模板已替换；
-Prep01 三张及 Spread01 一张保留，总计 13 张表，Prep 仍为 408 项共享计算。
+Prep01三张及Spread01一张保留，总计13张活动表，Prep现为404项共享计算。
 线上保留发布前实际参数：九个Prep02均开启、每规则100U、RX03 shares=1及原grid模板；
 Prep01 / Spread01参数保留。09:47:31.222 UTC完成存量分仓，10:45 UTC核验两worker
 回放与发布确认完成、执行端position_ready=true。历史盈亏不重写，归属守恒校验通过。
-部分Prep窗口仍未就绪，ICX四项计算无行情，相关规则保持跳过；Spread50项均就绪。
+12:11 UTC已从Prep两份规则与Prep/Spread券池定义清理ICX，计算408→404，代次和进程保持；
+ICX实际仓位与挂单为0。部分Prep窗口仍未就绪，Spread50项均就绪。
+RX03九条grid/shares=1绑定正常，真实新策略成交已确认，全部分仓总量与交易所一致，
+无未完成执行行、活动批次或委托。见 [ICX清理与RX03核验](../artifacts/cta_icx_cleanup_20261104/README.md)。
 部署回执见 [九策略上线记录](../artifacts/cta_symbol_groups_20261104/README.md)。
 用户已确认自动迁移口径：唯一匹配的旧规则直接归组；跨券池重复的旧规则等分数量和入场金额，
 总仓不变。历史盈亏保留在旧策略，切换后按九个新策略统计。空策略保留身份和零目标，

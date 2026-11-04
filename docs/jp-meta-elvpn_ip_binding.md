@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 10:45 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 12:13 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 12:11–12:13 UTC，经Config API热更新移除Prep02的3条ICX规则和
+Prep/Spread券池成员，Prep计算408→404，九条RX03绑定保持grid/shares=1。
+ICX无持仓及挂单，完整Exec分仓与交易所逐币一致；进程/代次、CPU、原执行参数保持。
+未修改env.sh、主TOML、source IP、`local_ips`、ENI/EIP、路由或监听；未启停任何进程。
+详情见 `core_allocation.md` 及 `../artifacts/cta_icx_cleanup_20261104/README.md`。
 
 2026-11-04 10:14–10:45 UTC，依次发布并恢复 JP `bitget_fr_arb01/02/03` 的 ADL
 现货修复与原有信号。本地同步 arbmm `516116fa` 构建6个 release 二进制，经SCP
@@ -863,7 +869,7 @@ binance-cta-special-rx02     172.31.35.228                  已停止并归档�
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       已下线，运行目录归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；Exec07已清仓解绑，旧配置410
 binance-cta-perp-rx01        默认出口 / 172.31.35.228       全部旧进程停止；Exec06永续仓位/挂单0，91旧绑定及virtual06跟随移除，旧配置410
-cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17运行，Prep01三张+Prep02九张活动表；Config loopback19220，发布开启，ICX无行情及部分窗口未就绪
+cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17运行，Prep01三张+Prep02九张活动表；Config loopback19220，发布开启，ICX已清理，部分窗口未就绪
 cta-factor-spread           默认出口 / 172.31.35.228       CPU18计算及Spread01发布开启，无私有交易请求
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；5min已清仓解绑，旧配置410

@@ -349,7 +349,7 @@ fn empty_symbol_group_strategy_is_a_valid_zero_target_scope() {
 }
 
 #[test]
-fn prep02_symbol_group_templates_match_all_requested_rules_without_cross_pool_deduplication() {
+fn prep02_symbol_group_templates_match_requested_rules_after_icx_removal() {
     let plan = Plan::load(std::path::Path::new("config/cta_prep_binance_futures")).unwrap();
     let fixture: Vec<serde_json::Value> = serde_json::from_str(include_str!(
         "../../tests/fixtures/cta_prep02_symbol_groups.json"
@@ -358,6 +358,10 @@ fn prep02_symbol_group_templates_match_all_requested_rules_without_cross_pool_de
     let mut expected = BTreeSet::new();
     for row in fixture {
         for symbol in row["symbols"].as_array().unwrap() {
+            // The original import is retained as evidence; ICX was explicitly removed later.
+            if symbol.as_str() == Some("ICX") {
+                continue;
+            }
             expected.insert((
                 row["symbol_group"].as_str().unwrap().to_owned(),
                 row["interval"].as_str().unwrap().to_owned(),
@@ -389,11 +393,11 @@ fn prep02_symbol_group_templates_match_all_requested_rules_without_cross_pool_de
         }
     }
     assert_eq!(tables, 9);
-    assert_eq!(expected.len(), 102);
+    assert_eq!(expected.len(), 99);
     assert_eq!(actual, expected);
     assert_eq!(plan.symbol_groups.0["top-5"].len(), 5);
     assert_eq!(plan.symbol_groups.0["top-20"].len(), 20);
-    assert_eq!(plan.symbol_groups.0["last-20"].len(), 20);
+    assert_eq!(plan.symbol_groups.0["last-20"].len(), 19);
     let spread = Plan::load(std::path::Path::new("config/cta_factor_spread")).unwrap();
     assert_eq!(spread.symbol_groups, plan.symbol_groups);
 }
