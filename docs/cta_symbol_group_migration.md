@@ -56,12 +56,17 @@ target/release/cta-symbol-group-migrate \
 |---|---|
 | `source_id` | Manager 的稳定 source ID |
 | `shares` | 原三个策略名到有效跟随份数的映射，包含虚拟账户乘数 |
-| `ledgers` | `batch_exec` / `chase_exec` 两个完整 `position_allocations` 原值 |
+| `ledgers` | `batch_exec` / `chase_exec` 两个完整 `position_allocations` 原值；未使用家族明确为 `null`，不得伪造空账本 |
 | `ledgers_after` | Exec 快照后的第二次账本捕获，必须与第一次完全一致 |
 | `exec_snapshot` | Viz 的完整 `exec_pre_trade_state` entry；`position_ready=true`，`ts_ms` 与切换时刻一致，所有行无活动批次和活动委托 |
 | `allocation_audit` | Manager 同源同时间完整重放得到的 `source_id`、`snapshot_ts_us`、`account`、`strategies`，使用既有 `AllocationAudit` JSON |
 | `strategy_anchor` | 该账户是否使用策略初始仓位快照；为 true 时输出显式不变的 `__unallocated__` 对照腿 |
 | `marks` | 币对到 `{ "close_ts_us": ..., "price": ... }`；时间为切换时刻所在分钟的起点，即上一根完整分钟的收盘时间 |
+| `residual_quote_limit` | 默认 0，要求实际分仓精确等于旧目标；可显式允许最多 10 USDT 的已完成执行尾差，仍须验证 Exec 的完成原因、原目标及零 pending/活动委托 |
+
+已完成执行的最小下单量/目标容差尾差随实际 Exec 数量迁移，不通过交易强行对齐。
+尾差优先按新券池现有贡献的绝对数量比例分配；没有当前信号贡献时，在该符号的已配置
+目标券池间等分。原始实际数量、新归属及调整量全部写入审计；信号子仓位不伪造尾差。
 
 完整 Manager 投影必须与 Exec 的观察账户和旧策略归属相符。策略快照字段采用 Manager
 现有契约，不新增版本、历史成交副本或跨仓库运行时依赖。

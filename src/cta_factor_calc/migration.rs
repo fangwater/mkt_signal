@@ -32,6 +32,10 @@ pub struct Source {
     pub allocation_audit: Value,
     pub strategy_anchor: bool,
     pub marks: BTreeMap<String, Mark>,
+    /// Explicit cap for already-settled exchange-minimum/tolerance residuals.
+    /// Zero retains exact matching; never accepts a pending execution gap.
+    #[serde(default)]
+    pub residual_quote_limit: f64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -287,6 +291,9 @@ pub fn prepare(plan: &Plan, positions_dir: &Path, request: &Request) -> Result<B
 }
 
 fn ledger_positions(ledger: &Value) -> Result<BTreeMap<String, Quantities>> {
+    if ledger.is_null() {
+        return Ok(BTreeMap::new());
+    }
     let positions =
         serde_json::from_value::<BTreeMap<String, Quantities>>(ledger["positions"].clone())
             .context("Exec ledger requires complete positions")?;
@@ -420,6 +427,12 @@ fn prepare_source(
     }
     let mut changes = BTreeMap::<(String, String, i16), (f64, f64)>::new();
     let mut new_shares = BTreeMap::new();
+    let mut residuals = Vec::new();
+    ensure!(
+        source.residual_quote_limit.is_finite()
+            && (0.0..=10.0).contains(&source.residual_quote_limit),
+        "residual cap must be 0..=10 quote units"
+    );
     for (old_name, share) in &source.shares {
         ensure!(
             share.is_finite() && *share >= 0.0 && old.contains_key(old_name),
@@ -445,6 +458,18 @@ fn prepare_source(
             );
         }
         let owned = positions.get_mut(family).unwrap().remove(old_name).unwrap();
+        let mut allocations = mapping[old_name]
+            .iter()
+            .map(|name| {
+                Ok((
+                    name.clone(),
+                    quantities(&new[name])?
+                        .into_iter()
+                        .map(|(s, q)| (s, q * share))
+                        .collect::<Quantities>(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let symbols = total
             .keys()
             .chain(owned.keys())
@@ -452,10 +477,86 @@ fn prepare_source(
             .collect::<BTreeSet<_>>();
         for symbol in symbols {
             let qty = owned.get(&symbol).copied().unwrap_or_default();
-            ensure!(
-                same_qty(qty, total.get(&symbol).copied().unwrap_or_default() * share),
-                "Exec has not settled to the old signal target: {old_name}/{symbol}"
-            );
+            let target = total.get(&symbol).copied().unwrap_or_default() * share;
+            if !same_qty(qty, target) {
+                let mark = source
+                    .marks
+                    .get(&symbol)
+                    .context("residual requires a completed minute mark")?;
+                let row = source.exec_snapshot["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["strategy_name"] == *old_name && row["symbol"] == symbol)
+                    .context("residual lacks a factual Exec completion observation")?;
+                ensure!(
+                    source.residual_quote_limit > 0.0
+                        && ((qty - target) * mark.price).abs() <= source.residual_quote_limit
+                        && row["execution_complete"] == true
+                        && row["pending_qty"].as_f64() == Some(0.0)
+                        && matches!(
+                            row["completion_reason"].as_str(),
+                            Some("target_reached" | "target_tolerance" | "exchange_minimum")
+                        )
+                        && row["target_qty"]
+                            .as_f64()
+                            .is_some_and(|q| same_qty(q, target)),
+                    "Exec has not settled to the old signal target: {old_name}/{symbol}"
+                );
+                let eligible = mapping[old_name]
+                    .iter()
+                    .filter(|name| {
+                        new[*name].combination.factor_rules.iter().any(|r| {
+                            new[*name]
+                                .combination
+                                .rule_id(r)
+                                .is_ok_and(|id| id.symbol == symbol)
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                ensure!(
+                    !eligible.is_empty(),
+                    "execution residual has no factual destination universe: {symbol}"
+                );
+                let gross: f64 = eligible
+                    .iter()
+                    .map(|name| {
+                        allocations[name]
+                            .get(&symbol)
+                            .copied()
+                            .unwrap_or_default()
+                            .abs()
+                    })
+                    .sum();
+                let mut remaining = qty - target;
+                let mut audit = Vec::new();
+                for (index, name) in eligible.iter().enumerate() {
+                    let weight = if gross > 0.0 {
+                        allocations[name]
+                            .get(&symbol)
+                            .copied()
+                            .unwrap_or_default()
+                            .abs()
+                            / gross
+                    } else {
+                        1.0 / eligible.len() as f64
+                    };
+                    let adjustment = if index + 1 == eligible.len() {
+                        remaining
+                    } else {
+                        (qty - target) * weight
+                    };
+                    remaining -= adjustment;
+                    *allocations
+                        .get_mut(name)
+                        .unwrap()
+                        .entry(symbol.clone())
+                        .or_default() += adjustment;
+                    audit.push(json!({"strategy":name,"adjustment":adjustment}));
+                }
+                residuals.push(json!({"old_strategy":old_name,"symbol":symbol,"target_qty":target,"actual_qty":qty,"adjustments":audit}));
+            }
             ensure!(
                 same_qty(
                     qty,
@@ -476,10 +577,7 @@ fn prepare_source(
             owned.keys().map(|s| (s.clone(), 0.0)).collect(),
         );
         for name in &mapping[old_name] {
-            let allocated = quantities(&new[name])?
-                .into_iter()
-                .map(|(s, q)| (s, q * share))
-                .collect::<Quantities>();
+            let allocated = allocations.remove(name).unwrap();
             for (symbol, qty) in &allocated {
                 ensure!(
                     qty.is_finite()
@@ -537,8 +635,15 @@ fn prepare_source(
             "execution family total changed"
         );
         let ledger = ledgers.get_mut(family).unwrap();
-        ledger["positions"] = serde_json::to_value(rows)?;
-        ledger["updated_at_us"] = json!(ts_us);
+        if !ledger.is_null() {
+            ledger["positions"] = serde_json::to_value(rows)?;
+            ledger["updated_at_us"] = json!(ts_us);
+        } else {
+            ensure!(
+                rows.is_empty(),
+                "cannot allocate to an absent execution family"
+            );
+        }
         files.insert(
             format!(
                 "sources/{}/original-{family}-allocations.json",
@@ -587,7 +692,7 @@ fn prepare_source(
         );
     }
     Ok(
-        json!({"source_id":source.source_id,"old_shares":source.shares,"new_shares":new_shares,"manager_audit_sha256":fingerprint(&source.allocation_audit)?,"account_quantity_unchanged":true,"pnl_correction_required":!corrections.is_empty()}),
+        json!({"source_id":source.source_id,"old_shares":source.shares,"new_shares":new_shares,"execution_residuals":residuals,"manager_audit_sha256":fingerprint(&source.allocation_audit)?,"account_quantity_unchanged":true,"pnl_correction_required":!corrections.is_empty()}),
     )
 }
 

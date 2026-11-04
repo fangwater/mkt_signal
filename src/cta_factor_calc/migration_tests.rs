@@ -121,7 +121,7 @@ fn fixture() -> Fixture {
             ledgers_after: ledgers.clone(), ledgers,
             exec_snapshot: json!({"position_ready":true,"ts_ms":CUTOVER/1000,"rows":rows}),
             allocation_audit: json!({"source_id":id,"snapshot_ts_us":CUTOVER,"account":account,"strategies":projection}),
-            strategy_anchor: true, marks,
+            strategy_anchor: true, marks, residual_quote_limit: 0.0,
         }
     }).collect();
     Fixture {
@@ -261,4 +261,62 @@ fn migration_rejects_a_held_rule_without_a_destination_instead_of_guessing() {
         .unwrap_err()
         .to_string()
         .contains("no destination"));
+}
+
+#[test]
+fn migration_preserves_observed_settled_residuals_and_an_absent_unused_family() {
+    let mut f = fixture();
+    let source = &mut f.request.sources[0];
+    source.residual_quote_limit = 5.0;
+    source.ledgers.get_mut("batch_exec").unwrap()["positions"]["cta-prep02-bn-15min-pos"]
+        ["SOLUSDT"] = json!(1.99);
+    source.ledgers.get_mut("batch_exec").unwrap()["positions"]["unrelated"] =
+        json!({"OTHERUSDT":17.0});
+    source.ledgers.insert("chase_exec".into(), Value::Null);
+    source.ledgers_after = source.ledgers.clone();
+    for row in source.exec_snapshot["rows"].as_array_mut().unwrap() {
+        if row["symbol"] == "SOLUSDT" {
+            row["account_position_qty"] = json!(6.99);
+        }
+        if row["strategy_name"] == "cta-prep02-bn-15min-pos" && row["symbol"] == "SOLUSDT" {
+            row["current_qty"] = json!(1.99);
+            row["target_qty"] = json!(2.0);
+            row["execution_complete"] = json!(true);
+            row["pending_qty"] = json!(0.0);
+            row["completion_reason"] = json!("target_tolerance");
+        }
+        if row["strategy_name"] == "unrelated" {
+            row["algorithm"] = json!("grid");
+        }
+    }
+    for row in source.allocation_audit["strategies"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if row[0] == "cta-prep02-bn-15min-pos" && row[1] == "SOLUSDT" {
+            row[3] = json!(1.99);
+        }
+    }
+    for row in source.allocation_audit["account"].as_array_mut().unwrap() {
+        if row[0] == "SOLUSDT" {
+            row[2] = json!(6.99);
+        }
+    }
+    let bundle = prepare(&f.plan, &f.root, &f.request).unwrap();
+    let ledger = &bundle.files["sources/source-a/batch_exec-allocations.json"]["positions"];
+    assert_eq!(ledger["cta-top-5-prep02-bn-15min-pos"]["SOLUSDT"], 0.995);
+    assert_eq!(ledger["cta-top-20-prep02-bn-15min-pos"]["SOLUSDT"], 0.995);
+    assert_eq!(
+        bundle.files["sources/source-a/chase_exec-allocations.json"],
+        Value::Null
+    );
+    assert_eq!(
+        bundle.summary["execution_sources"][0]["execution_residuals"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    f.request.sources[0].residual_quote_limit = 0.0;
+    assert!(prepare(&f.plan, &f.root, &f.request).is_err());
 }
