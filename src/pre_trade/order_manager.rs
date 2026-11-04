@@ -267,7 +267,7 @@ fn order_price_qv(order: &Order) -> Option<QuantizedValue> {
         .or_else(|| quantize_order_decimal(order.price))
 }
 
-fn gate_spot_price_qv(
+fn reducing_spot_buy_price_qv(
     order: &Order,
     resolved: ResolvedOrderQuantities,
 ) -> Result<QuantizedValue, String> {
@@ -276,7 +276,7 @@ fn gate_spot_price_qv(
             return Ok(price);
         }
         let quote = MktChannel::is_initialized()
-            .then(|| MktChannel::instance().get_quote(&order.symbol, TradingVenue::GateMargin))
+            .then(|| MktChannel::instance().get_quote(&order.symbol, order.venue))
             .flatten()
             .filter(|quote| {
                 let age = get_timestamp_us().saturating_sub(quote.ts);
@@ -290,18 +290,18 @@ fn gate_spot_price_qv(
             })
             .ok_or_else(|| {
                 format!(
-                    "Gate reducing spot buy needs a fresh ask: symbol={}",
-                    order.symbol
+                    "reducing spot buy needs a fresh ask: venue={:?} symbol={}",
+                    order.venue, order.symbol
                 )
             })?;
         quantize_order_decimal(quote.ask).ok_or_else(|| {
             format!(
-                "invalid Gate reducing spot buy ask: symbol={}",
-                order.symbol
+                "invalid reducing spot buy ask: venue={:?} symbol={}",
+                order.venue, order.symbol
             )
         })
     } else {
-        resolved.limit_price_qv_or_zero(order, "gate")
+        resolved.limit_price_qv_or_zero(order, order.venue.as_str())
     }
 }
 
@@ -1279,7 +1279,7 @@ impl PreTradeOrderRequestExt for Order {
                     ));
                 }
                 let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
-                let price_qv = gate_spot_price_qv(self, resolved)?;
+                let price_qv = reducing_spot_buy_price_qv(self, resolved)?;
                 GateNewOrderParams::request_bytes_from_parts(
                     trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
@@ -1353,7 +1353,11 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
                 let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                let price_qv = if self.bitget_spot_order {
+                    reducing_spot_buy_price_qv(self, resolved)?
+                } else {
+                    resolved.limit_price_qv_or_zero(self, "bitget")?
+                };
                 BitgetNewOrderParams::request_bytes_from_parts(
                     if self.bitget_spot_order {
                         trade_engine::trade_request::TradeRequestType::BitgetNewSpotOrder
@@ -1572,7 +1576,7 @@ impl PreTradeOrderRequestExt for Order {
                     ));
                 }
                 let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
-                let price_qv = gate_spot_price_qv(self, resolved)?;
+                let price_qv = reducing_spot_buy_price_qv(self, resolved)?;
                 GateNewOrderParams::prepared_request_from_parts(
                     trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
@@ -1615,7 +1619,11 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
                 let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                let price_qv = if self.bitget_spot_order {
+                    reducing_spot_buy_price_qv(self, resolved)?
+                } else {
+                    resolved.limit_price_qv_or_zero(self, "bitget")?
+                };
                 BitgetNewOrderParams::prepared_request_from_parts(
                     if self.bitget_spot_order {
                         trade_engine::trade_request::TradeRequestType::BitgetNewSpotOrder
@@ -2939,6 +2947,51 @@ mod tests {
         assert_eq!(payload.get("clientOid").and_then(Value::as_str), Some("77"));
         assert!(payload.get("reduceOnly").is_none());
         assert!(payload.get("posSide").is_none());
+    }
+
+    #[test]
+    fn bitget_adl_spot_repair_requests_preserve_base_qty_and_spot_category() {
+        for side in [Side::Buy, Side::Sell] {
+            let mut order = Order::new(
+                TradingVenue::BitgetMargin,
+                42,
+                OrderType::Market,
+                "BTCUSDT".to_string(),
+                side,
+                0.2,
+                if side == Side::Buy { 50000.0 } else { 0.0 },
+                true,
+                1.0,
+                None,
+                false,
+            );
+            order.set_bitget_spot_order(true);
+            for bytes in [
+                order.get_order_request_bytes().unwrap(),
+                order.get_order_request_prepared().unwrap().to_bytes(),
+            ] {
+                let request = TradeRequestMsg::parse(&bytes).unwrap();
+                assert_eq!(request.req_type, TradeRequestType::BitgetNewSpotOrder);
+                let payload: Value = serde_json::from_str(
+                    &trade_engine::bitget_ws::build_order_payload(&request, 999).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(payload["category"], "spot");
+                let arg = &payload["args"][0];
+                assert_eq!(arg["qty"], "0.2");
+                assert_eq!(arg["reduceOnly"], "YES");
+                if side == Side::Buy {
+                    assert_eq!(arg["orderType"], "limit");
+                    assert_eq!(arg["timeInForce"], "ioc");
+                    assert_eq!(arg["price"], "50000");
+                } else {
+                    assert_eq!(arg["orderType"], "market");
+                }
+            }
+            let cancel = order.get_order_cancel_bytes().unwrap();
+            let request = TradeRequestMsg::parse(&cancel).unwrap();
+            assert_eq!(request.req_type, TradeRequestType::BitgetCancelSpotOrder);
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-# Gate, Bybit and Binance FR ADL spot repair
+# Gate, Bybit, Binance and Bitget FR ADL spot repair
 
 Funding-rate environments (`ArbMode::FundingArb`) with the following opening
 and hedge venues repair new ADL fills on the spot leg:
@@ -8,6 +8,7 @@ and hedge venues repair new ADL fills on the spot leg:
 | Gate | `GateMargin` | `GateFutures` | `futures.usertrades`, `text=auto_deleveraging` |
 | Bybit | `BybitMargin` | `BybitFutures` | Full `execution` stream, `execType=AdlTrade` |
 | Binance | `BinanceMargin` | `BinanceFutures` | `ORDER_TRADE_UPDATE`, `c=adl_autoclose` or `adl_autoclose-...`, with an actual fill |
+| Bitget | `BitgetMargin` | `BitgetFutures` | UTA `fill`, explicit ADL `tradeSide`; order-to-fill identity join when needed |
 
 This repair requires the exact same-exchange pair and USDT linear futures.
 Exec, intra-arbitrage, cross-exchange, COIN-M and other deployment modes retain
@@ -23,6 +24,18 @@ alongside `execution.fast`; ADL is parsed from the full channel with the native
 order and execution identities. Binance retains its existing native order
 stream and PM/standard USD-M account scope. Its actual ADL fills use a local
 adapter for repair; no additional external-fill IPC event is emitted.
+
+Bitget's account monitor already subscribes to UTA `fill` and `order`. The
+documented `tradeSide` values `dte_sys_adl_close_long`,
+`dte_sys_adl_close_short`, `dte_sys_adl_buy_in_single_side_mode` and
+`dte_sys_adl_sell_in_single_side_mode` identify ADL. An ADL marker on the
+actual fill is sufficient, including with a numeric `clientOid`. A marker on
+the order can classify cached external fills or later fills by native order
+ID. Aggregate order quantities never create an extra repair fill. Known
+exchange-owned order updates have no strategy client ID. `execType=reduce`
+retains its separate `forced_reduction` attribution and does not trigger ADL
+repair. The `adl-notification` channel lacks native order/trade IDs and is not
+used to invent fills or additional repair work.
 
 Pre-trade publishes both unmatched trade evidence and a `uniform_orders` fill
 attributed to `exchange_forced_close:adl:order=...:trade=...`, without assigning
@@ -41,13 +54,15 @@ The first order is attempted from the account event. Subsequent children use
 the existing per-symbol `arb_amount_u` size and a fresh matching spot BBO, at
 most two seconds old. Only one live or unresolved repair child is allowed.
 Bybit and Binance submit market orders in base quantity; Bybit market buys
-explicitly set `marketUnit=baseCoin`. Gate spot sells use market IOC; reducing
-Gate spot buys use a base-quantity limit IOC at the fresh ask, because Gate
-market buys otherwise express quote notional. Repair orders do not enable new
-borrowing. Neither direction reopens a futures hedge.
+explicitly set `marketUnit=baseCoin`. Gate and Bitget reducing spot buys use a
+base-quantity limit IOC at the fresh ask, because their market buys otherwise
+express quote notional. Gate spot sells use market IOC; Bitget spot sells use
+market orders. Bitget repair children explicitly use UTA `category=spot`,
+because `category=margin` automatically borrows funds. Repair orders do not
+enable new borrowing. Neither direction reopens a futures hedge.
 
 Actual partial fills reduce the repair work; confirmed unfilled quantities
-are retried. Gate and Bybit deduplicate native `(order_id, trade_id)` pairs.
+are retried. Gate, Bybit and Bitget deduplicate native `(order_id, trade_id)` pairs.
 Binance requires a valid cumulative filled quantity and retains a per-native-
 order cumulative watermark, adding only its positive increase. Duplicate or
 older updates cannot add repair work, including when the native trade ID is
@@ -69,3 +84,11 @@ account-monitor artifacts together when deploying this change. The existing
 external-fill IPC and persisted order formats are reused; no persistence
 schema migration is required. Follow the repository's production `arbmm`,
 checksum and env-local start/stop rules.
+
+Bitget external contracts:
+
+- [UTA tradeSide and execType enumeration](https://www.bitget.com/docs/uta/enum#tradeside)
+- [UTA fill channel](https://www.bitget.com/docs/uta/websocket/private/Fill-Channel)
+- [UTA order channel](https://www.bitget.com/docs/uta/websocket/private/Order-Channel)
+- [UTA order placement and quantity units](https://www.bitget.com/docs/uta/websocket/private/Place-Order-Channel)
+- [ADL notifications](https://www.bitget.com/docs/uta/websocket/private/ADL-Notification-Channel)

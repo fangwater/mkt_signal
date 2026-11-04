@@ -20,11 +20,11 @@ use sonic_rs::{JsonValueTrait, LazyValue};
 pub struct BitgetAccountEventParser {
     external_fills: std::cell::RefCell<
         std::collections::BTreeMap<
-            String,
+            (String, String),
             Vec<crate::msg::external_futures_fill::ExternalFuturesFill>,
         >,
     >,
-    forced_orders: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
+    forced_orders: std::cell::RefCell<std::collections::BTreeMap<(String, String), String>>,
 }
 
 impl Default for BitgetAccountEventParser {
@@ -251,19 +251,15 @@ impl BitgetAccountEventParser {
         let default_venue = detect_message_venue(json_value);
 
         for order_obj in collect_data_objects(json_value) {
-            if let Some(reason) = crate::msg::external_futures_fill::bitget_reason(
-                order_obj
-                    .get("execType")
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-            ) {
-                if let Some(id) = order_obj.get("orderId").and_then(Value::as_str) {
+            let forced_reason = bitget_forced_close_reason(order_obj);
+            if let Some(reason) = forced_reason {
+                if let Some(key) = bitget_linear_order_key(order_obj) {
                     let mut reasons = self.forced_orders.borrow_mut();
                     if reasons.len() >= 8192 {
                         reasons.pop_first();
                     }
-                    reasons.insert(id.to_owned(), reason.to_owned());
-                    if let Some(fills) = self.external_fills.borrow_mut().remove(id) {
+                    reasons.insert(key.clone(), reason.to_owned());
+                    if let Some(fills) = self.external_fills.borrow_mut().remove(&key) {
                         for mut fill in fills {
                             fill.reason = Some(reason.to_owned());
                             count += usize::from(fill.emit(tx));
@@ -285,9 +281,15 @@ impl BitgetAccountEventParser {
             let order_id = parse_i64_str_or_num(order_obj.get("orderId"))
                 .or_else(|| parse_i64_str_or_num(order_obj.get("ordId")))
                 .unwrap_or(0);
-            let client_order_id = parse_i64_str_or_num(order_obj.get("clientOid"))
-                .or_else(|| parse_i64_str_or_num(order_obj.get("clOrdId")))
-                .unwrap_or(0);
+            // A documented exchange-owned close must never be adopted by a
+            // strategy merely because its clientOid happens to be numeric.
+            let client_order_id = if forced_reason.is_some() {
+                0
+            } else {
+                parse_i64_str_or_num(order_obj.get("clientOid"))
+                    .or_else(|| parse_i64_str_or_num(order_obj.get("clOrdId")))
+                    .unwrap_or(0)
+            };
             let event_time = parse_i64_str_or_num(order_obj.get("updatedTime"))
                 .or_else(|| parse_i64_str_or_num(order_obj.get("uTime")))
                 .or_else(|| parse_i64_str_or_num(order_obj.get("fillTime")))
@@ -418,11 +420,13 @@ impl BitgetAccountEventParser {
         let default_venue = detect_message_venue(json_value);
 
         for fill_obj in collect_data_objects(json_value) {
-            let id = fill_obj
-                .get("orderId")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let reason = self.forced_orders.borrow().get(id).cloned();
+            let key = bitget_linear_order_key(fill_obj);
+            let reason = bitget_forced_close_reason(fill_obj)
+                .map(str::to_owned)
+                .or_else(|| {
+                    key.as_ref()
+                        .and_then(|key| self.forced_orders.borrow().get(key).cloned())
+                });
             let internal = parse_i64_str_or_num(fill_obj.get("clientOid")).is_some_and(|v| v > 0);
             if !internal || reason.is_some() {
                 if let Some(fill) =
@@ -433,12 +437,12 @@ impl BitgetAccountEventParser {
                     )
                 {
                     count += usize::from(fill.emit(tx));
-                    if fill.reason.is_none() {
+                    if let Some(key) = key.filter(|_| fill.reason.is_none()) {
                         let mut pending = self.external_fills.borrow_mut();
                         if pending.len() >= 8192 {
                             pending.pop_first();
                         }
-                        let fills = pending.entry(id.to_owned()).or_default();
+                        let fills = pending.entry(key).or_default();
                         if !fills.iter().any(|v| v.trade_id == fill.trade_id) && fills.len() < 1024
                         {
                             fills.push(fill);
@@ -610,6 +614,26 @@ impl BitgetAccountEventParser {
 
         count
     }
+}
+
+fn bitget_forced_close_reason(row: &Map<String, Value>) -> Option<&'static str> {
+    use crate::msg::external_futures_fill::{bitget_reason, bitget_trade_side_reason};
+    bitget_trade_side_reason(row.get("tradeSide").and_then(Value::as_str).unwrap_or(""))
+        .or_else(|| bitget_reason(row.get("execType").and_then(Value::as_str).unwrap_or("")))
+}
+
+fn bitget_linear_order_key(row: &Map<String, Value>) -> Option<(String, String)> {
+    if !row
+        .get("category")?
+        .as_str()?
+        .eq_ignore_ascii_case("usdt-futures")
+    {
+        return None;
+    }
+    let symbol = row.get("symbol")?.as_str()?;
+    let order_id = row.get("orderId")?.as_str()?;
+    (symbol.len() > 4 && symbol.ends_with("USDT") && !order_id.is_empty())
+        .then(|| (symbol.to_owned(), order_id.to_owned()))
 }
 
 impl Parser for BitgetAccountEventParser {
@@ -804,6 +828,143 @@ mod tests {
             assert_eq!(factual.len(), 1);
             assert_eq!(factual[0].reason.as_deref(), Some("liquidation"));
             assert_eq!(factual[0].trade_id, "9002");
+        }
+    }
+
+    #[test]
+    fn adl_fill_uses_documented_trade_side_even_with_numeric_client_oid() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        for (trade_side, side) in [
+            ("dte_sys_adl_close_long", "sell"),
+            ("dte_sys_adl_close_short", "buy"),
+            ("dte_sys_adl_buy_in_single_side_mode", "buy"),
+            ("dte_sys_adl_sell_in_single_side_mode", "sell"),
+        ] {
+            let parser = BitgetAccountEventParser::new();
+            let sink = TestAccountEventSink::new();
+            let row = serde_json::json!({"arg":{"instType":"UTA","topic":"fill"},"data":[{
+                "category":"usdt-futures","symbol":"BTCUSDT","orderId":"9001","clientOid":"12345",
+                "execId":"9002","execTime":"1793355400797","side":side,"tradeSide":trade_side,
+                "execPrice":"50000","execQty":"0.2","tradeScope":"taker"
+            }]});
+            assert_eq!(parser.parse(Bytes::from(row.to_string()), &sink), 1);
+            let raw = sink.recv().unwrap();
+            let (kind, scope, body) = split_basic_account_event(&raw).unwrap();
+            assert_eq!(kind, BasicAccountEventType::ExternalFuturesFill);
+            assert_eq!(scope, BasicAccountScope::BitgetUnified);
+            let fill = ExternalFuturesFill::from_bytes(body).unwrap();
+            assert_eq!(fill.reason.as_deref(), Some("adl"));
+            assert_eq!(fill.order_id, "9001");
+            assert_eq!(fill.trade_id, "9002");
+            assert_eq!(fill.quantity, 0.2);
+            assert_eq!(fill.side, if side == "buy" { 1 } else { 2 });
+            assert_eq!(fill.timestamp_us, 1_793_355_400_797_000);
+            assert!(sink.recv().is_none());
+        }
+    }
+
+    #[test]
+    fn adl_order_joins_factual_fills_without_inventing_an_aggregate_fill() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        for fill_first in [true, false] {
+            let parser = BitgetAccountEventParser::new();
+            let sink = TestAccountEventSink::new();
+            let fill = serde_json::json!({"arg":{"instType":"UTA","topic":"fill"},"data":[{
+                "category":"usdt-futures","symbol":"BTCUSDT","orderId":"9001","clientOid":"exchange-owned",
+                "tradeId":"9002","execTime":"1793355400797","side":"buy","execPrice":"50000","execQty":"0.2"
+            }]});
+            let order = serde_json::json!({"arg":{"instType":"UTA","topic":"order"},"data":[{
+                "category":"usdt-futures","symbol":"BTCUSDT","orderId":"9001","clientOid":"12345",
+                "side":"buy","tradeSide":"dte_sys_adl_buy_in_single_side_mode","execType":"reduce",
+                "orderType":"market","orderStatus":"filled","cumExecQty":"0.2","avgPrice":"50000"
+            }]});
+            for event in if fill_first {
+                [fill, order]
+            } else {
+                [order, fill]
+            } {
+                parser.parse(Bytes::from(event.to_string()), &sink);
+            }
+            let mut adl_fills = Vec::new();
+            let mut aggregate_orders = 0;
+            while let Some(raw) = sink.recv() {
+                let (kind, _, body) = split_basic_account_event(&raw).unwrap();
+                match kind {
+                    BasicAccountEventType::ExternalFuturesFill => {
+                        let fill = ExternalFuturesFill::from_bytes(body).unwrap();
+                        if fill.reason.as_deref() == Some("adl") {
+                            adl_fills.push(fill);
+                        }
+                    }
+                    BasicAccountEventType::OrderUpdate => {
+                        aggregate_orders += 1;
+                        assert_eq!(
+                            BitgetBasicOrderMsg::from_bytes(body)
+                                .unwrap()
+                                .client_order_id,
+                            0
+                        );
+                    }
+                    _ => panic!("forced close must not emit a strategy fill"),
+                }
+            }
+            assert_eq!(aggregate_orders, 1);
+            assert_eq!(adl_fills.len(), 1);
+            assert_eq!(adl_fills[0].trade_id, "9002");
+            assert_eq!(adl_fills[0].quantity, 0.2);
+        }
+    }
+
+    #[test]
+    fn adl_requires_a_valid_usdt_native_fill_and_never_uses_notifications_as_fills() {
+        let parser = BitgetAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let mut event = serde_json::json!({"arg":{"instType":"UTA","topic":"fill"},"data":[{
+            "category":"usdt-futures","symbol":"BTCUSDT","orderId":"9001","clientOid":"exchange-owned",
+            "execId":"9002","execTime":"1793355400797","side":"buy",
+            "tradeSide":"dte_sys_adl_buy_in_single_side_mode","execPrice":"50000","execQty":"0"
+        }]});
+        assert_eq!(parser.parse(Bytes::from(event.to_string()), &sink), 0);
+        event["data"][0]["execQty"] = serde_json::json!("0.2");
+        for category in ["spot", "margin", "coin-futures", "usdc-futures"] {
+            event["data"][0]["category"] = serde_json::json!(category);
+            assert_eq!(parser.parse(Bytes::from(event.to_string()), &sink), 0);
+        }
+        let notice = serde_json::json!({"arg":{"instType":"UTA","topic":"adl-notification"},"data":[{
+            "symbol":"BTCUSDT","side":"buy","status":"triggered","price":"50000","amount":"0.2","ts":"1793355400797"
+        }]});
+        assert_eq!(parser.parse(Bytes::from(notice.to_string()), &sink), 0);
+        assert!(sink.recv().is_none());
+    }
+
+    #[test]
+    fn adl_order_join_requires_the_same_usdt_market_and_symbol() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        for (category, symbol) in [
+            ("spot", "ETHUSDT"),
+            ("coin-futures", "ETHUSDT"),
+            ("usdc-futures", "ETHUSDT"),
+            ("usdt-futures", "BTCUSDT"),
+        ] {
+            let parser = BitgetAccountEventParser::new();
+            let sink = TestAccountEventSink::new();
+            let fill = serde_json::json!({"arg":{"instType":"UTA","topic":"fill"},"data":[{
+                "category":"usdt-futures","symbol":"ETHUSDT","orderId":"9001","clientOid":"exchange-owned",
+                "execId":"9002","execTime":"1793355400797","side":"buy","execPrice":"3000","execQty":"0.2"
+            }]});
+            let order = serde_json::json!({"arg":{"instType":"UTA","topic":"order"},"data":[{
+                "category":category,"symbol":symbol,"orderId":"9001","clientOid":"exchange-owned",
+                "tradeSide":"dte_sys_adl_buy_in_single_side_mode"
+            }]});
+            for event in [fill, order] {
+                parser.parse(Bytes::from(event.to_string()), &sink);
+            }
+            while let Some(raw) = sink.recv() {
+                let (kind, _, body) = split_basic_account_event(&raw).unwrap();
+                if kind == BasicAccountEventType::ExternalFuturesFill {
+                    assert_eq!(ExternalFuturesFill::from_bytes(body).unwrap().reason, None);
+                }
+            }
         }
     }
 

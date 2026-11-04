@@ -740,6 +740,7 @@ impl ArbHedgeStrategy {
             TradingVenue::GateFutures => Some(TradingVenue::GateMargin),
             TradingVenue::BybitFutures => Some(TradingVenue::BybitMargin),
             TradingVenue::BinanceFutures => Some(TradingVenue::BinanceMargin),
+            TradingVenue::BitgetFutures => Some(TradingVenue::BitgetMargin),
             _ => None,
         }
     }
@@ -2235,10 +2236,11 @@ impl ArbHedgeStrategy {
         } else {
             OrderType::Limit
         };
-        // Gate spot market buys take quote notional, whereas our order ledger
-        // uses base quantity. The Gate encoder submits this reducing buy as a
-        // base-quantity IOC at the fresh ask carried here.
-        let price = if self.adl_spot_hedge && venue == TradingVenue::GateMargin && side == Side::Buy
+        // Gate and Bitget spot market buys take quote notional. Their encoders
+        // submit these reducing buys as base-quantity IOCs at the fresh ask.
+        let price = if self.adl_spot_hedge
+            && matches!(venue, TradingVenue::GateMargin | TradingVenue::BitgetMargin)
+            && side == Side::Buy
         {
             ctx.hedging_leg.ask0
         } else if is_taker {
@@ -2359,6 +2361,10 @@ impl ArbHedgeStrategy {
                 qty_multiplier,
                 false,
                 |order| {
+                    if self.adl_spot_hedge && venue == TradingVenue::BitgetMargin {
+                        // UTA category=margin automatically borrows funds.
+                        order.set_bitget_spot_order(true);
+                    }
                     order.set_quantity_qv(quantity_qv);
                     if let Some(price_qv) = price_qv {
                         order.set_price_qv(price_qv);
@@ -4009,11 +4015,12 @@ mod tests {
     }
 
     #[test]
-    fn adl_spot_repair_routes_only_the_three_supported_linear_venues() {
+    fn adl_spot_repair_routes_only_the_four_supported_linear_venues() {
         for (futures, spot) in [
             (TradingVenue::GateFutures, TradingVenue::GateMargin),
             (TradingVenue::BybitFutures, TradingVenue::BybitMargin),
             (TradingVenue::BinanceFutures, TradingVenue::BinanceMargin),
+            (TradingVenue::BitgetFutures, TradingVenue::BitgetMargin),
         ] {
             let mut strategy =
                 ArbHedgeStrategy::new_adl_spot(1, "BTCUSDT".to_string(), futures).unwrap();
@@ -4027,8 +4034,12 @@ mod tests {
             fill.order_id = "order-2".to_string();
             assert!(strategy.record_adl_spot_fill(&fill, 0.2, cumulative));
             assert_eq!(strategy.pending_hedge_qty(), 0.4);
-            fill.venue = TradingVenue::BitgetFutures as u8;
+            fill.venue = TradingVenue::OkexFutures as u8;
             assert!(!strategy.record_adl_spot_fill(&fill, 0.2, None));
+            fill.venue = futures as u8;
+            fill.order_id = "order-3".to_string();
+            fill.reason = Some("forced_reduction".to_string());
+            assert!(!strategy.record_adl_spot_fill(&fill, 0.2, cumulative));
         }
         assert!(ArbHedgeStrategy::new_adl_spot(
             1,
@@ -4039,7 +4050,7 @@ mod tests {
         assert!(ArbHedgeStrategy::new_adl_spot(
             1,
             "BTCUSDT".to_string(),
-            TradingVenue::BitgetFutures
+            TradingVenue::BitgetCoinFutures
         )
         .is_none());
     }

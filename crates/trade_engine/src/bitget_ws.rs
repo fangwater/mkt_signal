@@ -55,7 +55,7 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
                     req_type
                 )
             })?;
-            push_bitget_new_order_arg(&mut out, &params, msg.client_order_id);
+            push_bitget_new_order_arg(&mut out, &params, msg.client_order_id, req_type)?;
         }
         TradeRequestType::BitgetCancelMarginOrder
         | TradeRequestType::BitgetCancelUMOrder
@@ -97,7 +97,19 @@ fn push_bitget_new_order_arg(
     out: &mut String,
     params: &BitgetNewOrderParamsRef<'_>,
     client_order_id: i64,
-) {
+    req_type: TradeRequestType,
+) -> Result<()> {
+    // Spot market buys use quote notional. Reducing buys keep the ledger's
+    // base quantity by crossing the supplied fresh ask as a limit IOC.
+    let reducing_spot_buy = req_type == TradeRequestType::BitgetNewSpotOrder
+        && params.reduce_only
+        && params.order_type == order_common::OrderType::Market
+        && params.side == order_common::Side::Buy;
+    if reducing_spot_buy && params.price_qv.get_val() <= 0.0 {
+        return Err(anyhow!(
+            "Bitget reducing spot buy needs a positive IOC price"
+        ));
+    }
     let mut first = true;
     if params.symbol.bytes().all(|b| !b.is_ascii_lowercase()) {
         push_json_field(out, "symbol", params.symbol, &mut first);
@@ -109,15 +121,24 @@ fn push_bitget_new_order_arg(
     push_json_field(
         out,
         "orderType",
-        if params.order_type.is_limit() {
+        if params.order_type.is_limit() || reducing_spot_buy {
             "limit"
         } else {
             "market"
         },
         &mut first,
     );
-    if params.order_type.is_limit() {
-        push_json_field(out, "timeInForce", "post_only", &mut first);
+    if params.order_type.is_limit() || reducing_spot_buy {
+        push_json_field(
+            out,
+            "timeInForce",
+            if reducing_spot_buy {
+                "ioc"
+            } else {
+                "post_only"
+            },
+            &mut first,
+        );
         push_qv_json_field(out, "price", params.price_qv, &mut first);
     }
     push_qv_json_field(out, "qty", params.quantity_qv, &mut first);
@@ -125,6 +146,7 @@ fn push_bitget_new_order_arg(
     if params.reduce_only {
         push_json_field(out, "reduceOnly", "YES", &mut first);
     }
+    Ok(())
 }
 
 fn push_bitget_cancel_order_arg(out: &mut String, params: &BitgetCancelOrderParamsRef<'_>) {
@@ -417,6 +439,59 @@ mod tests {
         );
         let err = build_order_payload(&msg, 999).expect_err("raw json must be rejected");
         assert!(err.to_string().contains("requires typed params"));
+    }
+
+    #[test]
+    fn adl_spot_repair_buy_is_base_quantity_ioc_and_sell_is_market() {
+        for side in [Side::Buy, Side::Sell] {
+            let params = BitgetNewOrderParams {
+                side,
+                order_type: OrderType::Market,
+                quantity_qv: QuantizedValue::from_decimal(0.2).unwrap(),
+                price_qv: if side == Side::Buy {
+                    QuantizedValue::from_decimal(50000.0).unwrap()
+                } else {
+                    QuantizedValue::zero()
+                },
+                reduce_only: true,
+                symbol: "BTCUSDT".to_string(),
+            };
+            let bytes = params.to_bytes().unwrap();
+            let msg = trade_msg(TradeRequestType::BitgetNewSpotOrder, 123, &bytes);
+            let payload: Value =
+                serde_json::from_str(&build_order_payload(&msg, 999).unwrap()).unwrap();
+            assert_eq!(payload["category"], "spot");
+            let order = &payload["args"][0];
+            assert_eq!(order["qty"], "0.2");
+            assert_eq!(order["reduceOnly"], "YES");
+            if side == Side::Buy {
+                assert_eq!(order["orderType"], "limit");
+                assert_eq!(order["timeInForce"], "ioc");
+                assert_eq!(order["price"], "50000");
+            } else {
+                assert_eq!(order["orderType"], "market");
+                assert!(order.get("price").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn reducing_spot_buy_without_ioc_price_is_rejected() {
+        let params = BitgetNewOrderParams {
+            side: Side::Buy,
+            order_type: OrderType::Market,
+            quantity_qv: QuantizedValue::from_decimal(0.2).unwrap(),
+            price_qv: QuantizedValue::zero(),
+            reduce_only: true,
+            symbol: "BTCUSDT".to_string(),
+        };
+        let bytes = params.to_bytes().unwrap();
+        let spot = trade_msg(TradeRequestType::BitgetNewSpotOrder, 123, &bytes);
+        assert!(build_order_payload(&spot, 999).is_err());
+        let futures = trade_msg(TradeRequestType::BitgetNewUMOrder, 123, &bytes);
+        let payload: Value =
+            serde_json::from_str(&build_order_payload(&futures, 999).unwrap()).unwrap();
+        assert_eq!(payload["args"][0]["orderType"], "market");
     }
 
     #[test]

@@ -39,6 +39,18 @@ pub fn bitget_reason(value: &str) -> Option<&'static str> {
     }
 }
 
+/// UTA order/fill `tradeSide` identities from the venue's enumeration.
+/// `execType=reduce` is a separate forced reduction, not proof of ADL.
+pub fn bitget_trade_side_reason(value: &str) -> Option<&'static str> {
+    match value {
+        "dte_sys_adl_close_long"
+        | "dte_sys_adl_close_short"
+        | "dte_sys_adl_buy_in_single_side_mode"
+        | "dte_sys_adl_sell_in_single_side_mode" => Some("adl"),
+        _ => None,
+    }
+}
+
 impl ExternalFuturesFill {
     /// Gate user trades are authoritative fills; order notifications only carry
     /// cumulative quantities and must not create a second ADL fill.
@@ -209,6 +221,18 @@ mod tests {
         assert_eq!(bybit_reason("AdlTrade"), Some("adl"));
         assert_eq!(bybit_reason("Funding"), None);
         assert_eq!(bitget_reason("offset"), None);
+        assert_eq!(bitget_reason("reduce"), Some("forced_reduction"));
+        for trade_side in [
+            "dte_sys_adl_close_long",
+            "dte_sys_adl_close_short",
+            "dte_sys_adl_buy_in_single_side_mode",
+            "dte_sys_adl_sell_in_single_side_mode",
+        ] {
+            assert_eq!(bitget_trade_side_reason(trade_side), Some("adl"));
+        }
+        for trade_side in ["close", "reduce_close_long", "offset_close_short", "adl"] {
+            assert_eq!(bitget_trade_side_reason(trade_side), None);
+        }
         let mut row = serde_json::json!({"category":"linear","symbol":"BTCUSDT","orderId":"exchange-owned","orderLinkId":"non-numeric","execId":"trade-1","execTime":"1700000000000","side":"Sell","execPrice":"60000","execQty":"0.1"});
         let fill = ExternalFuturesFill::from_exchange(5, &row, bybit_reason("Delivery")).unwrap();
         assert_eq!(fill.order_id, "exchange-owned");

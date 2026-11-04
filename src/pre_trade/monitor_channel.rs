@@ -8171,6 +8171,7 @@ mod tests {
             (TradingVenue::GateMargin, TradingVenue::GateFutures),
             (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
             (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+            (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
         ] {
             assert!(adl_spot_repair_enabled(
                 spot,
@@ -8202,7 +8203,7 @@ mod tests {
         ));
         assert!(!adl_spot_repair_enabled(
             TradingVenue::BitgetMargin,
-            TradingVenue::BitgetFutures,
+            TradingVenue::BitgetCoinFutures,
             ArbMode::FundingArb,
             false
         ));

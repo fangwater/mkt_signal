@@ -1,0 +1,46 @@
+{
+  "scope": "Bitget UTA same-account USDT linear funding-rate ADL spot repair",
+  "validation": {
+    "mkt_parsers_library": {
+      "passed": 187
+    },
+    "trade_engine_library": {
+      "passed": 384
+    },
+    "root_library": {
+      "passed": 1477,
+      "ignored": 3
+    },
+    "format_check": "passed",
+    "diff_whitespace_check": "passed",
+    "cargo_check_bins": {
+      "pre_trade": "passed",
+      "bitget_account_monitor": "passed",
+      "trade_engine": "passed"
+    }
+  },
+  "coverage": [
+    "All four documented ADL tradeSide identities retain native factual fill IDs, including numeric clientOid",
+    "Order/fill correlation works in either arrival order and requires the same USDT market and symbol",
+    "Aggregate order notifications never invent additional fills or strategy attribution",
+    "execType=reduce remains forced_reduction and does not activate ADL repair",
+    "ADL notifications without native order/trade IDs are not converted to fills",
+    "Shared repair routing accepts Bitget USDT futures FundingArb while excluding Exec, COIN-M, other modes and cross-venue pairs",
+    "Bitget repair children use spot category; reducing buys encode base-quantity limit IOC while sells remain market orders",
+    "Both request builders preserve protection price and quantity; cancel uses spot category",
+    "Shared native-fill deduplication, partial-fill remainder and unresolved-order reservation guards"
+  ],
+  "production_deployed": false,
+  "notes": [
+    "No live orders were submitted and no live Bitget ADL event was observed during verification.",
+    "Repair and deduplication state is process-local; a restart during repair requires reconciling outstanding orders and actual exposure.",
+    "Historical ADL records are not automatically replayed into orders."
+  ],
+  "external_contracts": [
+    "https://www.bitget.com/docs/uta/enum#tradeside",
+    "https://www.bitget.com/docs/uta/websocket/private/Fill-Channel",
+    "https://www.bitget.com/docs/uta/websocket/private/Order-Channel",
+    "https://www.bitget.com/docs/uta/websocket/private/Place-Order-Channel",
+    "https://www.bitget.com/docs/uta/websocket/private/ADL-Notification-Channel"
+  ]
+}
