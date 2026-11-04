@@ -1,6 +1,14 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 06:32 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 10:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 10:04 UTC，JP Delist 发布独立FR钉钉、计划内建仓差额及明确现货尾差排除，
+源码 `b77e5da1`，后端 PID `2922632`、既有SG隧道 PID `2922607`，CPU均 `0-5`。
+保留8787/4191监听及16379/14191回环隧道；四份私有配置、线上启动脚本与原有参数保持。
+无交易源IP、`local_ips`、ENI/EIP、路由或核心分配变化，92个受保护进程核对未变。
+11个FR检查均新鲜，忽略13项已确认尾差后无数据不完整；旧4条提示撤销且不发恢复。
+构建、通知和界面验收见 `docs/delist_risk_server.md` 及
+`../artifacts/fr_dingtalk_20261104/README.md`。
 
 2026-11-04 06:32 UTC，JP Delist 接入11个FR的只读敞口检查，后端 PID `2469971` / CPU `0-5`。
 沿用8787/4191与现有16379/14191的SG回环隧道；未改动交易源IP、`local_ips`、ENI/EIP、路由、

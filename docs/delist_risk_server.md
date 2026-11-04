@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-04 06:32 UTC（11个FR只读敞口检查已上线，保留当前CTA与下架监控）
+最后更新：2026-11-04 10:04 UTC（独立FR钉钉、建仓覆盖及特殊现货尾差排除已验收）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
@@ -23,6 +23,7 @@ http://<jp-host>:4191/delist/venues
 http://<jp-host>:4191/delist/risk
 http://<jp-host>:4191/delist/accounts
 http://<jp-host>:4191/delist/exposures
+http://<jp-host>:4191/delist/notifications
 http://<jp-host>:4191/delist/removal-candidates
 http://<jp-host>:4191/delist/removals
 http://<jp-host>:4191/delist/dump-candidates
@@ -44,19 +45,26 @@ its separate operation token in addition to the login session.
 
 ## FR exposure checks
 
-Deployment verified 2026-11-04 06:32 UTC on JP: source `c5f52f66`, Delist PID `2469971`,
-CPU `0-5`, all 11 current FR accounts discovered. Binary SHA-256:
-`6315c7bc39ef90e2caf3b9de756814fa69eecad8b700cb24de4e87b111d65e7c`.
-Service/auth configuration and previous automatic-action arguments were unchanged;
-92 protected trading/market-data/CTA processes retained their PIDs and affinities.
-Loopback and gateway `/exposures` both returned 401 without a login. The deployed
-HTML and live report were replayed in Chromium at desktop/mobile sizes. Gate04
-had at least 1854.24 USDT absolute residual exposure at verification; the other
-seven fully valued accounts were within monitoring thresholds. Gate01, Gate02,
-Bybit and Gate04 had unpriced holdings and were explicitly marked incomplete.
-These are a point-in-time observation, not a guarantee about later positions.
-See `../artifacts/fr_exposure_check_20261104/README.md` and the private runtime
-backup `~/delist_risk_server/run/fr_exposure_20261104_c5f52f66/`.
+Deployment verified 2026-11-04 10:04 UTC on JP: source `b77e5da1`, Delist PID
+`2922632`, SG tunnel PID `2922607`, both CPU `0-5`.
+Binary SHA-256: `a2a490e1f810706b6af7b08f5a05609f4607f24d3b8ec20c097bdb082684df06`.
+All 11 current FR accounts were fresh and within uncovered-difference thresholds;
+zero accounts were incomplete after excluding 13 explicitly confirmed spot tails.
+The original balances and unknown prices remain visible in the detail rows.
+These counts and values are a point-in-time observation.
+
+The independent FR DingTalk channel was enabled and had 28 acknowledged deliveries,
+zero queued sends and no send error. Actual Luna processing and the existing scan
+heartbeat had both been delivered. Four old tail-price notices were retired without
+recovery messages or resetting the heartbeat. Normal construction no longer creates
+exposure alarm/recovery transitions. The service's private configurations, existing
+startup arguments and deployed wrapper were preserved, including its intentional
+difference from the repository's CTA argument defaults. All 92 protected trading,
+market-data and CTA processes retained their PIDs and affinities. Loopback and gateway
+`/exposures` and `/notifications` returned 401 without a login. Local release,
+56 Delist tests and desktop/mobile browser verification passed. See
+`../artifacts/fr_dingtalk_20261104/README.md`; the final runtime backup is
+`~/delist_risk_server/run/fr_spot_tails_20261104/`.
 
 The board includes a permanent, read-only FR exposure section. `/exposures`
 returns the cached report under the same login protection. Account discovery
@@ -106,14 +114,14 @@ This uses account-monitor-derived snapshots, **not independent exchange REST
 reconciliation**. Cash stablecoins and small nontrading holdings filtered by
 `pre_trade`'s existing `min_non_trading_position_usdt` setting are outside the
 snapshot totals. Missing upstream positions cannot be reconstructed here.
-The board explicitly identifies this scope; unpriced holdings that are present
-in a snapshot are listed as incomplete instead of being treated as zero.
+The board explicitly identifies this scope. Unpriced holdings present in a snapshot
+and within the monitored scope are listed as incomplete instead of being treated as zero.
 
 Operator-confirmed special spot tails are explicitly excluded by
 `config/fr_exposure_ignored_spot_tails.json` (override with
-`--exposure-ignored-spot-tails`). Rules are exchange/asset scoped, require no
-futures-leg quantity, bound the spot quantity, and also bound notional when a
-price is known. Current rules cover the identified Gate stock/legacy-token tails
+`--exposure-ignored-spot-tails`). Rules are exchange/asset scoped, require an
+explicitly confirmed cash open-leg venue and no futures-leg quantity, bound the
+spot quantity, and also bound notional when a price is known. Current rules cover the identified Gate stock/legacy-token tails
 and Bybit EUR/HFT leftovers. Larger balances, any futures leg, unlisted assets,
 and malformed records are checked normally. Missing prices stay null in the
 detail rows; exclusions do not manufacture zero-valued balances. The board shows

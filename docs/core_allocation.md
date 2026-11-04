@@ -1,7 +1,20 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-04 06:32 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-04 10:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-04 10:04 UTC，JP `~/delist_risk_server` 完成独立FR钉钉与敞口口径修正发布，
+最终构建源码 `b77e5da1`，Delist PID `2922632`、SG隧道 PID `2922607`，均 CPU `0-5`。
+按同步的arbmm已提交树在活跃本地工作区隔离构建，1,784个源码文件核对Git blob；
+release、56项Delist测试、鉴权及桌面/手机验证通过，上传SHA-256校验并原子安装。
+实际净量扣除同向策略对冲计划覆盖后才计入告警；正常建仓不再触发风险/恢复。
+验收11个FR新鲜且在阈值内，13项已确认现货尾差保留明细并排除，数据不完整为0；
+4条旧尾差缺价告警撤销，没有补发恢复。独立钉钉28条已确认、0积压、无错误，
+Luna实际处理逐次推送，原24小时公告扫描完成心跳，风险仅首次/确认恢复推送。
+沿用线上启动脚本和参数、四份私有配置及既有SG隧道端口；92个受保护交易/行情/CTA
+进程的PID、归属及CPU mask均保持。无交易操作及IP/监听/隔离核分配变化。
+备份 `~/delist_risk_server/run/fr_spot_tails_20261104/`，说明与验收见
+`docs/delist_risk_server.md`、`../artifacts/fr_dingtalk_20261104/README.md`。
 
 2026-11-04 06:32 UTC，JP `~/delist_risk_server` 发布 FR 敞口检查（源码 `c5f52f66`）。
 从同步 `origin/arbmm` 的已提交树在活跃本地工作区 `data/ops/fr_exposure_check_20261104/build-source`
@@ -12,8 +25,8 @@ Delist PID `2469971`、SG隧道 PID `2469945`，CPU均为 `0-5`；
 92个既有交易/行情/CTA进程的 PID、归属与CPU mask均保持。
 鉴权与服务配置、原有自动下架处理参数保持；敞口模块仅并发读取11个 FR 的本机网关快照，
 不产生交易或外部通知。默认10秒检查，单币100U/单账户500U持续30秒提示，过期或缺价保持未知。
-06:32验收 Gate04 已定价绝对净敞口合计1854.24U并持续超限，Gate01/02及Bybit存在缺价项，
-其余7个FR在提示阈值内；数值会随交易变化。无源IP、端口或核心分配变化。
+06:32初版把Gate04原始两腿差额1854.24U计作风险，并把Gate01/02、Bybit及Gate04尾差缺价计作不完整；
+该历史口径已由上述10:04发布修正为未覆盖差额及明确尾差排除。无源IP、端口或核心分配变化。
 原文件备份 `~/delist_risk_server/run/fr_exposure_20261104_1cb089b7/`，本次修正版前备份
 `~/delist_risk_server/run/fr_exposure_20261104_c5f52f66/`；说明与验收见
 `docs/delist_risk_server.md`、`../artifacts/fr_exposure_check_20261104/README.md`。
