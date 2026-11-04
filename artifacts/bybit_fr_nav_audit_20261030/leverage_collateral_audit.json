@@ -1,0 +1,74 @@
+{
+  "captured_at_ms": 1793332026088,
+  "margin_mode": "PORTFOLIO_MARGIN",
+  "spot_hedging_status": "ON",
+  "total_equity_usd": 54937.16600812,
+  "total_margin_balance_usd": 24874.59439284,
+  "initial_margin_usd": 5997.52825297,
+  "maintenance_margin_usd": 4678.31022409,
+  "account_mm_rate": 0.188,
+  "unimmr": 5.319148936170213,
+  "risk_params": {
+    "max_pos_u": "10000",
+    "max_symbol_exposure_ratio": "0.2",
+    "max_total_exposure_ratio": "0.05",
+    "max_leverage": "1.6",
+    "fr_position_concentration_alert_ratio": "0.15",
+    "fr_position_concentration_dump_ratio": "0.25",
+    "unimmr_trigger_line": "5",
+    "unimmr_recover_line": "5.1",
+    "unimmr_force_close_line": "4.5",
+    "unimmr_force_close_recover_line": "4.6",
+    "max_pending_limit_orders": "20",
+    "arb_max_pending_limit_buy_orders": "10",
+    "arb_max_pending_limit_sell_orders": "10",
+    "arb_close_max_pending_limit_buy_orders": "10",
+    "arb_close_max_pending_limit_sell_orders": "10",
+    "arb_open_order_rate_limit_per_min": "1000",
+    "arb_open_order_rate_limit_10s": "500",
+    "arb_hedge_order_rate_limit_per_min": "1000",
+    "arb_hedge_order_rate_limit_10s": "500"
+  },
+  "collateral_off": [
+    {
+      "coin": "BASED",
+      "usd_value": 8210.69091069,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "EDGE",
+      "usd_value": 4668.49907103,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "BSB",
+      "usd_value": 4541.04997578,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "WET",
+      "usd_value": 3738.95823715,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "VELO",
+      "usd_value": 3701.94154023,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "QTUM",
+      "usd_value": 2259.07635335,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "RECALL",
+      "usd_value": 1847.7636183,
+      "spot_hedging_qty": "0"
+    },
+    {
+      "coin": "BILL",
+      "usd_value": 41.83645576,
+      "spot_hedging_qty": "0"
+    }
+  ]
+}

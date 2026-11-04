@@ -1,0 +1,714 @@
+[
+  {
+    "env": "binance_fr_arb01",
+    "at_ms": 1793337436534,
+    "before_processes": {},
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "2c3965e4e17ef1a4b6fd6a77233b1ccdae71bc9ad33cc0ab3e0561a015e34bae",
+        "new": "7e4abf23fd0d0cba0b53a58962015e6cc53709eabe57babae09514580c016c7c"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {}
+  },
+  {
+    "env": "binance_fr_arb02",
+    "at_ms": 1793337436596,
+    "before_processes": {
+      "43876": {
+        "comm": "account_monitor",
+        "start": "120794"
+      },
+      "47756": {
+        "comm": "trade_engine",
+        "start": "127645"
+      },
+      "99911": {
+        "comm": "pre_trade",
+        "start": "225809"
+      },
+      "149220": {
+        "comm": "trade_signal",
+        "start": "346996"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d",
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "7a654750943b463d9e7118cd3a098320f0a90709db0bab435a978f4e1ea424fe",
+        "new": "354bd3c711c3188d0fd11d55ae5a72a9264fe5777f975291dc0b34bba6ce27f3"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {
+      "43876": {
+        "comm": "account_monitor",
+        "start": "120794"
+      },
+      "47756": {
+        "comm": "trade_engine",
+        "start": "127645"
+      },
+      "99911": {
+        "comm": "pre_trade",
+        "start": "225809"
+      },
+      "149220": {
+        "comm": "trade_signal",
+        "start": "346996"
+      }
+    }
+  },
+  {
+    "env": "binance_fr_arb03",
+    "at_ms": 1793337436704,
+    "before_processes": {
+      "44461": {
+        "comm": "account_monitor",
+        "start": "121075"
+      },
+      "47920": {
+        "comm": "trade_engine",
+        "start": "127772"
+      },
+      "147066": {
+        "comm": "pre_trade",
+        "start": "342776"
+      },
+      "149309": {
+        "comm": "trade_signal",
+        "start": "347336"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "7a654750943b463d9e7118cd3a098320f0a90709db0bab435a978f4e1ea424fe",
+        "new": "354bd3c711c3188d0fd11d55ae5a72a9264fe5777f975291dc0b34bba6ce27f3"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {
+      "44461": {
+        "comm": "account_monitor",
+        "start": "121075"
+      },
+      "47920": {
+        "comm": "trade_engine",
+        "start": "127772"
+      },
+      "147066": {
+        "comm": "pre_trade",
+        "start": "342776"
+      },
+      "149309": {
+        "comm": "trade_signal",
+        "start": "347336"
+      }
+    }
+  },
+  {
+    "env": "binance_fr_arb04",
+    "at_ms": 1793337436777,
+    "before_processes": {
+      "45056": {
+        "comm": "account_monitor",
+        "start": "121291"
+      },
+      "48089": {
+        "comm": "trade_engine",
+        "start": "127907"
+      },
+      "144946": {
+        "comm": "pre_trade",
+        "start": "337482"
+      },
+      "149403": {
+        "comm": "trade_signal",
+        "start": "347669"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "7a654750943b463d9e7118cd3a098320f0a90709db0bab435a978f4e1ea424fe",
+        "new": "354bd3c711c3188d0fd11d55ae5a72a9264fe5777f975291dc0b34bba6ce27f3"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {
+      "45056": {
+        "comm": "account_monitor",
+        "start": "121291"
+      },
+      "48089": {
+        "comm": "trade_engine",
+        "start": "127907"
+      },
+      "144946": {
+        "comm": "pre_trade",
+        "start": "337482"
+      },
+      "149403": {
+        "comm": "trade_signal",
+        "start": "347669"
+      }
+    }
+  },
+  {
+    "env": "bitget_fr_arb01",
+    "at_ms": 1793337436847,
+    "before_processes": {
+      "63432": {
+        "comm": "account_monitor",
+        "start": "155752"
+      },
+      "63801": {
+        "comm": "trade_engine",
+        "start": "155855"
+      },
+      "142609": {
+        "comm": "pre_trade",
+        "start": "328583"
+      },
+      "149767": {
+        "comm": "trade_signal",
+        "start": "349037"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "684d944b90ec3d73d0e9c5abee13ed07db6439a2b1623345e6d0435ef81513cb",
+        "new": "6e38d699652a5a65ca2311faf48e47241cc4a746110a19ffb3caa8e51844c223"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "3a6e9b2696a905f431490474e5e1ff1876148bfd0172eefb18a8c782170b8062",
+        "new": "b1695055d452ce7cad5fa99ef2d4b632d44f036a400f70eedcada74ad2c1586b"
+      }
+    ],
+    "after_processes": {
+      "63432": {
+        "comm": "account_monitor",
+        "start": "155752"
+      },
+      "63801": {
+        "comm": "trade_engine",
+        "start": "155855"
+      },
+      "142609": {
+        "comm": "pre_trade",
+        "start": "328583"
+      },
+      "149767": {
+        "comm": "trade_signal",
+        "start": "349037"
+      }
+    }
+  },
+  {
+    "env": "bitget_fr_arb02",
+    "at_ms": 1793337436927,
+    "before_processes": {
+      "64192": {
+        "comm": "account_monitor",
+        "start": "156213"
+      },
+      "64572": {
+        "comm": "trade_engine",
+        "start": "156319"
+      },
+      "142765": {
+        "comm": "pre_trade",
+        "start": "330008"
+      },
+      "149857": {
+        "comm": "trade_signal",
+        "start": "349371"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "7a654750943b463d9e7118cd3a098320f0a90709db0bab435a978f4e1ea424fe",
+        "new": "354bd3c711c3188d0fd11d55ae5a72a9264fe5777f975291dc0b34bba6ce27f3"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {
+      "64192": {
+        "comm": "account_monitor",
+        "start": "156213"
+      },
+      "64572": {
+        "comm": "trade_engine",
+        "start": "156319"
+      },
+      "142765": {
+        "comm": "pre_trade",
+        "start": "330008"
+      },
+      "149857": {
+        "comm": "trade_signal",
+        "start": "349371"
+      }
+    }
+  },
+  {
+    "env": "bitget_fr_arb03",
+    "at_ms": 1793337437113,
+    "before_processes": {
+      "64965": {
+        "comm": "account_monitor",
+        "start": "156678"
+      },
+      "65382": {
+        "comm": "trade_engine",
+        "start": "156789"
+      },
+      "129512": {
+        "comm": "pre_trade",
+        "start": "293239"
+      },
+      "149949": {
+        "comm": "trade_signal",
+        "start": "349719"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "684d944b90ec3d73d0e9c5abee13ed07db6439a2b1623345e6d0435ef81513cb",
+        "new": "6e38d699652a5a65ca2311faf48e47241cc4a746110a19ffb3caa8e51844c223"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "3a6e9b2696a905f431490474e5e1ff1876148bfd0172eefb18a8c782170b8062",
+        "new": "b1695055d452ce7cad5fa99ef2d4b632d44f036a400f70eedcada74ad2c1586b"
+      }
+    ],
+    "after_processes": {
+      "64965": {
+        "comm": "account_monitor",
+        "start": "156678"
+      },
+      "65382": {
+        "comm": "trade_engine",
+        "start": "156789"
+      },
+      "129512": {
+        "comm": "pre_trade",
+        "start": "293239"
+      },
+      "149949": {
+        "comm": "trade_signal",
+        "start": "349719"
+      }
+    }
+  },
+  {
+    "env": "gate_fr_arb01",
+    "at_ms": 1793337437163,
+    "before_processes": {
+      "60648": {
+        "comm": "account_monitor",
+        "start": "154400"
+      },
+      "61143": {
+        "comm": "trade_engine",
+        "start": "154502"
+      },
+      "123262": {
+        "comm": "pre_trade",
+        "start": "275868"
+      },
+      "149496": {
+        "comm": "trade_signal",
+        "start": "348011"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "7a654750943b463d9e7118cd3a098320f0a90709db0bab435a978f4e1ea424fe",
+        "new": "354bd3c711c3188d0fd11d55ae5a72a9264fe5777f975291dc0b34bba6ce27f3"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {
+      "60648": {
+        "comm": "account_monitor",
+        "start": "154400"
+      },
+      "61143": {
+        "comm": "trade_engine",
+        "start": "154502"
+      },
+      "123262": {
+        "comm": "pre_trade",
+        "start": "275868"
+      },
+      "149496": {
+        "comm": "trade_signal",
+        "start": "348011"
+      }
+    }
+  },
+  {
+    "env": "gate_fr_arb02",
+    "at_ms": 1793337437210,
+    "before_processes": {
+      "61805": {
+        "comm": "account_monitor",
+        "start": "154841"
+      },
+      "62192": {
+        "comm": "trade_engine",
+        "start": "154940"
+      },
+      "116154": {
+        "comm": "pre_trade",
+        "start": "259314"
+      },
+      "149584": {
+        "comm": "trade_signal",
+        "start": "348347"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "7a654750943b463d9e7118cd3a098320f0a90709db0bab435a978f4e1ea424fe",
+        "new": "354bd3c711c3188d0fd11d55ae5a72a9264fe5777f975291dc0b34bba6ce27f3"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "b0461373b96b2051777a797db63070185b58fec429160d4445ed04a2c455971d",
+        "new": "4e84cbbc730ed5502ac1c5be635aab7917c464c409f2a915b812d89e7f84203e"
+      }
+    ],
+    "after_processes": {
+      "61805": {
+        "comm": "account_monitor",
+        "start": "154841"
+      },
+      "62192": {
+        "comm": "trade_engine",
+        "start": "154940"
+      },
+      "116154": {
+        "comm": "pre_trade",
+        "start": "259314"
+      },
+      "149584": {
+        "comm": "trade_signal",
+        "start": "348347"
+      }
+    }
+  },
+  {
+    "env": "gate_fr_arb03",
+    "at_ms": 1793337437257,
+    "before_processes": {
+      "62577": {
+        "comm": "account_monitor",
+        "start": "155286"
+      },
+      "62997": {
+        "comm": "trade_engine",
+        "start": "155389"
+      },
+      "120900": {
+        "comm": "pre_trade",
+        "start": "271130"
+      },
+      "149679": {
+        "comm": "trade_signal",
+        "start": "348691"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "684d944b90ec3d73d0e9c5abee13ed07db6439a2b1623345e6d0435ef81513cb",
+        "new": "6e38d699652a5a65ca2311faf48e47241cc4a746110a19ffb3caa8e51844c223"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "3a6e9b2696a905f431490474e5e1ff1876148bfd0172eefb18a8c782170b8062",
+        "new": "b1695055d452ce7cad5fa99ef2d4b632d44f036a400f70eedcada74ad2c1586b"
+      }
+    ],
+    "after_processes": {
+      "62577": {
+        "comm": "account_monitor",
+        "start": "155286"
+      },
+      "62997": {
+        "comm": "trade_engine",
+        "start": "155389"
+      },
+      "120900": {
+        "comm": "pre_trade",
+        "start": "271130"
+      },
+      "149679": {
+        "comm": "trade_signal",
+        "start": "348691"
+      }
+    }
+  },
+  {
+    "env": "gate_fr_arb04",
+    "at_ms": 1793337437301,
+    "before_processes": {
+      "4175337": {
+        "comm": "account_monitor",
+        "start": "92929650"
+      }
+    },
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "684d944b90ec3d73d0e9c5abee13ed07db6439a2b1623345e6d0435ef81513cb",
+        "new": "6e38d699652a5a65ca2311faf48e47241cc4a746110a19ffb3caa8e51844c223"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "3a6e9b2696a905f431490474e5e1ff1876148bfd0172eefb18a8c782170b8062",
+        "new": "b1695055d452ce7cad5fa99ef2d4b632d44f036a400f70eedcada74ad2c1586b"
+      }
+    ],
+    "after_processes": {
+      "4175337": {
+        "comm": "account_monitor",
+        "start": "92929650"
+      }
+    }
+  },
+  {
+    "env": "gate_fr_arb05",
+    "at_ms": 1793337437347,
+    "before_processes": {},
+    "files": [
+      {
+        "path": "scripts/lib/exchange_signing.py",
+        "old": null,
+        "new": "d5be671b0c0e2ed4d1be36bd906d268c2f25400310d66320acd70e09acbcde3d"
+      },
+      {
+        "path": "scripts/lib/intra_symbols.py",
+        "old": null,
+        "new": "cca127a913c60076c972a43a1bdd88da6d506ed8fb359ed5ecc28626f96d2dc6"
+      },
+      {
+        "path": "scripts/check_fr_collateral.py",
+        "old": null,
+        "new": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f"
+      },
+      {
+        "path": "scripts/start_trade_signal.sh",
+        "old": "684d944b90ec3d73d0e9c5abee13ed07db6439a2b1623345e6d0435ef81513cb",
+        "new": "6e38d699652a5a65ca2311faf48e47241cc4a746110a19ffb3caa8e51844c223"
+      },
+      {
+        "path": "scripts/start_fr_pre_trade.sh",
+        "old": "3a6e9b2696a905f431490474e5e1ff1876148bfd0172eefb18a8c782170b8062",
+        "new": "b1695055d452ce7cad5fa99ef2d4b632d44f036a400f70eedcada74ad2c1586b"
+      }
+    ],
+    "after_processes": {}
+  }
+]

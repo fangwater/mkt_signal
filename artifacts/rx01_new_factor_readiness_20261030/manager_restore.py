@@ -32,6 +32,7 @@ exec(compile(ast.Module(body=nodes, type_ignores=[]), str(helper), "exec"), name
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("action", choices=["source", "catalog", "connect", "verify"])
 parser.add_argument("--execute", action="store_true")
+parser.add_argument("--resume", action="store_true", help="Resume only the partially created new RX01 catalog")
 args = parser.parse_args()
 
 
@@ -45,6 +46,7 @@ def ready():
     p = root / "run/operator_list_20261030/formal_readiness.json"
     j = json.loads(p.read_text())
     assert j["ready_rules"] == 146 and j["nq_ready_symbols"] == 38 and j["caught_up"] is True
+    assert j["symbols"] == 38 and j["consistent_model_timestamp"] is True
     assert datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000 - j["model_ts_ms"] <= 1800000
 
 
@@ -110,24 +112,42 @@ else:
         positions = api("/manager/api/catalog/position-strategies")
         old = {"reference": reference, "account": account, "virtuals": virtuals, "orders": orders, "positions": positions}
         if args.action == "catalog":
-            save("catalog_before.json", old)
+            if not args.resume:
+                save("catalog_before.json", old)
             reference_order = next(x for x in orders if x["strategy_name"] == "lgq_grid_prep")
             name = "binance_cta_perp_rx01_grid"
-            assert all(x["strategy_name"] != name for x in orders)
-            assert all(not x["strategy_name"].startswith("binance_cta_perp_rx01_") for x in positions)
+            existing_orders = [x for x in orders if x["strategy_name"] == name]
+            existing_positions = {x["strategy_name"]: x for x in positions if x["strategy_name"].startswith("binance_cta_perp_rx01_")}
+            if args.resume:
+                assert (run / "publish_token").exists() and (run / "catalog_before.json").exists()
+                assert len(existing_orders) == 1 and existing_orders[0]["order_parameters"] == reference_order["order_parameters"]
+                assert set(existing_positions).issubset(groups)
+                for strategy, position in existing_positions.items():
+                    assert set(position["targets"]) == set(groups[strategy])
+                    assert all(t["qty"] == "clear" and t.get("signal", 0) == 0 for t in position["targets"].values()), "new catalog changed since partial creation"
+            else:
+                assert not existing_orders and not existing_positions
             assert all(x["name"] != "binance_cta_perp_rx01" for x in virtuals)
             assert not account["bindings"] and account["configuration"]["mode"] == "independent"
             if args.execute:
                 ready()
-                token = secrets.token_urlsafe(48)
                 p = run / "publish_token"
-                with p.open("x") as f:
-                    p.chmod(0o600)
-                    f.write(token)
-                api("/manager/api/catalog/order-strategies", {"strategy_name": name, "order_parameters": reference_order["order_parameters"]})
-                for strategy, targets in sorted(groups.items()):
-                    api("/manager/api/catalog/position-strategies", {"strategy_name": strategy, "targets": targets})
-                    api(f"/manager/api/catalog/position-strategies/{strategy}/publish-token", {"publish_token": token}, "PUT")
+                if args.resume:
+                    token = p.read_text().strip()
+                else:
+                    token = secrets.token_urlsafe(48)
+                    with p.open("x") as f:
+                        p.chmod(0o600)
+                        f.write(token)
+                if not existing_orders:
+                    api("/manager/api/catalog/order-strategies", {"strategy_name": name, "order_parameters": reference_order["order_parameters"]})
+                # Manager requires administrator authority for token management;
+                # catalog ownership and all RX01 account operations remain lgq.
+                with namespace["session"]("prc") as admin_api:
+                    for strategy, targets in sorted(groups.items()):
+                        if strategy not in existing_positions:
+                            api("/manager/api/catalog/position-strategies", {"strategy_name": strategy, "targets": targets})
+                        admin_api(f"/manager/api/catalog/position-strategies/{strategy}/publish-token", {"publish_token": token}, "PUT")
                 bindings = [{"binding_name": s, "position_strategy_name": s, "order_strategy_name": name, "shares": 1.0} for s in sorted(groups)]
                 virtual = api("/manager/api/catalog/virtual-accounts", {"name": "binance_cta_perp_rx01", "bindings": bindings})
                 save("new_virtual.json", virtual)
@@ -158,4 +178,4 @@ else:
             assert all(b["shares"] == 1 for b in account["bindings"])
             assert all(set(p["targets"]) == set(groups[p["strategy_name"]]) for p in matching)
             save("catalog_verified.json", {"account": account, "positions": matching})
-            print(json.dumps({"position_strategies": 91, "target_rows": sum(len(p["targets"]) for p in matching), "configuration": account["configuration"], "pending_publishes": account["pending_publishes"]}))
+            print(json.dumps({"position_strategies": 91, "target_rows": sum(len(p["targets"]) for p in matching), "configuration": account["configuration"], "pending_publishes": len(account["pending_publishes"]), "publish_errors": sum(p.get("error") is not None for p in account["pending_publishes"])}))

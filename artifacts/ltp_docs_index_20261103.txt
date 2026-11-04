@@ -1,0 +1,196 @@
+# LTP API Doc Documentation
+
+> Documentation for LTP API Doc
+
+## Guides: Overview
+- [About LTP](https://apidocliquidity.readme.io/docs/about-ltp.md)
+- [Accounts System](https://apidocliquidity.readme.io/docs/accounts-system.md)
+- [Rapid Transfer](https://apidocliquidity.readme.io/docs/rapidtransfer.md)
+- [Change Log](https://apidocliquidity.readme.io/docs/change-log.md)
+
+## Guides: Getting Started
+- [Get Started](https://apidocliquidity.readme.io/docs/get-started.md)
+- [Authentication](https://apidocliquidity.readme.io/docs/authentication.md)
+- [API Management](https://apidocliquidity.readme.io/docs/api-management.md)
+- [Error Codes](https://apidocliquidity.readme.io/docs/error-codes.md)
+- [ENUM Definitions](https://apidocliquidity.readme.io/docs/enum-definitions.md)
+- [Account Types](https://apidocliquidity.readme.io/docs/account-types.md)
+
+## API Reference: Assets V1
+- [Account Assets](https://apidocliquidity.readme.io/reference/assets-v1-account-assets.md)
+  - [Get Account List](https://apidocliquidity.readme.io/reference/get-account-list.md): Retrieve all trade accounts accessible to the current LTP user.
+  - [Get Account Balance](https://apidocliquidity.readme.io/reference/get-account-balance.md): Retrieve asset balances across all trade accounts accessible to the current LTP user.
+- [Asset Operations](https://apidocliquidity.readme.io/reference/assets-v1-asset-operations.md)
+  - [Get Deposit Address](https://apidocliquidity.readme.io/reference/get-deposit-address.md): Retrieve deposit addresses for specific currencies, applicable for Funding Accounts and RapidX Trading Portfolios.
+  - [Get Deposit History](https://apidocliquidity.readme.io/reference/get-deposit-history.md): Retrieve deposit records filtered by accountId and currency.
+  - [Get Deposit Exchange](https://apidocliquidity.readme.io/reference/get-deposit-exchange.md)
+  - [Set Deposit Exchange](https://apidocliquidity.readme.io/reference/set-deposit-exchange.md)
+  - [Withdraw](https://apidocliquidity.readme.io/reference/withdraw.md): Support withdrawal of tokens from Funding Account, Exchange Account and Trading Porfolio.
+  - [Get Withdrawal Address](https://apidocliquidity.readme.io/reference/get-withdraw-address.md): Retrieve withdrawal address added to whitelist
+  - [Get Withdrawal History](https://apidocliquidity.readme.io/reference/get-withdraw-history.md): Retrieve withdrawal history within a specified time period.
+  - [Transfer](https://apidocliquidity.readme.io/reference/asset-transfer-between-accounts-support-innercross-exchange.md): Initiate an asset transfer between accounts. Supported transfer types include: Intra-exchange transfer, Cross-exchange transfer, Transfer between Funding Accounts and Trading Portfolios, Transfer…
+  - [Query Transfer History](https://apidocliquidity.readme.io/reference/query-transfer-history.md): Retrieve the details of a specific tranfer by providing the transferId or clientOrderId.
+  - [Query Transfer All](https://apidocliquidity.readme.io/reference/query-transfer-all.md): Retrieve transfer recrods within a specified time period.
+  - [Query Rapid Pool Quota](https://apidocliquidity.readme.io/reference/rapidpool.md): Returns how much you can move through Rapid Transfer into one venue right now. Each supported venue is served by its own pool, so pools are queried one at a time — query the pool at the receiving…
+  - [Get Portfolio Funds History](https://apidocliquidity.readme.io/reference/get-sub-portfolio-funding-history.md)
+  - [ClearLoop Lock](https://apidocliquidity.readme.io/reference/lock.md): Only API keys with Transfer privilege can call this endpoint.
+  - [ClearLoop Unlock](https://apidocliquidity.readme.io/reference/unlock.md): Only API keys with Transfer privilege can call this endpoint.
+  - [ClearLoop History](https://apidocliquidity.readme.io/reference/historypage.md): Only API keys with Transfer privilege can call this endpoint.
+- [Asset Information](https://apidocliquidity.readme.io/reference/assets-v1-asset-information.md)
+  - [Get Currencies](https://apidocliquidity.readme.io/reference/get-currencies.md): Retrieve information on supported currencies for deposit, withdrawal, and transfer across Funding Accounts, Trading Portfolios, Custody Accounts and Exchange Accounts.
+  - [Get System Status](https://apidocliquidity.readme.io/reference/get-system-status.md)
+
+## API Reference: Assets V2
+- [Account Assets](https://apidocliquidity.readme.io/reference/assets-v2-account-assets.md): Query Funding, Trading, DeFi and Earn account assets.
+  - [Get Account Assets Overview](https://apidocliquidity.readme.io/reference/get-account-assets-overview.md): Returns the Funding, Trading, DeFi and Earn valuation overview.
+  - [Get Funding Account Assets](https://apidocliquidity.readme.io/reference/get-funding-account-assets.md): Returns Funding balances by currency and network.
+  - [Get Trading Account List](https://apidocliquidity.readme.io/reference/get-trading-account-list-v2.md): Lists accessible DMA accounts and RapidX Portfolios.
+  - [Get Trading Account Assets](https://apidocliquidity.readme.io/reference/get-trading-account-assets-v2.md): Returns the asset detail for one DMA account or RapidX Portfolio.
+  - [Get Trading Asset Summary](https://apidocliquidity.readme.io/reference/get-trading-asset-summary-v2.md): Returns Trading assets aggregated by currency.
+  - [Get Trading Asset Distribution](https://apidocliquidity.readme.io/reference/get-trading-asset-distribution-v2.md): Returns Trading currency distribution across DMA accounts or RapidX Portfolios.
+  - [Get DeFi Account Assets](https://apidocliquidity.readme.io/reference/get-defi-account-assets.md): Returns DeFi balances by currency and network.
+  - [Get Earn Product Assets](https://apidocliquidity.readme.io/reference/get-earn-product-assets.md): Returns Earn holdings by product, including product identity, holding quantities and yield-related fields.
+  - [Get Earn Asset Summary](https://apidocliquidity.readme.io/reference/get-earn-asset-summary.md): Returns Earn holdings aggregated by currency, including balances and valuations.
+
+## API Reference: RapidX Trading
+- [REST](https://apidocliquidity.readme.io/reference/trading-rest.md)
+  - [Portfolios](https://apidocliquidity.readme.io/reference/portfolios.md)
+    - [Create Portfolio](https://apidocliquidity.readme.io/reference/create-portfolio.md): Create a trading portfolio only by a primary user.
+    - [List Portfolios](https://apidocliquidity.readme.io/reference/get-portfolio.md): Retrieve trading portfolio list under primary user.
+    - [Update Portfolio](https://apidocliquidity.readme.io/reference/update-portfolio.md): Update Trading Portfolio's name by a primary user.
+    - [Get Portfolio Overview](https://apidocliquidity.readme.io/reference/get-portfolio-overview.md)
+    - [Get Portfolio Asset Details](https://apidocliquidity.readme.io/reference/get-portfolio-assets-details.md)
+    - [Get All Portfolio Assets](https://apidocliquidity.readme.io/reference/get-all-portfolio-assets.md)
+  - [API Keys](https://apidocliquidity.readme.io/reference/portfolio-api-keys.md)
+    - [Create Portfolio API Key](https://apidocliquidity.readme.io/reference/create-portfolio-api.md): Create a RapidX Portfolio API key. Main User Level key with TRADE required.
+    - [List Portfolio API Keys](https://apidocliquidity.readme.io/reference/get-portfolio-api.md): List Portfolio API keys under the main user. Main User Level key with READ required.
+    - [Update Portfolio API Key](https://apidocliquidity.readme.io/reference/update-portfolio-api.md): Update a Portfolio API key using a JSON body. Main User Level key with TRADE required.
+    - [Delete Portfolio API Key](https://apidocliquidity.readme.io/reference/delete-portfolio-api.md): Delete a Portfolio API key using a JSON body. Main User Level key with TRADE required.
+  - [Orders](https://apidocliquidity.readme.io/reference/orders.md)
+    - [Place Order](https://apidocliquidity.readme.io/reference/place-order.md): Rate Limit: 1200 requests per 60 seconds
+    - [Replace Order](https://apidocliquidity.readme.io/reference/replace-order.md): Rate Limit: 300 requests per 60 seconds
+    - [Cancel Order](https://apidocliquidity.readme.io/reference/cancel-order.md): Rate Limit: 1200 requests per 60 seconds
+    - [Query Order Detail](https://apidocliquidity.readme.io/reference/query-order.md)
+    - [Current Open Orders](https://apidocliquidity.readme.io/reference/current-open-orders.md): Rate Limit: 1200 requests per 60 seconds
+    - [Order History](https://apidocliquidity.readme.io/reference/order-history.md)
+    - [Order History Archive](https://apidocliquidity.readme.io/reference/order-history-archive.md)
+    - [Cancel Orders](https://apidocliquidity.readme.io/reference/cancel-one-portfolio-orders.md)
+  - [Positions](https://apidocliquidity.readme.io/reference/positions.md)
+    - [Change Portfolio Position Mode](https://apidocliquidity.readme.io/reference/change-portfolio-position-mode.md)
+    - [Set Leverage](https://apidocliquidity.readme.io/reference/set-leverage.md)
+    - [Get Leverage](https://apidocliquidity.readme.io/reference/get-perp-leverage.md)
+    - [Close Position](https://apidocliquidity.readme.io/reference/close-position.md): Rate Limit: 50 requests per 10 seconds.
+    - [Close Positions](https://apidocliquidity.readme.io/reference/close-positions.md): Rate Limit: 3 requests per 10 seconds
+    - [Query Portfolio Position](https://apidocliquidity.readme.io/reference/query-portfolio-position.md)
+    - [Query Portfolio History Position](https://apidocliquidity.readme.io/reference/query-portfolio-history-position.md)
+    - [Query ADL Rank](https://apidocliquidity.readme.io/reference/query-adl-rank.md)
+  - [Algo Orders](https://apidocliquidity.readme.io/reference/algo-orders-rest.md)
+    - [Place Algo Order](https://apidocliquidity.readme.io/reference/place-algo-order-rest.md): Rate Limit: 3 requests per 10 seconds
+    - [Replace Algo Order](https://apidocliquidity.readme.io/reference/replace-algo-order.md): Rate Limit: 3 requests per 10 seconds
+    - [Cancel Algo Order](https://apidocliquidity.readme.io/reference/cancel-algo-order-rest.md): Rate Limit:  3 requests per 10 seconds
+    - [Cancel All Algo Orders](https://apidocliquidity.readme.io/reference/cancel-all-algo-orders.md)
+    - [Query Algo Order Detail](https://apidocliquidity.readme.io/reference/query-order-detail-rest.md): Rate Limit:  3 requests per 10 seconds
+    - [Current Open Algo Orders](https://apidocliquidity.readme.io/reference/current-open-orders-rest.md): Rate Limit:  3 requests per 10 seconds
+    - [Algo Order History](https://apidocliquidity.readme.io/reference/order-history-rest.md): Rate Limit:  3 requests per 10 seconds
+    - [Current Open Sub Orders](https://apidocliquidity.readme.io/reference/current-open-sub-orders-rest.md): Rate Limit:  3 requests per 10 seconds
+    - [Sub Order History](https://apidocliquidity.readme.io/reference/sub-order-history-rest.md): Rate Limit:  3 requests per 10 seconds
+    - [Sub Order Trade](https://apidocliquidity.readme.io/reference/sub-order-query-transactions-rest.md): Rate Limit: 5 requests per 10 seconds
+  - [Trading Rules](https://apidocliquidity.readme.io/reference/trading-rules.md)
+    - [Set Margin Leverage](https://apidocliquidity.readme.io/reference/set-margin-leverage.md): Rate Limit: 100 requests per 10 seconds
+    - [Get Margin Leverage](https://apidocliquidity.readme.io/reference/get-margin-leverage.md): Rate Limit: 100 requests per 10 seconds
+    - [Sym Info](https://apidocliquidity.readme.io/reference/sym-info.md)
+    - [User Trading Fee Rate](https://apidocliquidity.readme.io/reference/user-trading-fee-rate.md): Rate Limit: 3 requests per 10 seconds
+    - [Get Position Tier](https://apidocliquidity.readme.io/reference/positionbracket.md): Rate Limit: 3 requests per 10 seconds
+    - [Get Loan Tier (Deprecated)](https://apidocliquidity.readme.io/reference/loan-tier.md)
+    - [Get Discount Rate](https://apidocliquidity.readme.io/reference/get-discount-rate-detail.md)
+    - [Get Discount Rate (Deprecated)](https://apidocliquidity.readme.io/reference/discount.md)
+    - [Get User Interest](https://apidocliquidity.readme.io/reference/get-user-interest-detail.md): Rate Limit: 3 requests per 10 seconds
+    - [Get User Interest (Deprecated)](https://apidocliquidity.readme.io/reference/query-user-interest.md): Rate Limit: 3 requests per 10 seconds
+    - [Get Loan Tier](https://apidocliquidity.readme.io/reference/get-loan-tier.md)
+    - [Get Loan Pool](https://apidocliquidity.readme.io/reference/get-loan-pool.md)
+  - [Liquidation Event](https://apidocliquidity.readme.io/reference/liquidation-event.md)
+    - [Get Liquidation Event](https://apidocliquidity.readme.io/reference/get-liquidation-event.md)
+  - [Transaction](https://apidocliquidity.readme.io/reference/transaction.md)
+    - [Query Transactions](https://apidocliquidity.readme.io/reference/query-transactions.md)
+    - [Query Transactions (Pageable)](https://apidocliquidity.readme.io/reference/query-transactions-pageable.md)
+    - [Query Archived Transactions (Pageable)](https://apidocliquidity.readme.io/reference/query-archived-transactions-pageable.md)
+  - [Statement](https://apidocliquidity.readme.io/reference/statement.md)
+    - [Query Statement](https://apidocliquidity.readme.io/reference/query-statement.md): Rate Limit: 100 requests per 60 seconds
+    - [Query User Trading Volume](https://apidocliquidity.readme.io/reference/query-user-tradingstats.md)
+    - [Query User's Portfolio Trading Volume](https://apidocliquidity.readme.io/reference/query-users-portfolio-tradingstats.md)
+  - [History Data Export](https://apidocliquidity.readme.io/reference/history-data-export.md)
+    - [Create History Data Export](https://apidocliquidity.readme.io/reference/create-history-data-export.md)
+    - [Query History Data Export](https://apidocliquidity.readme.io/reference/query-history-data-export.md)
+    - [Get History Data Export Download Url](https://apidocliquidity.readme.io/reference/get-history-data-export-download-url.md)
+- [WebSocket](https://apidocliquidity.readme.io/reference/trading-websocket.md)
+  - [Overview](https://apidocliquidity.readme.io/reference/ws-user-data-overview.md): Private WebSocket for real-time account updates and order management.
+  - [Orders](https://apidocliquidity.readme.io/reference/ws-orders.md)
+    - [Place Order](https://apidocliquidity.readme.io/reference/ws-place-order.md)
+    - [Replace Order](https://apidocliquidity.readme.io/reference/ws-replace-order.md)
+    - [Cancel Order](https://apidocliquidity.readme.io/reference/ws-cancel-order.md)
+    - [Cancel Orders](https://apidocliquidity.readme.io/reference/ws-cancel-orders.md)
+  - [Algo Orders](https://apidocliquidity.readme.io/reference/algo-orders-ws.md)
+    - [Overview](https://apidocliquidity.readme.io/reference/ws-algo-overview.md): Rate Limit: 1 requests per 1 seconds  per apiKey
+    - [Place Algo Order](https://apidocliquidity.readme.io/reference/ws-place-algo-order.md)
+    - [Cancel Algo Order](https://apidocliquidity.readme.io/reference/ws-cancel-algo-order.md): Rate Limit: 3 requests per 10 seconds
+    - [Replace Algo Order](https://apidocliquidity.readme.io/reference/replace-algo-order-ws.md): Rate Limit: 3 requests per 10 seconds
+    - [Algo Order Update](https://apidocliquidity.readme.io/reference/ws-algo-order-update.md)
+    - [Sub Order Trade](https://apidocliquidity.readme.io/reference/ws-sub-order-trade.md)
+    - [Sub Order Update](https://apidocliquidity.readme.io/reference/ws-sub-order-update.md)
+  - [User Data](https://apidocliquidity.readme.io/reference/ws-user-data.md)
+    - [User Data (orders, trades, assets, positions, accounts)](https://apidocliquidity.readme.io/reference/ws-user-data-orders-trades-assets-positions.md)
+    - [Liquidation](https://apidocliquidity.readme.io/reference/ws-liquidation.md)
+
+## API Reference: RapidX Market Data
+- [WebSocket](https://apidocliquidity.readme.io/reference/market-data.md)
+  - [Overview](https://apidocliquidity.readme.io/reference/market-data-overview.md): Real-time market data via WebSocket.
+  - [Price](https://apidocliquidity.readme.io/reference/market-data-price.md): Mark price and index price for futures pairs.
+  - [Ticker](https://apidocliquidity.readme.io/reference/market-data-ticker.md): 24-hour rolling market statistics.
+  - [Kline (Candlestick)](https://apidocliquidity.readme.io/reference/market-data-kline-candlestick.md): Real-time OHLCV candlestick data.
+  - [Order Book](https://apidocliquidity.readme.io/reference/market-data-order-book.md): Full order book depth with incremental updates.
+  - [BBO](https://apidocliquidity.readme.io/reference/market-data-bbo.md): Best bid and offer (top of book).
+  - [Trade](https://apidocliquidity.readme.io/reference/market-data-trade.md): Real-time trade executions.
+  - [Open Interest](https://apidocliquidity.readme.io/reference/market-data-open-interest.md): Total open interest for a futures contract.
+- [REST](https://apidocliquidity.readme.io/reference/md-rest.md)
+  - [Get Current Mark Price](https://apidocliquidity.readme.io/reference/get-current-markprice.md): Rate Limit: 3 requests per 10 seconds
+  - [Get Current Funding Rate](https://apidocliquidity.readme.io/reference/get-current-fundingfee.md): Rate Limit: 3 requests per 10 seconds
+
+## API Reference: RapidX Loan
+- [Borrow & Repay](https://apidocliquidity.readme.io/reference/loan-borrow-repay.md)
+  - [Loan Borrowing](https://apidocliquidity.readme.io/reference/loan-borrowing.md)
+  - [Loan Repayment](https://apidocliquidity.readme.io/reference/loan-repayment.md)
+- [Loan Status](https://apidocliquidity.readme.io/reference/loan-status.md)
+  - [Query Loan Info](https://apidocliquidity.readme.io/reference/query-loan-info.md)
+  - [Query User Loan Config](https://apidocliquidity.readme.io/reference/query-user-loan-config.md)
+  - [Query Borrowable Currencies With Maximum Amount](https://apidocliquidity.readme.io/reference/query-max-loan-amount.md)
+- [Loan History](https://apidocliquidity.readme.io/reference/loan-history.md)
+  - [Borrowing / Repayment History](https://apidocliquidity.readme.io/reference/loan-borrow-repay-history.md)
+  - [Borrowing/Repayment Settlement](https://apidocliquidity.readme.io/reference/borrowing-repayment-settlement.md)
+
+## API Reference: RapidX Broker
+- [Get Broker Position Tier](https://apidocliquidity.readme.io/reference/get-position-tier-broker.md): Rate Limit: 3 requests per 10 seconds
+- [Fee Rates](https://apidocliquidity.readme.io/reference/broker-fee-rates.md)
+  - [Get Fee Rate](https://apidocliquidity.readme.io/reference/get-fee-rate.md)
+  - [Get Fee Rate For Sub Portfolio](https://apidocliquidity.readme.io/reference/get-fee-rate-sub.md)
+  - [Set Sub Portfolio Fee Rate](https://apidocliquidity.readme.io/reference/set-sub-user-fee-rate.md)
+- [Clearing](https://apidocliquidity.readme.io/reference/broker-clearing.md)
+  - [Get Clearing Statement](https://apidocliquidity.readme.io/reference/get-clearing-statement.md)
+  - [Get Collection Record](https://apidocliquidity.readme.io/reference/get-collection-record.md)
+
+## API Reference: MarginX
+- [Group Management](https://apidocliquidity.readme.io/reference/marginx-group-management.md)
+  - [Get Margin Groups](https://apidocliquidity.readme.io/reference/get-margin-groups.md): Returns your MarginX margin groups with valuations, outstanding debt, borrowing capacity, LTV and MMR.
+  - [Create Margin Group](https://apidocliquidity.readme.io/reference/create-margin-group.md): Creates a MarginX margin group with eligible DMA accounts and/or RapidX Portfolio venues.
+  - [Get Margin Group Details](https://apidocliquidity.readme.io/reference/get-margin-group-details.md): Returns asset, debt, borrowing-capacity and risk data for one MarginX group, without a member list.
+  - [Get Margin Group Members](https://apidocliquidity.readme.io/reference/get-margin-group-members.md): Returns paginated DMA and RapidX members with their asset and debt valuations, including zero-asset members.
+  - [Update Margin Group](https://apidocliquidity.readme.io/reference/update-margin-group.md): Updates a MarginX group name and/or its complete member set. Requires Main User Level access with TRANSFER permission.
+  - [Delete Margin Group](https://apidocliquidity.readme.io/reference/delete-margin-group.md): Deletes a MarginX group and releases its members without deleting the underlying accounts or moving funds. Requires TRANSFER permission.
+- [Borrowing & Repayment](https://apidocliquidity.readme.io/reference/marginx-borrowing-repayment.md)
+  - [Get Borrowing Currency Configuration](https://apidocliquidity.readme.io/reference/get-marginx-currency-config.md): Queries all MarginX borrowing-currency configurations, amount limits, floating-pool availability and floating/fixed rate terms. No query parameters.
+  - [Get Margin Group Borrowable Assets](https://apidocliquidity.readme.io/reference/get-margin-group-borrowable-assets.md): Queries one currency’s group borrowing capacity, quantity limits, floating-pool availability and floating/fixed annual rates. Does not submit a loan.
+  - [Borrow MarginX Funds](https://apidocliquidity.readme.io/reference/borrow-marginx.md): Submit a borrowing request to a group member. Main User Level TRANSFER required. LTP covers transaction fees; borrowing interest remains payable.
+  - [Repay MarginX Debt](https://apidocliquidity.readme.io/reference/repay-marginx.md): Submit a repayment, interest first then principal. Main User Level TRANSFER required. LTP covers transaction fees; borrowing interest remains payable.
+- [Debt & Activity](https://apidocliquidity.readme.io/reference/marginx-debt-history.md)
+  - [Get Outstanding Debts](https://apidocliquidity.readme.io/reference/get-marginx-outstanding-debts.md): Lists unpaid MarginX principal and interest, including interest-only debts. Optional exact group filtering, pagination and valuation currency.
+  - [Get Interest Accrual History](https://apidocliquidity.readme.io/reference/get-marginx-interest-history.md): Queries historical interest charges, calculation bases and applicable annual rates. FIXED does not necessarily mean fixed-term borrowing.
+  - [Get Borrowing and Repayment Orders](https://apidocliquidity.readme.io/reference/get-marginx-borrow-and-repay-orders.md): Queries borrowing, principal-repayment and interest-repayment orders. Includes independent split-repayment records and historical borrowing.

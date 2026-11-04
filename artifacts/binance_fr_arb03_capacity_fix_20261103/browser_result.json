@@ -1,0 +1,11 @@
+{
+  "utc": "2026-11-03T15:39:37.417Z",
+  "values": {
+    "risk-usdt-max-margin": "125,733.22",
+    "risk-usdt-cash": "0.00",
+    "risk-usdt-borrow": "0.00",
+    "risk-usdt-buy": "0.00",
+    "risk-usdt-state": "USDT 购买能力不足，暂停新买单"
+  },
+  "exceptions": []
+}

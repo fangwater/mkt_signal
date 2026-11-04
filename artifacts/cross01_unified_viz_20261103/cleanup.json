@@ -1,0 +1,48 @@
+{
+  "remote_stage_removed": "/home/ubuntu/crypto_cta_manager/deploy-staging/cross01_unified_viz_20261103T054937Z",
+  "manager_pid": 3538262,
+  "native_trading_processes_running": false,
+  "native_processes": [
+    {
+      "env": "okex_exec_trade01",
+      "process": "persist_manager"
+    },
+    {
+      "env": "okex_exec_trade01",
+      "process": "python3"
+    },
+    {
+      "env": "okex_exec_trade01",
+      "process": "viz_server"
+    },
+    {
+      "env": "binance_exec_spread01",
+      "process": "persist_manager"
+    },
+    {
+      "env": "binance_exec_spread01",
+      "process": "python3"
+    },
+    {
+      "env": "binance_exec_spread01",
+      "process": "viz_server"
+    },
+    {
+      "env": "binance_exec_spread01",
+      "process": "account_monitor"
+    },
+    {
+      "env": "okex_exec_trade01",
+      "process": "account_monitor"
+    }
+  ],
+  "removed_local_files_sha256": {
+    "frontend.tar.gz": "615ca0674ba1e1659658e355eee33946cdd2f56ab5ecef1d9ee29a59303ceaf0",
+    "candidate-empty.png": "c4a9193dc0a4a72647540fcd50d6df3e207104742fa51599968551395ea04b98",
+    "fixture-desktop.png": "1a680a26ccccdf78cc3220a98df4540057fa927c08c663bf90c5588f701cccba",
+    "fixture-mobile.png": "2686550ec08c63c8e561109c2abb9685b4eec1463f02986d031a16f0cf3f7195",
+    "live-empty.png": "c4a9193dc0a4a72647540fcd50d6df3e207104742fa51599968551395ea04b98"
+  },
+  "browser_profiles_remaining": 0,
+  "rollback_retained": true
+}

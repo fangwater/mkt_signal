@@ -1,0 +1,1 @@
+{"account_id": "cta_cross_spread_rx01", "account_alias": "okex_binace_cross_1min", "execution_leg_aliases": {"okex_exec_trade01": "okex_exec_cross01", "binance_exec_spread01": "binance_exec_cross01"}, "source_ids_changed": false, "directories_or_namespaces_changed": false, "trading_started": false}

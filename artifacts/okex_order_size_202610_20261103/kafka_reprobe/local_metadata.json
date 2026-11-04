@@ -1,0 +1,1522 @@
+{
+  "observed_at_utc": "2026-11-03T03:30:22.842979+00:00",
+  "bootstrap": "156.231.137.189:1501",
+  "elapsed_seconds": 4.218060372397304,
+  "brokers": [
+    {
+      "id": 0,
+      "host": "10.140.140.55",
+      "port": 1501
+    }
+  ],
+  "topics": [
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_liquidation",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit_top_long_short_ratio",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit_liquidation_continuous",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-spot",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc_derivative",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "aster-spot",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap_derivative",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap_premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap_liquidation",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_top_long_short_ratio_1022_1",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-spot-usdc_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit_premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc_liquidation_continuous",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_liquidation_continuous",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "aster-futures_premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_top_long_short_ratio",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit-spot",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "aster-futures",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap_top_long_short_ratio",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-spot_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit_liquidation",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc_liquidation",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-spot-usdc",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_obfeature_1m",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_liquidation",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc_premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-alpha",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-usdc_top_long_short_ratio",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "top_long_short_ratio",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit_derivative",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance_kline1",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "__consumer_offsets",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 10,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 20,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 40,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 30,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 9,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 11,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 31,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 39,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 13,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 18,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 22,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 8,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 32,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 43,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 29,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 34,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 1,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 6,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 41,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 27,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 48,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 5,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 15,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 35,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 25,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 46,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 26,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 36,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 44,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 16,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 37,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 17,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 45,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 3,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 24,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 38,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 33,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 23,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 28,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 2,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 12,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 19,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 14,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 4,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 47,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 49,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 42,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 7,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        },
+        {
+          "error": 0,
+          "id": 21,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_top_long_short_ratio",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "bybit-spot_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "okex-swap_liquidation_continuous",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_premium_index_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-alpha_ticker24",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_liquidation_continuous",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures-tradifi_derivative",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance_kline",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance-futures_derivative",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "error": 0,
+      "name": "binance_mkt_status",
+      "partitions": [
+        {
+          "error": 0,
+          "id": 0,
+          "leader": 0,
+          "replicas": [
+            0
+          ],
+          "isr": [
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

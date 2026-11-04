@@ -1,0 +1,9 @@
+{
+  "publish_binance_order_size_thresholds.py": "4448e28aeba506f4add3f7b4b94fcb60fbb0b64a380b9972943569eec3b09011",
+  "thresholds.csv": "75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841",
+  "manifest.json": "77ff312b3d87f51756ad409af7c89c8680ced4e0ef6a8fc1648e3e274ed95857",
+  "results.json": "97f5b6a2bf2b53c9558416ef174aaca09c632e52c9357b3b9173b6ec56dc713e",
+  "okex_instruments.json": "1d3e8d8056f094e36827038c0adea3412637cd4a086833793c4ea2e4c26ba406",
+  "release_manifest.json": "6deb67cab53580b0f208b2e431b8811a634a6b466ff9a230312f03e662af9112",
+  "tool_tests.json": "7d9ce88170572e57b9239cf4e422b2bb78b862aa2a0d5229c3ebaafc9e978e02"
+}

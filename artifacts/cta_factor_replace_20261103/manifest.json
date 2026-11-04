@@ -1,0 +1,33 @@
+{
+  "commit": "163bcf9be0947fb08554143a3c6f6b909f207569",
+  "branch": "arbmm",
+  "files": {
+    "unified-nginx.conf": "8ca905a1a47fd74b2c2348c3a1a66517bef1d78b2809167e8a86b47b6075aa89",
+    "cta-prep-binance-futures/cta-prep-binance-futures": "c493af47e5046f76fa8aa43f6f6f19994726d939f646a3feb2cb2b16589c4bc9",
+    "cta-prep-binance-futures/cta-factor-config": "4a830a358df0b53b9dcec898efa907c1f080425d9b562ef04fcbe744d249972a",
+    "cta-factor-spread/cta-factor-spread": "58704d7d033c4cf052d8ebea1023a0caf6e74c87c33d66f6a5df3607fee77c46",
+    "cta-factor-spread/config/cta_factor_spread.toml": "b58f67bf6e118565d4d917299f9d68386f95b45820fed47be1e845b5e9f2f1f1",
+    "cta-factor-spread/config/iceoryx2.toml": "d665a71ddd1e97db6e231c6b38bbd9194b57decbd6e6cba7968f1009642b46f9",
+    "cta-factor-spread/scripts/cta_factor_process.sh": "98fa60cc4f3af011c93b70b42a91298d858c7e899da0c250e3a323b8979fec4e",
+    "cta-factor-spread/scripts/process_match_lib.sh": "d00385fa02f8070b341440b740e2e9e00403fd9af3e53265f14d87394ec0d714",
+    "cta-factor-spread/scripts/start_cta_factor_spread.sh": "2da7624c61a7d2f927bfbff1e0bc261a17b9f88368937a82ce4d35af4e405186",
+    "cta-factor-spread/scripts/stop_cta_factor_spread.sh": "a5a53a33f2ed1eff6f0f8142b1b331581e08a2464157847d567a0e07258c6b4a",
+    "cta-factor-spread/config/cta_factor_spread/okex-futures_binance-futures_1min.json": "0be16afec50eea9f640e9c8d67f173ef8abd45a22427447f030fa31253ea7fc5",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures.toml": "76eceb7f73c117b628b3ff6a5b67aa319076a4c5fdf84c02d2946d0207de126c",
+    "cta-prep-binance-futures/config/iceoryx2.toml": "d665a71ddd1e97db6e231c6b38bbd9194b57decbd6e6cba7968f1009642b46f9",
+    "cta-prep-binance-futures/scripts/cta_factor_process.sh": "98fa60cc4f3af011c93b70b42a91298d858c7e899da0c250e3a323b8979fec4e",
+    "cta-prep-binance-futures/scripts/process_match_lib.sh": "d00385fa02f8070b341440b740e2e9e00403fd9af3e53265f14d87394ec0d714",
+    "cta-prep-binance-futures/scripts/start_cta_prep_binance_futures.sh": "c5f924ade9aa4700fc0a82d09ab62b6749cb74afae30d7b56b380678c66cc132",
+    "cta-prep-binance-futures/scripts/stop_cta_prep_binance_futures.sh": "ade8a7f94c627cfebca8e528faf8a1e7c6dfd4517cc5de82339ce790afdb906a",
+    "cta-prep-binance-futures/scripts/start_cta_factor_config.sh": "a2943d3811bbf8ae98472772a854c8a931761e468d5808fa6b4832d3962a7a4a",
+    "cta-prep-binance-futures/scripts/stop_cta_factor_config.sh": "19940e2f79c1b2760d76c6e2c5a8d12fd11167343f6849a1fba8667a8d7fb2a8",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/binance-futures_15min.json": "e33d1044d61f9cf31f962e7a18ce58e6f0e0be1174e7bd78f403463aff466700",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/binance-futures_1min.json": "e18a48d9247aa28da1c37e93a0eff88705f272cad09340146e7b73b9b513bf0f",
+    "cta-prep-binance-futures/config/cta_prep_binance_futures/binance-futures_5min.json": "0ae371c047df370a6d6469390ee3fd71944d25cc90e3b7ffde90de3be0c1aa1b"
+  },
+  "all_position_tables_enabled": false,
+  "cores": {
+    "cta-prep-binance-futures": 17,
+    "cta-factor-spread": 18
+  }
+}

@@ -1,0 +1,142 @@
+{
+  "utc": "2026-11-03T15:30:10.734482+00:00",
+  "cutoff": "2026-11-03T15:28:10",
+  "processes": [
+    {
+      "pid": 61245,
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 466005,
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 466178,
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 468517,
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 469039,
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 471322,
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 472267,
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 476386,
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    }
+  ],
+  "hashes": {
+    "env.sh": "b9aabdba64ab40370c539e43a7cb77f6703db74aa1bc8c42f28bbeb3337cc727",
+    "trade_engine.toml": "388bb370fe85036d2fbd5c4cc1bdd4583fe3f4fcaa92a09c0bf788bd9202f60b",
+    "config/viz.toml": "fb68784b22a9b3ea3eaf67a63f18d258225b908ea5666c6d4fa841ceac49cef8",
+    "www/index.html": "d2562d3b2dfb65967fd853e7c9196cd1d830534dd18f44d5c3fa229907d57fdd",
+    "pre_trade": "5b9d7e5b31f5c0065ebd57df2ab1bb2059c95a2fbcaabf0795f531deef6fdb3f",
+    "trade_engine": "6f81900b36836b4ac953df126cdab81cf886957d7637b99772f8ef3b011f76f6",
+    "trade_signal": "a2acd8edebaea01217c19bfcf674d7bed62d12955f3411fa522631c32ba33d8a",
+    "account_monitor": "b91a9739fc6debc7d10ffaa46e18256114e7a7abd32aca049a40e51786a622b2",
+    "viz_server": "3cc6997892434fc3380b5a4197a2f6d3a87507256057d2541316111fbde5d1c6",
+    "persist_manager": "ed731e7e07e9d67c620d8629817f9493b7937c2a25645fd53f926455837b516a"
+  },
+  "snapshot_age_sec": 1.2624378204345703,
+  "net_exposure_usdt": 172.69505086739554,
+  "risk": {
+    "account_risks": [
+      {
+        "actual_equity_usd": 1136620.62428222,
+        "adj_equity_usd": 319120.46849976,
+        "borrowed_usd": 0.0,
+        "initial_margin_usd": 193445.46008392,
+        "maintenance_margin_usd": 56504.90104826,
+        "margin_ratio": 5.64765998,
+        "notional_usd": 0.0,
+        "state": "free_trade",
+        "ts_ms": 1793719809127
+      }
+    ],
+    "borrowed_usd": 44203.79858322,
+    "hedge_leg": {
+      "borrowed_usd": 0.0,
+      "interest_usd": 0.0,
+      "leverage": 3.953226575768832,
+      "spot_equity_usd": 0.0,
+      "total_equity": 238836.41744342,
+      "total_position": 944174.4726987464,
+      "um_unrealized_usd": 238836.41744342,
+      "venue": "binance-futures"
+    },
+    "interest_usd": 39.39711626144872,
+    "leverage": 1.6611982687793232,
+    "max_leverage": 1.7,
+    "open_leg": {
+      "borrowed_usd": 44203.79858322,
+      "interest_usd": 39.39711626144872,
+      "leverage": 1.049212739438523,
+      "spot_equity_usd": 899819.7076808013,
+      "total_equity": 899819.7076808013,
+      "total_position": 944102.3004965445,
+      "um_unrealized_usd": 0.0,
+      "venue": "binance-margin"
+    },
+    "signal_counts": {
+      "ArbCancel": 546,
+      "ArbClose": 40,
+      "ArbOpen": 150
+    },
+    "spot_equity_usd": 897782.9256080899,
+    "total_equity": 1136619.34305151,
+    "total_exposure": 172.67546567103665,
+    "total_position": 1888150.08493826,
+    "ts_ms": 1793719809431,
+    "um_unrealized_usd": 238836.41744342,
+    "unimmr_force_close_line": 3.3,
+    "unimmr_force_close_recover_line": 3.4,
+    "unimmr_recover_line": 3.6,
+    "unimmr_trigger_line": 3.5,
+    "usdt_max_available_margin": 125704.34940522
+  },
+  "engine": {
+    "lines": 6174,
+    "51042": 3900,
+    "51014": 62,
+    "panics": 0,
+    "capacity_query_errors": 0,
+    "volatility_suppression": 0,
+    "capacity_samples": []
+  },
+  "pre_trade": {
+    "lines": 14273,
+    "51042": 1974,
+    "51014": 35,
+    "panics": 0,
+    "capacity_query_errors": 0,
+    "volatility_suppression": 0,
+    "capacity_samples": []
+  },
+  "signal": {
+    "lines": 847,
+    "51042": 0,
+    "51014": 0,
+    "panics": 0,
+    "capacity_query_errors": 0,
+    "volatility_suppression": 0,
+    "capacity_samples": []
+  }
+}

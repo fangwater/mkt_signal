@@ -1,0 +1,7 @@
+{
+  "installed_at_utc": "2026-11-03T03:09:39.520689+00:00",
+  "path": "/home/ubuntu/tlen_config_shared/scripts/publish_binance_order_size_thresholds.py",
+  "before_sha256": "4448e28aeba506f4add3f7b4b94fcb60fbb0b64a380b9972943569eec3b09011",
+  "after_sha256": "3c1da6b51b12f0b369eaa3eaa8a0fcb0d193aebbe68270ca1ecdca93ab89544e",
+  "backup": "/home/ubuntu/tlen_config_shared/run/okex_order_size_202610_20261103/native_alignment/publisher_before.py"
+}

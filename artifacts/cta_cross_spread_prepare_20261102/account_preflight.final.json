@@ -1,0 +1,127 @@
+{
+  "checked_at": "2026-11-02T10:28:17.560967+00:00",
+  "observation_only": true,
+  "okx": {
+    "env": "okex_mm_alpha",
+    "source_ip": "172.31.35.229",
+    "positions": [],
+    "open_orders": [],
+    "algo_orders": {
+      "conditional": [],
+      "oco": [],
+      "trigger": [],
+      "move_order_stop": []
+    },
+    "config": [
+      {
+        "acctLv": "3",
+        "posMode": "net_mode",
+        "autoLoan": true,
+        "perm": "read_only,trade"
+      }
+    ],
+    "swap_fees": [
+      {
+        "instType": "SWAP",
+        "makerU": "0.00005",
+        "takerU": "-0.00015",
+        "maker": "",
+        "taker": "",
+        "level": "VIP8"
+      }
+    ],
+    "nonzero_positions": [],
+    "balances": [
+      {
+        "ccy": "USDT",
+        "cashBal": "34871.42976384234",
+        "eq": "34871.42976384234",
+        "liab": "0",
+        "interest": "0",
+        "upl": "0"
+      }
+    ],
+    "complete": true,
+    "flat": true,
+    "orders_clear": true
+  },
+  "binance": {
+    "env": "binance_exec_trade08",
+    "label": "lgq_ltp_81857",
+    "source_ip": "172.31.35.228",
+    "account_mode": "STANDARD",
+    "open_orders": [],
+    "algo_orders": [],
+    "spot_open_orders": [],
+    "nonzero_positions": [
+      {
+        "symbol": "IOTAUSDT",
+        "positionAmt": "-0.1",
+        "positionSide": "BOTH",
+        "entryPrice": "0.0400674192386",
+        "markPrice": "0.03915393",
+        "notional": "-0.00391539",
+        "unRealizedProfit": "0.00009134",
+        "marginType": "cross",
+        "leverage": "5"
+      }
+    ],
+    "futures_account": {
+      "canTrade": null,
+      "multiAssetsMargin": null,
+      "totalWalletBalance": "19690.35715759",
+      "totalMarginBalance": "19690.35724880",
+      "totalPositionInitialMargin": "0.00078212",
+      "totalOpenOrderInitialMargin": "0.00000000",
+      "availableBalance": "19690.35646668"
+    },
+    "spot_balances": [],
+    "iota_rules": [
+      {
+        "symbol": "IOTAUSDT",
+        "status": "TRADING",
+        "filters": [
+          {
+            "maxPrice": "200",
+            "tickSize": "0.000010",
+            "minPrice": "0.000010",
+            "filterType": "PRICE_FILTER"
+          },
+          {
+            "stepSize": "0.1",
+            "filterType": "LOT_SIZE",
+            "minQty": "0.1",
+            "maxQty": "20000000"
+          },
+          {
+            "minQty": "0.1",
+            "maxQty": "3000000",
+            "stepSize": "0.1",
+            "filterType": "MARKET_LOT_SIZE"
+          },
+          {
+            "filterType": "MAX_NUM_ORDERS",
+            "limit": 200
+          },
+          {
+            "notional": "5",
+            "filterType": "MIN_NOTIONAL"
+          },
+          {
+            "multiplierDown": "0.9000",
+            "multiplierUp": "1.1000",
+            "multiplierDecimal": "4",
+            "filterType": "PERCENT_PRICE"
+          },
+          {
+            "positionControlSide": "NONE",
+            "filterType": "POSITION_RISK_CONTROL"
+          }
+        ]
+      }
+    ],
+    "complete": true,
+    "flat": false,
+    "orders_clear": true
+  }
+}

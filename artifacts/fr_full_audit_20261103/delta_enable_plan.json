@@ -1,0 +1,21 @@
+{
+  "authorized": "Enable Delta-neutral mode for audited active FR accounts",
+  "excluded": [
+    "gate_fr_arb04"
+  ],
+  "known_off": [
+    "gate_fr_arb03",
+    "bitget_fr_arb03",
+    "bybit_fr_arb01"
+  ],
+  "query_before_every_change": true,
+  "verify_after_every_change": true,
+  "retries_on_POST": false,
+  "source_binding": "env-local trade_engine.toml local_ips[0]",
+  "allowed_mutations": [
+    "Gate enabled=true",
+    "Bitget mode=advanced deltaSwitch=yes",
+    "Bybit deltaEnable=1",
+    "Binance deltaEnabled=true"
+  ]
+}

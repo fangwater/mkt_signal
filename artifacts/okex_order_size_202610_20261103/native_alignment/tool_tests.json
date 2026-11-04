@@ -1,0 +1,16 @@
+{
+  "fixture": {
+    "source_rows": 432065,
+    "samples": 432030,
+    "python_seconds_including_exact_sort": 2.2740213815122843,
+    "rust_seconds_including_process_hashing_and_outputs": 0.20571457594633102,
+    "python_rust_sketch_and_all_fields_equal": true,
+    "kll_p50": 2861.5,
+    "exact_p50": 2863.5,
+    "kll_p90": 8545.0,
+    "exact_p90": 8536.5
+  },
+  "tests_run": 8,
+  "failures": 0,
+  "errors": 0
+}

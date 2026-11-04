@@ -1,0 +1,27 @@
+{
+  "bindings_shares": 1,
+  "enabled": true,
+  "warming": false,
+  "generation": "f2b1845a-54b6-4b75-9bb3-660176b8dc08",
+  "factors_ready": 50,
+  "factors_total": 50,
+  "spreads_ready": 8,
+  "spread_total": 8,
+  "publications": [
+    {
+      "error": null,
+      "last_success_ts_us": 1793698162230290,
+      "manager_url": "http://127.0.0.1:18201/api",
+      "pending_strategies": []
+    }
+  ],
+  "processes": {
+    "okex_exec_trade01/trade_engine": 3936778,
+    "okex_exec_trade01/exec-pre-trade": 3937073,
+    "okex_exec_trade01/trade_signal": 3937424,
+    "binance_exec_spread01/trade_engine": 3939283,
+    "binance_exec_spread01/exec-pre-trade": 3939493,
+    "binance_exec_spread01/trade_signal": 3939914
+  },
+  "checked_ms": 1793698235759
+}

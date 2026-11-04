@@ -1,0 +1,15 @@
+{
+  "utc": "2026-11-03T02:37:30.032870+00:00",
+  "publisher_sha256": "4448e28aeba506f4add3f7b4b94fcb60fbb0b64a380b9972943569eec3b09011",
+  "other_keys_verified_unchanged": 0,
+  "threshold_fields": 8,
+  "meta": {
+    "medium_quantile": "0.5",
+    "apply_month": "2026-11",
+    "csv_sha256_history": "[\"75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841\"]",
+    "large_quantile": "0.9",
+    "source_month": "2026-10",
+    "csv_sha256": "75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841",
+    "unit": "USDT"
+  }
+}

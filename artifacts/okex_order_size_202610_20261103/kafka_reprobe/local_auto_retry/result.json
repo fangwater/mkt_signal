@@ -1,0 +1,14 @@
+{
+  "observed_at_utc": "2026-11-03T03:31:51.701234+00:00",
+  "library": "kafka-python 3.0.12",
+  "requested_api_version": "auto",
+  "read_only": true,
+  "group_id": null,
+  "enable_auto_commit": false,
+  "rewrites": [],
+  "messages": [],
+  "success": false,
+  "error": "KafkaTimeoutError: KafkaTimeoutError: Unable to bootstrap from ['156.231.137.189:1501']",
+  "traceback": "Traceback (most recent call last):\n  File \"/home/fanghaizhou/mkt_signal/artifacts/okex_order_size_202610_20261103/kafka_reprobe/consumer_probe.py\", line 28, in <module>\n    consumer=KafkaConsumer(bootstrap_servers=['156.231.137.189:1501'],group_id=None,enable_auto_commit=False,allow_auto_create_topics=False,api_version=av,bootstrap_timeout_ms=5000,request_timeout_ms=12000,session_timeout_ms=10000,fetch_max_bytes=10_485_760,max_partition_fetch_bytes=10_485_760,security_protocol='PLAINTEXT',client_id='okex_readonly_probe')\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/consumer/group.py\", line 432, in __init__\n    self._manager.bootstrap(self.config['bootstrap_timeout_ms'])\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/manager.py\", line 181, in bootstrap\n    self._net.run(self.bootstrap_async, timeout_ms, refresh)\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/selector.py\", line 332, in run\n    raise state['exception']  # pylint: disable=E0702\n    ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/selector.py\", line 316, in waiter\n    state['value'] = await self._invoke(coro, *args)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/selector.py\", line 408, in _invoke\n    result = await result\n             ^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/future.py\", line 165, in __await__\n    raise self.exception\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/selector.py\", line 389, in wrapper\n    future.success(await self._invoke(coro, *args))\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/selector.py\", line 402, in _invoke\n    result = await coro(*args)\n             ^^^^^^^^^^^^^^^^^\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/net/manager.py\", line 168, in _do_bootstrap\n    raise Errors.KafkaTimeoutError(\n        'Unable to bootstrap from %s' % (self.cluster.config['bootstrap_servers'],))\nkafka.errors.KafkaTimeoutError: KafkaTimeoutError: Unable to bootstrap from ['156.231.137.189:1501']\n",
+  "elapsed_seconds": 5.011526247486472
+}

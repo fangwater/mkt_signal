@@ -1,0 +1,48 @@
+{
+  "verified_at_utc": "2026-11-03T03:35:23.202309+00:00",
+  "host": "jp-meta-elvpn",
+  "broker": "156.231.137.189:1501",
+  "topic": "okex-swap",
+  "partition": 0,
+  "venue": "okex-futures",
+  "read_only": true,
+  "kafka_python_success": true,
+  "kafka_python_records": 22,
+  "rust_helper_offsets_success": true,
+  "rust_helper_records": 8,
+  "rust_helper_offsets_report": "jp_helper/offsets.stdout",
+  "watermarks": [
+    {
+      "topic": "okex-swap",
+      "partition": 0,
+      "low": 6896321,
+      "high": 6945089
+    }
+  ],
+  "payload": "zlib compressed PeriodMessage protobuf",
+  "symbol_count": 220,
+  "quantity_unit": "native_contracts",
+  "matches": 54,
+  "matched_by_symbol": {
+    "ETCUSDT": 4,
+    "CRVUSDT": 7,
+    "DOGEUSDT": 11,
+    "NEARUSDT": 12,
+    "DOTUSDT": 8,
+    "ATOMUSDT": 4,
+    "ADAUSDT": 5,
+    "TRBUSDT": 3
+  },
+  "all_matched_amounts_equal_official_sz": true,
+  "local_probe_success": false,
+  "local_failure": "Metadata / API negotiation / watermark timeouts on local access path. Same release Rust artifact and config succeeds on JP. Exact network fault not isolated.",
+  "broker_advertised_address": "10.140.140.55:1501",
+  "existing_address_rewrite": "10.140.140.55 -> 156.231.137.189",
+  "comparison_file": "kafka_native_comparison.json",
+  "duplicate_payload_records": 10,
+  "unique_payloads": 12,
+  "excluded_ambiguous_matches": 8,
+  "unmatched_native_trades": 2,
+  "production_services_restarted": false,
+  "configuration_or_thresholds_changed": false
+}

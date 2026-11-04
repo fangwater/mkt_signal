@@ -1,0 +1,14 @@
+{
+  "observed_at_utc": "2026-11-03T03:31:12.609356+00:00",
+  "library": "kafka-python 3.0.12",
+  "requested_api_version": "auto",
+  "read_only": true,
+  "group_id": null,
+  "enable_auto_commit": false,
+  "rewrites": [],
+  "messages": [],
+  "success": false,
+  "error": "KafkaConfigurationError: KafkaConfigurationError: Unrecognized configs: {'api_version_auto_timeout_ms'}",
+  "traceback": "Traceback (most recent call last):\n  File \"/home/fanghaizhou/mkt_signal/artifacts/okex_order_size_202610_20261103/kafka_reprobe/consumer_probe.py\", line 28, in <module>\n    consumer=KafkaConsumer(bootstrap_servers=['156.231.137.189:1501'],group_id=None,enable_auto_commit=False,allow_auto_create_topics=False,api_version=av,api_version_auto_timeout_ms=5000,request_timeout_ms=12000,session_timeout_ms=10000,fetch_max_bytes=10_485_760,max_partition_fetch_bytes=10_485_760,security_protocol='PLAINTEXT',client_id='okex_readonly_probe')\n  File \"/tmp/okex-kafka-reprobe-deps/kafka/consumer/group.py\", line 372, in __init__\n    raise KafkaConfigurationError(\"Unrecognized configs: %s\" % (extra_configs,))\nkafka.errors.KafkaConfigurationError: KafkaConfigurationError: Unrecognized configs: {'api_version_auto_timeout_ms'}\n",
+  "elapsed_seconds": 0.0008570961654186249
+}

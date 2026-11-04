@@ -1,0 +1,19 @@
+{
+  "template": "lgq_grid_spread",
+  "algorithm": "ctaker",
+  "per_market": {
+    "okex_exec_trade01": {
+      "symbol_count": 8,
+      "nonzero_targets": 4,
+      "updated_at_us": 1793701085327799
+    },
+    "binance_exec_spread01": {
+      "symbol_count": 8,
+      "nonzero_targets": 3,
+      "updated_at_us": 1793701085118073
+    }
+  },
+  "binding_shares": 1,
+  "other_parameters_unchanged": true,
+  "verified_at_ms": 1793702200450
+}

@@ -1,0 +1,17 @@
+{
+  "public_accounts": {
+    "okex_exec_trade01": "okex_exec_cross01",
+    "binance_exec_spread01": "binance_exec_cross01"
+  },
+  "old_aggregate_removed": true,
+  "pair_viz": "/manager/exec/?group=cross01",
+  "combined_pnl": 0,
+  "funding": "estimated",
+  "orders": 0,
+  "initial_positions": 0,
+  "protected_processes_unchanged": 87,
+  "execution_configs_unchanged": true,
+  "aliases_unchanged": true,
+  "manager_pid": 3427918,
+  "trading_started": false
+}

@@ -1,0 +1,8 @@
+{
+  "binance_account_monitor": "b91a9739fc6debc7d10ffaa46e18256114e7a7abd32aca049a40e51786a622b2",
+  "pre_trade": "5b9d7e5b31f5c0065ebd57df2ab1bb2059c95a2fbcaabf0795f531deef6fdb3f",
+  "trade_engine": "6f81900b36836b4ac953df126cdab81cf886957d7637b99772f8ef3b011f76f6",
+  "trade_signal": "a2acd8edebaea01217c19bfcf674d7bed62d12955f3411fa522631c32ba33d8a",
+  "viz_server": "3cc6997892434fc3380b5a4197a2f6d3a87507256057d2541316111fbde5d1c6",
+  "persist_manager": "ed731e7e07e9d67c620d8629817f9493b7937c2a25645fd53f926455837b516a"
+}

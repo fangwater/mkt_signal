@@ -1,0 +1,154 @@
+{
+  "utc": "2026-11-03T15:40:39.295001+00:00",
+  "cutoff": "2026-11-03T15:38:39",
+  "processes": [
+    {
+      "pid": 61245,
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 590456,
+      "comm": "python3",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 592648,
+      "comm": "viz_server",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 592997,
+      "comm": "persist_manager",
+      "cpus": "15"
+    },
+    {
+      "pid": 595521,
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 595779,
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 598066,
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95"
+    },
+    {
+      "pid": 600644,
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95"
+    }
+  ],
+  "hashes": {
+    "env.sh": "b9aabdba64ab40370c539e43a7cb77f6703db74aa1bc8c42f28bbeb3337cc727",
+    "trade_engine.toml": "388bb370fe85036d2fbd5c4cc1bdd4583fe3f4fcaa92a09c0bf788bd9202f60b",
+    "config/viz.toml": "fb68784b22a9b3ea3eaf67a63f18d258225b908ea5666c6d4fa841ceac49cef8",
+    "www/index.html": "ba89a982378254747a7c40de7fd8280220b84e00d194ba16088145aecf12b23a",
+    "pre_trade": "83f1268c77907f7df246f98936158885444166124cbcb03260fe186e13d03388",
+    "trade_engine": "32dba4ceb2bd150c27bb7f1b29264e8e618ef70dab918a8bd8bf3512888a2170",
+    "trade_signal": "a2acd8edebaea01217c19bfcf674d7bed62d12955f3411fa522631c32ba33d8a",
+    "account_monitor": "a9b88bd74ea7b83fb7cebb0460b27e692ac021a6842d4741cd611f205604e1d6",
+    "viz_server": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de",
+    "persist_manager": "ed731e7e07e9d67c620d8629817f9493b7937c2a25645fd53f926455837b516a"
+  },
+  "snapshot_age_sec": 0.332974910736084,
+  "risk": {
+    "account_risks": [
+      {
+        "actual_equity_usd": 1136441.76206736,
+        "adj_equity_usd": 318075.75866799,
+        "borrowed_usd": 0.0,
+        "initial_margin_usd": 193679.24437915,
+        "maintenance_margin_usd": 56578.38679507,
+        "margin_ratio": 5.62185981,
+        "notional_usd": 0.0,
+        "state": "free_trade",
+        "ts_ms": 1793720435497
+      }
+    ],
+    "binance_pm_usdt": {
+      "buy_capacity": 0.0,
+      "cash_available": 0.0,
+      "max_borrowable": 0.0,
+      "reserved_usdt": -0.0,
+      "retry_after_ms": 0,
+      "snapshot_ts_ms": 1793720426895,
+      "state": "binance_usdt_buy_capacity_insufficient"
+    },
+    "borrowed_usd": 44203.79858322,
+    "hedge_leg": {
+      "borrowed_usd": 0.0,
+      "interest_usd": 0.0,
+      "leverage": 3.9757398695055137,
+      "spot_equity_usd": 0.0,
+      "total_equity": 237773.67918913,
+      "total_position": 945326.2962712374,
+      "um_unrealized_usd": 237773.67918913,
+      "venue": "binance-futures"
+    },
+    "interest_usd": 39.4564285225,
+    "leverage": 1.6635070495325417,
+    "max_leverage": 1.7,
+    "open_leg": {
+      "borrowed_usd": 44203.79858322,
+      "interest_usd": 39.4564285225,
+      "leverage": 1.0491499619702944,
+      "spot_equity_usd": 900971.428361,
+      "total_equity": 900971.428361,
+      "total_position": 945254.1398012652,
+      "um_unrealized_usd": 0.0,
+      "venue": "binance-margin"
+    },
+    "signal_counts": {
+      "ArbCancel": 473,
+      "ArbClose": 20,
+      "ArbOpen": 120
+    },
+    "spot_equity_usd": 898668.0828782301,
+    "total_equity": 1136441.76206736,
+    "total_exposure": 172.29992319023822,
+    "total_position": 1890478.8825822368,
+    "ts_ms": 1793720438892,
+    "um_unrealized_usd": 237773.67918913,
+    "unimmr_force_close_line": 3.3,
+    "unimmr_force_close_recover_line": 3.4,
+    "unimmr_recover_line": 3.6,
+    "unimmr_trigger_line": 3.5,
+    "usdt_max_available_margin": 125733.21938933
+  },
+  "net_exposure_usdt": 172.29559740005752,
+  "engine": {
+    "lines": 0,
+    "51042": 0,
+    "51014": 0,
+    "panics": 0,
+    "capacity_query_errors": 0,
+    "volatility_suppression": 0,
+    "capacity_samples": []
+  },
+  "pre_trade": {
+    "lines": 21,
+    "51042": 0,
+    "51014": 0,
+    "panics": 0,
+    "capacity_query_errors": 0,
+    "volatility_suppression": 0,
+    "capacity_samples": [
+      "[2026-11-03T15:39:26Z INFO  mkt_signal::pre_trade::binance_pm_buy_capacity] BinancePmBuyCapacity: cash=0.00000000 max_borrowable=0.00000000 reserved=-0.00000000 snapshot_us=1793720366900207",
+      "[2026-11-03T15:40:26Z INFO  mkt_signal::pre_trade::binance_pm_buy_capacity] BinancePmBuyCapacity: cash=0.00000000 max_borrowable=0.00000000 reserved=-0.00000000 snapshot_us=1793720426895300"
+    ]
+  },
+  "signal": {
+    "lines": 222,
+    "51042": 0,
+    "51014": 0,
+    "panics": 0,
+    "capacity_query_errors": 0,
+    "volatility_suppression": 0,
+    "capacity_samples": []
+  }
+}

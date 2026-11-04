@@ -1,0 +1,39 @@
+{
+  "base_commit": "4223c12c8538d05d0b6a1ae772b6e2a3b11f2bb0",
+  "verified_at_utc": "2026-10-30T05:19:48.194980+00:00",
+  "installed_envs": [
+    "bybit_fr_arb01",
+    "binance_fr_arb01",
+    "binance_fr_arb02",
+    "binance_fr_arb03",
+    "binance_fr_arb04",
+    "bitget_fr_arb01",
+    "bitget_fr_arb02",
+    "bitget_fr_arb03",
+    "gate_fr_arb01",
+    "gate_fr_arb02",
+    "gate_fr_arb03",
+    "gate_fr_arb04",
+    "gate_fr_arb05"
+  ],
+  "live_verified_envs": [
+    "bybit_fr_arb01",
+    "binance_fr_arb02",
+    "binance_fr_arb03",
+    "binance_fr_arb04",
+    "bitget_fr_arb01",
+    "bitget_fr_arb02",
+    "bitget_fr_arb03",
+    "gate_fr_arb01",
+    "gate_fr_arb02",
+    "gate_fr_arb03"
+  ],
+  "unchanged_processes": 41,
+  "test_count": 37,
+  "helper_sha256": "87188c7ba694fbd5a627b891e785cbac8f682110ba880b0c669f66d8c733d60f",
+  "unsupported_live_assets": 0,
+  "newly_enabled_bybit": [
+    "GRVT",
+    "SLX"
+  ]
+}

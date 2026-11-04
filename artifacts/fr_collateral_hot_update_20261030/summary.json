@@ -1,0 +1,15 @@
+{
+  "startup_commit": "cb85e71b",
+  "symbol_update_commit": "2a396d90",
+  "branch": "arbmm",
+  "pushed": true,
+  "installed_envs": 13,
+  "live_collateral_checks": 10,
+  "collateral_checks_ok": true,
+  "trading_processes_unchanged": true,
+  "tests_passed": 65,
+  "redis_probes": [
+    "sg",
+    "jp-meta-elvpn"
+  ]
+}

@@ -1,0 +1,1339 @@
+{
+  "plan": {
+    "calculations": {
+      "binance-futures-adausdt-1min-baseline_115": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_115",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ADAUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-adausdt-1min-baseline_164": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_164",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ADAUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-adausdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ADAUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-adausdt-1min-td_mt_019": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_MT_019",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ADAUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-adausdt-1min-td_ti_024": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_TI_024",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ADAUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-atomusdt-1min-baseline_141": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_141",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ATOMUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-atomusdt-1min-baseline_164": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_164",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ATOMUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-atomusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ATOMUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-atomusdt-1min-td_mt_019": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_MT_019",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ATOMUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-crvusdt-1min-baseline_047": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_047",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "CRVUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-crvusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "CRVUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-crvusdt-1min-td_pr_014": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_PR_014",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "CRVUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dogeusdt-1min-baseline_035": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_035",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOGEUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dogeusdt-1min-baseline_164": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_164",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOGEUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dogeusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOGEUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-dogeusdt-1min-td_ti_024": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_TI_024",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOGEUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dotusdt-1min-baseline_035": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_035",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dotusdt-1min-baseline_141": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_141",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dotusdt-1min-baseline_164": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_164",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dotusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-dotusdt-1min-td_mt_019": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_MT_019",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-dotusdt-1min-td_ti_024": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_TI_024",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-etcusdt-1min-factor_170": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "factor_170",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ETCUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-etcusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ETCUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-etcusdt-1min-td_mt_019": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_MT_019",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ETCUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-etcusdt-1min-td_ti_024": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_TI_024",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "ETCUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-nearusdt-1min-baseline_005": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_005",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "NEARUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-nearusdt-1min-baseline_141": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_141",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "NEARUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-nearusdt-1min-baseline_164": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_164",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "NEARUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-nearusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "NEARUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-nearusdt-1min-td_ti_024": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_TI_024",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "NEARUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_005": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_005",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_022": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_022",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_115": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_115",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_126": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_126",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_141": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_141",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_164": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_164",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-baseline_185": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "baseline_185",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-nq": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "nq",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "valid_samples",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 60,
+          "rank_window": 120
+        }
+      },
+      "binance-futures-trbusdt-1min-td_mt_016": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_MT_016",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-td_mt_019": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_MT_019",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "binance-futures-trbusdt-1min-td_ti_024": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "TD_TI_024",
+          "interval": "1min",
+          "market": "binance-futures",
+          "reference_market": null,
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-adausdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "ADAUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-atomusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "ATOMUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-crvusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "CRVUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-dogeusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "DOGEUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-dotusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "DOTUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-etcusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "ETCUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-nearusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "NEARUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      },
+      "okex-futures-binance-futures-trbusdt-1min-spread": {
+        "combinations": [
+          "okex-futures_binance-futures_1min"
+        ],
+        "id": {
+          "factor": "spread",
+          "interval": "1min",
+          "market": "okex-futures",
+          "reference_market": "binance-futures",
+          "symbol": "TRBUSDT"
+        },
+        "parameters": {
+          "clip_zscore": 3.0,
+          "lookback": 120,
+          "missing_policy": "slots",
+          "normalize_min_periods": 1000,
+          "normalize_window": 1440,
+          "rank_min_periods": 1440,
+          "rank_window": 2880
+        }
+      }
+    },
+    "combinations": {
+      "okex-futures_binance-futures_1min": {
+        "factor_rules": [
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_MT_016",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_MT_019",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_TI_024",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_005",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_022",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_115",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_126",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_141",
+            "标的": "TRBUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_164",
+            "标的": "TRBUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_185",
+            "标的": "TRBUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_MT_019",
+            "标的": "DOTUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_TI_024",
+            "标的": "DOTUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_035",
+            "标的": "DOTUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_141",
+            "标的": "DOTUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_164",
+            "标的": "DOTUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_MT_019",
+            "标的": "ADAUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_TI_024",
+            "标的": "ADAUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_115",
+            "标的": "ADAUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_164",
+            "标的": "ADAUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_TI_024",
+            "标的": "NEARUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_005",
+            "标的": "NEARUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_141",
+            "标的": "NEARUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_164",
+            "标的": "NEARUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_MT_019",
+            "标的": "ATOMUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_141",
+            "标的": "ATOMUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_164",
+            "标的": "ATOMUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_TI_024",
+            "标的": "DOGEUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_035",
+            "标的": "DOGEUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_164",
+            "标的": "DOGEUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_MT_019",
+            "标的": "ETCUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_TI_024",
+            "标的": "ETCUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "factor_170",
+            "标的": "ETCUSDT",
+            "符号": -1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "TD_PR_014",
+            "标的": "CRVUSDT",
+            "符号": 1.0
+          },
+          {
+            "nq": "0.50",
+            "venue": "binance-futures",
+            "因子": "baseline_047",
+            "标的": "CRVUSDT",
+            "符号": -1.0
+          }
+        ],
+        "interval": "1min",
+        "name": "okex-futures_binance-futures_1min",
+        "reference_venue": "binance-futures",
+        "signal": {
+          "enabled": false,
+          "entry": {
+            "factor_long_quantile": 0.9,
+            "factor_short_quantile": 0.1,
+            "nq_change_enabled": true,
+            "nq_long_quantile": 0.5,
+            "nq_short_quantile": 0.5
+          },
+          "execution": {
+            "factor_exit_quantile_long": 0.7,
+            "factor_exit_quantile_short": 0.3
+          },
+          "max_pos_u": 200.0,
+          "position_algorithm": "v0",
+          "spread": {
+            "long_quantile": 0.3,
+            "short_quantile": 0.7
+          },
+          "symbol_overrides": {}
+        },
+        "venue": "okex-futures"
+      }
+    }
+  },
+  "position_tables": [
+    {
+      "combination_name": "okex-futures_binance-futures_1min",
+      "enabled": false,
+      "interval": "1min",
+      "max_pos_u": 200.0,
+      "strategy_name": "cta-spread-okx-bn-1min-pos"
+    }
+  ],
+  "topics": [
+    "binance-futures",
+    "okex-swap"
+  ],
+  "worker": "cta-factor-spread"
+}

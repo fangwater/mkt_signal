@@ -1,6 +1,60 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-03 09:40 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 03:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 03:35 UTC，仅重启Manager以发布跨所账户今日盈利汇总修复，账户
+展示名改为 `okex_binace_cross`。交易进程、所有local_ips、ENI/EIP、路由和
+监听保持，未新增环境或IP使用者。CPU/PID及验收见 `docs/core_allocation.md`。
+
+2026-11-03 15:41 UTC，按要求重发 JP `binance_fr_arb03` 的 USDT购买能力/51042退避修复并恢复信号。
+6个二进制由本地同步arbmm工作区构建，上传SHA-256校验后原子安装；前端新增现金/可借
+额度展示，并保留远端已有币名处理。`trade_engine.toml local_ips` 仍为
+`["172.31.35.231", "172.31.35.231"]`；env.sh、交易/Viz配置哈希均保持，
+没有变更ENI/EIP、路由、监听或共享因子进程。CPU/PID与验收见 `core_allocation.md`、
+`../artifacts/binance_fr_arb03_capacity_fix_20261103/README.md`。
+
+2026-11-03 15:18–15:36 UTC，Bitget档位sidecar恢复至独立目录
+`~/bitget_position_tier_sidecar`，仅连接本机Redis和已部署的公共API缓存
+`127.0.0.1:28902`；三个FR原 `local_ips`、交易进程及账户连接未由本次修改。
+15:33另发布并重启Delist当前CTA映射，沿用8787/4191及既有SG loopback隧道，
+监控配置与鉴权哈希保持；无新增公共端点、交易源IP、ENI/EIP、路由或核心分配。
+当前7个CTA组合与真实Manager/Exec绑定只读核对通过；CPU/PID和备份见
+`core_allocation.md`。证据 `../artifacts/bitget_tier_restore_20261103/` 与
+`../artifacts/delist_strategy_alerts_20261103/`。
+
+2026-11-03 15:30 UTC，仅发布Manager的RapidX占用保证金/占比及UniMMR展示。
+复用现有账户监控本地快照，无新增私有REST、IP绑定、路由或监听变化；
+交易及账户监控进程、全部local_ips保持。CPU/PID与验收见 `docs/core_allocation.md`。
+
+2026-11-03 15:01 UTC，Manager当前Funding查询优先及FR主面板更新完成。
+Gate arb04仅展示/授权变化，OKX MM仅停用NAV目录；NAV、SG、交易进程保持。
+公开费率和分钟行情仍使用原出口，全部交易local_ips、网卡、路由及监听不变。
+完整核验及最终Manager CPU/PID见 `docs/core_allocation.md`。
+
+2026-11-03 14:41–14:56 UTC，按要求重发JP `binance_fr_arb03`，本地同步arbmm构建、
+上传SHA-256核验和原子安装后，通过环境本地脚本恢复原运行进程；未执行人工平仓或还款。
+`trade_engine.toml local_ips` 保持 `["172.31.35.231", "172.31.35.231"]`，env.sh及
+交易/Viz配置哈希保持；没有新增IP、改变ENI/EIP、路由或监听端口。14:56另恢复缺失的
+共享Binance Futures trade_flow_feature_pub，仅消费本地行情IPC，沿用原二进制和配置，
+没有新增交易源IP。CPU和PID见 `core_allocation.md`，发布证据在
+`../artifacts/binance_fr_arb03_republish_20261103/README.md`，远端备份为
+`~/binance_fr_arb03/run/republish_20261103T143605Z/`。
+
+2026-11-03 14:35 UTC，发布 Manager Funding 当前区间加载与重试修复；公开费率
+客户端仍用原出口和限流，交易配置全部 local_ips、ENI/EIP、路由及监听不变。
+仅 Manager 重启，交易与账户流保持；CPU及检查记录见 `docs/core_allocation.md`。
+
+2026-11-03 13:52 UTC，仅发布并重启 Manager 的跨所账户实时权益订阅修复。
+OKX/Binance账户流及交易进程继续运行，全部 local_ips、专用行情出口和网络配置保持。
+权益汇总、权限与进程核验见 `docs/core_allocation.md`。
+
+2026-11-03 13:21 UTC，仅发布并重启 Manager 的 OKX 分钟确认处理修复，行情继续
+使用 `172.31.46.93` / `18.181.48.65` 专用出口；交易进程及所有 local_ips 保持。
+净值核验、受保护进程及CPU登记见 `docs/core_allocation.md`。
+
+2026-11-03 10:35 UTC，OKX 合约乘数刷新修复及仓位账本核对完成，两侧 Spread
+pre-trade 已恢复；OKX `.229/.230`、Binance `.228/.228` 保持。详细状态见
+`docs/core_allocation.md`。
 
 2026-11-03 09:38 UTC，启用 `binance_exec_rx01` / `binance_exec_rx03` 的六份Prep
 策略：shares=1、六频段enable=true，交易引擎/pre-trade/信号转发运行在0-5。
@@ -10,6 +64,10 @@ Spread PID3960454全部线程仅18，启动配置持久化。六份目标成功�
 路由或监听；并行Spread操作独立保留。完整配置/进程/成交及CPU核验见
 `artifacts/cta_prep_live_20261103/`，绑核登记见 `docs/core_allocation.md`。
 
+2026-11-03，启动 OKX/Binance CTA Spread 计算及两所执行进程；OKX 继续使用
+`.229/.230`，Binance 继续使用 `.228/.228`。完成回放后仓位推送开启、两侧绑定
+各1份；未更改 local_ips、网卡或路由。具体 CPU 和启动状态见 `docs/core_allocation.md`。
+
 2026-11-03 08:33 UTC，补齐 Binance Futures 51币的2026-11大小单阈值并发布源码
 a0d39e69 的共享阈值读取修复（月份/单位校验、180秒复查、变化后重新回放）。
 仅通过环境脚本重启 `~/cta-prep-binance-futures`，PID3855958 / CPU17；Spread
@@ -17,6 +75,10 @@ a0d39e69 的共享阈值读取修复（月份/单位校验、180秒复查、变�
 下单进程停止，七份推送false、八条绑定shares=0。此次未改 `local_ips`、源IP、
 ENI/EIP、网卡、路由或监听地址。完整阈值/就绪回执及哈希见
 `artifacts/binance_order_size_202610_20261103/`，CPU记录见 `docs/core_allocation.md`。
+
+2026-11-03 08:13 UTC，`gate_fr_arb04` 交易链路已启用，Gate 现货及合约
+trade_engine 均继续使用 `172.31.35.231`；该地址与 Gate FR arb01/03 共用，
+未改变网卡、路由或其他环境的地址。运行状态及启动检查见 `docs/core_allocation.md`。
 
 2026-11-03 07:23 UTC，完成 CTA Kafka / NQ 健康修复及 ICX 下线清理，源码44fe891c。
 Kafka PARTITION_EOF 正常返回空轮询，后续有效记录清理旧Kafka错误；NQ允许从保留的增量
@@ -60,6 +122,14 @@ local_ips、端口和CPU分配均未改动。API/数据库/Redis复核绑定、�
 私有备份 `~/crypto_cta_manager/maintenance-backups/cta_disabled_bindings_20261103T061615Z/`；
 脱敏回执 `artifacts/cta_disabled_bindings_20261103/verified.json`。
 
+2026-11-03 05:50 UTC，cross01执行页直接订阅两所原生数据，合成一个账户汇总及一张执行表，
+移除iframe，公共账户仍为 `okex_binace_cross_1min`。仅切换Manager前端静态文件，
+Manager和87个受保护进程未重启，API/配置、执行参数及快照/绑定均保持。
+OKX `okex_exec_trade01`继续使用`.229/.230`，Binance `binance_exec_spread01`继续使用`.228/.228`；
+未改ENI/EIP、路由、`trade_engine.toml local_ips`、端口或Nginx。两侧风险独立、交易/信号仍关闭。
+两路鉴权WebSocket均101；缺失或过期执行数据不补零。回执 `artifacts/cross01_unified_viz_20261103/`。
+以下05:19的嵌入Viz布局已被本次替换，单账户映射保留。
+
 2026-11-03 05:40 UTC，按用户补充的四列 JSON 规范，更新 Config 产物 `212a531e`：
 因子每行只含 `标的` 字符串、小写 `nq`、`符号`、`因子`，频率统一取页面所选频段。
 仅通过环境脚本重启 Config（PID3578063，loopback19220）；Prep PID3522829
@@ -74,6 +144,14 @@ Prep PID3522829 / CPU17 / start_ticks137144251 保持，81 个受保护进程身
 两套环境全部因子 JSON、主 TOML、env.sh 哈希和配置 revision 均保持，没有修改开关、
 额度、交易绑定或源 IP。七份配置的桌面/手机验证及仅校验不写盘检查通过。
 审计 `artifacts/cta_config_simplify_20261103/`；原配置 URL 保持。
+
+2026-11-03 05:19 UTC，cross01恢复为一个Manager账户，别名 `okex_binace_cross_1min`，
+内部 `okex_exec_trade01`（`.229/.230`）与 `binance_exec_spread01`（`.228/.228`）
+保持两套独立执行。账户内同页拼接Viz，两个Exec别名不再作为独立账户入口。
+仅恢复Manager公共账户映射、更新前端并重启Manager；两源namespace、订单库、风控及
+`trade_engine.toml local_ips`保持，未修改ENI/EIP、路由、监听端口或Nginx。
+87个受保护进程身份与全部执行配置核验一致，交易/信号仍关闭，Funding使用公开预估。
+回执 `artifacts/cross01_single_account_20261103/`。下方旧两账户展示记录仅为历史。
 
 2026-11-03 05:08 UTC，用户确认 Prep02 两条 SOL/DOGE 15min 规则使用
 `TD_MT_040` 后，发布 `arbmm` 的 `fa63d6e4` 多策略组产物。Prep01 / Prep02
@@ -100,6 +178,25 @@ Prep PID3522829 / CPU17 / start_ticks137144251 保持，81 个受保护进程身
 CPU17/18/19/28 当前无 CTA 因子进程；源 IP、ENI/EIP、路由、其他交易进程保持。
 回执：`artifacts/rx01_taker_clear_20261103/`、`artifacts/cta_factor_replace_20261103/user-paused.json`。
 
+2026-11-03 04:18 UTC，cross01只调整Manager账户入口与拼接执行Viz：
+两个普通账户别名 `okex_exec_cross01` / `binance_exec_cross01`，移除旧逻辑聚合入口。
+真实source/namespace/持久化仍为 `okex_exec_trade01`（`.229/.230`）与
+`binance_exec_spread01`（`.228/.228`），风险参数独立。两套原生Viz通过现有4191鉴权
+网关拼接，不改Nginx、监听端口、ENI/EIP、路由或 `trade_engine.toml local_ips`。
+仅重启Manager，87个受保护进程身份和全部执行配置保持，下单链路及信号仍关闭。
+Funding实际采集均关闭，使用公开预估。回执 `artifacts/cross01_exec_viz_20261103/`。
+下方较早的单账户展示描述保留为历史。
+
+2026-11-03 03:42 UTC，Spread只更新预估Funding界面，两源实际采集保持关闭；没有变更任何交易IP、
+ENI/EIP、路由或执行进程。官方OKX公开数据样本校验显式绑定Manager行情出口`.46.93`
+（`172.31.46.93`），不使用凭据或私有API；回执
+`artifacts/cta_spread_data_audit_20261103/official_okx_samples.json`。
+
+2026-11-03 03:10 UTC，Spread仅更新普通账户页前端，OKX/Binance在同一账户内按交易市场选择，
+不再展示双Exec管理卡片；所有源IP、ENI/EIP、路由、namespace和执行风控保持。
+未重启任何进程，也未更改运行配置。前端/浏览器回执见
+`artifacts/cta_spread_alias_20261103/multi-market-browser-verification.json`。
+
 2026-11-03 02:45 UTC，移除旧 `lgq_ltp_81857` / `binance_exec_trade08` 的Manager入口。
 仅从Manager配置移除旧source及对应source_viewers，并重启Manager；旧环境继续停止，
 历史source记录、symbol索引、仓位快照和日净值指纹保持。新跨所组合
@@ -108,6 +205,14 @@ CPU17/18/19/28 当前无 CTA 因子进程；源 IP、ENI/EIP、路由、其他�
 旧Exec08的 `.228/.228` 配置、共享IP、ENI/EIP和路由保留；交易所下单/撤单/清仓调用数0。
 证据 `artifacts/ltp_81857_manager_remove_20261103/verified.json`；私有备份
 `~/crypto_cta_manager/maintenance-backups/ltp_81857_manager_remove_20261103T024033Z/`。
+
+2026-11-03 02:41 UTC，Spread账户的展示别名改为 `okex_binace_cross_1min`，内部仍为
+`okex_exec_trade01`（`.229/.230`）和 `binance_exec_spread01`（`.228/.228`）两套Exec。
+两腿显示名为 `okex_exec_cross01` / `binance_exec_cross01`，真实目录和source ID不变。
+Manager账户ID、两套namespace/风控/持久化及所有交易配置保持；本次只更新Manager别名元数据、
+API和前端。没有变更ENI/EIP、源IP或路由，没有启动交易；89个受保护进程PID及启动时间不变。
+账户及策略启用入口只显示一个账户，内部切换两腿配置，桌面/手机检查通过。
+证据 `artifacts/cta_spread_alias_20261103/verification.json`。
 
 2026-11-03 02:28 UTC，补齐 RX03 / RX04 的Manager入口移除：从运行配置移除
 `binance_exec_trade07` / `binance_exec_rx04_5m05` 及其source_viewers、RX03 funding出口例外，
@@ -127,6 +232,62 @@ virtual04/virtual05跟随及全部活跃Exec策略索引已移除；签名复核
 CPU19/28的因子publisher、账户监控及历史持久化保留；两套Exec各保留监控/persist/Viz/Config。
 完整私有审计 `~/crypto_cta_manager/maintenance-backups/rx03_rx04_taker_clear_20261102T144523Z/`；
 脱敏回执 `artifacts/rx03_rx04_taker_clear_20261102/final_verification.json`。
+
+2026-11-02 14:59 UTC，JP `cta_cross_spread_rx01` 已作为单一Manager账户关联两条执行源，
+替换此前两个普通账户加独立组合页的展示。`okex_exec_trade01` 仍使用 `.229/.230`，
+`binance_exec_spread01` 仍使用 `.228/.228`；namespace、持久化库及风控保持独立。
+本次仅更新Manager/API/前端，未改动ENI/EIP、路由、任何交易配置或账户监控进程；
+93个受保护进程及源配置校验一致，下单和信号仍关闭。净值0，未导入历史或创建初始仓位。
+81857此前观察到的IOTAUSDT -0.1尾仓未交易、未种入新账本。
+证据 `artifacts/cta_cross_spread_deploy_20261102/managed-account-verification.json`。
+
+2026-11-02 14:07 UTC，只读复核 `gate_fr_arb04` / `gate_fr_arb05`：当前分别
+绑定 `GateAM36_LTP` / `GateAM40_LTP`，两环境的 `trade_engine.toml` 均仍为
+`local_ips=["172.31.35.231","172.31.35.231"]`。13:47 UTC 从 `.231` 发起
+Gate 签名 GET，两者均为 `multi_currency`，且 `usdt_futures=true`；arb04
+可用 USDT 约 1,000,000，arb05 为 0。arb04 仅运行账户监控（PID4175337），
+arb05 全部停止。
+
+2026-11-02 13:57 UTC，新组合账户只读部署完成：`okex_exec_trade01` 使用
+`local_ips=["172.31.35.229","172.31.35.230"]`，`binance_exec_spread01` 使用
+`local_ips=["172.31.35.228","172.31.35.228"]`。两环境独立namespace/订单库/风控，
+仅启动账户监控、persist、Viz及Config；下单链路和信号发布关闭。
+OKX监控私有REST已复用显式绑定client；实机socket检查仅使用 `.229/.230`，
+Binance仅使用 `.228`。无ENI/EIP/路由变更，旧MM与trade08配置校验未变且继续停止。
+新Binance环境仅复用81857凭据，不加载trade08历史订单或初始快照；新组合NAV实测0。
+13:05交易所查询仍有原IOTAUSDT -0.1尾仓，未下单、未将尾仓记入新策略初始持仓。
+新监听均为loopback：OKX10049/18169，Binance10050/18170，CTA配置19184；
+通过原4191网关鉴权访问。仅lgq可见两账户与组合，prc网关请求已验证403。
+证据：`artifacts/cta_cross_spread_deploy_20261102/`；维护备份在
+`~/crypto_cta_manager/maintenance-backups/cta_cross_spread_20261102T131916Z/`。
+
+2026-11-02 10:26 UTC，配置新原生OKX `okex_exec_trade01` 作为
+`okex-binance-cta-spread-rx01` 的开仓腿，`local_ips=["172.31.35.229","172.31.35.230"]`。
+凭据来自已停机 `okex_mm_alpha`，旧MM env及配置保持；新Exec独立namespace/订单库，
+仅准备配置脚本，未安装二进制或启动进程。Binance平仓腿复用停止中的
+`binance_exec_trade08` / 81857，继续使用 `172.31.35.228`，原配置未改。
+10:23 UTC私有GET分别显式绑定各账户原交易IP：OKX持仓/挂单/借款0，仅USDT；
+Binance仍有IOTAUSDT -0.1（约0.004 USDT），各类已查挂单0，未提交平仓单。
+未分配或释放ENI/EIP，未修改路由；10049/18169/19184均无监听。
+Manager仅在维护目录保存双source禁用候选配置，未改线上配置或重启Manager。
+证据：`artifacts/cta_cross_spread_prepare_20261102/`。
+
+2026-11-02 按操作员要求下线 RX02 与 `binance_exec_trade08`。Exec08 原有
+`local_ips` 均为共享地址 `172.31.35.228`；该地址、ENI、EIP及路由保留供其他
+环境使用。未提交平仓或资金划转；停机前 Exec08 有 IOTAUSDT -0.1 的微小尾仓。
+Manager 禁用 Exec08 并移除其跟随和执行绑定，RX02 运行目录归档至
+`~/retired_data/rx02_retired_20261102/`，Delist 不再发现 RX02。
+
+2026-10-30 10:59–11:03 UTC，RX01发布器更新为`ec539eb9`本地release，
+SHA-256核验后原子安装；CPU17 PID3716037。38币各672根闭合15min baseline由
+2026-10-22至28连续Tardis原始成交/L2复用线上聚合生成，真实月度分类阈值保持；
+历史长窗口原始公式不变，缓存随实盘闭合bar持续保存，重启不再只依赖Kafka留存。
+当前正在追平Kafka，`enabled=false`，15min signal停止，尚无Manager绑定；
+旧的部分预热观察仓位和历史已归档，不作为新目标恢复。
+Dashboard PID3648167（10195），Config PID3716937迁至空闲19195，避免旧RX03入口串用。
+Exec06仍停止；11:00前只读核验永续、普通/算法订单、全部资产债务（含USDT）及显式贷款为0，
+55笔现货尾差约3.61 USDT且数量均低于lot step。1407项Rust库测试及转换测试通过。
+本次未改动交易source IP、ENI/EIP或路由。
 
 2026-10-30 10:24 UTC，新RX01 Perp 15min按操作员清单进入观察预热：38币、89因子、
 145个计算组合、146条独立仓位规则，SKL/factor_170的NQ关闭和0.50分别维护。
@@ -252,21 +413,6 @@ signal和pre-trade停止、发布关闭，使用原交易IP `172.31.35.228` 显�
 signal 已停止并关闭发布；账户已市价清仓，订单归档并移出原数据目录。
 `local_ips` 和网络配置未改，清仓与账户只读核查均绑定原地址 `172.31.35.228`；
 该地址仍由其他运行中的环境共享。
-
-2026-10-27，部署 `gate_fr_arb04`（`GateAM36_LTP`）和
-`gate_fr_arb05`（`GateAM05_LTP`），两环境的 `trade_engine.toml` 均预配置
-`local_ips=["172.31.35.231","172.31.35.231"]`，沿用 ens41 / table100 / EIP
-`52.69.78.134`。未分配新 ENI/EIP，未修改路由。arb04 只读账户监控已启动，
-实测 WS 连接源地址为 `.231`，REST 轮询另有既有默认出口 `.228`；交易进程均停止。
-arb05 全部程序停止。两账户在 `.231` 及 NAV 现有 Gate REST 池
-`.229` / `.230` / `.234` 上的只读鉴权均通过。
-arb04 已是 multi_currency；arb05 尝试通过 API 切换同一模式并启用 USDT futures，
-Gate 返回 `INVALID_PARAM_VALUE: account balance must greater than 500 USDT`，
-实际仍为 classic，未调拨资金。NAV 两项按 SubAccount ID 启用登记，
-共用 `st_ms=1793091610625`；arb04 为 live，arb05 为 unavailable。
-预留 Viz/Config/dashboard 端口分别为 20124/20024/20174 和 20125/20025/20175，
-均未启动，网关路由未安装；本次仅部署、账户连通性核验和 NAV 登记/只读采集。
-证据：`artifacts/gate_fr_arb04_05_deploy_20261027/`。
 
 2026-10-23，新增RX04 5min的独立账户环境 `binance_exec_rx04_5m05`，
 复用原RX02的 `/exec_trade05/` 入口及保留端口10045/18165，别名 `RX04 5min`。
@@ -595,7 +741,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 `ens41`（主网卡，metric 100）上的 `172.31.35.228/20`–`.234/20` 对应 7 个公网 IPv4：
 
 - `.228` / `13.115.227.29`：主 IP、默认出口、SSH/管理入口；**套利**固定 IP。
-- `.229` / `52.193.90.33` 与 `.230` / `54.238.72.43`：保留给已停机的 `okex_mm_alpha`，原 `local_ips` 配置保留；原共用的 `binance_mm_alpha` 已下线退役。
+- `.229` / `52.193.90.33` 与 `.230` / `54.238.72.43`：已停机 `okex_mm_alpha` 原配置保留；同账户新 `okex_exec_trade01` 沿用两地址，账户监控运行，下单链路关闭。原共用的 `binance_mm_alpha` 已退役。
 - `.231` / `52.69.78.134`：资金费率固定 IP。
 - `.232` / `54.238.97.67` 与 `.233` / `54.64.165.84`：`gate_fr_arb02`。
 - `.234` / `54.64.228.233`：Exec `trade02`、`trade03`、`trade04` 的第二个 source IP 配置。
@@ -613,9 +759,9 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01 Spread 接 Exec `trade06`，RX03 Perp 接 Exec `trade07`；Exec `trade02`–`trade04` `local_ips[0]`；新 `trade08` 原生STANDARD USD-M Grid执行RX02。RX02新版双Manager推送；`trade05` 已停机归档 |
-| `172.31.35.229` | `52.193.90.33` | 已预留 / 停机 | `okex_mm_alpha` `local_ips[0]` 配置保留，2026-10-29全栈停止（原 `binance_mm_alpha` 已退役） |
-| `172.31.35.230` | `54.238.72.43` | 已预留 / 停机 | `okex_mm_alpha` `local_ips[1]` 配置保留，2026-10-29全栈停止（原 `binance_mm_alpha` 已退役） |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
+| `172.31.35.229` | `52.193.90.33` | 已使用 / 只读 | `okex_exec_trade01 local_ips[0]`，新CTA账户监控及私有REST；下单关闭、旧MM停止 |
+| `172.31.35.230` | `54.238.72.43` | 已使用 / 只读 | `okex_exec_trade01 local_ips[1]`，新CTA备用WS；下单关闭、旧MM停止 |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 仅只读监控，05 停止）、`bitget_fr_arb01`/`02`/`03` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
@@ -679,24 +825,27 @@ RocksDB 归档并逐文件校验后删除部署目录及 `local_ips` 配置；�
 binance-cta-rx01             172.31.35.228                  RapidX/LTP（仅账户监控与持久化保留）
 binance-cta-spread-rx01      已退役                         全环境归档；旧10186/19174监听及网页入口移除
 binance-cta-special-rx02     172.31.35.228                  已停止并归档，原配置保留
-binance-cta-perp-rx02        默认出口 / 172.31.35.228       新版23币/69组合向JP、SG推送，RLC继续预热；旧状态归档
+binance-cta-perp-rx02        默认出口 / 172.31.35.228       已下线，运行目录归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；Exec07已清仓解绑，旧配置410
 binance-cta-perp-rx01        默认出口 / 172.31.35.228       全部旧进程停止；Exec06永续仓位/挂单0，91旧绑定及virtual06跟随移除，旧配置410
 cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17 计算运行，Prep01/02 六张表预热；Config loopback19220，发布/绑定均关闭
-cta-factor-spread           默认出口 / 172.31.35.228       多组产物和 Spread01 配置已安装；计算停止、发布关闭，无私有交易请求
+cta-factor-spread           默认出口 / 172.31.35.228       CPU18计算及Spread01发布开启，无私有交易请求
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；5min已清仓解绑，旧配置410
 binance-cta-special-rx03     172.31.35.228                  RapidX/LTP（停盘，无运行进程）
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 okex_mm_alpha                172.31.35.229, 172.31.35.230   全部停止；全部持仓/挂单/借款0，仅USDT；原配置及IP预留保留
+okex_exec_trade01            172.31.35.229, 172.31.35.230   复用MM凭据；监控及Exec运行，Spread绑定1份
+binance_exec_spread01        172.31.35.228, 172.31.35.228   81857独立source；监控及Exec运行，Spread绑定1份；保留IOTA微小尾仓
+okex-binance-cta-spread-rx01  两腿由独立Exec交易             旧signal/publisher/config停止，旧配置410；新Spread计算及发布开启
 binance_fr_arb01             172.31.35.231, 172.31.35.231
 binance_fr_arb02             172.31.35.231, 172.31.35.231
 binance_fr_arb03             172.31.35.231, 172.31.35.231
 binance_fr_arb04             172.31.35.231, 172.31.35.231
 gate_fr_arb01                172.31.35.231, 172.31.35.231
 gate_fr_arb03                172.31.35.231, 172.31.35.231
-gate_fr_arb04                172.31.35.231, 172.31.35.231   仅只读账户监控，REST 轮询另走默认 .228；交易停止
-gate_fr_arb05                172.31.35.231, 172.31.35.231   仅部署、全部停止；classic，待余额大于500 USDT后切换统一账户
+gate_fr_arb04                172.31.35.231, 172.31.35.231   GateAM36_LTP；multi_currency，11-03交易运行，启动时可用约100万USDT
+gate_fr_arb05                172.31.35.231, 172.31.35.231   GateAM40_LTP；multi_currency，11-02余额0；全部停止
 bitget_fr_arb01              172.31.35.231, 172.31.35.231
 bitget_fr_arb02              172.31.35.231, 172.31.35.231
 bitget_fr_arb03              172.31.35.231, 172.31.35.231
@@ -745,7 +894,7 @@ binance_exec_trade08         172.31.35.228, 172.31.35.228   旧环境继续停�
 1. 改 `local_ips`、给环境分配新 EIP、或下线占用 IP 的环境后，立刻改本文件的日期、表格和引用列表。
 2. `.228` 不要改作他用。
 3. `ens42` 的四个地址在写入任何 `trade_engine.toml` 之前先占表；`.234` 已由 Exec 环境共用配置。
-4. `.229/.230` 继续预留给已停机的 `okex_mm_alpha`，未释放或改作他用（原共用的 `binance_mm_alpha` 已下线退役）。
+4. `.229/.230` 继续服务同一OKX账户：旧 `okex_mm_alpha` 停机，新 `okex_exec_trade01` 只读监控运行、交易关闭。不得同时启动两套策略管理该账户库存（原共用的 `binance_mm_alpha` 已下线退役）。
 
 2026-10-10 06:42 UTC 有符号权重与 rx02 Kafka 仓位回放发布沿用现有本机服务和 Nginx
 4191 网关，未更改 source IP、ENI、local_ips 或路由。rx02/rx03 均继续关闭真实交易。
@@ -828,3 +977,7 @@ trade_signal 保持停止，旧 Bybit intra01/02 也保持停止。Manager 公�
 行情 ENI，独立 namespace / Redis 前缀 / RocksDB，未搬迁旧 intra 持仓与历史。
 服务与 CPU 清单见 `core_allocation.md`；证据见
 `artifacts/sg_bybit02_exec_deploy/20261016T100107Z/validation.json`。
+
+新 `cta-prep-binance-futures` / `cta-factor-spread` 无私有交易 API 或独立交易源 IP；
+Prep 计算进程已启动预热，Spread 计算保持停止。统一配置服务在 Prep 目录监听 `127.0.0.1:19220`，Manager 发布目标为
+`http://127.0.0.1:18201/api`；不更改 Exec 的现有 `local_ips`。

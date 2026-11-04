@@ -1,0 +1,12 @@
+{
+  "execute": true,
+  "installed_at": "2026-10-30T11:01:56.825469+00:00",
+  "source_commit": "ec539eb9026ad77977a65746126a6845d47c51f7",
+  "symbols": 38,
+  "seed_bars_per_symbol": 672,
+  "seed_end": "2026-10-28",
+  "config_port": 19195,
+  "enabled": false,
+  "signal_started": false,
+  "publisher_sha256": "ca27d6c345b3465e8433418faacca6066d3fce3e940a7343b015e72ecc6d97f6"
+}

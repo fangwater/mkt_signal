@@ -1,0 +1,132 @@
+{
+  "portfolio": {
+    "id": "cta_cross_spread_rx01",
+    "name": "CTA Spread \u00b7 OKX / Binance",
+    "source_ids": [
+      "okex_exec_trade01",
+      "binance_exec_spread01"
+    ]
+  },
+  "net_value_sum": 0,
+  "history_orders": 0,
+  "initial_positions": 0,
+  "database_initialization": {
+    "account_snapshots": 0,
+    "strategy_snapshots": 0,
+    "bindings": 0
+  },
+  "trading_enabled": false,
+  "lgq_access": true,
+  "prc_denied": true,
+  "original_env_files_unchanged": true,
+  "existing_trading_processes_unchanged": 87,
+  "services": {
+    "okex_exec_trade01": [
+      {
+        "pid": 1358514,
+        "comm": "persist_manager",
+        "cpus": [
+          15
+        ]
+      },
+      {
+        "pid": 1358662,
+        "comm": "python3",
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      {
+        "pid": 1358723,
+        "comm": "viz_server",
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      {
+        "pid": 1397233,
+        "comm": "account_monitor",
+        "cpus": [
+          21
+        ]
+      }
+    ],
+    "binance_exec_spread01": [
+      {
+        "pid": 1361017,
+        "comm": "persist_manager",
+        "cpus": [
+          15
+        ]
+      },
+      {
+        "pid": 1361135,
+        "comm": "python3",
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      {
+        "pid": 1361217,
+        "comm": "viz_server",
+        "cpus": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      {
+        "pid": 1361356,
+        "comm": "account_monitor",
+        "cpus": [
+          25
+        ]
+      }
+    ]
+  },
+  "risk_namespaces": {
+    "okex_exec_trade01:okex-futures:pre_trade_risk_params": {
+      "max_pending_limit_orders": "10",
+      "exec_max_pending_limit_buy_orders": "10",
+      "exec_max_pending_limit_sell_orders": "10",
+      "exec_order_rate_limit_per_min": "400",
+      "exec_order_rate_limit_10s": "200"
+    },
+    "binance_exec_spread01:binance-futures:pre_trade_risk_params": {
+      "max_pending_limit_orders": "10",
+      "exec_max_pending_limit_buy_orders": "10",
+      "exec_max_pending_limit_sell_orders": "10",
+      "exec_order_rate_limit_per_min": "400",
+      "exec_order_rate_limit_10s": "200"
+    }
+  },
+  "manager_health": "ok",
+  "browser_verification": {
+    "desktop": "passed",
+    "mobile_width": "passed",
+    "named_portfolio_card": "0.00",
+    "combined_nav": 0,
+    "fills": 0,
+    "initial_snapshots_created": false,
+    "page_errors": []
+  },
+  "legacy_signal_processes_started": false
+}

@@ -1,0 +1,106 @@
+{
+  "created_at": "2026-11-03T03:09:39.740176+00:00",
+  "report": {
+    "execute": true,
+    "mode": "correct",
+    "source_month": "2026-10",
+    "apply_month": "2026-11",
+    "csv_sha256": "e81dfd6e934d5e8a21d01b214a394a0fafdf061b4cfb9fa29430544ab91a3832",
+    "units": {
+      "okex-futures": "price_x_contracts"
+    },
+    "changes": {
+      "okex-futures:amount-thresholds": {
+        "before": 8,
+        "after": 8,
+        "added": [],
+        "removed": [],
+        "updated": [
+          "ADA-USDT-SWAP",
+          "DOGE-USDT-SWAP",
+          "ETC-USDT-SWAP",
+          "NEAR-USDT-SWAP",
+          "TRB-USDT-SWAP"
+        ]
+      },
+      "okex-futures:factor-plan": {
+        "before": 0,
+        "after": 0,
+        "added": [],
+        "removed": [],
+        "updated": []
+      },
+      "okex-futures:factor-plan-1m": {
+        "before": 0,
+        "after": 0,
+        "added": [],
+        "removed": [],
+        "updated": []
+      }
+    },
+    "correction_from": "/home/ubuntu/tlen_config_shared/run/okex_order_size_202610_20261103/redis_before.json"
+  },
+  "before": {
+    "okex-futures:amount-thresholds": {
+      "type": "hash",
+      "values": {
+        "CRV-USDT-SWAP": "{\"large_notional_threshold\":200.3904,\"medium_notional_threshold\":2.3954}",
+        "ADA-USDT-SWAP": "{\"large_notional_threshold\":753.786,\"medium_notional_threshold\":14.621999999999998}",
+        "ATOM-USDT-SWAP": "{\"large_notional_threshold\":262.78599999999994,\"medium_notional_threshold\":11.544}",
+        "ETC-USDT-SWAP": "{\"large_notional_threshold\":145.86299999999997,\"medium_notional_threshold\":5.297999999999999}",
+        "TRB-USDT-SWAP": "{\"large_notional_threshold\":213.8,\"medium_notional_threshold\":16.688}",
+        "NEAR-USDT-SWAP": "{\"large_notional_threshold\":916.0900000000001,\"medium_notional_threshold\":10.232}",
+        "DOT-USDT-SWAP": "{\"large_notional_threshold\":170.952,\"medium_notional_threshold\":4.6668}",
+        "DOGE-USDT-SWAP": "{\"large_notional_threshold\":859.0416,\"medium_notional_threshold\":5.2578}"
+      },
+      "pttl": -1
+    },
+    "okex-futures:amount-thresholds:meta": {
+      "type": "hash",
+      "values": {
+        "medium_quantile": "0.5",
+        "apply_month": "2026-11",
+        "csv_sha256_history": "[\"75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841\"]",
+        "large_quantile": "0.9",
+        "source_month": "2026-10",
+        "csv_sha256": "75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841",
+        "unit": "USDT"
+      },
+      "pttl": -1
+    },
+    "okex-futures:factor-plan": {
+      "type": "none",
+      "values": {},
+      "pttl": -2
+    },
+    "okex-futures:factor-plan-1m": {
+      "type": "none",
+      "values": {},
+      "pttl": -2
+    }
+  },
+  "after": {
+    "okex-futures:amount-thresholds": {
+      "CRV-USDT-SWAP": "{\"large_notional_threshold\":200.3904,\"medium_notional_threshold\":2.3954}",
+      "ADA-USDT-SWAP": "{\"large_notional_threshold\":7.537859999999999,\"medium_notional_threshold\":0.14622}",
+      "ATOM-USDT-SWAP": "{\"large_notional_threshold\":262.78599999999994,\"medium_notional_threshold\":11.544}",
+      "ETC-USDT-SWAP": "{\"large_notional_threshold\":14.586299999999998,\"medium_notional_threshold\":0.5297999999999999}",
+      "TRB-USDT-SWAP": "{\"large_notional_threshold\":2138.0,\"medium_notional_threshold\":166.88}",
+      "NEAR-USDT-SWAP": "{\"large_notional_threshold\":91.60900000000001,\"medium_notional_threshold\":1.0231999999999999}",
+      "DOT-USDT-SWAP": "{\"large_notional_threshold\":170.952,\"medium_notional_threshold\":4.6668}",
+      "DOGE-USDT-SWAP": "{\"large_notional_threshold\":0.8590416000000001,\"medium_notional_threshold\":0.0052578}"
+    },
+    "okex-futures:amount-thresholds:meta": {
+      "source_month": "2026-10",
+      "apply_month": "2026-11",
+      "csv_sha256": "e81dfd6e934d5e8a21d01b214a394a0fafdf061b4cfb9fa29430544ab91a3832",
+      "csv_sha256_history": "[\"75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841\",\"e81dfd6e934d5e8a21d01b214a394a0fafdf061b4cfb9fa29430544ab91a3832\"]",
+      "medium_quantile": "0.5",
+      "large_quantile": "0.9",
+      "unit": "price_x_contracts",
+      "corrected_from_csv_sha256": "75368ac8ff7a8944aa7bd6d96c957f4e6dabb693accb57be87d0321490064841"
+    },
+    "okex-futures:factor-plan": {},
+    "okex-futures:factor-plan-1m": {}
+  }
+}

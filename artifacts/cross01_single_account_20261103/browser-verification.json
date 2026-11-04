@@ -1,0 +1,83 @@
+{
+  "public_account_id": "cta_cross_spread_rx01",
+  "display_alias": "okex_binace_cross_1min",
+  "public_account_entries": 1,
+  "execution_sources_hidden_from_account_lists": true,
+  "one_account_in_strategy_and_nav_selectors": true,
+  "market_fees_independent": true,
+  "account_links_keep_public_scope": true,
+  "native_frames": [
+    {
+      "title": "okex_exec_cross01 执行 Viz",
+      "src": "/exec_okex01/",
+      "connection": "实时",
+      "rect": {
+        "x": 33,
+        "y": 320.25,
+        "width": 1839
+      }
+    },
+    {
+      "title": "binance_exec_cross01 执行 Viz",
+      "src": "/exec_binance_spread01/",
+      "connection": "实时",
+      "rect": {
+        "x": 33,
+        "y": 1315.25,
+        "width": 1839
+      }
+    }
+  ],
+  "websocket_upgrades": [
+    {
+      "url": "ws://127.0.0.1:27649/exec_okex01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:27649/exec_binance_spread01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:27649/exec_okex01/ws",
+      "status": 101
+    },
+    {
+      "url": "ws://127.0.0.1:27649/exec_binance_spread01/ws",
+      "status": 101
+    }
+  ],
+  "frames_stable_on_refresh": true,
+  "desktop_columns": [
+    {
+      "x": 33,
+      "y": 320.25,
+      "width": 908.5
+    },
+    {
+      "x": 963.5,
+      "y": 320.25,
+      "width": 908.5
+    }
+  ],
+  "mobile": {
+    "width": 390,
+    "scroll": 390,
+    "frames": [
+      {
+        "x": 17,
+        "y": 430,
+        "width": 356
+      },
+      {
+        "x": 17,
+        "y": 1425,
+        "width": 356
+      }
+    ]
+  },
+  "combined_pnl": 0,
+  "estimated_funding": 0,
+  "pnl_query_uses_public_account": true,
+  "hidden_user_denied": true,
+  "page_errors": []
+}

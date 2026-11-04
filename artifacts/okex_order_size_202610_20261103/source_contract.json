@@ -1,0 +1,6 @@
+{
+  "mapper_url": "https://raw.githubusercontent.com/tardis-dev/tardis-node/master/src/mappers/okex.ts",
+  "mapper_sha256": "3f4ab162caf7bc3bcdde87663c038a77e8c841e2275145bb0b19fbe0e2ca4fd6",
+  "amount_mapping": "amount: Number(okexTrade.sz)",
+  "notional": "price * amount_in_contracts * ctVal; USDT-settled linear swaps with ctValCcy equal to base asset only"
+}

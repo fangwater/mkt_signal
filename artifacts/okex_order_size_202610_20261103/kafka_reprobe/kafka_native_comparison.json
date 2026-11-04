@@ -1,0 +1,1268 @@
+{
+  "verified_at_utc": "2026-11-03T03:34:28.163017+00:00",
+  "source": "Kafka topic okex-swap, partition 0 (not IPC)",
+  "match_method": "symbol and side equal; price equal within floating tolerance; timestamps within 2 ms; ambiguous candidates excluded",
+  "quantity_unit": "native_contracts",
+  "native_trades": 64,
+  "matched_unique_trades": 54,
+  "matched_by_symbol": {
+    "ETCUSDT": 4,
+    "CRVUSDT": 7,
+    "DOGEUSDT": 11,
+    "NEARUSDT": 12,
+    "DOTUSDT": 8,
+    "ATOMUSDT": 4,
+    "ADAUSDT": 5,
+    "TRBUSDT": 3
+  },
+  "ambiguous": 8,
+  "unmatched": 2,
+  "kafka_records": 22,
+  "unique_payloads": 12,
+  "duplicate_payload_records": 10,
+  "all_matched_amounts_equal_official_sz": true,
+  "matches": [
+    {
+      "native": {
+        "instId": "ETC-USDT-SWAP",
+        "tradeId": "234170996",
+        "px": "6.906",
+        "sz": "0.2",
+        "side": "sell",
+        "ts": "1793676776041",
+        "count": "6",
+        "source": "0",
+        "seqId": 15242814084
+      },
+      "kafka": {
+        "symbol": "ETCUSDT",
+        "timestamp_ms": 1793676776041,
+        "side": "S",
+        "price": 6.906,
+        "amount": 0.2,
+        "offset": 6945089
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294221",
+        "px": "0.262",
+        "sz": "1",
+        "side": "sell",
+        "ts": "1793676776502",
+        "count": "1",
+        "source": "0",
+        "seqId": 18494089267
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676776502,
+        "side": "S",
+        "price": 0.262,
+        "amount": 1.0,
+        "offset": 6945089
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543967",
+        "px": "0.07393",
+        "sz": "0.13",
+        "side": "buy",
+        "ts": "1793676776690",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690768703
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676776690,
+        "side": "B",
+        "price": 0.07393,
+        "amount": 0.13,
+        "offset": 6945089
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294224",
+        "px": "0.262",
+        "sz": "5",
+        "side": "sell",
+        "ts": "1793676777480",
+        "count": "3",
+        "source": "0",
+        "seqId": 18494089332
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676777480,
+        "side": "S",
+        "price": 0.262,
+        "amount": 5.0,
+        "offset": 6945091
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310145986",
+        "px": "3.807",
+        "sz": "56.4",
+        "side": "buy",
+        "ts": "1793676779009",
+        "count": "7",
+        "source": "0",
+        "seqId": 20478343991
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676779009,
+        "side": "B",
+        "price": 3.807,
+        "amount": 56.4,
+        "offset": 6945091
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765554",
+        "px": "0.9334",
+        "sz": "2",
+        "side": "buy",
+        "ts": "1793676779052",
+        "count": "1",
+        "source": "0",
+        "seqId": 19074928452
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676779052,
+        "side": "B",
+        "price": 0.9334,
+        "amount": 2.0,
+        "offset": 6945091
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765556",
+        "px": "0.9335",
+        "sz": "3",
+        "side": "buy",
+        "ts": "1793676779089",
+        "count": "2",
+        "source": "0",
+        "seqId": 19074928557
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676779089,
+        "side": "B",
+        "price": 0.9335,
+        "amount": 3.0,
+        "offset": 6945091
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765558",
+        "px": "0.9335",
+        "sz": "7",
+        "side": "sell",
+        "ts": "1793676780776",
+        "count": "2",
+        "source": "0",
+        "seqId": 19074928834
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676780776,
+        "side": "S",
+        "price": 0.9335,
+        "amount": 7.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765561",
+        "px": "0.9334",
+        "sz": "268",
+        "side": "sell",
+        "ts": "1793676781212",
+        "count": "3",
+        "source": "0",
+        "seqId": 19074928932
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676781212,
+        "side": "S",
+        "price": 0.9334,
+        "amount": 268.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765565",
+        "px": "0.9333",
+        "sz": "647",
+        "side": "sell",
+        "ts": "1793676781212",
+        "count": "4",
+        "source": "0",
+        "seqId": 19074928932
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676781212,
+        "side": "S",
+        "price": 0.9333,
+        "amount": 647.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765572",
+        "px": "0.9332",
+        "sz": "433",
+        "side": "sell",
+        "ts": "1793676781214",
+        "count": "7",
+        "source": "0",
+        "seqId": 19074928997
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676781214,
+        "side": "S",
+        "price": 0.9332,
+        "amount": 433.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310145991",
+        "px": "3.807",
+        "sz": "12.8",
+        "side": "sell",
+        "ts": "1793676781272",
+        "count": "5",
+        "source": "0",
+        "seqId": 20478345157
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676781272,
+        "side": "S",
+        "price": 3.807,
+        "amount": 12.8,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "ATOM-USDT-SWAP",
+        "tradeId": "210453578",
+        "px": "1.42",
+        "sz": "588",
+        "side": "sell",
+        "ts": "1793676781275",
+        "count": "2",
+        "source": "0",
+        "seqId": 14494382208
+      },
+      "kafka": {
+        "symbol": "ATOMUSDT",
+        "timestamp_ms": 1793676781275,
+        "side": "S",
+        "price": 1.42,
+        "amount": 588.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "ATOM-USDT-SWAP",
+        "tradeId": "210453581",
+        "px": "1.42",
+        "sz": "306",
+        "side": "sell",
+        "ts": "1793676781276",
+        "count": "3",
+        "source": "0",
+        "seqId": 14494382224
+      },
+      "kafka": {
+        "symbol": "ATOMUSDT",
+        "timestamp_ms": 1793676781276,
+        "side": "S",
+        "price": 1.42,
+        "amount": 306.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "ATOM-USDT-SWAP",
+        "tradeId": "210453589",
+        "px": "1.42",
+        "sz": "323",
+        "side": "sell",
+        "ts": "1793676781277",
+        "count": "8",
+        "source": "0",
+        "seqId": 14494382243
+      },
+      "kafka": {
+        "symbol": "ATOMUSDT",
+        "timestamp_ms": 1793676781277,
+        "side": "S",
+        "price": 1.42,
+        "amount": 323.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "ATOM-USDT-SWAP",
+        "tradeId": "210453592",
+        "px": "1.42",
+        "sz": "171",
+        "side": "sell",
+        "ts": "1793676781278",
+        "count": "3",
+        "source": "0",
+        "seqId": 14494382258
+      },
+      "kafka": {
+        "symbol": "ATOMUSDT",
+        "timestamp_ms": 1793676781278,
+        "side": "S",
+        "price": 1.42,
+        "amount": 171.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "ADA-USDT-SWAP",
+        "tradeId": "402108506",
+        "px": "0.1877",
+        "sz": "0.1",
+        "side": "sell",
+        "ts": "1793676781290",
+        "count": "1",
+        "source": "0",
+        "seqId": 33917044203
+      },
+      "kafka": {
+        "symbol": "ADAUSDT",
+        "timestamp_ms": 1793676781290,
+        "side": "S",
+        "price": 0.1877,
+        "amount": 0.1,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 100.0
+    },
+    {
+      "native": {
+        "instId": "TRB-USDT-SWAP",
+        "tradeId": "369683234",
+        "px": "16.08",
+        "sz": "12",
+        "side": "sell",
+        "ts": "1793676781352",
+        "count": "3",
+        "source": "0",
+        "seqId": 28329465491
+      },
+      "kafka": {
+        "symbol": "TRBUSDT",
+        "timestamp_ms": 1793676781352,
+        "side": "S",
+        "price": 16.08,
+        "amount": 12.0,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 0.1
+    },
+    {
+      "native": {
+        "instId": "ETC-USDT-SWAP",
+        "tradeId": "234170999",
+        "px": "6.904",
+        "sz": "0.08",
+        "side": "sell",
+        "ts": "1793676782160",
+        "count": "3",
+        "source": "0",
+        "seqId": 15242814551
+      },
+      "kafka": {
+        "symbol": "ETCUSDT",
+        "timestamp_ms": 1793676782160,
+        "side": "S",
+        "price": 6.904,
+        "amount": 0.08,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "ADA-USDT-SWAP",
+        "tradeId": "402108515",
+        "px": "0.1877",
+        "sz": "535.2",
+        "side": "sell",
+        "ts": "1793676782197",
+        "count": "9",
+        "source": "0",
+        "seqId": 33917044303
+      },
+      "kafka": {
+        "symbol": "ADAUSDT",
+        "timestamp_ms": 1793676782197,
+        "side": "S",
+        "price": 0.1877,
+        "amount": 535.2,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 100.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543972",
+        "px": "0.07392",
+        "sz": "28.99",
+        "side": "sell",
+        "ts": "1793676782210",
+        "count": "5",
+        "source": "0",
+        "seqId": 87690769550
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676782210,
+        "side": "S",
+        "price": 0.07392,
+        "amount": 28.99,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543984",
+        "px": "0.07391",
+        "sz": "0.56",
+        "side": "sell",
+        "ts": "1793676782213",
+        "count": "12",
+        "source": "0",
+        "seqId": 87690769739
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676782213,
+        "side": "S",
+        "price": 0.07391,
+        "amount": 0.56,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543986",
+        "px": "0.07391",
+        "sz": "0.02",
+        "side": "buy",
+        "ts": "1793676782317",
+        "count": "2",
+        "source": "0",
+        "seqId": 87690770195
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676782317,
+        "side": "B",
+        "price": 0.07391,
+        "amount": 0.02,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543987",
+        "px": "0.07391",
+        "sz": "0.16",
+        "side": "buy",
+        "ts": "1793676782321",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690770206
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676782321,
+        "side": "B",
+        "price": 0.07391,
+        "amount": 0.16,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543988",
+        "px": "0.07391",
+        "sz": "0.04",
+        "side": "buy",
+        "ts": "1793676782322",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690770209
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676782322,
+        "side": "B",
+        "price": 0.07391,
+        "amount": 0.04,
+        "offset": 6945093
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294234",
+        "px": "0.2621",
+        "sz": "1731",
+        "side": "buy",
+        "ts": "1793676783219",
+        "count": "10",
+        "source": "0",
+        "seqId": 18494089485
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676783219,
+        "side": "B",
+        "price": 0.2621,
+        "amount": 1731.0,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310145994",
+        "px": "3.807",
+        "sz": "0.4",
+        "side": "buy",
+        "ts": "1793676783300",
+        "count": "3",
+        "source": "0",
+        "seqId": 20478345656
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676783300,
+        "side": "B",
+        "price": 3.807,
+        "amount": 0.4,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310145995",
+        "px": "3.807",
+        "sz": "21.1",
+        "side": "sell",
+        "ts": "1793676783778",
+        "count": "1",
+        "source": "0",
+        "seqId": 20478345804
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676783778,
+        "side": "S",
+        "price": 3.807,
+        "amount": 21.1,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "ADA-USDT-SWAP",
+        "tradeId": "402108522",
+        "px": "0.1877",
+        "sz": "13.3",
+        "side": "buy",
+        "ts": "1793676784146",
+        "count": "7",
+        "source": "0",
+        "seqId": 33917044973
+      },
+      "kafka": {
+        "symbol": "ADAUSDT",
+        "timestamp_ms": 1793676784146,
+        "side": "B",
+        "price": 0.1877,
+        "amount": 13.3,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 100.0
+    },
+    {
+      "native": {
+        "instId": "ETC-USDT-SWAP",
+        "tradeId": "234171001",
+        "px": "6.903",
+        "sz": "0.91",
+        "side": "sell",
+        "ts": "1793676784788",
+        "count": "2",
+        "source": "0",
+        "seqId": 15242814749
+      },
+      "kafka": {
+        "symbol": "ETCUSDT",
+        "timestamp_ms": 1793676784788,
+        "side": "S",
+        "price": 6.903,
+        "amount": 0.91,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765578",
+        "px": "0.9333",
+        "sz": "252",
+        "side": "sell",
+        "ts": "1793676785109",
+        "count": "6",
+        "source": "0",
+        "seqId": 19074929729
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676785109,
+        "side": "S",
+        "price": 0.9333,
+        "amount": 252.0,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOT-USDT-SWAP",
+        "tradeId": "364765582",
+        "px": "0.9332",
+        "sz": "298",
+        "side": "sell",
+        "ts": "1793676785109",
+        "count": "4",
+        "source": "0",
+        "seqId": 19074929729
+      },
+      "kafka": {
+        "symbol": "DOTUSDT",
+        "timestamp_ms": 1793676785109,
+        "side": "S",
+        "price": 0.9332,
+        "amount": 298.0,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310145997",
+        "px": "3.807",
+        "sz": "11.7",
+        "side": "sell",
+        "ts": "1793676785717",
+        "count": "2",
+        "source": "0",
+        "seqId": 20478346199
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676785717,
+        "side": "S",
+        "price": 3.807,
+        "amount": 11.7,
+        "offset": 6945095
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "TRB-USDT-SWAP",
+        "tradeId": "369683235",
+        "px": "16.08",
+        "sz": "7",
+        "side": "buy",
+        "ts": "1793676787298",
+        "count": "1",
+        "source": "0",
+        "seqId": 28329465774
+      },
+      "kafka": {
+        "symbol": "TRBUSDT",
+        "timestamp_ms": 1793676787298,
+        "side": "B",
+        "price": 16.08,
+        "amount": 7.0,
+        "offset": 6945097
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 0.1
+    },
+    {
+      "native": {
+        "instId": "ADA-USDT-SWAP",
+        "tradeId": "402108523",
+        "px": "0.1877",
+        "sz": "4.6",
+        "side": "sell",
+        "ts": "1793676787767",
+        "count": "1",
+        "source": "0",
+        "seqId": 33917045471
+      },
+      "kafka": {
+        "symbol": "ADAUSDT",
+        "timestamp_ms": 1793676787767,
+        "side": "S",
+        "price": 0.1877,
+        "amount": 4.6,
+        "offset": 6945097
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 100.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377543989",
+        "px": "0.0739",
+        "sz": "0.02",
+        "side": "sell",
+        "ts": "1793676788349",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690771102
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676788349,
+        "side": "S",
+        "price": 0.0739,
+        "amount": 0.02,
+        "offset": 6945097
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294235",
+        "px": "0.2621",
+        "sz": "3",
+        "side": "sell",
+        "ts": "1793676789998",
+        "count": "1",
+        "source": "0",
+        "seqId": 18494089733
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676789998,
+        "side": "S",
+        "price": 0.2621,
+        "amount": 3.0,
+        "offset": 6945099
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294240",
+        "px": "0.2622",
+        "sz": "475",
+        "side": "buy",
+        "ts": "1793676791583",
+        "count": "5",
+        "source": "0",
+        "seqId": 18494089807
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676791583,
+        "side": "B",
+        "price": 0.2622,
+        "amount": 475.0,
+        "offset": 6945099
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294242",
+        "px": "0.2622",
+        "sz": "44",
+        "side": "buy",
+        "ts": "1793676791721",
+        "count": "2",
+        "source": "0",
+        "seqId": 18494089829
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676791721,
+        "side": "B",
+        "price": 0.2622,
+        "amount": 44.0,
+        "offset": 6945099
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377544008",
+        "px": "0.07391",
+        "sz": "56.51",
+        "side": "buy",
+        "ts": "1793676793324",
+        "count": "19",
+        "source": "0",
+        "seqId": 87690771714
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676793324,
+        "side": "B",
+        "price": 0.07391,
+        "amount": 56.51,
+        "offset": 6945101
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377544009",
+        "px": "0.07392",
+        "sz": "21.37",
+        "side": "buy",
+        "ts": "1793676794056",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690772199
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676794056,
+        "side": "B",
+        "price": 0.07392,
+        "amount": 21.37,
+        "offset": 6945101
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377544012",
+        "px": "0.07392",
+        "sz": "0.14",
+        "side": "buy",
+        "ts": "1793676794070",
+        "count": "3",
+        "source": "0",
+        "seqId": 87690772221
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676794070,
+        "side": "B",
+        "price": 0.07392,
+        "amount": 0.14,
+        "offset": 6945101
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "ADA-USDT-SWAP",
+        "tradeId": "402108528",
+        "px": "0.1877",
+        "sz": "0.9",
+        "side": "sell",
+        "ts": "1793676796439",
+        "count": "5",
+        "source": "0",
+        "seqId": 33917045929
+      },
+      "kafka": {
+        "symbol": "ADAUSDT",
+        "timestamp_ms": 1793676796439,
+        "side": "S",
+        "price": 0.1877,
+        "amount": 0.9,
+        "offset": 6945103
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 100.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146024",
+        "px": "3.807",
+        "sz": "739.9",
+        "side": "buy",
+        "ts": "1793676796946",
+        "count": "9",
+        "source": "0",
+        "seqId": 20478347340
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676796946,
+        "side": "B",
+        "price": 3.807,
+        "amount": 739.9,
+        "offset": 6945103
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146046",
+        "px": "3.808",
+        "sz": "162.4",
+        "side": "buy",
+        "ts": "1793676796946",
+        "count": "22",
+        "source": "0",
+        "seqId": 20478347340
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676796946,
+        "side": "B",
+        "price": 3.808,
+        "amount": 162.4,
+        "offset": 6945103
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146068",
+        "px": "3.809",
+        "sz": "32.7",
+        "side": "buy",
+        "ts": "1793676797018",
+        "count": "15",
+        "source": "0",
+        "seqId": 20478348075
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676797018,
+        "side": "B",
+        "price": 3.809,
+        "amount": 32.7,
+        "offset": 6945103
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146083",
+        "px": "3.81",
+        "sz": "22.8",
+        "side": "buy",
+        "ts": "1793676797039",
+        "count": "15",
+        "source": "0",
+        "seqId": 20478348350
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676797039,
+        "side": "B",
+        "price": 3.81,
+        "amount": 22.8,
+        "offset": 6945103
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "TRB-USDT-SWAP",
+        "tradeId": "369683237",
+        "px": "16.08",
+        "sz": "2",
+        "side": "sell",
+        "ts": "1793676797339",
+        "count": "2",
+        "source": "0",
+        "seqId": 28329466096
+      },
+      "kafka": {
+        "symbol": "TRBUSDT",
+        "timestamp_ms": 1793676797339,
+        "side": "S",
+        "price": 16.08,
+        "amount": 2.0,
+        "offset": 6945103
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 0.1
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146084",
+        "px": "3.81",
+        "sz": "0.3",
+        "side": "buy",
+        "ts": "1793676798240",
+        "count": "1",
+        "source": "0",
+        "seqId": 20478348798
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676798240,
+        "side": "B",
+        "price": 3.81,
+        "amount": 0.3,
+        "offset": 6945105
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "CRV-USDT-SWAP",
+        "tradeId": "445294243",
+        "px": "0.2622",
+        "sz": "1",
+        "side": "sell",
+        "ts": "1793676799324",
+        "count": "1",
+        "source": "0",
+        "seqId": 18494090126
+      },
+      "kafka": {
+        "symbol": "CRVUSDT",
+        "timestamp_ms": 1793676799324,
+        "side": "S",
+        "price": 0.2622,
+        "amount": 1.0,
+        "offset": 6945105
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1.0
+    },
+    {
+      "native": {
+        "instId": "DOGE-USDT-SWAP",
+        "tradeId": "1377544013",
+        "px": "0.07393",
+        "sz": "3.97",
+        "side": "buy",
+        "ts": "1793676800901",
+        "count": "1",
+        "source": "0",
+        "seqId": 87690773796
+      },
+      "kafka": {
+        "symbol": "DOGEUSDT",
+        "timestamp_ms": 1793676800901,
+        "side": "B",
+        "price": 0.07393,
+        "amount": 3.97,
+        "offset": 6945105
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 1000.0
+    },
+    {
+      "native": {
+        "instId": "ETC-USDT-SWAP",
+        "tradeId": "234171005",
+        "px": "6.904",
+        "sz": "2.7",
+        "side": "buy",
+        "ts": "1793676801075",
+        "count": "4",
+        "source": "0",
+        "seqId": 15242815213
+      },
+      "kafka": {
+        "symbol": "ETCUSDT",
+        "timestamp_ms": 1793676801075,
+        "side": "B",
+        "price": 6.904,
+        "amount": 2.7,
+        "offset": 6945107
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146085",
+        "px": "3.809",
+        "sz": "2.7",
+        "side": "sell",
+        "ts": "1793676802511",
+        "count": "1",
+        "source": "0",
+        "seqId": 20478349411
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676802511,
+        "side": "S",
+        "price": 3.809,
+        "amount": 2.7,
+        "offset": 6945107
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    },
+    {
+      "native": {
+        "instId": "NEAR-USDT-SWAP",
+        "tradeId": "310146086",
+        "px": "3.809",
+        "sz": "12.3",
+        "side": "sell",
+        "ts": "1793676803056",
+        "count": "1",
+        "source": "0",
+        "seqId": 20478349506
+      },
+      "kafka": {
+        "symbol": "NEARUSDT",
+        "timestamp_ms": 1793676803056,
+        "side": "S",
+        "price": 3.809,
+        "amount": 12.3,
+        "offset": 6945107
+      },
+      "amount_ratio": 1.0,
+      "ctVal": 10.0
+    }
+  ]
+}
