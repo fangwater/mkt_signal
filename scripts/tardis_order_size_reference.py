@@ -95,6 +95,9 @@ def month_bounds(month):
 def reference(paths, exchange, symbol, month):
     """Keep exact samples only for validation/benchmark inputs that fit in RAM."""
     started = time.perf_counter()
+    source_symbol = symbol
+    if exchange == "okex-swap":
+        source_symbol = symbol.removesuffix('USDT') + '-USDT-SWAP'
     start, end = month_bounds(month)
     stats = dict(source_rows=0, sample_count=0, invalid_values=0, outside_month=0, late_trades=0)
     hourly, current, values = [], None, []
@@ -108,7 +111,7 @@ def reference(paths, exchange, symbol, month):
                 stats["source_rows"] += 1
                 if None in row or None in row.values():
                     raise ValueError("wrong column count")
-                if row["exchange"] != exchange or row["symbol"] != symbol:
+                if row["exchange"] != exchange or row["symbol"] != source_symbol:
                     raise ValueError("exchange/symbol mismatch")
                 timestamp = int(row["timestamp"])
                 if timestamp <= 0 or int(row["id"]) <= 0 or row["side"].lower() not in ("buy", "sell"):
@@ -152,7 +155,7 @@ def reference(paths, exchange, symbol, month):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, nargs="+", required=True)
-    parser.add_argument("--exchange", choices=["binance", "binance-futures"], required=True)
+    parser.add_argument("--exchange", choices=["binance", "binance-futures", "okex-swap"], required=True)
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--month", required=True)
     parser.add_argument("--output", type=Path, required=True)

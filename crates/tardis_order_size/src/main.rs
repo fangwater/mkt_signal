@@ -31,7 +31,7 @@ const HEADER: [&str; 8] = [
     about = "Compute monthly P50/P90 trade-notional thresholds from read-only Tardis gzip CSVs"
 )]
 struct Args {
-    /// TardisSource root containing binance_usd_SYMBOL / binance_spot_SYMBOL.
+    /// TardisSource root containing binance_usd_, binance_spot_ or okex_usd_ directories.
     #[arg(long)]
     root: PathBuf,
     /// Sample month, YYYY-MM; defaults to the previous complete UTC calendar month.
@@ -53,6 +53,10 @@ struct Args {
     symbols_file: Option<PathBuf>,
     #[arg(long, value_delimiter = ',', default_value = "binance-futures,binance")]
     exchanges: Vec<String>,
+    /// Saved OKX public SWAP instruments response. Required for okex-swap;
+    /// its ctVal is audited but is not applied to the raw quantity statistics.
+    #[arg(long)]
+    okex_instruments: Option<PathBuf>,
     #[arg(long, default_value_t = 8)]
     workers: usize,
     #[arg(long, default_value_t = 0.5)]
@@ -102,6 +106,9 @@ impl Month {
 struct Job {
     exchange: String,
     symbol: String,
+    source_symbol: String,
+    contract_value: Option<f64>,
+    unit: &'static str,
     paths: Vec<PathBuf>,
 }
 
@@ -148,6 +155,7 @@ struct Calculation {
 struct JobOutput {
     exchange: String,
     symbol: String,
+    unit: &'static str,
     source_month: String,
     apply_month: String,
     status: String,
@@ -286,7 +294,7 @@ fn calculate(job: &Job, month: &Month, args: &Args) -> Result<Calculation> {
 fn parse_record(row: &csv::StringRecord, job: &Job) -> Result<Option<(i64, f64)>> {
     ensure!(row.len() == HEADER.len(), "wrong column count");
     ensure!(
-        row[0] == job.exchange && row[1] == job.symbol,
+        row[0] == job.exchange && row[1] == job.source_symbol,
         "exchange/symbol mismatch"
     );
     let timestamp: i64 = row[2].parse().context("invalid timestamp")?;
@@ -309,6 +317,47 @@ fn parse_record(row: &csv::StringRecord, job: &Job) -> Result<Option<(i64, f64)>
         return Ok(None);
     }
     Ok(Some((timestamp, notional)))
+}
+
+fn okex_contract_value(catalog: &serde_json::Value, symbol: &str) -> Result<f64> {
+    ensure!(
+        catalog["code"] == "0",
+        "OKX instruments response is not successful"
+    );
+    let base = symbol
+        .strip_suffix("USDT")
+        .context("OKX symbol must use USDT")?;
+    let native = format!("{base}-USDT-SWAP");
+    let records = catalog["data"]
+        .as_array()
+        .context("missing OKX instruments data")?;
+    let matches = records
+        .iter()
+        .filter(|r| r["instId"] == native)
+        .collect::<Vec<_>>();
+    ensure!(
+        matches.len() == 1,
+        "expected one OKX instrument for {native}"
+    );
+    let record = matches[0];
+    ensure!(
+        record["instType"] == "SWAP"
+            && record["ctType"] == "linear"
+            && record["ctMult"] == "1"
+            && record["settleCcy"] == "USDT"
+            && record["ctValCcy"] == base,
+        "{native}: only USDT-settled linear swaps with base-asset ctVal are supported"
+    );
+    let value: f64 = record["ctVal"]
+        .as_str()
+        .context("missing OKX ctVal")?
+        .parse()
+        .context("invalid OKX ctVal")?;
+    ensure!(
+        value.is_finite() && value > 0.0,
+        "{native}: invalid OKX contract value"
+    );
+    Ok(value)
 }
 
 fn symbols(args: &Args) -> Result<Vec<String>> {
@@ -387,6 +436,17 @@ fn main() -> Result<()> {
     )?;
     let symbols = symbols(&args)?;
     let root = fs::canonicalize(&args.root).context("resolve input root")?;
+    let metadata_bytes = args
+        .okex_instruments
+        .as_ref()
+        .map(fs::read)
+        .transpose()
+        .context("read OKX instrument metadata")?;
+    let catalog = metadata_bytes
+        .as_ref()
+        .map(|bytes| serde_json::from_slice::<serde_json::Value>(bytes))
+        .transpose()
+        .context("parse OKX instruments response")?;
     let mut jobs = Vec::new();
     let mut seen = BTreeSet::new();
     for exchange in &args.exchanges {
@@ -394,9 +454,22 @@ fn main() -> Result<()> {
         let prefix = match exchange.as_str() {
             "binance-futures" => "binance_usd",
             "binance" => "binance_spot",
+            "okex-swap" => "okex_usd",
             _ => bail!("unsupported exchange: {exchange}"),
         };
         for symbol in &symbols {
+            let (source_symbol, contract_value, unit) = if exchange == "okex-swap" {
+                let catalog = catalog.as_ref().context(
+                    "okex-swap requires --okex-instruments; never assume a contract value",
+                )?;
+                (
+                    format!("{}-USDT-SWAP", symbol.strip_suffix("USDT").unwrap()),
+                    Some(okex_contract_value(catalog, symbol)?),
+                    "price_x_contracts",
+                )
+            } else {
+                (symbol.clone(), None, "USDT")
+            };
             let dir = root
                 .join(format!("{prefix}_{}", symbol.to_ascii_lowercase()))
                 .join("trades");
@@ -408,6 +481,9 @@ fn main() -> Result<()> {
             jobs.push(Job {
                 exchange: exchange.clone(),
                 symbol: symbol.clone(),
+                source_symbol,
+                contract_value,
+                unit,
                 paths,
             });
         }
@@ -433,7 +509,12 @@ fn main() -> Result<()> {
         "start_us_inclusive": month.start_us, "end_us_exclusive": month.end_us,
         "tool_source_sha256": source_fingerprint(), "started_at_utc": started_at,
         "algorithm": "hourly KLL (capacity 512), chronological merge_all, weighted linear quantiles with f32 q",
-        "unit": "USDT", "jobs": jobs,
+        "units_by_exchange": jobs.iter().map(|j| (&j.exchange, j.unit)).collect::<std::collections::BTreeMap<_,_>>(), "jobs": jobs,
+        "instrument_metadata": metadata_bytes.as_ref().map(|bytes| serde_json::json!({
+            "path": args.okex_instruments,
+            "sha256": format!("{:x}", Sha256::digest(bytes)),
+            "notional": "price * exchange-native amount; OKX ctVal is audited, not applied"
+        })),
     });
     write_json(&args.output.join("manifest.json"), &manifest)?;
     let pool = rayon::ThreadPoolBuilder::new()
@@ -449,6 +530,7 @@ fn main() -> Result<()> {
                 let output = JobOutput {
                     exchange: job.exchange.clone(),
                     symbol: job.symbol.clone(),
+                    unit: job.unit,
                     source_month: month.name.clone(),
                     apply_month: month.apply_month.clone(),
                     status: status.to_string(),
@@ -494,6 +576,7 @@ fn main() -> Result<()> {
         "large_notional_threshold",
         "sample_count",
         "nonempty_hours",
+        "unit",
     ])?;
     for row in &results {
         if let Some(c) = &row.calculation {
@@ -508,6 +591,7 @@ fn main() -> Result<()> {
                 c.large_notional_threshold,
                 c.stats.sample_count,
                 c.stats.nonempty_hours,
+                row.unit,
             ))?;
         }
     }

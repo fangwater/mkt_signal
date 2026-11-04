@@ -67,11 +67,11 @@ class OrderSizeTest(unittest.TestCase):
         for path, data in self.original.items():
             path.write_bytes(data)
 
-    def run_tool(self, name, extra=(), success=True):
+    def run_tool(self, name, extra=(), success=True, exchange="binance-futures"):
         out = self.work / name
         started = time.perf_counter()
         process = subprocess.run([str(BINARY), "--root", str(self.root), "--month", self.month,
-                                  "--symbols", "BTCUSDT", "--exchanges", "binance-futures",
+                                  "--symbols", "BTCUSDT", "--exchanges", exchange,
                                   "--workers", "2", "--output", str(out), *extra],
                                  text=True, capture_output=True)
         elapsed = time.perf_counter() - started
@@ -80,6 +80,36 @@ class OrderSizeTest(unittest.TestCase):
         else:
             self.assertNotEqual(process.returncode, 0, process.stderr)
         return out, elapsed, process
+
+    def test_okex_contracts_and_native_identity_match_python_reference(self):
+        paths = []
+        for original in self.paths:
+            path = self.root / "okex_usd_btcusdt" / "trades" / original.name.replace("binance-futures", "okex-swap")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw = gzip.decompress(self.original[original]).replace(b"binance-futures", b"okex-swap").replace(b"BTCUSDT", b"BTC-USDT-SWAP")
+            path.write_bytes(gzip.compress(raw))
+            paths.append(path)
+        metadata = self.work / "okex_instruments.json"
+        record = dict(instId="BTC-USDT-SWAP", instType="SWAP", ctType="linear", ctVal="0.01", ctMult="1", ctValCcy="BTC", settleCcy="USDT")
+        metadata.write_text(json.dumps({"code":"0", "data":[record]}))
+        expected = reference(paths, "okex-swap", "BTCUSDT", self.month)
+        out, _, _ = self.run_tool("okex", ["--okex-instruments", str(metadata)], exchange="okex-swap")
+        got = json.loads((out / "results.json").read_text())["results"][0]["calculation"]
+        for key in ("medium_notional_threshold", "large_notional_threshold", "sketch"):
+            self.assertEqual(got[key], expected[key], key)
+        self.assertEqual(got["stats"]["nonempty_hours"], 720)
+        manifest = json.loads((out / "manifest.json").read_text())
+        self.assertEqual(manifest["jobs"][0]["source_symbol"], "BTC-USDT-SWAP")
+        self.assertEqual(manifest["jobs"][0]["contract_value"], .01)
+        self.assertEqual(manifest["jobs"][0]["unit"], "price_x_contracts")
+        self.assertEqual(got["medium_notional_threshold"], reference(self.paths, "binance-futures", "BTCUSDT", self.month)["medium_notional_threshold"])
+        self.assertEqual(manifest["instrument_metadata"]["sha256"], hashlib.sha256(metadata.read_bytes()).hexdigest())
+        with (out / "thresholds.csv").open() as stream:
+            self.assertEqual(next(csv.DictReader(stream))["symbol"], "BTCUSDT")
+        self.run_tool("okex-no-spec", success=False, exchange="okex-swap")
+        for field, value in [("ctVal", "0"), ("ctValCcy", "USDT"), ("ctType", "inverse"), ("ctMult", "2")]:
+            metadata.write_text(json.dumps({"code":"0", "data":[{**record, field:value}]}))
+            self.run_tool("okex-invalid-"+field, ["--okex-instruments",str(metadata)], success=False, exchange="okex-swap")
 
     def test_complete_month_matches_python_and_hashes(self):
         ref = reference(self.paths, "binance-futures", "BTCUSDT", self.month)

@@ -42,6 +42,9 @@ struct Args {
     /// useful for confirming whether a producer carries reconstructed depth.
     #[arg(long, value_delimiter = ',')]
     depth_symbols: Vec<String>,
+    /// Print up to three raw trades per selected symbol, without quantity conversion.
+    #[arg(long, value_delimiter = ',')]
+    trade_symbols: Vec<String>,
 
     /// Print earliest/latest offsets for configured topics and exit without consuming messages.
     #[arg(long, default_value_t = false)]
@@ -120,6 +123,7 @@ fn main() -> Result<()> {
                             message.payload.len(),
                             decompressed_len,
                         );
+                        print_trade_samples(&period, &args.trade_symbols);
                         if config.max_messages.is_some_and(|max| decoded_count >= max) {
                             break;
                         }
@@ -140,6 +144,28 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_trade_samples(period: &pb::PeriodMessage, symbols: &[String]) {
+    let requested: HashSet<_> = symbols
+        .iter()
+        .map(|s| s.trim().to_ascii_uppercase())
+        .collect();
+    for info in &period.symbol_infos {
+        if !requested.contains(&info.symbol.to_ascii_uppercase()) {
+            continue;
+        }
+        for trade in info.trades.iter().take(3) {
+            println!(
+                "trade symbol={} ts_ms={} side={} price={} amount={}",
+                info.symbol,
+                period_pbs::period::normalize_timestamp_ms(trade.timestamp),
+                trade.side,
+                trade.price,
+                trade.amount
+            );
+        }
+    }
 }
 
 fn load_config(path: &PathBuf) -> Result<KafkaConsumerConfig> {

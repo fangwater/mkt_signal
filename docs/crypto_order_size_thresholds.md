@@ -1,4 +1,4 @@
-# Binance 月度大小单阈值发布
+# Binance / OKX 月度大小单阈值发布
 
 最后更新：2026-11-03 08:38 UTC（Binance Futures 51币，2026-10→2026-11；CTA共享阈值已加载）
 
@@ -13,9 +13,82 @@ JP部署工具先backfill预演、保存精确写前备份，再原子补齐合�
 CTA共享表消费修复a0d39e69已发布：404项中331项ready、94项NQ全就绪，大小阈值缺项0；
 剩余73项为公式值或有效样本未就绪，其中58项为15min。仓位推送和交易保持关闭。
 
-权威输入是 `tardis_order_size` 输出的 `thresholds.csv`。2026-09 样本用于
-2026-10：43 币 × 合约/现货，共 86 组，P50/P90 单位为 USDT。现货与合约
-分别统计，不以合约值乘系数生成现货值。缺项必须保持缺失，不填默认值。
+权威输入是 `tardis_order_size` 输出的 `thresholds.csv`，完整自然月样本用于
+下一个 UTC 月。P50/P90 与实时分类端统一使用 `price * amount`：Binance 单位为
+USDT，OKX 永续为 `price_x_contracts`（价格乘原始张数）。各所、现货和合约
+分别统计，缺项保持缺失，OKX 数值不能当作真实 USDT 成交额跨币种比较。
+下面 Binance 的 2026-10 记录来自 2026-09 样本：43 币 × 合约/现货，共 86 组。
+
+## OKX USDT 永续
+
+`tardis_order_size --exchanges okex-swap` 读取
+`TardisSource/okex_usd_<symbol>/trades/okex-swap_trades_<day>_<SYMBOL>.csv.gz`。
+文件名中的 `DOTUSDT` 对应 CSV 内的 `DOT-USDT-SWAP`；交易所和原生合约名必须匹配。
+Tardis 的 OKX 映射直接保留 `sz` 张数；JP 的 OKX JSON/SBE 解析、
+`spread_pbs` IPC 和 Period 收集端也保留原始张数。大小单统计和实时分类
+统一使用 `price * amount`，不乘 `ctVal`。2026-11-03 同时采集官方公开成交和
+JP IPC，在 DOGE 上匹配到 9 笔：例如官方 `sz=7.8`，IPC `amount=7.8`，
+该合约 `ctVal=1000`，数量未变成 `7800`。
+
+03:31–03:34 UTC 重新从 JP 直接读取 Kafka `okex-swap` 的 partition 0，
+获得 22 条 zlib/PeriodMessage 记录，每条含 220 个币种；仓库原有 Rust
+消费者也独立成功读取 8 条记录。将 Kafka 成交与同时段 OKX 公开成交对照，
+8 个币种共匹配 54 笔无歧义成交，所有 `amount` 均等于官方原始 `sz`。
+例如 DOGE 的 `sz=28.99`，Kafka `amount=28.99`，没有变成 `28990`。
+54 笔已按重复 payload 去重；8 笔候选不唯一、2 笔未匹配，未纳入单位结论。
+Kafka 探测证据在 `artifacts/okex_order_size_202610_20261103/kafka_reprobe/`。
+
+此前超时发生在本地访问路径，重新探测仍可复现；同一 release Rust
+消费者和相同配置在 JP 可正常读取 offset 和消息，不能将本地超时理解为
+Kafka 无数据。broker 元数据发布内网地址 `10.140.140.55:1501`，探测沿用
+现有 `broker_addr_rewrites` 将其解析到可达的 bootstrap 公网地址。
+Kafka topic 为 `okex-swap`，系统内部 venue 为 `okex-futures`。
+
+工具强制要求 `--okex-instruments` 指定保存的 OKX 公共 instruments 响应，验证
+线性 SWAP、USDT 结算、`ctValCcy` 为基础币、`ctMult=1` 及正有限 `ctVal`。
+缺规格或其他类型合约会失败，不默认面值为 1。`ctVal` 只用于审计，不应用于
+分类统计。规格快照和每个原始文件均记录 SHA-256。对同币种固定面值，
+阈值与实时数值同时不换算，分类结果与两边同时换算一致。
+
+2026-11-03 核对并计算 TRB、DOT、ADA、NEAR、ATOM、DOGE、ETC、CRV 的
+2026-10 全月样本，8 个币各 744 个非空 UTC 小时，共 65,332,809 笔有效成交。
+原始文件只读，所有任务完成，非法值、跨月数据和迟到跨小时数据均为 0。
+合约面值快照取自 OKX 公共 API，时间为 2026-11-03 02:20:55 UTC。
+
+```bash
+target/release/tardis_order_size \
+  --root /mnt/nfs/30.133_xt_crypto/TardisSource --month 2026-10 \
+  --symbols TRBUSDT,DOTUSDT,ADAUSDT,NEARUSDT,ATOMUSDT,DOGEUSDT,ETCUSDT,CRVUSDT \
+  --exchanges okex-swap --okex-instruments /path/to/okex_instruments.json \
+  --workers 8 --output /path/to/new-output-directory
+```
+
+计算和独立 Python 基准使用同一小时 KLL 算法。工具回归覆盖 OKX 原生合约名、
+原始张数保持、缺失/非法规格拒绝，以及原 Binance 的分位、文件完整性和确定性。
+当前证据在 `artifacts/okex_order_size_202610_20261103/native_alignment/`，
+CSV SHA-256：`e81dfd6e934d5e8a21d01b214a394a0fafdf061b4cfb9fa29430544ab91a3832`。
+
+发布复用 `scripts/publish_binance_order_size_thresholds.py`，新增
+`okex-swap -> okex-futures` 映射；CSV 的 `DOTUSDT` 转为线上字段 `DOT-USDT-SWAP`。
+OKX 使用 `--mode backfill`，只填充输入币对；同月重复相同值可重入，拒绝覆盖不同值。
+backfill 保留全部因子计划，所有市场共用原有 `amount-thresholds` 格式，不增加频率副本。
+`replace` 仍仅用于 Binance 的相同币种现货/合约整批替换。
+CSV 必须带匹配市场口径的 `unit` 列，拒绝缺单位或错误单位的文件；
+backfill 也拒绝混入与线上元数据不同的数量口径。
+
+2026-11-03 02:37:30 UTC 首次发布时错误地只在历史统计侧乘了 `ctVal`，
+与实时分类端不一致。03:09:39 UTC 已完成原始张数口径的保护性纠正：
+JP `~/tlen_config_shared` 的 `okex-futures:amount-thresholds` 保持 8 项，
+更新 ADA、DOGE、ETC、NEAR、TRB 的阈值；DOT、ATOM、CRV 数值不变。
+`meta` 记录来源月 2026-10、应用月 2026-11、`price_x_contracts` 单位、
+新旧 CSV 摘要与纠正来源。全部因子计划保持不变。
+发布脚本经 SHA-256 校验后原子安装；未重启计算、信号或交易进程。
+Redis 及现有 `6322/api/thresholds?venue=okex-futures&config_type=amount_thresholds`
+接口于 03:09:57 UTC 逐项读回与新 CSV 一致。当前备份、dry-run、发布与
+安装回执在远端 `~/tlen_config_shared/run/okex_order_size_202610_20261103/native_alignment/`，
+本地同名目录包含当前 `verification.json`。父目录保留首次错误口径的原始证据，
+不应作为当前阈值使用。工具 8 项、发布 10 项测试全部通过，发布测试使用隔离 Redis；
+Period 相关 17 项测试通过。
 
 2026-10-30为RX01新清单补齐BNBUSDT、CRVUSDT、FILUSDT、THETAUSDT、XRPUSDT、
 ZILUSDT六个合约币种。复用tardis_order_size扫描各自完整2026-09的720小时原始成交，
@@ -35,6 +108,7 @@ JP `jp-meta-elvpn` 的本机 Redis DB 0 存储以下现有 Hash，
 | --- | --- | --- |
 | `binance-futures` | `binance-futures` | `binance-futures:amount-thresholds` |
 | `binance` | `binance-margin` | `binance-margin:amount-thresholds` |
+| `okex-swap` | `okex-futures` | `okex-futures:amount-thresholds` |
 
 每个 symbol 的 JSON 只含 `medium_notional_threshold` 和
 `large_notional_threshold`，保持现有消费者协议。现有 `:meta` 伴随键记录
@@ -56,7 +130,7 @@ RX01–04 的环境独立因子表不由此工具修改。
 ## 整批替换与后续补数
 
 工具：`scripts/publish_binance_order_size_thresholds.py`，复用 TLen 的键名和
-金额验证函数。默认只读预演，`--execute` 才写入；只管理上述 Binance 键。
+金额验证函数。默认只读预演，`--execute` 才写入；只管理输入市场对应的上述键。
 通过 `REDIS_HOST/PORT/DB/USERNAME/PASSWORD` 设置连接，凭据不进入命令行。
 
 ```bash
@@ -77,6 +151,11 @@ python3 scripts/publish_binance_order_size_thresholds.py \
 `backfill` 为默认模式，要求线上记录的样本月、应用月与输入一致，允许重复
 输入相同值，拒绝覆盖已有不同值。应用月必须为当前 UTC 月；每组必须具有
 完整自然月小时数、正有限 P50/P90，重复 market/symbol 或混合月份拒绝。
+
+纠正本工具自身的错误发布使用 `--mode correct --correct-from /path/to/previous_backup.json`。
+必须提供上次实际执行的完整写前/目标备份，且当前全部受管 Hash 与其目标完全一致，
+输入币种集合也必须与上次写入集合完全一致；任意操作员变更或部分范围均拒绝。
+先预演，再加 `--execute --backup /path/to/new_backup.json`，保留精确的新旧值。
 
 执行先保存精确旧 Hash 与新目标，随后在 `WATCH` 保护下以单个 Redis
 事务替换所有关联键，并逐项读回验证。并发变更导致整批取消，不自动覆盖
