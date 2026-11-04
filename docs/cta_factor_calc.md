@@ -1,6 +1,6 @@
 # CTA 因子计算与仓位表
 
-最后更新：2026-11-04 UTC（新增 symbol group 维度，源码与模板已更新，尚未部署）
+最后更新：2026-11-04 10:45 UTC（symbol group 已部署，Prep02九策略分仓完成）
 
 ## 券池维度
 
@@ -32,7 +32,7 @@ Spread 对应 `cta-top-5-spread01-okx-bn-1min-pos`。
 共享文件锁和内容摘要处理并发冲突；Prep 与 Spread 分别保存定义，各自热加载。
 Delist 的只读清单和备份也包含券池定义。
 
-2026-11-04 用户清单已写入本地 Prep02 模板。20 项输入中两个空标的项不展开，
+2026-11-04 用户清单已写入 Prep02 模板并部署到 JP。20 项输入中两个空标的项不展开，
 跨券池重复规则分别保留，共 102 条规则、9 张表（3 券池 × 3 频率）：
 
 | 券池 | 1min 规则 | 5min 规则 | 15min 规则 |
@@ -44,7 +44,11 @@ Delist 的只读清单和备份也包含券池定义。
 文件名示例 `top-5_prep02_binance-futures_1min.json`。所有模板发布开关为 false，
 金额和阈值沿用原 Prep02 同频段配置。原三张未分券池的 Prep02 模板已替换；
 Prep01 三张及 Spread01 一张保留，总计 13 张表，Prep 仍为 408 项共享计算。
-这次只修改源码和本地模板，没有更新线上配置、Manager 绑定或持仓。
+线上保留发布前实际参数：九个Prep02均开启、每规则100U、RX03 shares=1及原grid模板；
+Prep01 / Spread01参数保留。09:47:31.222 UTC完成存量分仓，10:45 UTC核验两worker
+回放与发布确认完成、执行端position_ready=true。历史盈亏不重写，归属守恒校验通过。
+部分Prep窗口仍未就绪，ICX四项计算无行情，相关规则保持跳过；Spread50项均就绪。
+部署回执见 [九策略上线记录](../artifacts/cta_symbol_groups_20261104/README.md)。
 用户已确认自动迁移口径：唯一匹配的旧规则直接归组；跨券池重复的旧规则等分数量和入场金额，
 总仓不变。历史盈亏保留在旧策略，切换后按九个新策略统计。空策略保留身份和零目标，
 不会自动补齐规则。`cta-symbol-group-migrate` 会准备信号、Exec 和 Manager 的迁移包，
@@ -398,7 +402,7 @@ cta-prep-binance-futures --import-symbol-factors /path/symbol_factors.json \
 脚本默认 dry-run，读取环境自己的 `env.sh`；CPU 可设置 `CTA_PREP_BINANCE_FUTURES_CORE` /
 `CTA_FACTOR_SPREAD_CORE`。生产构建、上传校验和安装仍须遵守 arbmm 和本地构建约束。
 
-本次未部署或修改线上进程、账户绑定和仓位。原独立仓位信号入口已从
+现行仓位表与券池分仓已按上述部署记录上线。原独立仓位信号入口已从
 `Cargo.toml` 的二进制清单中移除，旧停止脚本保留用于切换前关闭历史进程。
 统一 `start_cta_signal.sh` 拒绝再启动独立信号；启停因子进程即同时管理其仓位表。
 模板 `enabled=false` 不能覆盖线上实际启用状态，发布前应核对运行快照和完整账本。

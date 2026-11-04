@@ -1,6 +1,16 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 10:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 10:45 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 10:45 UTC，JP Prep02 切换为三券池×三频段九策略，RX03绑定及执行配置
+由原三项替换为九项，仍shares=1 / grid / `lgq_grid_prep`。存量分仓按确认口径迁移，
+账户总数量与FIFO/盈亏守恒，历史保留；Prep01和Spread01原绑定及参数保留。
+Prep PID2970444 / CPU17，Spread2970968 / CPU18，Config2968323；
+RX03 pre-trade3016803 / trade_signal3016920，Delist3033546及原SG隧道3033518已由环境脚本恢复。
+两worker回放与发布确认完成；ICX无行情及部分Prep窗口未就绪继续跳过。
+未修改env.sh、主TOML、交易source IP、`local_ips`、ENI/EIP、路由或监听端口。
+CPU/产物及迁移校验见 `docs/core_allocation.md` 和
+`../artifacts/cta_symbol_groups_20261104/README.md`。
 
 2026-11-04 10:04 UTC，JP Delist 发布独立FR钉钉、计划内建仓差额及明确现货尾差排除，
 源码 `b77e5da1`，后端 PID `2922632`、既有SG隧道 PID `2922607`，CPU均 `0-5`。
@@ -843,7 +853,7 @@ binance-cta-special-rx02     172.31.35.228                  已停止并归档�
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       已下线，运行目录归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；Exec07已清仓解绑，旧配置410
 binance-cta-perp-rx01        默认出口 / 172.31.35.228       全部旧进程停止；Exec06永续仓位/挂单0，91旧绑定及virtual06跟随移除，旧配置410
-cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17 计算运行，Prep01/02 六张表预热；Config loopback19220，发布/绑定均关闭
+cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17运行，Prep01三张+Prep02九张活动表；Config loopback19220，发布开启，ICX无行情及部分窗口未就绪
 cta-factor-spread           默认出口 / 172.31.35.228       CPU18计算及Spread01发布开启，无私有交易请求
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；5min已清仓解绑，旧配置410
@@ -875,7 +885,7 @@ binance_exec_rx04_5m05       172.31.35.228                  RX04 5min已清仓�
 binance_exec_trade06         172.31.35.228                  RX01旧运行目录已归档，Manager入口及绑定移除；新账户binance_exec_rx01
 binance_exec_trade07         172.31.35.228                  RX03旧运行目录已归档，Manager入口及绑定移除；新账户binance_exec_rx03
 binance_exec_rx01            172.31.35.228                  RX01全新执行账户，Prep01三频段shares=0；监控/persist/Viz/Config运行，下单关闭
-binance_exec_rx03            172.31.35.228                  RX03全新执行账户，Prep02三频段shares=0；监控/persist/Viz/Config运行，下单关闭
+binance_exec_rx03            172.31.35.228                  Prep02三券池×三频段九策略shares=1/grid；pre-trade/trade_signal及监控/persist/Viz/Config运行
 binance_exec_trade08         172.31.35.228, 172.31.35.228   旧环境继续停止，lgq_ltp_81857 Manager入口已移除；历史保留，新组合另走binance_exec_spread01
 ```
 

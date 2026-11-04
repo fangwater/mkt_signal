@@ -1,7 +1,27 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-04 10:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-04 10:45 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-04 10:45 UTC，JP Prep02 按 `top-5 / top-20 / last-20 × 1min / 5min / 15min`
+拆为九个独立策略，102条规则；`top-20 × 5min` 保留空策略。09:47:31.222 UTC切换点
+将唯一规则直接归组、重复规则等分数量及冻结入场金额，并按已完成执行的实际分仓处理22项尾差。
+Manager追加零和归属记录，账户数量、FIFO与history/7d/1d/after总盈亏校验不变；
+历史成交、费用和旧策略盈亏保留，切换后按九个新策略统计。九条RX03绑定沿用
+`lgq_grid_prep` / grid / shares=1；每规则额度沿用线上100U，原三条绑定和执行配置退役。
+Prep PID2970444 / CPU17（12张活动表、3张退役表、408项共享计算）；
+Spread PID2970968 / CPU18（原Spread01一张表、50项计算）；Config PID2968323 / CPU `0-5,48-95`。
+RX03 pre-trade PID3016803、trade_signal PID3016920，CPU均 `0-5,48-95`；
+trade_engine3936910、persist3684036、account_monitor3685214和Manager2097112 / CPU24保持。
+Delist同步券池清单，最终以包含现货尾差修复的 `37ea9cae` 源码本地构建更新，
+PID3033546、SG隧道3033518，均CPU `0-5,48-95`。Prep/Spread/Config源码 `f281e5f4`，
+迁移工具源码 `37ea9cae`；所有产物本地release、SCP临时上传、SHA-256核验及原子安装，
+仅通过环境本地脚本启停。两worker回放完成、Manager发布确认且无因子/仓位错误；
+部分Prep窗口仍未就绪，ICX四项计算无行情，保持跳过；Spread50项均已就绪。
+桌面/手机九策略与空表只读验收通过。env.sh、主TOML、原执行参数和源IP/ENI/路由保持；
+同期Bitget FR另有独立发布，不将其PID变化归为本次操作。私有审计
+`~/crypto_cta_manager/maintenance-backups/cta_symbol_groups_20261104T093943Z/`；
+脱敏产物清单、操作工具与验收见 `../artifacts/cta_symbol_groups_20261104/README.md`。
 
 2026-11-04 10:04 UTC，JP `~/delist_risk_server` 完成独立FR钉钉与敞口口径修正发布，
 最终构建源码 `b77e5da1`，Delist PID `2922632`、SG隧道 PID `2922607`，均 CPU `0-5`。
@@ -1261,8 +1281,8 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | 原FR等及新okex_exec_trade01/binance_exec_spread01只读账户持久化；旧MM停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta-prep-binance-futures | PID3956979；Prep01/Prep02六张表、404项计算，全部线程CPU17；六个发布开关开启、RX01/RX03绑定shares=1，已实盘成交 |
-| 18 | cta-factor-spread | PID3960454；Spread01 发布开启，两所绑定各1份，50项计算就绪 |
+| 17 | cta-prep-binance-futures | PID2970444；Prep01三张+Prep02九张活动表、三张旧退役表、408项计算；全部线程CPU17，发布开启，RX01/RX03 shares=1；部分窗口未就绪，ICX无行情 |
+| 18 | cta-factor-spread | PID2970968；Spread01发布开启，两所绑定各1份，50项计算就绪；全部线程CPU18 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
 | 21 | okex_exec_trade01 account_monitor | PID1397233；原MM停止 |
