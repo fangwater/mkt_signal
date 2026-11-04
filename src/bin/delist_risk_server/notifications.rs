@@ -102,6 +102,19 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+pub fn fr_source(source: &str, active_fr: &BTreeSet<String>) -> bool {
+    if matches!(source, "llm" | "fr_unimmr_close_list")
+        || source.starts_with("cta_")
+        || source.contains("_cta_")
+    {
+        return false;
+    }
+    if source.contains("_fr_arb") {
+        return active_fr.iter().any(|slug| source.ends_with(slug));
+    }
+    true
+}
+
 pub fn clip(s: &str, bytes: usize) -> String {
     if s.len() <= bytes {
         return s.to_owned();
@@ -560,7 +573,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
         for row in &account.rows {
             let key = format!("asset:{}", row.asset);
             let confirmed = account.breaches.get(&key).is_some_and(|b| b.confirmed);
-            let problem = row.net_usdt.filter(|_| fresh).and_then(|value| {
+            let problem = row.uncovered_usdt.filter(|_| fresh).and_then(|value| {
                 if value.abs() <= report.settings.asset_limit_usdt {
                     Some(false)
                 } else if confirmed {
@@ -571,23 +584,25 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
             });
             observations.push(Observation {
                 key: format!("exposure/{}/{}", account.slug, row.asset),
-                title: format!("{} {} 净敞口", account.slug, row.asset),
+                title: format!("{} {} 未覆盖差额", account.slug, row.asset),
                 problem,
                 detail: format!(
-                    "净敞口 {} USDT；单币阈值 {:.2} USDT；开仓腿数量 {:.8}，对冲腿数量 {:.8}",
-                    row.net_usdt
+                    "未覆盖差额 {} USDT；单币阈值 {:.2} USDT；实际净量 {:.8}，策略对冲计划净量 {}",
+                    row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
                         .unwrap_or_else(|| "未知".into()),
                     report.settings.asset_limit_usdt,
-                    row.open_qty,
-                    row.hedge_qty
+                    row.net_qty,
+                    row.hedge_plan_qty
+                        .map(|v| format!("{v:.8}"))
+                        .unwrap_or_else(|| "未知".into())
                 ),
             });
         }
         observations.push(Observation {
             key: format!("exposure/{}/total", account.slug),
-            title: format!("{} 绝对净敞口合计", account.slug),
-            problem: account.abs_usdt.filter(|_| fresh).and_then(|value| {
+            title: format!("{} 未覆盖差额合计", account.slug),
+            problem: account.risk_abs_usdt.filter(|_| fresh).and_then(|value| {
                 if value > report.settings.account_limit_usdt
                     && account.breaches.get("total").is_some_and(|b| b.confirmed)
                 {
@@ -599,8 +614,8 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                 }
             }),
             detail: format!(
-                "逐币绝对值合计 {:.2} USDT；账户阈值 {:.2} USDT{}",
-                account.abs_usdt.unwrap_or(0.0),
+                "未覆盖差额逐币绝对值合计 {:.2} USDT；账户阈值 {:.2} USDT{}",
+                account.risk_abs_usdt.unwrap_or(0.0),
                 report.settings.account_limit_usdt,
                 if account.complete {
                     ""
@@ -956,6 +971,29 @@ mod tests {
         assert_eq!(book.outbox.len(), 1);
     }
 
+    #[test]
+    fn fr_channel_excludes_cta_and_retired_fr_source_history() {
+        let active = BTreeSet::from(["binance_fr_arb02".into()]);
+        for source in [
+            "cta_backup_catalog",
+            "cta_backup_quality_binance-cta-perp-rx02",
+            "cos_cta_backup_active",
+            "redis_fr_backup_binance_fr_arb01",
+            "llm",
+            "fr_unimmr_close_list",
+        ] {
+            assert!(!fr_source(source, &active), "{source}");
+        }
+        for source in [
+            "redis_fr_backup_binance_fr_arb02",
+            "redis_fr_backup_catalog",
+            "exchange_info",
+            "bybit_announcements",
+        ] {
+            assert!(fr_source(source, &active), "{source}");
+        }
+    }
+
     #[tokio::test]
     async fn fully_closed_asset_recovers_only_from_complete_fresh_coverage() {
         let dir = std::env::temp_dir().join(format!("fr-closed-asset-{}", std::process::id()));
@@ -991,6 +1029,7 @@ mod tests {
             risk_status: "unknown",
             complete: false,
             abs_usdt: Some(0.0),
+            risk_abs_usdt: Some(0.0),
             net_usdt: Some(0.0),
             largest_asset: None,
             largest_usdt: None,

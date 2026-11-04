@@ -1080,13 +1080,13 @@ async fn main() -> Result<()> {
                         .read()
                         .await
                         .snapshot(exposure_state.store.is_some());
+                    let active_fr: BTreeSet<_> =
+                        report.accounts.iter().map(|a| a.slug.clone()).collect();
                     observations.extend(
                         sources
                             .sources
                             .iter()
-                            .filter(|s| {
-                                !matches!(s.source.as_str(), "llm" | "fr_unimmr_close_list")
-                            })
+                            .filter(|s| notifications::fr_source(&s.source, &active_fr))
                             .map(|s| notifications::Observation {
                                 key: format!("source/{}", s.source),
                                 title: format!("监控数据源 {}", s.source),
@@ -2041,10 +2041,11 @@ async fn fr_heartbeat(state: &AppState) {
         .await
         .report(Utc::now().timestamp_millis(), current);
     let sources = state.status.read().await.snapshot(state.store.is_some());
+    let active_fr: BTreeSet<_> = report.accounts.iter().map(|a| a.slug.clone()).collect();
     let failures = sources
         .sources
         .iter()
-        .filter(|s| !s.ok)
+        .filter(|s| !s.ok && notifications::fr_source(&s.source, &active_fr))
         .map(|s| s.source.as_str())
         .collect::<Vec<_>>();
     let summary = format!("FR 覆盖 {} 个：敞口告警 {}，数据不完整 {}\n公告及监控源：{}\n本轮按现有配置检查；没有新增策略、手工下单或调仓。自动风控实际操作列在下方日志中。", report.accounts.len(), report.accounts.iter().filter(|a| a.risk_status == "alert").count(), report.accounts.iter().filter(|a| !a.complete).count(), if failures.is_empty() { "全部已报告成功".into() } else { format!("存在失败/未知：{}", failures.join(", ")) });

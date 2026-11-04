@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--delist-binary', type=Path, required=True)
     parser.add_argument('--screenshot-dir', type=Path)
     args = parser.parse_args()
-    mode = {'gate': 'excess'}
+    mode = {'gate': 'building'}
     slugs = ['gate_fr_arb01', 'gate_fr_arb04', 'bybit_fr_arb01']
     with tempfile.TemporaryDirectory(prefix='delist-exposure-browser-') as temporary:
         root = Path(temporary)
@@ -83,12 +83,13 @@ def main():
                     timestamp = now-10_000 if slug == slugs[0] and mode['gate'] == 'stale' else now
                     row = {'asset': 'TEST', 'open_qty': 1000+qty, 'hedge_qty': -1000,
                            'open_usdt': (1000+qty)*price, 'hedge_usdt': -1000*price,
-                           'net_qty': qty, 'net_usdt': qty*price, 'is_total': False}
+                           'net_qty': qty, 'net_usdt': qty*price, 'is_total': False,
+                           'arb_hedge_net_qty': qty if mode['gate'] == 'building' and slug == slugs[0] else 0}
                     rows = [row]
                     if slug == slugs[0]:
                         rows.append({'asset': 'UNPRICED', 'open_qty': 20, 'hedge_qty': 0,
                                      'open_usdt': 0, 'hedge_usdt': 0, 'net_qty': 20,
-                                     'net_usdt': 0, 'is_total': False})
+                                     'net_usdt': 0, 'is_total': False, 'arb_hedge_net_qty': 0})
                     return self.respond({'entries': [
                         {'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
                         {'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000}}
@@ -166,6 +167,10 @@ def main():
                         time.sleep(.1)
                     raise AssertionError(report())
 
+                data = wait_account(lambda a: a['risk_abs_usdt'] == 0 and not a['breaches'])
+                time.sleep(2.5)
+                assert not next(a for a in report()['accounts'] if a['slug'] == slugs[0])['breaches']
+                mode['gate'] = 'excess'
                 data = wait_account(lambda a: a['risk_status'] == 'alert')
                 assert len(data['accounts']) == 3
                 assert next(a for a in data['accounts'] if a['slug'] == slugs[2])['risk_status'] == 'unknown'

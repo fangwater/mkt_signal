@@ -65,13 +65,24 @@ SG Bybit; directional CTA/Exec targets do not enter this check.
 
 Every 10 seconds, the service concurrently reads each account's existing
 `/fr/<env>/snapshot` through the loopback gateway (five-second request timeout).
-It sums **absolute per-asset net exposures** within each account; different
+It keeps raw account net position differences visible, but alerts only on the
+**uncovered difference** after subtracting same-direction strategy hedge-plan
+coverage. The coverage is capped at the actual net quantity: a larger plan cannot
+invent an opposite risk, and an opposite-direction plan covers none. The producer's
+`arb_hedge_net_qty` includes both pending and quantities already borrowed by a
+working hedge; subtracting `arb_pending_hedge_qty` alone would falsely flag normal
+construction. Explicit null means no strategy plan; absent/invalid metadata is
+unknown. A plan does not prove an order is active, filled or unstalled; order
+progress/rejection evidence is needed for a separate stalled-execution check.
+
+It sums **absolute per-asset uncovered differences** within each account; different
 assets and accounts cannot cancel each other's risk. The signed `TOTAL` row is
-ignored. Two-leg quantities/valuations, the largest residual, pending hedge
+ignored. Two-leg quantities/valuations, raw differences, plan quantities, the
+largest uncovered difference, pending hedge
 quantity, timestamps and all nonzero snapshot positions are available on the
 board. Mobile summaries are stacked; detailed position tables scroll locally.
 
-Default monitoring thresholds are **100 USDT per asset**, **500 USDT per account**,
+Default monitoring thresholds on uncovered differences are **100 USDT per asset**, **500 USDT per account**,
 and **30 seconds** of observed excess before a persistent warning. Initial excess
 is shown immediately as pending. These are display thresholds, independent of
 trading, delisting, automatic dump and flatten thresholds. The collector itself
@@ -136,10 +147,12 @@ one explicit setup test and exits. No extra scheduler or GPT model is introduced
   symbols are automatically added to strategies.
 - UniMMR uses the live account state and configured trigger/recovery lines;
   the gap between those lines is unknown for recovery. Confirmed asset/account
-  exposure, incomplete data, provider failures and empty UniMMR close lists send
+  uncovered exposure, incomplete data, provider failures and empty UniMMR close lists send
   once on first detection and once on confirmed recovery. There is no periodic
   repeat or severity-change repeat. Unknown/missing/stale data never recover a
   prior issue. A fully closed asset requires complete fresh coverage to recover.
+  Provider/backup source notices are scoped to FR and the current FR catalog;
+  CTA backup history and retired FR accounts are excluded from this channel.
 - Actual successful dump/list-removal mutations and completed flatten-script
   outcomes queue operation logs. The notification module itself submits no order
   and does not change trading settings. It reports these service operations,

@@ -66,6 +66,9 @@ pub struct Row {
     pub open_usdt: Option<f64>,
     pub hedge_usdt: Option<f64>,
     pub net_usdt: Option<f64>,
+    pub hedge_plan_qty: Option<f64>,
+    pub uncovered_qty: Option<f64>,
+    pub uncovered_usdt: Option<f64>,
     pub pending_hedge_qty: Option<f64>,
 }
 
@@ -93,6 +96,7 @@ pub struct Account {
     pub risk_status: &'static str,
     pub complete: bool,
     pub abs_usdt: Option<f64>,
+    pub risk_abs_usdt: Option<f64>,
     pub net_usdt: Option<f64>,
     pub largest_asset: Option<String>,
     pub largest_usdt: Option<f64>,
@@ -115,6 +119,7 @@ impl Account {
             risk_status: "unknown",
             complete: false,
             abs_usdt: None,
+            risk_abs_usdt: None,
             net_usdt: None,
             largest_asset: None,
             largest_usdt: None,
@@ -216,23 +221,30 @@ impl Monitor {
                             .sum(),
                     );
                     account.net_usdt = Some(sample.rows.iter().filter_map(|r| r.net_usdt).sum());
-                    let largest =
+                    account.risk_abs_usdt = Some(
                         sample
                             .rows
                             .iter()
-                            .filter(|r| r.net_usdt.is_some())
-                            .max_by(|a, b| {
-                                a.net_usdt
-                                    .unwrap()
-                                    .abs()
-                                    .total_cmp(&b.net_usdt.unwrap().abs())
-                            });
+                            .filter_map(|r| r.uncovered_usdt)
+                            .map(f64::abs)
+                            .sum(),
+                    );
+                    let largest = sample
+                        .rows
+                        .iter()
+                        .filter(|r| r.uncovered_usdt.is_some())
+                        .max_by(|a, b| {
+                            a.uncovered_usdt
+                                .unwrap()
+                                .abs()
+                                .total_cmp(&b.uncovered_usdt.unwrap().abs())
+                        });
                     account.largest_asset = largest.map(|r| r.asset.clone());
-                    account.largest_usdt = largest.and_then(|r| r.net_usdt);
+                    account.largest_usdt = largest.and_then(|r| r.uncovered_usdt);
                     let mut above = BTreeMap::new();
                     for row in &sample.rows {
                         if let Some(value) = row
-                            .net_usdt
+                            .uncovered_usdt
                             .filter(|v| v.abs() > self.settings.asset_limit_usdt)
                         {
                             above.insert(
@@ -241,14 +253,14 @@ impl Monitor {
                             );
                         }
                     }
-                    if account.abs_usdt.unwrap_or(0.0) > self.settings.account_limit_usdt {
-                        above.insert("total".into(), (None, account.abs_usdt.unwrap()));
+                    if account.risk_abs_usdt.unwrap_or(0.0) > self.settings.account_limit_usdt {
+                        above.insert("total".into(), (None, account.risk_abs_usdt.unwrap()));
                     }
                     if advanced {
                         let known_assets: BTreeSet<_> = sample
                             .rows
                             .iter()
-                            .filter(|row| row.net_usdt.is_some())
+                            .filter(|row| row.uncovered_usdt.is_some())
                             .map(|row| row.asset.as_str())
                             .collect();
                         account.breaches.retain(|key, breach| {
@@ -421,6 +433,39 @@ fn parse_row(value: &Value) -> Result<Row> {
             "{asset} 持仓估值无效"
         );
     }
+    let hedge_plan_qty = match value.get("arb_hedge_net_qty") {
+        Some(Value::Null) => Some(0.0), // Current producer explicitly has no strategy plan.
+        Some(value) => Some(
+            value
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .context("无效的对冲计划净量")?,
+        ),
+        None => None, // An older/incomplete producer cannot prove plan coverage.
+    };
+    let uncovered_qty = if net_qty.abs() <= 1e-12 {
+        Some(0.0)
+    } else {
+        hedge_plan_qty.map(|plan| {
+            let covered = if plan.signum() == net_qty.signum() {
+                plan.abs().min(net_qty.abs())
+            } else {
+                0.0
+            };
+            net_qty.signum() * (net_qty.abs() - covered)
+        })
+    };
+    let uncovered_usdt = if priced {
+        uncovered_qty.map(|qty| {
+            if net_qty.abs() <= 1e-12 {
+                0.0
+            } else {
+                net * (qty / net_qty)
+            }
+        })
+    } else {
+        None
+    };
     Ok(Row {
         asset,
         open_qty,
@@ -429,6 +474,9 @@ fn parse_row(value: &Value) -> Result<Row> {
         open_usdt: priced.then_some(open),
         hedge_usdt: priced.then_some(hedge),
         net_usdt: priced.then_some(net),
+        hedge_plan_qty,
+        uncovered_qty,
+        uncovered_usdt,
         pending_hedge_qty: value["arb_pending_hedge_qty"]
             .as_f64()
             .filter(|v| v.is_finite()),
@@ -474,6 +522,12 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
                 if row.net_usdt.is_none() {
                     errors.push(format!("{} 有持仓但缺少有效价格", row.asset));
                 }
+                if row.net_usdt.is_some() && row.uncovered_usdt.is_none() {
+                    errors.push(format!(
+                        "{} 缺少对冲计划元数据，不能判定异常敞口",
+                        row.asset
+                    ));
+                }
                 rows.push(row);
             }
             Err(err) => {
@@ -488,6 +542,7 @@ fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
             row.open_usdt = None;
             row.hedge_usdt = None;
             row.net_usdt = None;
+            row.uncovered_usdt = None;
         }
     }
     if rows.is_empty() && number(risk, "total_position")? > 1.0 {
@@ -585,7 +640,7 @@ mod tests {
 
     fn row(asset: &str, net: f64) -> Value {
         json!({"asset":asset,"open_qty":1000.0+net,"hedge_qty":-1000.0,
-            "open_usdt":1000.0+net,"hedge_usdt":-1000.0,"net_qty":net,"net_usdt":net,"is_total":false})
+            "open_usdt":1000.0+net,"hedge_usdt":-1000.0,"net_qty":net,"net_usdt":net,"is_total":false,"arb_hedge_net_qty":0.0})
     }
 
     fn snapshot(rows: Vec<Value>, now: i64) -> Value {
@@ -626,6 +681,67 @@ mod tests {
         assert_eq!(a.net_usdt, Some(0.0));
         assert_eq!(a.breaches.len(), 3);
         assert_eq!(a.rows.len(), 2);
+    }
+
+    #[test]
+    fn normal_construction_never_becomes_exposure_alert_or_recovery() {
+        let mut m = Monitor::new(Settings::default());
+        let mut building = row("IDOL", 160.0);
+        building["arb_hedge_net_qty"] = serde_json::json!(160.0);
+        // Pending excludes quantities already borrowed by a live hedge order;
+        // the full strategy net quantity covers both pending and working parts.
+        building["arb_pending_hedge_qty"] = serde_json::json!(1.0);
+        for t in [0, 10_000, 20_000, 30_000, 120_000] {
+            apply(&mut m, vec![building.clone()], NOW + t);
+            let a = account(&m, NOW + t);
+            assert_eq!(a.abs_usdt, Some(160.0));
+            assert_eq!(a.risk_abs_usdt, Some(0.0));
+            assert!(a.breaches.is_empty());
+        }
+        apply(&mut m, vec![row("IDOL", 0.0)], NOW + 130_000);
+        assert!(account(&m, NOW + 130_000).breaches.is_empty());
+    }
+
+    #[test]
+    fn unplanned_adl_difference_is_not_hidden_by_a_partial_or_wrong_direction_plan() {
+        for (net, plan, expected) in [
+            (160.0, 10.0, 150.0),
+            (160.0, -1000.0, 160.0),
+            (-160.0, -10.0, -150.0),
+            (160.0, 500.0, 0.0),
+            (0.0, 500.0, 0.0),
+        ] {
+            let mut value = row("BTC", net);
+            value["arb_hedge_net_qty"] = serde_json::json!(plan);
+            let parsed = parse_row(&value).unwrap();
+            assert_eq!(parsed.uncovered_qty, Some(expected));
+            assert_eq!(parsed.uncovered_usdt, Some(expected));
+        }
+        let mut m = Monitor::new(Settings::default());
+        let mut adl = row("BTC", 160.0);
+        adl["arb_hedge_net_qty"] = serde_json::json!(10.0);
+        for t in [0, 10_000, 20_000, 30_000] {
+            apply(&mut m, vec![adl.clone()], NOW + t);
+        }
+        let a = account(&m, NOW + 30_000);
+        assert_eq!(a.risk_status, "alert");
+        assert_eq!(a.breaches["asset:BTC"].value_usdt, 150.0);
+    }
+
+    #[test]
+    fn missing_plan_metadata_is_unknown_while_explicit_no_strategy_is_uncovered() {
+        let mut value = row("BTC", 160.0);
+        value.as_object_mut().unwrap().remove("arb_hedge_net_qty");
+        let sample = parse(
+            &snapshot(vec![value.clone()], NOW),
+            NOW,
+            &Settings::default(),
+        )
+        .unwrap();
+        assert!(!sample.errors.is_empty());
+        assert_eq!(sample.rows[0].uncovered_usdt, None);
+        value["arb_hedge_net_qty"] = Value::Null;
+        assert_eq!(parse_row(&value).unwrap().uncovered_usdt, Some(160.0));
     }
 
     #[test]
