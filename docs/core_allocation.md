@@ -1,7 +1,38 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-04 12:13 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-04 12:51 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-04 12:44–12:51 UTC，Gate arb02的O、BANK及最后一笔合约对冲收尾后，
+再次原生确认零挂单、最大净尾差约15 U，再停止基础组件并发布ADL修复。
+安装与arb03相同的6个本地release产物，经SCP临时路径、SHA-256核验及原子安装，
+环境本地脚本恢复基础服务和原有信号；env.sh、全部已采样配置及账户设置保持。
+Config PID3319943（20022）、Viz3320213（20122）、persist3320546（CPU15）、
+trade_engine3323074、pre_trade3323443、account_monitor3323698、trade_signal3326279；
+原dashboard62454（20132）保持，除persist外均CPU mask `0-5,48-95`。
+4路交易登录、6路账户订阅及主备futures.usertrades正常；小数张数/乘数核验通过，
+净尾差合计123.00 U、单币最大15.17 U、现货和合约挂单均0；FTM/MATIC的纳币级
+旧尾量保持并单列为无价，不伪造金额。原`.232/.233`出口及既有默认路由`.228`外连保持。
+arb03继续运行，arb01仍等待两笔已有对冲，尚未发布；Bitget/Gate arb04受保护进程保持。
+12:51末次一分钟91条信号、无新增运行错误；合约挂单0、恢复信号后正常现货挂单10笔。
+备份及验收见 `../artifacts/gate_fr_adl_release_20261104/README.md`。
+
+2026-11-04 12:28–12:42 UTC，JP `gate_fr_arb03` 发布ADL现货修复并恢复原有信号。
+本地同步、干净arbmm `038e1dac` 构建6个release产物，经标准publish的SCP临时路径、
+逐项SHA-256校验及原子安装，启停均经环境本地脚本。停止前/停信号后均确认
+现货及合约挂单0，再停止基础组件；env.sh、全部已采样配置与账户设置保持。
+Config PID3275510（20023）、Viz3275682（20123）、persist3278090（CPU15）、
+trade_engine3278567、pre_trade3279685、account_monitor3281204、trade_signal3287955；
+原dashboard63312（20133）未重启，除persist外CPU mask均为`0-5,48-95`。
+4路交易连接、6路账户订阅及主备futures.usertrades正常；原生小数张数/乘数核对通过，
+净尾差合计65.23 U、单币最大22.74 U，现货/合约挂单0，末次一分钟105条信号、无新增运行错误。
+TAKE/SFP借贷费率缺失在发布前12:00已存在，继续按原逻辑拦截相关缺数据标的。
+Gate arb01/02按用户要求仍等待既有对冲收尾，尚未发布；O/BANK大额对冲已完成，
+arb01仍有2笔合约单，arb02于12:41连续两次零挂单，待重新核验后发布。
+arb02报价仍依赖trade_signal，短暂停信号后已恢复，
+未强制taker或修改策略参数。Bitget及Gate arb04的24个交易进程身份保持；
+源IP/网络/共享因子未改。三套旧发布文件均在各环境`run/adl_release_20261104T121136Z/`。
+当前部署状态、哈希及验收见 `../artifacts/gate_fr_adl_release_20261104/README.md`。
 
 2026-11-04 12:11–12:13 UTC，按用户要求从Prep02 last-20的1min/15min删除ICX共3条规则，
 并从Prep/Spread券池定义移除ICX；Prep规则102→99、计算408→404，九策略身份保持。

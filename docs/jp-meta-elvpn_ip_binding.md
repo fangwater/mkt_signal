@@ -1,6 +1,21 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 12:13 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-04 12:51 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-04 12:44–12:49 UTC，待Gate arb02的既有对冲收尾后发布ADL修复并恢复信号。
+`local_ips`仍为`["172.31.35.232", "172.31.35.233"]`；实际引擎/账户连接可见
+两条绑定地址及既有默认路由`.228`外连，未改出口逻辑。env.sh、全部已采样配置、
+账户设置、CPU分配、监听端口、ENI/EIP和路由保持。arb03继续运行新版本，arb01尚待对冲收尾；
+Bitget/Gate arb04受保护进程保持。CPU/PID与验收见`core_allocation.md`和同一份
+`../artifacts/gate_fr_adl_release_20261104/README.md`。
+
+2026-11-04 12:28–12:42 UTC，仅完成JP `gate_fr_arb03` 的ADL修复发布及信号恢复；
+arb01/02继续等待在途对冲，未发布。arb03 `local_ips`保持
+`["172.31.35.231", "172.31.35.231"]`，引擎/账户WS沿用既有绑定，另有既有默认路由
+`.228`外连；arb02配置仍为`.232/.233`，arb01仍为`.231/.231`。
+env.sh、全部已采样配置与账户设置保持，无ENI/EIP、策略路由、网卡、监听端口或CPU分配变化。
+Bitget及Gate arb04的24个交易进程身份保持。CPU/PID、备份及原生仓位核验见
+`core_allocation.md`、`../artifacts/gate_fr_adl_release_20261104/README.md`。
 
 2026-11-04 12:11–12:13 UTC，经Config API热更新移除Prep02的3条ICX规则和
 Prep/Spread券池成员，Prep计算408→404，九条RX03绑定保持grid/shares=1。

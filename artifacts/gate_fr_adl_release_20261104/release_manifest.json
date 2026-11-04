@@ -1,0 +1,16 @@
+{
+  "source": {
+    "commit": "038e1dac63ef639b0d8391fdd30419bd91b511b2",
+    "branch": "arbmm",
+    "synced_with_origin": true,
+    "clean": true
+  },
+  "sha256": {
+    "trade_engine": "2c43f9dd91492a596821e60b1ef1a2dfdb6a4a6198d3bc19248a66caf2b0a796",
+    "pre_trade": "d97352fba42f29cb04cb993cad8d5394354bb7ba679998ec800b80c36cd592e2",
+    "gate_account_monitor": "a8544e7320a75fb6d71a02563f90a6627b78d9304cde92694c0ba5ab87c0484b",
+    "trade_signal": "6f86bf3b76740bf5bf6b730c6b7157ad0fcdd737275ae3b6e294cd2f89304d9b",
+    "viz_server": "bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de",
+    "persist_manager": "12cbefb582c388014d75740f708b4391984071a479a72fac3deaf60eb1aab002"
+  }
+}
