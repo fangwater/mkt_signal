@@ -36,6 +36,10 @@ pub struct Source {
     /// Zero retains exact matching; never accepts a pending execution gap.
     #[serde(default)]
     pub residual_quote_limit: f64,
+    /// Reconcile observed current ownership at the same zero-sum cutover;
+    /// requires complete account quantities to match historical replay first.
+    #[serde(default)]
+    pub reconcile_current_ownership: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -428,6 +432,47 @@ fn prepare_source(
     let mut changes = BTreeMap::<(String, String, i16), (f64, f64)>::new();
     let mut new_shares = BTreeMap::new();
     let mut residuals = Vec::new();
+    let residual_owner = if source.strategy_anchor {
+        "__unallocated__"
+    } else {
+        "system_position_close"
+    };
+    let mut actual_owners = BTreeMap::<(String, String, i16), f64>::new();
+    for rows in positions.values() {
+        for (owner, row) in rows {
+            let name = if owner.eq_ignore_ascii_case("SYSTEM_POSITION_CLOSE") {
+                residual_owner
+            } else {
+                owner
+            };
+            for (symbol, qty) in row {
+                *actual_owners
+                    .entry((name.into(), symbol.clone(), 1))
+                    .or_default() += qty;
+            }
+        }
+    }
+    if source.reconcile_current_ownership {
+        let mut totals = BTreeMap::<(String, i16), f64>::new();
+        for ((_, symbol, venue), qty) in &actual_owners {
+            *totals.entry((symbol.clone(), *venue)).or_default() += qty;
+        }
+        ensure!(
+            account.keys().chain(totals.keys()).all(|key| (account
+                .get(key)
+                .copied()
+                .unwrap_or_default()
+                - totals.get(key).copied().unwrap_or_default())
+            .abs()
+                < 1e-8),
+            "complete historical account does not match captured execution ownership"
+        );
+        for (key, qty) in &before {
+            if !old.contains_key(&key.0) && key.0 != residual_owner {
+                ensure!(same_qty(*qty, actual_owners.get(key).copied().unwrap_or_default()), "unrelated historical ownership differs; cannot reconcile it during group migration");
+            }
+        }
+    }
     ensure!(
         source.residual_quote_limit.is_finite()
             && (0.0..=10.0).contains(&source.residual_quote_limit),
@@ -474,6 +519,12 @@ fn prepare_source(
             .keys()
             .chain(owned.keys())
             .cloned()
+            .chain(
+                before
+                    .keys()
+                    .filter(|(name, _, venue)| name == old_name && *venue == 1)
+                    .map(|(_, symbol, _)| symbol.clone()),
+            )
             .collect::<BTreeSet<_>>();
         for symbol in symbols {
             let qty = owned.get(&symbol).copied().unwrap_or_default();
@@ -557,18 +608,16 @@ fn prepare_source(
                 }
                 residuals.push(json!({"old_strategy":old_name,"symbol":symbol,"target_qty":target,"actual_qty":qty,"adjustments":audit}));
             }
+            let historical = before
+                .get(&(old_name.clone(), symbol.clone(), 1))
+                .copied()
+                .unwrap_or_default();
             ensure!(
-                same_qty(
-                    qty,
-                    before
-                        .get(&(old_name.clone(), symbol.clone(), 1))
-                        .copied()
-                        .unwrap_or_default()
-                ),
+                source.reconcile_current_ownership || same_qty(qty, historical),
                 "Manager historical ownership differs from Exec: {old_name}/{symbol}"
             );
-            if qty != 0.0 {
-                changes.insert((old_name.clone(), symbol, 1), (qty, 0.0));
+            if historical != 0.0 {
+                changes.insert((old_name.clone(), symbol, 1), (historical, 0.0));
             }
         }
         // Preserve explicit zeros for retired strategy names in the current ledger.
@@ -597,6 +646,22 @@ fn prepare_source(
                 .unwrap()
                 .insert(name.clone(), allocated);
             new_shares.insert(name.clone(), share);
+        }
+    }
+    if source.reconcile_current_ownership {
+        let symbols = before
+            .keys()
+            .chain(actual_owners.keys())
+            .filter(|(name, _, venue)| name == residual_owner && *venue == 1)
+            .map(|(_, symbol, _)| symbol.clone())
+            .collect::<BTreeSet<_>>();
+        for symbol in symbols {
+            let key = (residual_owner.to_string(), symbol, 1);
+            let a = before.get(&key).copied().unwrap_or_default();
+            let b = actual_owners.get(&key).copied().unwrap_or_default();
+            if a != b {
+                changes.insert(key, (a, b));
+            }
         }
     }
     for (old_name, table) in old {
@@ -677,7 +742,11 @@ fn prepare_source(
             (delta * source.marks[symbol].price).abs() < 1e-6,
             "PnL ownership transfer changes account quantity: {symbol}"
         );
-        if source.strategy_anchor {
+        if source.strategy_anchor
+            && !corrections
+                .iter()
+                .any(|p| p["strategy"] == "__unallocated__" && p["symbol"] == *symbol)
+        {
             let qty = before
                 .get(&("__unallocated__".into(), symbol.clone(), 1))
                 .copied()
@@ -692,7 +761,7 @@ fn prepare_source(
         );
     }
     Ok(
-        json!({"source_id":source.source_id,"old_shares":source.shares,"new_shares":new_shares,"execution_residuals":residuals,"manager_audit_sha256":fingerprint(&source.allocation_audit)?,"account_quantity_unchanged":true,"pnl_correction_required":!corrections.is_empty()}),
+        json!({"source_id":source.source_id,"old_shares":source.shares,"new_shares":new_shares,"execution_residuals":residuals,"current_ownership_reconciled":source.reconcile_current_ownership,"manager_audit_sha256":fingerprint(&source.allocation_audit)?,"account_quantity_unchanged":true,"pnl_correction_required":!corrections.is_empty()}),
     )
 }
 

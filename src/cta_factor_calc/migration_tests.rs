@@ -121,7 +121,7 @@ fn fixture() -> Fixture {
             ledgers_after: ledgers.clone(), ledgers,
             exec_snapshot: json!({"position_ready":true,"ts_ms":CUTOVER/1000,"rows":rows}),
             allocation_audit: json!({"source_id":id,"snapshot_ts_us":CUTOVER,"account":account,"strategies":projection}),
-            strategy_anchor: true, marks, residual_quote_limit: 0.0,
+            strategy_anchor: true, marks, residual_quote_limit: 0.0, reconcile_current_ownership: false,
         }
     }).collect();
     Fixture {
@@ -318,5 +318,44 @@ fn migration_preserves_observed_settled_residuals_and_an_absent_unused_family() 
         1
     );
     f.request.sources[0].residual_quote_limit = 0.0;
+    assert!(prepare(&f.plan, &f.root, &f.request).is_err());
+}
+
+#[test]
+fn current_ownership_reconciliation_is_zero_sum_and_requires_full_account_proof() {
+    let mut f = fixture();
+    let source = &mut f.request.sources[0];
+    source.strategy_anchor = false;
+    for row in source.allocation_audit["strategies"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if row[0] == "cta-prep02-bn-15min-pos" && row[1] == "SOLUSDT" {
+            row[3] = json!(2.1);
+        }
+    }
+    source.allocation_audit["strategies"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(["system_position_close", "SOLUSDT", 1, -0.1]));
+    assert!(prepare(&f.plan, &f.root, &f.request).is_err());
+    f.request.sources[0].reconcile_current_ownership = true;
+    let bundle = prepare(&f.plan, &f.root, &f.request).unwrap();
+    let positions = bundle.files["sources/source-a/manager-allocation.json"]["positions"]
+        .as_array()
+        .unwrap();
+    let residual = positions
+        .iter()
+        .find(|p| p["strategy"] == "system_position_close" && p["symbol"] == "SOLUSDT")
+        .unwrap();
+    assert_eq!(residual["before_qty"], -0.1);
+    assert_eq!(residual["after_qty"], 0.0);
+    let sum: f64 = positions
+        .iter()
+        .filter(|p| p["symbol"] == "SOLUSDT")
+        .map(|p| p["after_qty"].as_f64().unwrap() - p["before_qty"].as_f64().unwrap())
+        .sum();
+    assert!(sum.abs() < 1e-12);
+    f.request.sources[0].allocation_audit["account"][0][2] = json!(999.0);
     assert!(prepare(&f.plan, &f.root, &f.request).is_err());
 }
