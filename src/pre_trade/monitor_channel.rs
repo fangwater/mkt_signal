@@ -2435,15 +2435,16 @@ impl BasicAccountListener {
                         });
                         if record.is_some() {
                             MonitorChannel::instance().bump_trade_update_seq();
-                            if fill.venue == TradingVenue::GateFutures as u8
-                                && fill.reason.as_deref() == Some("adl")
-                                && self.open_venue == TradingVenue::GateMargin
-                                && self.hedge_venue == TradingVenue::GateFutures
-                                && MonitorChannel::instance().arb_mode()
-                                    == trade_signal::ArbMode::FundingArb
-                                && !EXEC_RUNTIME_MODE.with(Cell::get)
+                            if fill.reason.as_deref() == Some("adl")
+                                && venue == self.hedge_venue
+                                && adl_spot_repair_enabled(
+                                    self.open_venue,
+                                    self.hedge_venue,
+                                    MonitorChannel::instance().arb_mode(),
+                                    EXEC_RUNTIME_MODE.with(Cell::get),
+                                )
                             {
-                                dispatch_gate_adl_spot_repair(&self.strategy_mgr, &fill);
+                                dispatch_adl_spot_repair(&self.strategy_mgr, &fill, None);
                             }
                         }
                     }
@@ -7709,6 +7710,24 @@ fn dispatch_binance_external_order_update(update: &BinanceBasicOrderMsg) {
             price,
             update.last_executed_quantity
         );
+        let monitor = MonitorChannel::instance();
+        if reason == "adl"
+            && venue == monitor.hedge_venue()
+            && adl_spot_repair_enabled(
+                monitor.open_venue(),
+                monitor.hedge_venue(),
+                monitor.arb_mode(),
+                EXEC_RUNTIME_MODE.with(Cell::get),
+            )
+        {
+            if let Some(fill) = binance_adl_repair_fill(update) {
+                dispatch_adl_spot_repair(
+                    &monitor.strategy_mgr(),
+                    &fill,
+                    Some(update.cumulative_filled_quantity),
+                );
+            }
+        }
     } else {
         PersistChannel::with(|channel| channel.publish_order_update_unmatched(update));
         debug!(
@@ -7723,12 +7742,61 @@ fn dispatch_binance_external_order_update(update: &BinanceBasicOrderMsg) {
     }
 }
 
-fn dispatch_gate_adl_spot_repair(
+fn adl_spot_repair_enabled(
+    spot: TradingVenue,
+    futures: TradingVenue,
+    mode: trade_signal::ArbMode,
+    is_exec: bool,
+) -> bool {
+    !is_exec
+        && mode == trade_signal::ArbMode::FundingArb
+        && crate::strategy::arb_hedge_strategy::ArbHedgeStrategy::adl_spot_venue(futures)
+            == Some(spot)
+}
+
+fn binance_adl_repair_fill(
+    update: &BinanceBasicOrderMsg,
+) -> Option<mkt_parsers::msg::external_futures_fill::ExternalFuturesFill> {
+    use order_common::{OrderUpdate, TradeUpdate};
+    if update.external_order_label() != Some("adl")
+        || OrderUpdate::trading_venue(update) != TradingVenue::BinanceFutures
+        || OrderUpdate::execution_type(update) != ExecutionType::Trade
+        || update.order_id <= 0
+        || !update.cumulative_filled_quantity.is_finite()
+        || update.cumulative_filled_quantity <= 0.0
+    {
+        return None;
+    }
+    let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill {
+        venue: TradingVenue::BinanceFutures as u8,
+        symbol: update.symbol.clone(),
+        order_id: update.order_id.to_string(),
+        trade_id: update.trade_id.to_string(),
+        timestamp_us: TradeUpdate::trade_time(update),
+        side: update.side,
+        price: if update.last_executed_price.is_finite() && update.last_executed_price > 0.0 {
+            update.last_executed_price
+        } else {
+            update.average_price
+        },
+        quantity: update.last_executed_quantity,
+        is_maker: TradeUpdate::factual_is_maker(update),
+        reason: Some("adl".to_string()),
+    };
+    fill.validate().ok()?;
+    Some(fill)
+}
+
+fn dispatch_adl_spot_repair(
     strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
     fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
+    cumulative_native_qty: Option<f64>,
 ) {
+    let Some(futures) = TradingVenue::from_u8(fill.venue) else {
+        return;
+    };
     let base_qty = match MonitorChannel::instance().qty_to_base_at_price(
-        TradingVenue::GateFutures,
+        futures,
         &fill.symbol,
         fill.quantity,
         fill.price,
@@ -7736,15 +7804,36 @@ fn dispatch_gate_adl_spot_repair(
         Ok(qty) if qty.is_finite() && qty > 0.0 => qty,
         result => {
             error!(
-                "Gate ADL spot repair missing valid contract multiplier: symbol={} result={:?}",
+                "ADL spot repair missing valid contract multiplier: symbol={} result={:?}",
                 fill.symbol, result
             );
             return;
         }
     };
-    let id = strategy_mgr
+    let cumulative_base_qty = match cumulative_native_qty {
+        Some(qty) => match MonitorChannel::instance().qty_to_base_at_price(
+            futures,
+            &fill.symbol,
+            qty,
+            fill.price,
+        ) {
+            Ok(qty) if qty.is_finite() && qty > 0.0 => Some(qty),
+            result => {
+                error!(
+                    "ADL spot repair invalid cumulative quantity: symbol={} result={:?}",
+                    fill.symbol, result
+                );
+                return;
+            }
+        },
+        None => None,
+    };
+    let Some(id) = strategy_mgr
         .borrow_mut()
-        .ensure_gate_adl_spot_hedge_strategy(&fill.symbol);
+        .ensure_adl_spot_hedge_strategy(&fill.symbol, futures)
+    else {
+        return;
+    };
     // Release the manager borrow before sending through the normal order path.
     let Some(mut strategy) = strategy_mgr.borrow_mut().remove(id) else {
         return;
@@ -7753,7 +7842,7 @@ fn dispatch_gate_adl_spot_repair(
         .as_any_mut()
         .downcast_mut::<crate::strategy::arb_hedge_strategy::ArbHedgeStrategy>()
     {
-        if hedge.record_gate_adl_spot_fill(fill, base_qty) {
+        if hedge.record_adl_spot_fill(fill, base_qty, cumulative_base_qty) {
             strategy.handle_period_clock(get_timestamp_us());
         }
     }
@@ -8073,6 +8162,99 @@ mod tests {
             record.from_key,
             b"exchange_forced_close:adl:order=11540474397072413:trade=5395499"
         );
+    }
+
+    #[test]
+    fn adl_spot_repair_is_scoped_to_same_venue_linear_funding_environments() {
+        use trade_signal::ArbMode;
+        for (spot, futures) in [
+            (TradingVenue::GateMargin, TradingVenue::GateFutures),
+            (TradingVenue::BybitMargin, TradingVenue::BybitFutures),
+            (TradingVenue::BinanceMargin, TradingVenue::BinanceFutures),
+        ] {
+            assert!(adl_spot_repair_enabled(
+                spot,
+                futures,
+                ArbMode::FundingArb,
+                false
+            ));
+            assert!(!adl_spot_repair_enabled(
+                spot,
+                futures,
+                ArbMode::FundingArb,
+                true
+            ));
+            for mode in [ArbMode::IntraArb, ArbMode::CrossArb] {
+                assert!(!adl_spot_repair_enabled(spot, futures, mode, false));
+            }
+        }
+        assert!(!adl_spot_repair_enabled(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BybitFutures,
+            ArbMode::FundingArb,
+            false
+        ));
+        assert!(!adl_spot_repair_enabled(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceCoinFutures,
+            ArbMode::FundingArb,
+            false
+        ));
+        assert!(!adl_spot_repair_enabled(
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
+            ArbMode::FundingArb,
+            false
+        ));
+    }
+
+    #[test]
+    fn binance_adl_adapter_accepts_only_factual_usdm_adl_fills() {
+        let mut update = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
+            1_793_355_400_798,
+            1_793_355_400_797,
+            "BTCUSDT".to_string(),
+            998877,
+            -998877,
+            556677,
+            Side::Buy.to_u8(),
+            order_common::OrderType::Market.to_u8(),
+            order_common::TimeInForce::IOC.to_u8(),
+            ExecutionType::Trade.to_u8(),
+            OrderStatus::PartiallyFilled.to_u8(),
+            false,
+            0.0,
+            0.5,
+            0.2,
+            0.3,
+            50000.0,
+            50000.0,
+            0.0,
+            0.0,
+            "USDT".to_string(),
+        );
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_ADL;
+        let fill = binance_adl_repair_fill(&update).unwrap();
+        assert_eq!(fill.venue, TradingVenue::BinanceFutures as u8);
+        assert_eq!(fill.order_id, "998877");
+        assert_eq!(fill.trade_id, "556677");
+        assert_eq!(fill.timestamp_us, 1_793_355_400_797_000);
+        assert_eq!(fill.quantity, 0.2);
+        assert_eq!(fill.reason.as_deref(), Some("adl"));
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_LIQUIDATION;
+        assert!(binance_adl_repair_fill(&update).is_none());
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_ADL;
+        update.last_executed_quantity = 0.0;
+        assert!(binance_adl_repair_fill(&update).is_none());
+        update.last_executed_quantity = 0.2;
+        for cumulative in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            update.cumulative_filled_quantity = cumulative;
+            assert!(binance_adl_repair_fill(&update).is_none());
+        }
+        update.cumulative_filled_quantity = 0.3;
+        update.venue = BinanceBasicOrderMsg::VENUE_CM;
+        assert!(binance_adl_repair_fill(&update).is_none());
     }
 
     #[test]

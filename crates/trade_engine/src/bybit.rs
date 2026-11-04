@@ -883,6 +883,37 @@ mod tests {
     }
 
     #[test]
+    fn bybit_adl_spot_market_repair_uses_base_quantity_without_new_borrow() {
+        for side in [Side::Buy, Side::Sell] {
+            let params = BybitNewOrderParams {
+                side,
+                order_type: OrderType::Market,
+                reduce_only: true,
+                is_leverage: false,
+                quantity_qv: QuantizedValue::from_decimal(0.2).unwrap(),
+                price_qv: QuantizedValue::zero(),
+                symbol: "BTCUSDT".to_string(),
+            };
+            let request = BybitNewOrderRequest::create_margin(1, 99, params).unwrap();
+            let payload: Value = serde_json::from_str(
+                &request
+                    .to_ws_json_string("adl-repair", 1793355400797)
+                    .unwrap(),
+            )
+            .unwrap();
+            let arg = &payload["args"][0];
+            assert_eq!(arg["category"], "spot");
+            assert_eq!(arg["orderType"], "Market");
+            assert_eq!(arg["qty"], "0.2");
+            assert_eq!(arg["isLeverage"], 0);
+            if side == Side::Buy {
+                assert_eq!(arg["marketUnit"], "baseCoin");
+            }
+            assert!(arg.get("reduceOnly").is_none());
+        }
+    }
+
+    #[test]
     fn prepared_bybit_new_order_matches_legacy_bytes() {
         let params = BybitNewOrderParams {
             side: Side::Buy,

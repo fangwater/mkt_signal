@@ -785,6 +785,35 @@ mod tests {
     }
 
     #[test]
+    fn adl_autoclose_is_a_factual_fill_in_pm_and_standard_um_scopes() {
+        for scope in [
+            BasicAccountScope::BinanceUnified,
+            BasicAccountScope::BinanceStdUm,
+        ] {
+            let parser = BinanceBasicAccountEventParser::new(true, scope);
+            let sink = TestAccountEventSink::new();
+            let raw = serde_json::json!({"e":"ORDER_TRADE_UPDATE","E":1793355400798_i64,"T":1793355400797_i64,"o":{
+                "s":"BTCUSDT","c":"adl_autoclose","S":"BUY","o":"MARKET","f":"IOC",
+                "x":"CALCULATED","X":"PARTIALLY_FILLED","i":998877,"t":556677,
+                "m":false,"p":"0","q":"0.5","ap":"50000","l":"0.2","z":"0.3","L":"50000","N":"USDT","n":"0"
+            }});
+            assert_eq!(parser.parse(Bytes::from(raw.to_string()), &sink), 1);
+            let received = sink.recv().unwrap();
+            let (_, actual_scope, payload) = split_basic_account_event(&received).unwrap();
+            assert_eq!(actual_scope, scope);
+            let fill = BinanceBasicOrderMsg::from_bytes(payload).unwrap();
+            assert_eq!(fill.external_order_label(), Some("adl"));
+            assert_eq!(
+                fill.execution_type,
+                order_codes::execution_type_to_u8("TRADE")
+            );
+            assert_eq!(fill.last_executed_quantity, 0.2);
+            assert_eq!(fill.cumulative_filled_quantity, 0.3);
+            assert_eq!(fill.trade_id, 556677);
+        }
+    }
+
+    #[test]
     fn execution_report_uses_orig_client_order_id_fallback() {
         let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdSpot);
         let sink = TestAccountEventSink::new();

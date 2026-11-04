@@ -138,7 +138,7 @@ impl ExternalFuturesFill {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            matches!(self.venue, 5 | 7 | 9)
+            matches!(self.venue, 1 | 5 | 7 | 9)
                 && self.symbol.len() > 4
                 && self.symbol.ends_with("USDT"),
             "external fill market mismatch"
@@ -176,6 +176,9 @@ impl ExternalFuturesFill {
             return false;
         };
         let scope = match self.venue {
+            // Binance retains its PM/standard scope on its existing native
+            // order-update stream. Its local ADL adapter is not emitted here.
+            1 => return false,
             5 => BasicAccountScope::BybitUnified,
             9 => BasicAccountScope::GateUnified,
             _ => BasicAccountScope::BitgetUnified,

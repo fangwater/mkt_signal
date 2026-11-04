@@ -376,7 +376,7 @@ impl StrategyManager {
             is_arb_hedge: strategy
                 .as_any()
                 .downcast_ref::<ArbHedgeStrategy>()
-                .is_some_and(|hedge| !hedge.is_gate_adl_spot_hedge()),
+                .is_some_and(|hedge| !hedge.is_adl_spot_hedge()),
             batch_exec_strategy_name: strategy
                 .as_any()
                 .downcast_ref::<BatchExecStrategy>()
@@ -1212,7 +1212,7 @@ impl StrategyManager {
                 if strategy
                     .as_any()
                     .downcast_ref::<ArbHedgeStrategy>()
-                    .is_some_and(|hedge| !hedge.is_gate_adl_spot_hedge())
+                    .is_some_and(|hedge| !hedge.is_adl_spot_hedge())
                 {
                     return Some(*id);
                 }
@@ -1227,20 +1227,29 @@ impl StrategyManager {
         self.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol_upper)
     }
 
-    pub fn ensure_gate_adl_spot_hedge_strategy(&mut self, symbol: &str) -> i32 {
+    pub fn ensure_adl_spot_hedge_strategy(
+        &mut self,
+        symbol: &str,
+        futures: TradingVenue,
+    ) -> Option<i32> {
+        ArbHedgeStrategy::adl_spot_venue(futures)?;
         let symbol = normalize_symbol_for_internal(symbol);
         for (&id, strategy) in &self.strategies {
             if strategy
                 .as_any()
                 .downcast_ref::<ArbHedgeStrategy>()
-                .is_some_and(|hedge| hedge.is_gate_adl_spot_hedge() && hedge.symbol == symbol)
+                .is_some_and(|hedge| {
+                    hedge.adl_futures_venue() == Some(futures) && hedge.symbol == symbol
+                })
             {
-                return id;
+                return Some(id);
             }
         }
         let id = Self::generate_strategy_id();
-        self.insert(Box::new(ArbHedgeStrategy::new_gate_adl_spot(id, symbol)));
-        id
+        self.insert(Box::new(ArbHedgeStrategy::new_adl_spot(
+            id, symbol, futures,
+        )?));
+        Some(id)
     }
 
     pub fn register_force_close_open_id(
@@ -1412,7 +1421,7 @@ impl StrategyManager {
             .strategies
             .get_mut(&source_id)
             .and_then(|strategy| strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>())
-            .filter(|hedge| hedge.is_gate_adl_spot_hedge())
+            .filter(|hedge| hedge.is_adl_spot_hedge())
         {
             return repair.record_hedge_order_terminal(
                 terminal_ts,
@@ -1458,7 +1467,7 @@ impl StrategyManager {
         let mut snapshots = Vec::new();
         for strategy in self.strategies.values() {
             if let Some(arb_hedge) = strategy.as_any().downcast_ref::<ArbHedgeStrategy>() {
-                if arb_hedge.is_gate_adl_spot_hedge() {
+                if arb_hedge.is_adl_spot_hedge() {
                     continue;
                 }
                 snapshots.push(arb_hedge.snapshot(now_ts));
@@ -1492,7 +1501,7 @@ impl StrategyManager {
             let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
                 continue;
             };
-            if arb_hedge.is_gate_adl_spot_hedge() {
+            if arb_hedge.is_adl_spot_hedge() {
                 continue;
             }
             if arb_hedge.trigger_lazy_taker_on_model_update(now_ts, None) {
@@ -1609,7 +1618,7 @@ mod tests {
     use std::any::Any;
 
     #[test]
-    fn gate_adl_spot_repair_cannot_replace_normal_arb_hedge_recorder() {
+    fn adl_spot_repair_cannot_replace_normal_arb_hedge_recorder() {
         let mut manager = StrategyManager::new();
         manager.insert(Box::new(ArbHedgeStrategy::new(
             41,
@@ -1617,10 +1626,10 @@ mod tests {
             TradingVenue::GateMargin,
             TradingVenue::GateFutures,
         )));
-        manager.insert(Box::new(ArbHedgeStrategy::new_gate_adl_spot(
-            42,
-            "ALPINEUSDT".to_string(),
-        )));
+        manager.insert(Box::new(
+            ArbHedgeStrategy::new_adl_spot(42, "ALPINEUSDT".to_string(), TradingVenue::GateFutures)
+                .unwrap(),
+        ));
         assert_eq!(manager.find_arb_hedge_id("ALPINEUSDT"), Some(41));
         assert_eq!(
             manager.find_order_terminal_recorder_id("ALPINEUSDT"),
@@ -1641,11 +1650,13 @@ mod tests {
             TradingVenue::GateMargin,
             TradingVenue::GateFutures,
         );
-        let mut repair = ArbHedgeStrategy::new_gate_adl_spot(42, "ALPINEUSDT".to_string());
+        let mut repair =
+            ArbHedgeStrategy::new_adl_spot(42, "ALPINEUSDT".to_string(), TradingVenue::GateFutures)
+                .unwrap();
         let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(
             &serde_json::json!({"id":1,"order_id":"native-1","text":"auto_deleveraging","contract":"ALPINE_USDT","create_time":1793355400,"size":"1","price":"0.4269"})
         ).unwrap();
-        assert!(repair.record_gate_adl_spot_fill(&fill, 1.0));
+        assert!(repair.record_adl_spot_fill(&fill, 1.0, None));
         assert_eq!(
             repair
                 .pending_hedge_queue

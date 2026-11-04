@@ -785,6 +785,30 @@ mod tests {
     }
 
     #[test]
+    fn execution_adl_keeps_factual_identity_even_with_numeric_order_link() {
+        use crate::msg::external_futures_fill::ExternalFuturesFill;
+        let parser = BybitAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let raw = serde_json::json!({"topic":"execution","data":[{
+            "category":"linear","symbol":"BTCUSDT","orderId":"native-adl-order",
+            "orderLinkId":"12345","execType":"AdlTrade","execId":"native-adl-trade",
+            "execTime":"1793355400797","side":"Buy","execPrice":"50000",
+            "execQty":"0.2","isMaker":false
+        }]});
+        assert_eq!(parser.parse(Bytes::from(raw.to_string()), &sink), 1);
+        let received = sink.recv().unwrap();
+        let (kind, scope, body) = split_basic_account_event(&received).unwrap();
+        assert_eq!(kind, BasicAccountEventType::ExternalFuturesFill);
+        assert_eq!(scope, BasicAccountScope::BybitUnified);
+        let fill = ExternalFuturesFill::from_bytes(body).unwrap();
+        assert_eq!(fill.reason.as_deref(), Some("adl"));
+        assert_eq!(fill.order_id, "native-adl-order");
+        assert_eq!(fill.trade_id, "native-adl-trade");
+        assert_eq!(fill.quantity, 0.2);
+        assert_eq!(fill.side, 1);
+    }
+
+    #[test]
     fn wallet_channel_emits_zero_borrow_when_liability_fields_are_present() {
         let parser = BybitAccountEventParser::new();
         let sink = TestAccountEventSink::new();
