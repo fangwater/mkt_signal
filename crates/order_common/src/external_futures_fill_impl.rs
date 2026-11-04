@@ -35,10 +35,10 @@ impl TradeUpdate for ExternalFuturesFill {
         self.is_maker
     }
     fn trading_venue(&self) -> TradingVenue {
-        if self.venue == 5 {
-            TradingVenue::BybitFutures
-        } else {
-            TradingVenue::BitgetFutures
+        match self.venue {
+            5 => TradingVenue::BybitFutures,
+            9 => TradingVenue::GateFutures,
+            _ => TradingVenue::BitgetFutures,
         }
     }
     fn cumulative_filled_quantity(&self) -> f64 {

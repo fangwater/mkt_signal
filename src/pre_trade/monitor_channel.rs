@@ -2435,6 +2435,16 @@ impl BasicAccountListener {
                         });
                         if record.is_some() {
                             MonitorChannel::instance().bump_trade_update_seq();
+                            if fill.venue == TradingVenue::GateFutures as u8
+                                && fill.reason.as_deref() == Some("adl")
+                                && self.open_venue == TradingVenue::GateMargin
+                                && self.hedge_venue == TradingVenue::GateFutures
+                                && MonitorChannel::instance().arb_mode()
+                                    == trade_signal::ArbMode::FundingArb
+                                && !EXEC_RUNTIME_MODE.with(Cell::get)
+                            {
+                                dispatch_gate_adl_spot_repair(&self.strategy_mgr, &fill);
+                            }
                         }
                     }
                 }
@@ -7713,6 +7723,43 @@ fn dispatch_binance_external_order_update(update: &BinanceBasicOrderMsg) {
     }
 }
 
+fn dispatch_gate_adl_spot_repair(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
+) {
+    let base_qty = match MonitorChannel::instance().qty_to_base_at_price(
+        TradingVenue::GateFutures,
+        &fill.symbol,
+        fill.quantity,
+        fill.price,
+    ) {
+        Ok(qty) if qty.is_finite() && qty > 0.0 => qty,
+        result => {
+            error!(
+                "Gate ADL spot repair missing valid contract multiplier: symbol={} result={:?}",
+                fill.symbol, result
+            );
+            return;
+        }
+    };
+    let id = strategy_mgr
+        .borrow_mut()
+        .ensure_gate_adl_spot_hedge_strategy(&fill.symbol);
+    // Release the manager borrow before sending through the normal order path.
+    let Some(mut strategy) = strategy_mgr.borrow_mut().remove(id) else {
+        return;
+    };
+    if let Some(hedge) = strategy
+        .as_any_mut()
+        .downcast_mut::<crate::strategy::arb_hedge_strategy::ArbHedgeStrategy>()
+    {
+        if hedge.record_gate_adl_spot_fill(fill, base_qty) {
+            strategy.handle_period_clock(get_timestamp_us());
+        }
+    }
+    strategy_mgr.borrow_mut().insert(strategy);
+}
+
 fn build_uta_external_uniform_order(
     fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
 ) -> Option<UnifiedOrderRecord> {
@@ -8009,6 +8056,23 @@ mod tests {
         let mut unknown = fill;
         unknown.reason = None;
         assert!(build_uta_external_uniform_order(&unknown).is_none());
+    }
+
+    #[test]
+    fn gate_adl_uniform_fill_keeps_native_contract_quantity_and_ids() {
+        let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(
+            &serde_json::json!({"id":5395499,"order_id":"11540474397072413","text":"auto_deleveraging","contract":"ALPINE_USDT","create_time":1793355400.7977,"size":"4250.1","price":"0.4269","role":"taker"})
+        ).unwrap();
+        use order_common::TradeUpdate;
+        assert_eq!(fill.trading_venue(), TradingVenue::GateFutures);
+        let record = build_uta_external_uniform_order(&fill).unwrap();
+        assert_eq!(record.client_order_id, 0);
+        assert_eq!(record.venue, TradingVenue::GateFutures as u8);
+        assert_eq!(record.amount_update, 4250.1);
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:adl:order=11540474397072413:trade=5395499"
+        );
     }
 
     #[test]

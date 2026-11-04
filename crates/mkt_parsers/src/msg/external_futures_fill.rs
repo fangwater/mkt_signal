@@ -40,6 +40,52 @@ pub fn bitget_reason(value: &str) -> Option<&'static str> {
 }
 
 impl ExternalFuturesFill {
+    /// Gate user trades are authoritative fills; order notifications only carry
+    /// cumulative quantities and must not create a second ADL fill.
+    pub fn from_gate_adl(row: &Value) -> Option<Self> {
+        if row["text"].as_str()? != "auto_deleveraging" {
+            return None;
+        }
+        let identity = |key: &str| match &row[key] {
+            Value::String(value) if !value.is_empty() => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        };
+        let number = |key: &str| {
+            row[key]
+                .as_f64()
+                .or_else(|| row[key].as_str()?.parse().ok())
+                .filter(|value| value.is_finite())
+        };
+        let signed_size = number("size")?;
+        let timestamp = number("create_time_ms").or_else(|| number("create_time"))?;
+        let timestamp_us = if timestamp >= 1_000_000_000_000.0 {
+            timestamp * 1_000.0
+        } else {
+            timestamp * 1_000_000.0
+        };
+        let value = Self {
+            venue: 9,
+            symbol: row["contract"].as_str()?.replace('_', ""),
+            order_id: identity("order_id")?,
+            trade_id: identity("id")?,
+            timestamp_us: timestamp_us.round() as i64,
+            side: if signed_size > 0.0 { 1 } else { 2 },
+            price: number("price")?,
+            // Preserve native contracts in the factual record. Pre-trade
+            // converts through the venue multiplier before hedging spot.
+            quantity: signed_size.abs(),
+            is_maker: match row["role"].as_str() {
+                Some("maker") => Some(true),
+                Some("taker") => Some(false),
+                _ => None,
+            },
+            reason: Some("adl".to_string()),
+        };
+        value.validate().ok()?;
+        Some(value)
+    }
+
     pub fn from_exchange(venue: u8, row: &Value, reason: Option<&str>) -> Option<Self> {
         let bybit = venue == 5;
         if !matches!(venue, 5 | 7) {
@@ -92,7 +138,9 @@ impl ExternalFuturesFill {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            matches!(self.venue, 5 | 7) && self.symbol.len() > 4 && self.symbol.ends_with("USDT"),
+            matches!(self.venue, 5 | 7 | 9)
+                && self.symbol.len() > 4
+                && self.symbol.ends_with("USDT"),
             "external fill market mismatch"
         );
         ensure!(
@@ -127,10 +175,10 @@ impl ExternalFuturesFill {
         let Ok(raw) = serde_json::to_vec(self) else {
             return false;
         };
-        let scope = if self.venue == 5 {
-            BasicAccountScope::BybitUnified
-        } else {
-            BasicAccountScope::BitgetUnified
+        let scope = match self.venue {
+            5 => BasicAccountScope::BybitUnified,
+            9 => BasicAccountScope::GateUnified,
+            _ => BasicAccountScope::BitgetUnified,
         };
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::ExternalFuturesFill,

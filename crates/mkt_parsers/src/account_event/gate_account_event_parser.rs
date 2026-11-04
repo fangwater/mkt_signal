@@ -625,6 +625,11 @@ impl GateAccountEventParser {
         for order in result {
             // 解析 client_order_id (text 字段，必须是 i64)
             let text = order.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if text == "auto_deleveraging" {
+                // Native user trades provide the fill/trade identities.
+                // Do not count this cumulative order notification again.
+                continue;
+            }
             let client_order_id = match Self::parse_gate_client_order_id(text) {
                 Some(id) => id,
                 None => {
@@ -993,6 +998,16 @@ impl GateAccountEventParser {
         }
 
         for trade in result {
+            if trade["text"].as_str() == Some("auto_deleveraging") {
+                match crate::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(trade) {
+                    Some(fill) => count += usize::from(fill.emit(tx)),
+                    None => {
+                        warn!("Gate: malformed ADL user trade: {}", trade);
+                        incomplete = true;
+                    }
+                }
+                continue;
+            }
             let symbol = trade
                 .get("contract")
                 .and_then(|v| v.as_str())
@@ -1940,6 +1955,58 @@ mod tests {
         assert_eq!(trade.is_maker, 1);
         assert!((trade.last_executed_price - 40_000.4).abs() < 1e-9);
         assert!((trade.last_executed_quantity - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn futures_adl_trade_keeps_native_identity_and_decimal_contracts() {
+        let parser = GateAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let row = serde_json::json!({
+            "id":5395499,"order_id":"11540474397072413",
+            "create_time":1793355400.7977,"contract":"ALPINE_USDT",
+            "size":"4250.1","price":"0.4269","role":"taker",
+            "text":"auto_deleveraging"
+        });
+        let payload =
+            serde_json::json!({"channel":"futures.usertrades","event":"update","result":[row]});
+        let report = parser.parse_with_report(Bytes::from(payload.to_string()), &sink);
+        assert!(report.complete);
+        assert_eq!(report.emitted, 1);
+        let wrapped = sink.recv().unwrap();
+        let (kind, scope, body) = split_basic_account_event(&wrapped).unwrap();
+        assert_eq!(kind, BasicAccountEventType::ExternalFuturesFill);
+        assert_eq!(scope, BasicAccountScope::GateUnified);
+        let fill =
+            crate::msg::external_futures_fill::ExternalFuturesFill::from_bytes(body).unwrap();
+        assert_eq!(fill.symbol, "ALPINEUSDT");
+        assert_eq!(fill.order_id, "11540474397072413");
+        assert_eq!(fill.trade_id, "5395499");
+        assert_eq!(fill.reason.as_deref(), Some("adl"));
+        assert_eq!(fill.quantity, 4250.1);
+        assert_eq!(fill.timestamp_us, 1_793_355_400_797_700);
+        assert_eq!(fill.side, 1);
+        assert_eq!(fill.is_maker, Some(false));
+    }
+
+    #[test]
+    fn futures_adl_order_does_not_duplicate_user_trade_or_invent_a_fill() {
+        let parser = GateAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let order = serde_json::json!({"channel":"futures.orders","event":"update","result":[{
+            "id":"11540474397072413","text":"auto_deleveraging",
+            "contract":"ALPINE_USDT","size":"4250","left":"0","finish_as":"filled"
+        }]});
+        let report = parser.parse_with_report(Bytes::from(order.to_string()), &sink);
+        assert!(report.complete);
+        assert_eq!(report.emitted, 0);
+        assert!(sink.recv().is_none());
+        let missing_trade_id = serde_json::json!({"channel":"futures.usertrades","event":"update","result":[{
+            "order_id":"11540474397072413","text":"auto_deleveraging",
+            "contract":"ALPINE_USDT","size":"4250","price":"0.4269","create_time":1793355400
+        }]});
+        let report = parser.parse_with_report(Bytes::from(missing_trade_id.to_string()), &sink);
+        assert!(!report.complete);
+        assert_eq!(report.emitted, 0);
     }
 
     #[test]

@@ -204,6 +204,10 @@ async fn main() -> Result<()> {
             channel: "futures.positions".to_string(),
             payload: vec!["!all".to_string()],
         },
+        SubscribeChannel {
+            channel: "futures.usertrades".to_string(),
+            payload: vec!["!all".to_string()],
+        },
     ];
 
     // 创建 PM 转发器 (account_pubs/gate/pm)

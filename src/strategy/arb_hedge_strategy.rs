@@ -189,6 +189,7 @@ fn is_direct_taker_from_key(from_key: &[u8]) -> bool {
         || from_key.starts_with(b"arb_hedge_unimmr_force_close_direct|")
         || from_key.starts_with(b"arb_hedge_intra_stop_loss_direct|")
         || from_key.starts_with(b"arb_hedge_intra_take_profit_direct|")
+        || from_key.starts_with(b"arb_hedge_gate_adl_spot_direct|")
 }
 
 fn is_unimmr_force_close_direct_from_key(from_key: &[u8]) -> bool {
@@ -227,6 +228,10 @@ pub struct ArbHedgeStrategy {
     pub(super) symbol: String,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    /// Dedicated Gate ADL repair instance. It owns only spot orders and is not
+    /// registered as the ordinary arbitrage hedge/terminal recorder.
+    gate_adl_spot_hedge: bool,
+    gate_adl_seen_fills: FastHashSet<(String, String)>,
     /// open/hedge 两个 venue 合并后的实时净敞口，使用 base qty 口径互相冲销。
     pub(super) net_qty_queue: NetQtyQueue,
     /// 尚需由对冲腿覆盖的 opening-leg 成交队列，到期时间来自成交记录的 close_ts。
@@ -286,7 +291,8 @@ struct ArbHedgeOrderMeta {
 
 impl ArbHedgeStrategy {
     fn is_intra(&self) -> bool {
-        self.open_venue != self.hedge_venue
+        !self.gate_adl_spot_hedge
+            && self.open_venue != self.hedge_venue
             && self.open_venue.trade_engine_exchange() == self.hedge_venue.trade_engine_exchange()
     }
 
@@ -680,6 +686,8 @@ impl ArbHedgeStrategy {
             symbol: normalize_symbol_for_internal(&symbol.into()),
             open_venue,
             hedge_venue,
+            gate_adl_spot_hedge: false,
+            gate_adl_seen_fills: fast_hash_set(),
             net_qty_queue: NetQtyQueue::new(),
             pending_hedge_queue: TimedNetQtyQueue::new(),
             force_close_open_ids: fast_hash_set(),
@@ -723,6 +731,111 @@ impl ArbHedgeStrategy {
             ret_qtl: self.last_ret_qtl,
             offset: self.last_hedge_offset,
         }
+    }
+
+    pub fn new_gate_adl_spot(strategy_id: i32, symbol: String) -> Self {
+        let mut strategy = Self::new(
+            strategy_id,
+            symbol,
+            TradingVenue::GateFutures,
+            TradingVenue::GateMargin,
+        );
+        strategy.gate_adl_spot_hedge = true;
+        strategy
+    }
+
+    pub fn is_gate_adl_spot_hedge(&self) -> bool {
+        self.gate_adl_spot_hedge
+    }
+
+    pub fn record_gate_adl_spot_fill(
+        &mut self,
+        fill: &mkt_parsers::msg::external_futures_fill::ExternalFuturesFill,
+        base_qty: f64,
+    ) -> bool {
+        if !self.gate_adl_spot_hedge
+            || fill.validate().is_err()
+            || fill.venue != TradingVenue::GateFutures as u8
+            || fill.reason.as_deref() != Some("adl")
+            || normalize_symbol_for_internal(&fill.symbol) != self.symbol
+            || !base_qty.is_finite()
+            || base_qty <= 0.0
+            || !self
+                .gate_adl_seen_fills
+                .insert((fill.order_id.clone(), fill.trade_id.clone()))
+        {
+            return false;
+        }
+        let signed_qty = if fill.side == Side::Buy as u8 {
+            base_qty
+        } else {
+            -base_qty
+        };
+        self.net_qty_queue
+            .apply_fill(fill.timestamp_us, signed_qty, fill.price);
+        self.pending_hedge_queue
+            .put(fill.timestamp_us, 0, signed_qty, fill.price);
+        warn!(
+            "Gate ADL spot repair queued: symbol={} order={} trade={} contracts={} signed_base_qty={} pending_base_qty={}",
+            self.symbol, fill.order_id, fill.trade_id, fill.quantity, signed_qty,
+            self.pending_hedge_queue.net_qty()
+        );
+        self.next_query_ts_us = 0;
+        true
+    }
+
+    fn gate_adl_reducing_qty(due: f64, spot_position: f64) -> f64 {
+        if !due.is_finite() || !spot_position.is_finite() || due * spot_position <= 0.0 {
+            return 0.0;
+        }
+        due.signum() * due.abs().min(spot_position.abs())
+    }
+
+    fn try_gate_adl_spot_hedge(&mut self, now_ts: i64) -> bool {
+        // Keep ambiguous/live orders reserved until their real terminal state.
+        // Reuse the ordinary hedge watchdog, partial-fill and retry lifecycle.
+        if now_ts < self.next_query_ts_us
+            || !self.hedge_order_meta.is_empty()
+            || !self.orphaned_hedge_order_meta.is_empty()
+        {
+            return false;
+        }
+        let monitor = MonitorChannel::instance();
+        let due = Self::gate_adl_reducing_qty(
+            self.pending_hedge_queue.due_qty(now_ts),
+            monitor.get_position_qty(&self.symbol, TradingVenue::GateMargin),
+        );
+        if due.abs() <= ARB_HEDGE_QTY_EPS {
+            return false;
+        }
+        let Some(price) = self.gate_adl_spot_reference_price(due, now_ts) else {
+            return false;
+        };
+        let amount_u = PreTradeParamsLoader::instance().arb_amount_u_for_symbol(&self.symbol);
+        if !amount_u.is_finite() || amount_u <= 0.0 {
+            return false;
+        }
+        let child_qty = due.signum() * due.abs().min(amount_u / price);
+        self.next_query_ts_us = now_ts.saturating_add(100_000);
+        self.supersede_inflight_query_for_force_close(now_ts, "gate_adl_spot");
+        self.send_taker_hedge_direct(now_ts, child_qty, "gate_adl_spot", None)
+    }
+
+    fn gate_adl_spot_reference_price(&self, due: f64, now_ts: i64) -> Option<f64> {
+        let quote = trade_signal::MktChannel::is_initialized()
+            .then(|| {
+                trade_signal::MktChannel::instance()
+                    .get_quote(&self.symbol, TradingVenue::GateMargin)
+            })
+            .flatten()?;
+        let age = now_ts.checked_sub(quote.ts)?;
+        (quote.ts > 0
+            && (0..=2_000_000).contains(&age)
+            && quote.bid.is_finite()
+            && quote.bid > 0.0
+            && quote.ask.is_finite()
+            && quote.ask >= quote.bid)
+            .then_some(if due > 0.0 { quote.bid } else { quote.ask })
     }
 
     pub fn net_qty(&self) -> f64 {
@@ -1247,7 +1360,12 @@ impl ArbHedgeStrategy {
             return false;
         }
         self.last_hedge_ts_ms = Some(now_ts / 1000);
-        let Some(mark_price) = self.mark_price() else {
+        let reference_price = if self.gate_adl_spot_hedge {
+            self.gate_adl_spot_reference_price(due_hedge_qty, now_ts)
+        } else {
+            self.mark_price()
+        };
+        let Some(mark_price) = reference_price else {
             if !suppress_pre_submit_hot_path_logs() {
                 info!(
                     "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because mark_price missing due_hedge_qty={:.8}",
@@ -1664,6 +1782,9 @@ impl ArbHedgeStrategy {
         reason: &'static str,
         throttle_on_skip: bool,
     ) -> bool {
+        if self.gate_adl_spot_hedge {
+            return self.try_gate_adl_spot_hedge(now_ts);
+        }
         let force_close_due = self.due_force_close_open_id(now_ts).is_some();
         if force_close_due {
             self.supersede_inflight_query_for_force_close(now_ts, reason);
@@ -1987,6 +2108,13 @@ impl ArbHedgeStrategy {
             return;
         }
         let ctx_is_taker = ctx.is_taker();
+        if self.gate_adl_spot_hedge && (venue != TradingVenue::GateMargin || !ctx_is_taker) {
+            warn!(
+                "Gate ADL repair rejects non-spot/non-taker order: symbol={} venue={:?}",
+                self.symbol, venue
+            );
+            return;
+        }
         let now_ts = get_timestamp_us();
         if self.is_binance_position_limit_blocked(side, now_ts) {
             self.next_query_ts_us = self.binance_position_limit_block_until_us;
@@ -2074,7 +2202,16 @@ impl ArbHedgeStrategy {
         } else {
             OrderType::Limit
         };
-        let price = if is_taker { 0.0 } else { ctx_price };
+        // Gate spot market buys take quote notional, whereas our order ledger
+        // uses base quantity. The Gate encoder submits this reducing buy as a
+        // base-quantity IOC at the fresh ask carried here.
+        let price = if self.gate_adl_spot_hedge && side == Side::Buy {
+            ctx.hedging_leg.ask0
+        } else if is_taker {
+            0.0
+        } else {
+            ctx_price
+        };
         let price_offset = if force_taker_taker {
             0.0
         } else {
@@ -2158,7 +2295,8 @@ impl ArbHedgeStrategy {
             );
         }
 
-        let reduce_only = force_taker_taker
+        let reduce_only = self.gate_adl_spot_hedge
+            || force_taker_taker
             || (venue == self.hedge_venue
                 && symbol == self.symbol
                 && self.hyperliquid_reduce_only_hedge(side, order_base_qty))
@@ -3235,6 +3373,24 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         client_order_id: i64,
         reason: &str,
     ) -> bool {
+        if self.gate_adl_spot_hedge {
+            // A query timeout is not proof that this spot IOC did not fill.
+            // Keep its quantity reserved and query the same order again;
+            // never let orphan-budget exhaustion turn it into a zero-fill
+            // terminal and sell the ADL quantity for a second time.
+            self.order_reconcile_state
+                .pending_order_queries
+                .remove(&client_order_id);
+            self.order_reconcile_state.order_query_watchdogs.insert(
+                client_order_id,
+                (
+                    get_timestamp_us().saturating_add(ARB_HEDGE_QUERY_INTERVAL_US),
+                    PendingOrderQueryReason::OrderWatchdog,
+                ),
+            );
+            warn!("Gate ADL spot repair awaiting factual order outcome: symbol={} client_order_id={} reason={}; quantity remains reserved", self.symbol, client_order_id, reason);
+            return false;
+        }
         warn!(
             "ArbHedgeReconcile: strategy_id={} orphan_handoff_start reason={} {}",
             self.strategy_id,
@@ -3523,6 +3679,10 @@ impl Strategy for ArbHedgeStrategy {
         }
         self.handle_order_query_watchdogs();
         self.handle_expired_hedge_orders(now_ts);
+        if self.gate_adl_spot_hedge {
+            self.try_gate_adl_spot_hedge(now_ts);
+            return;
+        }
         if self.check_intra_trailing_stops(now_ts) {
             return;
         }
@@ -3555,11 +3715,15 @@ impl Strategy for ArbHedgeStrategy {
     }
 
     fn has_order_terminal_recorder(&self) -> bool {
-        true
+        !self.gate_adl_spot_hedge
     }
 
     fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
-        Some(self)
+        if self.gate_adl_spot_hedge {
+            None
+        } else {
+            Some(self)
+        }
     }
 }
 
@@ -3792,6 +3956,104 @@ mod tests {
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
+
+    #[test]
+    fn gate_adl_spot_repair_deduplicates_and_keeps_partial_remainders() {
+        let mut strategy = ArbHedgeStrategy::new_gate_adl_spot(1, "ESPORTSUSDT".to_string());
+        assert_eq!(strategy.hedge_venue, TradingVenue::GateMargin);
+        assert!(!strategy.is_intra());
+        assert!(!strategy.has_order_terminal_recorder());
+        let mut row = serde_json::json!({"id":"fill-1","order_id":"native-1","text":"auto_deleveraging","contract":"ESPORTS_USDT","create_time":1793355400,"size":"12.5","price":"0.01","role":"taker"});
+        let fill =
+            mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(&row)
+                .unwrap();
+        // 12.5 Gate contracts, multiplier 100, must sell 1,250 spot units.
+        assert!(strategy.record_gate_adl_spot_fill(&fill, 1250.0));
+        assert!(!strategy.record_gate_adl_spot_fill(&fill, 1250.0));
+        assert_eq!(strategy.pending_hedge_qty(), 1250.0);
+        let borrowed = strategy
+            .pending_hedge_queue
+            .borrow(fill.timestamp_us, 1000.0);
+        assert_eq!(borrowed.qty, 1000.0);
+        assert!(strategy.record_hedge_order_terminal_with_borrowed(
+            fill.timestamp_us + 1,
+            Side::Sell,
+            1000.0,
+            600.0,
+            0.01,
+            borrowed.qv,
+            0
+        ));
+        assert_eq!(strategy.pending_hedge_qty(), 650.0);
+        assert_eq!(strategy.net_qty(), 650.0);
+        // A separate factual trade of the same ADL order is additional work.
+        row["id"] = serde_json::json!("fill-2");
+        row["size"] = serde_json::json!("2");
+        let second =
+            mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(&row)
+                .unwrap();
+        assert!(strategy.record_gate_adl_spot_fill(&second, 200.0));
+        assert_eq!(strategy.pending_hedge_qty(), 850.0);
+        assert!(!strategy.record_gate_adl_spot_fill(&fill, 1250.0));
+    }
+
+    #[test]
+    fn gate_adl_spot_repair_never_increases_spot_inventory() {
+        assert_eq!(
+            ArbHedgeStrategy::gate_adl_reducing_qty(8500.0, 11076.0),
+            8500.0
+        );
+        assert_eq!(
+            ArbHedgeStrategy::gate_adl_reducing_qty(8500.0, 100.0),
+            100.0
+        );
+        assert_eq!(ArbHedgeStrategy::gate_adl_reducing_qty(8500.0, -100.0), 0.0);
+        assert_eq!(
+            ArbHedgeStrategy::gate_adl_reducing_qty(-200.0, -50.0),
+            -50.0
+        );
+        assert_eq!(ArbHedgeStrategy::gate_adl_reducing_qty(-200.0, 50.0), 0.0);
+        assert_eq!(ArbHedgeStrategy::gate_adl_reducing_qty(f64::NAN, 50.0), 0.0);
+    }
+
+    #[test]
+    fn gate_adl_query_timeout_keeps_the_original_spot_order_reserved() {
+        use crate::strategy::hedge_order_reconcile::HedgeOrderReconcileCommon;
+        let mut strategy = ArbHedgeStrategy::new_gate_adl_spot(1, "ALPINEUSDT".to_string());
+        let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(
+            &serde_json::json!({"id":1,"order_id":"native-1","text":"auto_deleveraging","contract":"ALPINE_USDT","create_time":1793355400,"size":"100","price":"0.4269"})
+        ).unwrap();
+        strategy.record_gate_adl_spot_fill(&fill, 100.0);
+        strategy
+            .pending_hedge_queue
+            .borrow(fill.timestamp_us, 100.0);
+        strategy.hedge_order_meta.insert(
+            123,
+            ArbHedgeOrderMeta {
+                intra_allocations: None,
+                signal_ts: fill.timestamp_us,
+                price_offset: 0.0,
+                signal_bbo: None,
+                borrowed_qv: 100.0,
+                order_base_qty: 100.0,
+                filled_base_qty: 0.0,
+                expire_ts: 0,
+                next_expire_check_ts: 0,
+                cancel_requested: false,
+                bound_open_client_order_id: 0,
+                from_key: Vec::new(),
+            },
+        );
+        assert!(!strategy.handoff_hedge_order_after_query_failure(123, "query response timeout"));
+        assert!(strategy.hedge_order_meta.contains_key(&123));
+        assert!(strategy.orphaned_hedge_order_meta.is_empty());
+        assert_eq!(strategy.pending_hedge_qty(), 0.0);
+        assert_eq!(strategy.borrowed_hedge_qv(), 100.0);
+        assert!(strategy
+            .order_reconcile_state
+            .order_query_watchdogs
+            .contains_key(&123));
+    }
 
     #[test]
     fn intra_partial_taker_returns_each_leg_at_original_entry() {

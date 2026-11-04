@@ -267,6 +267,44 @@ fn order_price_qv(order: &Order) -> Option<QuantizedValue> {
         .or_else(|| quantize_order_decimal(order.price))
 }
 
+fn gate_spot_price_qv(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+) -> Result<QuantizedValue, String> {
+    if order.reduce_only && order.order_type == OrderType::Market && order.side == Side::Buy {
+        if let Some(price) = resolved.price_qv.filter(|price| price.get_val() > 0.0) {
+            return Ok(price);
+        }
+        let quote = MktChannel::is_initialized()
+            .then(|| MktChannel::instance().get_quote(&order.symbol, TradingVenue::GateMargin))
+            .flatten()
+            .filter(|quote| {
+                let age = get_timestamp_us().saturating_sub(quote.ts);
+                quote.ts > 0
+                    && (0..=2_000_000).contains(&age)
+                    && quote.ask.is_finite()
+                    && quote.ask > 0.0
+                    && quote.bid.is_finite()
+                    && quote.bid > 0.0
+                    && quote.ask >= quote.bid
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Gate reducing spot buy needs a fresh ask: symbol={}",
+                    order.symbol
+                )
+            })?;
+        quantize_order_decimal(quote.ask).ok_or_else(|| {
+            format!(
+                "invalid Gate reducing spot buy ask: symbol={}",
+                order.symbol
+            )
+        })
+    } else {
+        resolved.limit_price_qv_or_zero(order, "gate")
+    }
+}
+
 fn qv_text_or_zero(qv: Option<QuantizedValue>) -> String {
     qv.map(|qv| qv.decimal_string())
         .unwrap_or_else(|| "0".to_string())
@@ -1241,7 +1279,7 @@ impl PreTradeOrderRequestExt for Order {
                     ));
                 }
                 let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                let price_qv = gate_spot_price_qv(self, resolved)?;
                 GateNewOrderParams::request_bytes_from_parts(
                     trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
@@ -1534,7 +1572,7 @@ impl PreTradeOrderRequestExt for Order {
                     ));
                 }
                 let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
-                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                let price_qv = gate_spot_price_qv(self, resolved)?;
                 GateNewOrderParams::prepared_request_from_parts(
                     trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
@@ -2824,6 +2862,34 @@ mod tests {
         assert_eq!(payload.get("side").and_then(Value::as_str), Some("sell"));
         assert!(payload.get("auto_borrow").is_none());
         assert!(payload.get("auto_repay").is_none());
+    }
+
+    #[test]
+    fn gate_reducing_market_buy_keeps_base_quantity_and_protection_price() {
+        let order = Order::new(
+            TradingVenue::GateMargin,
+            123,
+            OrderType::Market,
+            "ALPINEUSDT".to_string(),
+            Side::Buy,
+            12.5,
+            0.4269,
+            true,
+            1.0,
+            None,
+            false,
+        );
+        for request in [
+            order.get_order_request_bytes().unwrap(),
+            order.get_order_request_prepared().unwrap().to_bytes(),
+        ] {
+            let payload = extract_request_json(&request);
+            assert_eq!(payload["type"], "limit");
+            assert_eq!(payload["time_in_force"], "ioc");
+            assert_eq!(payload["amount"], "12.5");
+            assert_eq!(payload["price"], "0.4269");
+            assert!(payload.get("auto_borrow").is_none());
+        }
     }
 
     #[test]

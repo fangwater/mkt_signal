@@ -373,7 +373,10 @@ impl StrategyManager {
     fn kind_index_flags(strategy: &dyn Strategy) -> StrategyKindIndexFlags {
         StrategyKindIndexFlags {
             is_mm_hedge: strategy.as_any().is::<MarketMakerHedgeStrategy>(),
-            is_arb_hedge: strategy.as_any().is::<ArbHedgeStrategy>(),
+            is_arb_hedge: strategy
+                .as_any()
+                .downcast_ref::<ArbHedgeStrategy>()
+                .is_some_and(|hedge| !hedge.is_gate_adl_spot_hedge()),
             batch_exec_strategy_name: strategy
                 .as_any()
                 .downcast_ref::<BatchExecStrategy>()
@@ -1206,7 +1209,11 @@ impl StrategyManager {
         let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
-                if strategy.as_any().is::<ArbHedgeStrategy>() {
+                if strategy
+                    .as_any()
+                    .downcast_ref::<ArbHedgeStrategy>()
+                    .is_some_and(|hedge| !hedge.is_gate_adl_spot_hedge())
+                {
                     return Some(*id);
                 }
             }
@@ -1218,6 +1225,22 @@ impl StrategyManager {
     pub fn ensure_arb_hedge_strategy(&mut self, symbol: &str) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
         self.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol_upper)
+    }
+
+    pub fn ensure_gate_adl_spot_hedge_strategy(&mut self, symbol: &str) -> i32 {
+        let symbol = normalize_symbol_for_internal(symbol);
+        for (&id, strategy) in &self.strategies {
+            if strategy
+                .as_any()
+                .downcast_ref::<ArbHedgeStrategy>()
+                .is_some_and(|hedge| hedge.is_gate_adl_spot_hedge() && hedge.symbol == symbol)
+            {
+                return id;
+            }
+        }
+        let id = Self::generate_strategy_id();
+        self.insert(Box::new(ArbHedgeStrategy::new_gate_adl_spot(id, symbol)));
+        id
     }
 
     pub fn register_force_close_open_id(
@@ -1382,6 +1405,25 @@ impl StrategyManager {
         bound_open_client_order_id: i64,
         hedge_client_order_id: i64,
     ) -> bool {
+        // ADL spot repair has no symbol-wide terminal-recorder registration:
+        // a timed-out repair order must return to its own original owner.
+        let source_id = (hedge_client_order_id >> 32) as i32;
+        if let Some(repair) = self
+            .strategies
+            .get_mut(&source_id)
+            .and_then(|strategy| strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>())
+            .filter(|hedge| hedge.is_gate_adl_spot_hedge())
+        {
+            return repair.record_hedge_order_terminal(
+                terminal_ts,
+                side,
+                order_base_qty,
+                filled_base_qty,
+                price,
+                bound_open_client_order_id,
+                hedge_client_order_id,
+            );
+        }
         let Some(id) = self.find_order_terminal_recorder_id(symbol) else {
             return false;
         };
@@ -1416,6 +1458,9 @@ impl StrategyManager {
         let mut snapshots = Vec::new();
         for strategy in self.strategies.values() {
             if let Some(arb_hedge) = strategy.as_any().downcast_ref::<ArbHedgeStrategy>() {
+                if arb_hedge.is_gate_adl_spot_hedge() {
+                    continue;
+                }
                 snapshots.push(arb_hedge.snapshot(now_ts));
             }
         }
@@ -1447,6 +1492,9 @@ impl StrategyManager {
             let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
                 continue;
             };
+            if arb_hedge.is_gate_adl_spot_hedge() {
+                continue;
+            }
             if arb_hedge.trigger_lazy_taker_on_model_update(now_ts, None) {
                 triggered = triggered.saturating_add(1);
             }
@@ -1559,6 +1607,73 @@ mod tests {
     use signal_common::tick_math::QuantizedValue;
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
+
+    #[test]
+    fn gate_adl_spot_repair_cannot_replace_normal_arb_hedge_recorder() {
+        let mut manager = StrategyManager::new();
+        manager.insert(Box::new(ArbHedgeStrategy::new(
+            41,
+            "ALPINEUSDT",
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+        )));
+        manager.insert(Box::new(ArbHedgeStrategy::new_gate_adl_spot(
+            42,
+            "ALPINEUSDT".to_string(),
+        )));
+        assert_eq!(manager.find_arb_hedge_id("ALPINEUSDT"), Some(41));
+        assert_eq!(
+            manager.find_order_terminal_recorder_id("ALPINEUSDT"),
+            Some(41)
+        );
+        assert_eq!(manager.arb_hedge_snapshots(1).len(), 1);
+        manager.remove(41);
+        assert_eq!(manager.find_arb_hedge_id("ALPINEUSDT"), None);
+        assert_eq!(manager.find_order_terminal_recorder_id("ALPINEUSDT"), None);
+    }
+
+    #[test]
+    fn gate_adl_orphan_terminal_returns_to_the_spot_repair_owner() {
+        let mut manager = StrategyManager::new();
+        let normal = ArbHedgeStrategy::new(
+            41,
+            "ALPINEUSDT",
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+        );
+        let mut repair = ArbHedgeStrategy::new_gate_adl_spot(42, "ALPINEUSDT".to_string());
+        let fill = mkt_parsers::msg::external_futures_fill::ExternalFuturesFill::from_gate_adl(
+            &serde_json::json!({"id":1,"order_id":"native-1","text":"auto_deleveraging","contract":"ALPINE_USDT","create_time":1793355400,"size":"1","price":"0.4269"})
+        ).unwrap();
+        assert!(repair.record_gate_adl_spot_fill(&fill, 1.0));
+        assert_eq!(
+            repair
+                .pending_hedge_queue
+                .borrow(fill.timestamp_us, 1.0)
+                .qty,
+            1.0
+        );
+        manager.insert(Box::new(normal));
+        manager.insert(Box::new(repair));
+        assert!(manager.record_hedge_order_terminal(
+            "ALPINEUSDT",
+            Side::Sell,
+            1.0,
+            1.0,
+            fill.timestamp_us + 1,
+            0.4269,
+            0,
+            (42_i64 << 32) | 1,
+        ));
+        for id in [41, 42] {
+            let strategy = manager.strategies[&id]
+                .as_any()
+                .downcast_ref::<ArbHedgeStrategy>()
+                .unwrap();
+            assert_eq!(strategy.net_qty(), 0.0);
+            assert_eq!(strategy.pending_hedge_qty(), 0.0);
+        }
+    }
 
     struct DummyOpenStrategy {
         id: i32,
