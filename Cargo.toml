@@ -284,6 +284,10 @@ name = "cta-factor-spread"
 path = "src/bin/cta_factor_spread.rs"
 
 [[bin]]
+name = "cta-symbol-group-migrate"
+path = "src/bin/cta_symbol_group_migrate.rs"
+
+[[bin]]
 name = "cta_cross_spread_factor_model_1m_pub"
 path = "src/bin/cta_cross_spread_factor_model_1m_pub.rs"
 

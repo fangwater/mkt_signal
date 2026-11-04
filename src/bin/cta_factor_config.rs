@@ -9,8 +9,10 @@ use axum::{
 };
 use clap::Parser;
 use mkt_signal::cta_factor_calc::{
-    config::{Combination, Config, Plan, Worker},
-    runtime::{catalog_revision, edit_combination_checked, CatalogConflict},
+    config::{Combination, Config, Plan, SymbolGroups, Worker},
+    runtime::{
+        catalog_revision, edit_combination_checked, edit_symbol_groups_checked, CatalogConflict,
+    },
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -81,6 +83,13 @@ struct Save {
 #[serde(deny_unknown_fields)]
 struct Remove {
     worker: Option<Worker>,
+    expected_revision: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveSymbolGroups {
+    worker: Option<Worker>,
+    symbol_groups: SymbolGroups,
     expected_revision: String,
 }
 
@@ -170,6 +179,40 @@ async fn preview(
 ) -> ApiResult {
     edit(app, headers, request, false).await
 }
+async fn edit_groups(
+    app: Arc<App>,
+    headers: HeaderMap,
+    request: SaveSymbolGroups,
+    execute: bool,
+) -> ApiResult {
+    same_origin(&headers)
+        .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
+    ensure_revision(&request.expected_revision)?;
+    let (config, worker) = app.profile(request.worker).map_err(error)?;
+    let plan = edit_symbol_groups_checked(
+        config,
+        request.symbol_groups,
+        execute,
+        worker,
+        Some(&request.expected_revision),
+    )
+    .map_err(error)?;
+    Ok(Json(app.response(plan, worker).map_err(error)?))
+}
+async fn save_groups(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<SaveSymbolGroups>,
+) -> ApiResult {
+    edit_groups(app, headers, request, true).await
+}
+async fn preview_groups(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(request): Json<SaveSymbolGroups>,
+) -> ApiResult {
+    edit_groups(app, headers, request, false).await
+}
 async fn remove(
     State(app): State<Arc<App>>,
     Path(name): Path<String>,
@@ -220,6 +263,8 @@ fn router(app: App) -> Router {
         .route("/api/status", get(status))
         .route("/api/combinations", post(save))
         .route("/api/preview", post(preview))
+        .route("/api/symbol-groups", post(save_groups))
+        .route("/api/symbol-groups/preview", post(preview_groups))
         .route("/api/combinations/:name", delete(remove))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(axum::middleware::map_response(

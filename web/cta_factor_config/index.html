@@ -31,6 +31,7 @@
   <div class="toolbar">
     <div class="field"><label for="strategy-type">策略类型</label><select id="strategy-type"><option value="cta-prep-binance-futures">Prep</option><option value="cta-factor-spread">Spread</option></select></div>
     <div class="field"><label for="strategy-group">策略组</label><select id="strategy-group"></select></div>
+    <div class="field"><label for="symbol-group">券池（Symbol group）</label><select id="symbol-group"></select></div>
     <div class="actions"><button id="reload" class="ghost" type="button">读取</button><button id="save" type="button">保存当前频段</button><span id="dirty"></span></div>
   </div>
 </header>
@@ -40,9 +41,9 @@
   <div id="message" class="status" role="status" aria-live="polite"></div>
   <section id="strategy-settings" class="panel">
     <div class="section-header"><h2>策略参数 <span id="current-frequency" class="badge"></span></h2></div>
-    <p class="hint">开关、金额和开平仓阈值分别保存到当前频段。各因子沿用独立开平仓规则。</p>
+    <p class="hint">开关、金额和开平仓阈值分别保存到当前策略组、券池和频段。各因子沿用独立开平仓规则。</p>
     <div class="kv-table">
-      <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组的当前频段。</div>
+      <label for="enabled" class="kv-key">策略开关</label><div class="kv-input"><select id="enabled"><option value="false">关闭</option><option value="true">启用</option></select></div><div class="kv-desc">只控制当前策略组、券池和频段。</div>
       <label for="max-pos" class="kv-key">单份金额（USDT）</label><div class="kv-input"><input id="max-pos" type="number" min="0" step="any"></div><div class="kv-desc">每条因子规则的单份金额，修改后用于后续新开仓。</div>
       <label for="entry-long" class="kv-key">多头开仓阈值</label><div class="kv-input"><input id="entry-long" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值高于此阈值时开多。</div>
       <label for="entry-short" class="kv-key">空头开仓阈值</label><div class="kv-input"><input id="entry-short" type="number" min="-1" max="1" step="any"></div><div class="kv-desc">因子值低于此阈值时开空。</div>
@@ -57,16 +58,24 @@
   <section class="panel">
     <div class="section-header"><h2>因子配置 <span id="factor-count" class="badge"></span></h2><div class="actions"><button id="format" class="ghost" type="button">格式化 JSON</button><button id="validate" class="secondary" type="button">校验 JSON</button></div></div>
     <p id="factor-hint" class="hint"></p>
+    <p id="symbol-members" class="hint"></p>
     <textarea id="factor-json" aria-label="因子配置 JSON" spellcheck="false"></textarea>
   </section>
+  <details class="panel">
+    <summary>券池定义 JSON</summary>
+    <p class="hint">填写组名到完整 USDT 标的数组的映射，例如 {"top-5":["BTCUSDT","ETHUSDT"]}。允许券池重叠；规则中的标的须属于所选券池。定义分别保存到当前 Prep / Spread。</p>
+    <textarea id="symbol-groups-json" aria-label="券池定义 JSON" spellcheck="false"></textarea>
+    <div class="actions" style="margin-top:12px"><button id="validate-groups" class="secondary" type="button">校验券池</button><button id="save-groups" type="button">保存券池定义</button></div>
+  </details>
 </main>
 <script>
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
 const prepIntervals=['1min','5min','15min'];
-let catalog=null,draft=null,dirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
+let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
+function hasChanges(){return dirty||groupsDirty;}
 function setBusy(value){busy=value;document.querySelector('main').setAttribute('aria-busy',String(value));for(const el of document.querySelectorAll('input,select,button,textarea'))el.disabled=value;if(!value){for(const button of $('frequency-tabs').children)button.disabled=!button.dataset.name;$('save').disabled=!draft;}}
 async function api(path,options={}){
   const url=new URL('api/'+path,location.href.split('#')[0]);url.searchParams.set('worker',selectedWorker);
@@ -78,7 +87,7 @@ function factorRows(doc){
 }
 function parseRules(){
   let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
-  if(!Array.isArray(rows)||!rows.length)throw Error('因子配置必须是非空 JSON 数组');
+  if(!Array.isArray(rows)||(!rows.length&&!(draft?.symbol_group&&draft?.signal)))throw Error('因子配置必须是 JSON 数组；未限定券池的配置至少需要一条规则');
   const fields=['标的','nq','符号','因子'],result=[],seen=new Set();
   for(const [index,row] of rows.entries()){
     const label='第 '+(index+1)+' 项：';
@@ -90,6 +99,7 @@ function parseRules(){
     const base=row['标的'].trim().toUpperCase().replace(/USDT$/,'');
     if(!/^[A-Z0-9]{1,28}$/.test(base))throw Error(label+'标的名称无效：'+row['标的']);
     const next={'标的':base+'USDT',nq:row.nq.trim(),'符号':row['符号'],'因子':row['因子'].trim()},key=JSON.stringify([next['标的'],next.nq,next['符号'],next['因子'].toLowerCase()]);
+    if(draft.symbol_group&&!catalog.plan.symbol_groups?.[draft.symbol_group]?.includes(next['标的']))throw Error(label+next['标的']+' 不属于券池 '+draft.symbol_group);
     if(seen.has(key))continue;seen.add(key);
     if(draft.reference_venue&&next['因子'].toLowerCase()!=='spread')next.venue=draft.reference_venue;
     result.push(next);
@@ -114,47 +124,72 @@ function collect(){
 }
 function updateCount(rows){$('factor-count').textContent=new Set(rows.map(row=>row['标的'])).size+' 个标的 · '+rows.length+' 条规则';}
 function show(doc){
-  draft=clone(doc);dirty=false;$('dirty').textContent='';$('strategy-group').value=doc.strategy_group;$('current-frequency').textContent=doc.interval;
+  draft=clone(doc);dirty=false;$('dirty').textContent=groupsDirty?'券池定义有未保存修改':'';$('strategy-group').value=doc.strategy_group;$('symbol-group').value=doc.symbol_group||'';$('current-frequency').textContent=(doc.symbol_group?doc.symbol_group+' · ':'')+doc.interval;
   const signal=doc.signal;$('strategy-settings').hidden=!signal;
   if(signal){$('enabled').value=String(signal.enabled);$('max-pos').value=signal.max_pos_u;$('entry-long').value=signal.entry.factor_long_quantile;$('entry-short').value=signal.entry.factor_short_quantile;$('exit-long').value=signal.execution.factor_exit_quantile_long;$('exit-short').value=signal.execution.factor_exit_quantile_short;$('spread-long').value=signal.spread?.long_quantile??.3;$('spread-short').value=signal.spread?.short_quantile??.7;}
   $('spread-settings').hidden=!doc.reference_venue;$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);
   $('factor-hint').textContent='每项只填「标的、nq、符号、因子」，标的为字符串。频率统一使用上方选择的 '+doc.interval+'。nq 填「0.50」「0.2/0.8」或「关闭」。';
+  $('symbol-members').textContent=doc.symbol_group?'券池 '+doc.symbol_group+'：'+(catalog.plan.symbol_groups[doc.symbol_group]||[]).join(', '):'all：当前配置未限定券池。';
   renderTabs();const url=new URL(location.href);url.searchParams.set('worker',selectedWorker);url.hash=doc.name;history.replaceState(null,'',url);
+}
+function scopeDoc(interval){
+  const group=$('strategy-group').value,symbolGroup=$('symbol-group').value;
+  const docs=Object.values(catalog.plan.combinations),existing=docs.find(c=>c.strategy_group===group&&(c.symbol_group||'')===symbolGroup&&c.interval===interval);
+  if(existing)return existing;
+  // New scopes begin disabled with an empty rule list; only explicit rules trade.
+  const source=docs.find(c=>c.strategy_group===group&&c.interval===interval);
+  if(!source||!symbolGroup)return null;
+  const shortMarket={'binance-futures':'bn','okex-futures':'okx','binance-margin':'bn-spot'};
+  const next=clone(source);next.name=[symbolGroup,group,shortMarket[next.venue],shortMarket[next.reference_venue],interval].filter(Boolean).join('_');next.symbol_group=symbolGroup;next.factor_rules=[];delete next.parameters;
+  if(next.signal){next.signal.enabled=false;next.signal.symbol_overrides={};}
+  return next;
 }
 function renderTabs(){
   $('frequency-tabs').replaceChildren();
-  const group=$('strategy-group').value,intervals=selectedWorker==='cta-factor-spread'?['1min']:prepIntervals;
+  const intervals=selectedWorker==='cta-factor-spread'?['1min']:prepIntervals;
   for(const interval of intervals){
-    const doc=Object.values(catalog.plan.combinations).find(c=>c.strategy_group===group&&c.interval===interval),button=document.createElement('button');
+    const doc=scopeDoc(interval),button=document.createElement('button');
     button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(draft?.name===doc?.name));button.dataset.interval=interval;button.dataset.name=doc?.name||'';button.disabled=busy||!doc;
-    button.append(document.createTextNode(interval));const badge=document.createElement('small');badge.textContent=doc?(doc.signal?.enabled?'已启用':'已关闭'):'未配置';button.append(badge);
-    button.onclick=()=>{if(!doc||busy)return;if(dirty&&!confirm('放弃未保存修改，切换频段？'))return;show(doc);message('');};$('frequency-tabs').append(button);
+    button.append(document.createTextNode(interval));const badge=document.createElement('small');badge.textContent=catalog.plan.combinations[doc?.name]?(doc.signal?.enabled?'已启用':'已关闭'):'未配置';button.append(badge);
+    button.onclick=()=>{if(!doc||busy)return;if(dirty&&!confirm('放弃未保存修改，切换频段？'))return;show(doc);message(catalog.plan.combinations[doc.name]?'':'新券池配置：填写规则后保存，策略默认为关闭');};$('frequency-tabs').append(button);
   }
 }
 function renderCatalog(preferred){
   selectedWorker=catalog.worker;$('strategy-type').replaceChildren();for(const worker of catalog.workers||[catalog.worker])$('strategy-type').append(new Option(worker==='cta-factor-spread'?'Spread':'Prep',worker));$('strategy-type').value=selectedWorker;
   const groups=[...new Set(Object.values(catalog.plan.combinations).map(doc=>doc.strategy_group))].sort();$('strategy-group').replaceChildren();for(const group of groups)$('strategy-group').append(new Option(group,group));
+  $('symbol-group').replaceChildren(new Option('all（未限定券池）',''));for(const group of Object.keys(catalog.plan.symbol_groups||{}))$('symbol-group').append(new Option(group,group));
+  groupsDirty=false;$('symbol-groups-json').value=JSON.stringify(catalog.plan.symbol_groups||{},null,2);
   const doc=catalog.plan.combinations[preferred]||Object.values(catalog.plan.combinations).find(doc=>doc.interval==='1min')||Object.values(catalog.plan.combinations)[0];
   if(doc)show(doc);else{draft=null;$('factor-json').value='[]';$('frequency-tabs').replaceChildren();$('strategy-settings').hidden=true;message('尚无该策略的频段配置');}
 }
 async function load(){
-  if(busy&&catalog)return;if(dirty&&!confirm('放弃未保存修改，重新读取？'))return;
+  if(busy&&catalog)return;if(hasChanges()&&!confirm('放弃未保存修改，重新读取？'))return;
   setBusy(true);try{catalog=await api('config');renderCatalog(decodeURIComponent(location.hash.slice(1)));message('读取完成');}catch(error){if(catalog){selectedWorker=catalog.worker;$('strategy-type').value=selectedWorker;}message(error.message,true);}finally{setBusy(false);}
 }
 async function action(save){
-  if(busy||!draft)return;setBusy(true);
+  if(busy||!draft)return;if(groupsDirty){message('请先保存券池定义，再保存或校验当前规则',true);return;}setBusy(true);
   try{const combination=collect(),result=await api(save?'combinations':'preview',{method:'POST',body:JSON.stringify({worker:selectedWorker,combination,expected_revision:catalog.revision})});
-    if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+combination.interval);}
+    if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+(combination.symbol_group||'all')+' · '+combination.interval);}
     else{updateCount(combination.factor_rules);message('JSON 校验通过：'+combination.factor_rules.length+' 条规则');}
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
-$('strategy-type').onchange=async()=>{if(dirty&&!confirm('放弃未保存修改，切换策略类型？')){$('strategy-type').value=selectedWorker;return;}selectedWorker=$('strategy-type').value;dirty=false;const url=new URL(location.href);url.hash='';history.replaceState(null,'',url);await load();};
-$('strategy-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换策略组？')){$('strategy-group').value=draft.strategy_group;return;}const docs=Object.values(catalog.plan.combinations).filter(doc=>doc.strategy_group===$('strategy-group').value);const next=docs.find(doc=>doc.interval===draft?.interval)||docs.find(doc=>doc.interval==='1min')||docs[0];if(next)show(next);message('');};
+async function groupsAction(save){
+  if(busy)return;if(dirty){message('请先保存当前规则，或重新读取后修改券池定义',true);return;}setBusy(true);
+  try{const symbol_groups=JSON.parse($('symbol-groups-json').value);if(!symbol_groups||Array.isArray(symbol_groups)||typeof symbol_groups!=='object')throw Error('券池定义必须是组名到标的数组的 JSON 对象');
+    const result=await api(save?'symbol-groups':'symbol-groups/preview',{method:'POST',body:JSON.stringify({worker:selectedWorker,symbol_groups,expected_revision:catalog.revision})});
+    if(save){const name=draft?.name;catalog=result;renderCatalog(name);message('券池定义已保存');}else message('券池定义校验通过');
+  }catch(error){message(error.message,true);}finally{setBusy(false);}
+}
+$('strategy-type').onchange=async()=>{if(hasChanges()&&!confirm('放弃未保存修改，切换策略类型？')){$('strategy-type').value=selectedWorker;return;}selectedWorker=$('strategy-type').value;dirty=false;groupsDirty=false;const url=new URL(location.href);url.hash='';history.replaceState(null,'',url);await load();};
+$('strategy-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换策略组？')){$('strategy-group').value=draft.strategy_group;return;}const next=scopeDoc(draft?.interval||'1min')||scopeDoc('1min');if(next)show(next);else{const fallback=Object.values(catalog.plan.combinations).find(c=>c.strategy_group===$('strategy-group').value);if(fallback)show(fallback);}message('');};
+$('symbol-group').onchange=()=>{if(dirty&&!confirm('放弃未保存修改，切换券池？')){$('symbol-group').value=draft.symbol_group||'';return;}const next=scopeDoc(draft?.interval||'1min')||scopeDoc('1min');if(next){show(next);message(catalog.plan.combinations[next.name]?'':'新券池配置：填写规则后保存，策略默认为关闭');}else{$('symbol-group').value=draft?.symbol_group||'';message('当前策略组没有该券池配置',true);}};
+$('symbol-groups-json').addEventListener('input',()=>{groupsDirty=true;$('dirty').textContent='券池定义有未保存修改';});
+$('save-groups').onclick=()=>groupsAction(true);$('validate-groups').onclick=()=>groupsAction(false);
 $('reload').onclick=load;$('save').onclick=()=>action(true);$('validate').onclick=()=>action(false);
 $('format').onclick=()=>{if(!draft||busy)return;try{const doc=clone(draft);doc.factor_rules=parseRules();$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);changed();message('JSON 已格式化，尚未保存');}catch(error){message(error.message,true);}};
 for(const id of ['factor-json','enabled','max-pos','entry-long','entry-short','exit-long','exit-short','spread-long','spread-short'])$(id).addEventListener('input',changed);
 window.addEventListener('hashchange',()=>{if(!catalog||busy)return;const requested=decodeURIComponent(location.hash.slice(1)),next=catalog.plan.combinations[requested];if(!next||next.name===draft?.name)return;if(dirty&&!confirm('放弃未保存修改，切换频段？')){const url=new URL(location.href);url.hash=draft.name;history.replaceState(null,'',url);return;}show(next);message('');});
-window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
+window.addEventListener('beforeunload',event=>{if(hasChanges()){event.preventDefault();event.returnValue='';}});
 load();
 </script>
 </body>

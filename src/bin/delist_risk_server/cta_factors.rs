@@ -156,6 +156,7 @@ pub fn snapshot(env: &Path, worker: Worker) -> Result<Snapshot> {
     let names = combination_files(&root, &combinations_rel)?;
     let mut files = BTreeMap::from([(config_rel.to_path_buf(), bytes)]);
     let mut combinations = Vec::new();
+    let mut symbol_groups = mkt_signal::cta_factor_calc::config::SymbolGroups::default();
     let mut total = 0;
     for path in &names {
         let data = read(&root, path)?;
@@ -164,16 +165,23 @@ pub fn snapshot(env: &Path, worker: Worker) -> Result<Snapshot> {
             total <= 64 * 1024 * 1024,
             "factor configuration snapshot is too large"
         );
-        let combination: Combination =
-            serde_json::from_slice(&data).context("decode factor combination")?;
-        ensure!(
-            path.file_stem().and_then(|s| s.to_str()) == Some(&combination.name),
-            "factor combination filename does not match name"
-        );
-        combinations.push(combination);
+        if path
+            .file_name()
+            .is_some_and(|s| s == mkt_signal::cta_factor_calc::config::SYMBOL_GROUPS_FILE)
+        {
+            symbol_groups = serde_json::from_slice(&data).context("decode symbol groups")?;
+        } else {
+            let combination: Combination =
+                serde_json::from_slice(&data).context("decode factor combination")?;
+            ensure!(
+                path.file_stem().and_then(|s| s.to_str()) == Some(&combination.name),
+                "factor combination filename does not match name"
+            );
+            combinations.push(combination);
+        }
         files.insert(path.clone(), data);
     }
-    let plan = Plan::merge(combinations)?;
+    let plan = Plan::merge_with_symbol_groups(combinations, symbol_groups)?;
     worker.validate_plan(&plan)?;
     ensure!(
         names == combination_files(&root, &combinations_rel)?,
@@ -355,7 +363,7 @@ mod tests {
         let snapshot = snapshot(&env.0.join("config/.."), Worker::Perp).unwrap();
         let view = view(Ok(&snapshot), Worker::Perp);
         assert_eq!(view.name, "cta-prep-binance-futures");
-        assert_eq!(view.unique_factor_count, 404);
+        assert_eq!(view.unique_factor_count, 408);
         assert_eq!(view.topics, ["binance-futures"]);
         let counts = view
             .combinations
@@ -376,14 +384,30 @@ mod tests {
                 .map(|(name, _)| *name)
                 .collect::<Vec<_>>(),
             [
-                "prep02_binance-futures_15min",
-                "prep02_binance-futures_1min",
-                "prep02_binance-futures_5min"
+                "last-20_prep02_binance-futures_15min",
+                "last-20_prep02_binance-futures_1min",
+                "last-20_prep02_binance-futures_5min",
+                "top-20_prep02_binance-futures_15min",
+                "top-20_prep02_binance-futures_1min",
+                "top-20_prep02_binance-futures_5min",
+                "top-5_prep02_binance-futures_15min",
+                "top-5_prep02_binance-futures_1min",
+                "top-5_prep02_binance-futures_5min"
             ]
         );
-        assert!(counts.iter().all(|(_, n)| *n > 0));
+        assert_eq!(
+            counts
+                .iter()
+                .filter(|(_, n)| *n == 0)
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["top-20_prep02_binance-futures_5min"]
+        );
         assert!(view.stale && !view.plan_matches_config);
         assert!(snapshot.files.keys().all(|p| p.starts_with("config")));
+        assert!(snapshot.files.contains_key(Path::new(
+            "config/cta_prep_binance_futures/symbol_groups.json"
+        )));
     }
 
     #[test]

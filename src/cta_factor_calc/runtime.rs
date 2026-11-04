@@ -1,5 +1,7 @@
 use super::{
-    config::{Combination, Config, Interval, Market, Plan, Worker},
+    config::{
+        Combination, Config, Interval, Market, Plan, SymbolGroups, Worker, SYMBOL_GROUPS_FILE,
+    },
     engine::{Engine, FactorEvent, FactorPoint},
 };
 use crate::factor_pub::model_output_publisher::ModelPublisher;
@@ -19,7 +21,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(group(ArgGroup::new("action").args(["check", "put_combination", "delete_combination", "import_symbol_factors", "replay_only"])))]
+#[command(group(ArgGroup::new("action").args(["check", "put_combination", "put_symbol_groups", "delete_combination", "import_symbol_factors", "replay_only"])))]
 struct Args {
     #[arg(long)]
     config: Option<PathBuf>,
@@ -29,6 +31,9 @@ struct Args {
     /// Install or replace one named combination from JSON.
     #[arg(long)]
     put_combination: Option<PathBuf>,
+    /// Replace the symbol-group JSON after validating all combination memberships.
+    #[arg(long)]
+    put_symbol_groups: Option<PathBuf>,
     /// Convert the existing symbol -> factor -> weight JSON table.
     #[arg(long, requires_all=["name","strategy_group","market","interval"])]
     import_symbol_factors: Option<PathBuf>,
@@ -165,7 +170,7 @@ pub fn edit_combination_checked(
             ensure!(
                 (previous.signal.is_none() && value.signal.is_none())
                     || previous.manager_strategy_name() == value.manager_strategy_name(),
-                "signal strategy group/market/frequency cannot change in place; create a new combination"
+                "signal strategy group/symbol group/market/frequency cannot change in place; create a new combination"
             );
         }
         combinations.insert(value.name.clone(), value.clone());
@@ -178,7 +183,7 @@ pub fn edit_combination_checked(
         );
         name.to_owned()
     };
-    let plan = Plan::merge(combinations.into_values())?;
+    let plan = Plan::merge_with_symbol_groups(combinations.into_values(), current.symbol_groups)?;
     worker.validate_plan(&plan)?;
     if execute {
         let path = config.combinations_dir.join(format!("{name}.json"));
@@ -188,6 +193,33 @@ pub fn edit_combination_checked(
             fs::remove_file(path)?;
             File::open(&config.combinations_dir)?.sync_all()?;
         }
+    }
+    Ok(plan)
+}
+
+pub fn edit_symbol_groups_checked(
+    config: &Config,
+    groups: SymbolGroups,
+    execute: bool,
+    worker: Worker,
+    expected_revision: Option<&str>,
+) -> Result<Plan> {
+    let _lock = execute
+        .then(|| FileLock::acquire(&config.combinations_dir.join(".catalog.lock")))
+        .transpose()?;
+    let current = Plan::load(&config.combinations_dir)?;
+    if let Some(expected) = expected_revision {
+        if expected != catalog_revision(&current)? {
+            return Err(CatalogConflict("configuration changed; reload before saving").into());
+        }
+    }
+    let plan = Plan::merge_with_symbol_groups(current.combinations.into_values(), groups)?;
+    worker.validate_plan(&plan)?;
+    if execute {
+        atomic_json(
+            &config.combinations_dir.join(SYMBOL_GROUPS_FILE),
+            &plan.symbol_groups,
+        )?;
     }
     Ok(plan)
 }
@@ -376,6 +408,7 @@ async fn run(worker: Worker) -> Result<()> {
     ensure!(
         !args.execute
             || args.put_combination.is_some()
+            || args.put_symbol_groups.is_some()
             || args.delete_combination.is_some()
             || args.import_symbol_factors.is_some(),
         "--execute requires a configuration edit"
@@ -385,9 +418,13 @@ async fn run(worker: Worker) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from(worker.default_config()));
     let mut config = Config::load(&config_path)?;
     let editing = args.put_combination.is_some()
+        || args.put_symbol_groups.is_some()
         || args.delete_combination.is_some()
         || args.import_symbol_factors.is_some();
-    let plan = if editing {
+    let plan = if let Some(path) = &args.put_symbol_groups {
+        let groups = serde_json::from_slice(&fs::read(path)?).context("parse symbol groups")?;
+        edit_symbol_groups_checked(&config, groups, args.execute, worker, None)?
+    } else if editing {
         let mut put = args
             .put_combination
             .as_ref()
@@ -421,7 +458,7 @@ async fn run(worker: Worker) -> Result<()> {
     worker.validate_plan(&plan)?;
     if args.check || editing {
         let position_tables=plan.combinations.values().filter_map(|c|c.signal.as_ref().map(|p|
-            json!({"strategy_name":c.manager_strategy_name(),"strategy_group":c.strategy_group,"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
+            json!({"strategy_name":c.manager_strategy_name(),"strategy_group":c.strategy_group,"symbol_group":c.symbol_group,"combination_name":c.name,"interval":c.interval,"enabled":p.enabled,"max_pos_u":p.max_pos_u}))).collect::<Vec<_>>();
         println!(
             "{}",
             serde_json::to_string_pretty(

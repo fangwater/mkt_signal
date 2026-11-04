@@ -1135,8 +1135,8 @@ mod tests {
         let risk = super::super::RiskBook::default()
             .query(&mkt_signal::common::delist_risk::RiskQuery::default());
         let response = load(&settings, &risk, &ListingIndex::default()).await;
-        assert_eq!(response.strategies.len(), 6);
-        assert_eq!(response.factor_processes[0].unique_factor_count, 404);
+        assert_eq!(response.strategies.len(), 12);
+        assert_eq!(response.factor_processes[0].unique_factor_count, 408);
         assert!(response.factor_processes[0]
             .combinations
             .iter()
@@ -1146,7 +1146,12 @@ mod tests {
             assert_eq!(row.factor_worker, "cta-prep-binance-futures");
             assert!(row.factor_count.is_some());
             assert!(row.risk.symbols.contains(&"UNLISTEDUSDT".into()));
-            assert!(row.slug.starts_with("cta-prep01-") || row.slug.starts_with("cta-prep02-"));
+            assert!(
+                row.slug.starts_with("cta-prep01-")
+                    || ["top-5", "top-20", "last-20"]
+                        .iter()
+                        .any(|group| row.slug.starts_with(&format!("cta-{group}-prep02-")))
+            );
             assert!(row.errors.is_empty(), "{:?}", row.errors);
             assert!(row.backup_env.is_none());
         }

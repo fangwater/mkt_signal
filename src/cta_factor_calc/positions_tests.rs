@@ -69,15 +69,25 @@ fn worker_owns_four_named_tables_and_spread_dependencies_are_implicit() {
 
 #[test]
 fn groups_size_persist_disable_and_retire_positions_independently() {
-    for base in [prep("1min"), spread()] {
+    for (mut base, symbol_group) in [prep("1min"), spread()]
+        .into_iter()
+        .flat_map(|base| [(base.clone(), false), (base, true)])
+    {
+        if symbol_group {
+            base.symbol_group = Some("top-5".into());
+        }
         let mut other = base.clone();
         other.name = "second".into();
-        other.strategy_group = if base.reference_venue.is_some() {
-            "spread02"
+        if symbol_group {
+            other.symbol_group = Some("top-20".into());
         } else {
-            "prep02"
+            other.strategy_group = if base.reference_venue.is_some() {
+                "spread02"
+            } else {
+                "prep02"
+            }
+            .into();
         }
-        .into();
         other.signal.as_mut().unwrap().max_pos_u = 500.0;
         let mut first = Table::new(base, (TS - 60000) * 1000);
         let mut second = Table::new(other, (TS - 60000) * 1000);
@@ -122,6 +132,10 @@ fn groups_size_persist_disable_and_retire_positions_independently() {
                 restored.combination.strategy_group,
                 table.combination.strategy_group
             );
+            assert_eq!(
+                restored.combination.symbol_group,
+                table.combination.symbol_group
+            );
         }
         assert_ne!(first.strategy_name, second.strategy_name);
         fs::remove_dir_all(root).unwrap();
@@ -150,6 +164,30 @@ fn prep_uses_live_direct_factors_and_persists_frozen_independent_positions() {
     assert_eq!(restored.targets().unwrap(), table.targets().unwrap());
     assert_eq!(restored.clock, table.clock);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn removing_last_rule_keeps_the_symbol_group_identity_and_publishes_clear() {
+    let mut combination = prep("1min");
+    combination.symbol_group = Some("top-5".into());
+    let mut table = Table::new(combination, (TS - 60000) * 1000);
+    let factor = point("binance-futures-ethusdt-1min-factor_036", TS, 0.99);
+    table
+        .observe(
+            &BTreeMap::from([(factor.factor_id.clone(), factor)]),
+            &BTreeMap::new(),
+            (TS + 6000) * 1000,
+            &book,
+        )
+        .unwrap();
+    assert_eq!(table.targets().unwrap()["ETHUSDT"]["qty"], 2.0);
+    let mut empty = table.combination.clone();
+    empty.factor_rules.clear();
+    empty.validate().unwrap();
+    table.update(&empty, (TS + 7000) * 1000).unwrap();
+    assert_eq!(table.strategy_name, "cta-top-5-prep01-bn-1min-pos");
+    assert_eq!(table.targets().unwrap()["ETHUSDT"]["qty"], "clear");
+    table.validate().unwrap();
 }
 
 #[test]

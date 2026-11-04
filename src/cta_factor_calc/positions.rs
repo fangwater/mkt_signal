@@ -28,6 +28,9 @@ use trade_signal::MktChannel;
 
 type SpreadRows = BTreeMap<String, BTreeMap<String, SpreadPosition>>;
 
+#[path = "migration.rs"]
+pub mod migration;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "rows", rename_all = "snake_case")]
 enum Ledger {
@@ -506,7 +509,7 @@ impl Table {
     }
     fn snapshot(&self) -> Result<Value> {
         Ok(
-            json!({"strategy_name":self.strategy_name,"strategy_group":self.combination.strategy_group,"combination_name":self.combination.name,"interval":self.combination.interval,
+            json!({"strategy_name":self.strategy_name,"strategy_group":self.combination.strategy_group,"symbol_group":self.combination.symbol_group,"combination_name":self.combination.name,"interval":self.combination.interval,
             "enabled":self.enabled() && !self.retiring && !self.retired,"max_pos_u":self.combination.signal.as_ref().map(|s|s.max_pos_u),
             "retiring":self.retiring,"retired":self.retired,"updated_ts_us":self.updated_ts_us,"targets":self.targets()?,"sub_positions":self.ledger,"observations":self.observations}),
         )

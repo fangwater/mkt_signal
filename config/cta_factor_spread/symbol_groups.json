@@ -1,0 +1,53 @@
+{
+  "top-5": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT"
+  ],
+  "top-20": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "ETCUSDT",
+    "DOTUSDT",
+    "BCHUSDT",
+    "FILUSDT",
+    "NEARUSDT",
+    "AXSUSDT",
+    "ATOMUSDT",
+    "AAVEUSDT",
+    "TRXUSDT",
+    "UNIUSDT"
+  ],
+  "last-20": [
+    "1INCHUSDT",
+    "EGLDUSDT",
+    "YFIUSDT",
+    "KNCUSDT",
+    "RSRUSDT",
+    "KAVAUSDT",
+    "ZENUSDT",
+    "QTUMUSDT",
+    "BELUSDT",
+    "RLCUSDT",
+    "DASHUSDT",
+    "KSMUSDT",
+    "ZRXUSDT",
+    "IOTAUSDT",
+    "ONTUSDT",
+    "BANDUSDT",
+    "SKLUSDT",
+    "IOSTUSDT",
+    "BATUSDT",
+    "ICXUSDT"
+  ]
+}

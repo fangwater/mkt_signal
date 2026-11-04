@@ -69,9 +69,7 @@ def main():
                 plan=current['plan']
                 tables=[]
                 for combination in plan['combinations'].values():
-                    spread=worker=='cta-factor-spread'
-                    group=combination['strategy_group']
-                    strategy=f"cta-{group}-{'okx-bn' if spread else 'bn'}-{combination['interval']}-pos"
+                    strategy=current['position_strategies'][combination['name']]
                     tables.append({'strategy_name':strategy,'combination_name':combination['name'],
                         'interval':combination['interval'],'enabled':combination.get('signal',{}).get('enabled',False),
                         'targets':{'ETHUSDT':{'qty':1.25,'signal':0}}})
@@ -93,7 +91,7 @@ def main():
                 '--cta-spread-factor-env',str(root)
             ],env=environment))
             assert len(cta['factor_processes'])==2
-            assert len(cta['strategies'])==7
+            assert len(cta['strategies'])==13
             assert all(not row['stale'] and not row['errors'] for row in cta['strategies'])
             # SQL bindings are checked separately against the deployed reader;
             # this disposable web fixture has no Manager database.
@@ -142,7 +140,7 @@ def main():
                 page.goto(gateway_base+'/delist/')
                 page.wait_for_selector('#cta-strategies .cta-table')
                 assert page.locator('#cta-config-entries a').count()==2
-                assert page.locator('#cta-strategies tr[data-strategy]').count()==7
+                assert page.locator('#cta-strategies tr[data-strategy]').count()==13
                 assert page.locator('#cta-strategies .account-slug').filter(has_text='binance-cta-perp-').count()==0
                 assert '异常' not in page.locator('#system-state').inner_text()
                 if args.screenshot_dir:
@@ -158,21 +156,22 @@ def main():
                 page.get_by_role('link',name='CTA Prep 统一配置').click()
                 page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#factor-json').value!==''")
                 assert page.locator('#parameters,#position-targets,#rows,#import-json').count()==0
-                assert page.locator('textarea').count()==1
+                assert page.locator('textarea').count()==2
                 page.locator('#strategy-group').select_option('prep02')
+                page.locator('#symbol-group').select_option('top-5')
                 page.locator('[data-interval="5min"]').click()
                 rows=json.loads(page.locator('#factor-json').input_value())
                 assert all(set(row)=={'标的','nq','符号','因子'} and isinstance(row['标的'],str) for row in rows)
-                assert len(rows)==7
-                untouched=(root/'config/cta_prep_binance_futures/prep02_binance-futures_1min.json').read_bytes()
+                assert len(rows)==2
+                untouched=(root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_1min.json').read_bytes()
                 page.locator('#max-pos').fill('250')
                 with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
                     page.locator('#save').click()
                 assert saved.value.status==200
-                recipe=root/'config/cta_prep_binance_futures/prep02_binance-futures_5min.json'
+                recipe=root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_5min.json'
                 data=json.loads(recipe.read_text())
-                assert data['signal']['max_pos_u']==250 and len(data['factor_rules'])==7
-                assert (root/'config/cta_prep_binance_futures/prep02_binance-futures_1min.json').read_bytes()==untouched
+                assert data['signal']['max_pos_u']==250 and len(data['factor_rules'])==2
+                assert (root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_1min.json').read_bytes()==untouched
                 current=api('config')
                 external=current['plan']['combinations']['binance-futures_1min']
                 external['signal']['max_pos_u']=123
@@ -197,10 +196,58 @@ def main():
                 page.locator('#strategy-type').select_option('cta-prep-binance-futures')
                 page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#strategy-type').value==='cta-prep-binance-futures'")
                 page.locator('#strategy-group').select_option('prep02')
+                page.locator('#symbol-group').select_option('top-5')
                 page.locator('[data-interval="15min"]').click()
                 rows=json.loads(page.locator('#factor-json').input_value())
-                assert len(rows)==31
+                assert len(rows)==7
                 assert any(row['因子']=='TD_MT_040' and row['nq']=='0.2/0.8' for row in rows)
+                # Overlapping pools retain separate parameters and rows.
+                page.locator('#symbol-group').select_option('top-20')
+                assert len(json.loads(page.locator('#factor-json').input_value()))==10
+                assert page.locator('#max-pos').input_value()=='200'
+                page.locator('[data-interval="5min"]').click()
+                assert json.loads(page.locator('#factor-json').input_value())==[]
+                with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
+                    page.locator('#save').click()
+                assert saved.value.status==200
+                empty_recipe=root/'config/cta_prep_binance_futures/top-20_prep02_binance-futures_5min.json'
+                assert json.loads(empty_recipe.read_text())['factor_rules']==[]
+                page.locator('[data-interval="15min"]').click()
+                page.locator('#symbol-group').select_option('last-20')
+                page.locator('#factor-json').fill('[{"标的":"BTC","nq":"关闭","符号":1,"因子":"factor_036"}]')
+                page.locator('#validate').click()
+                page.wait_for_function("document.querySelector('#message').textContent.includes('不属于券池')")
+                page.locator('#reload').click()
+                page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false'")
+                # A new Spread pool starts empty and disabled, then saves independently.
+                page.locator('#strategy-type').select_option('cta-factor-spread')
+                page.wait_for_function("document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#strategy-type').value==='cta-factor-spread'")
+                page.locator('#symbol-group').select_option('top-5')
+                assert json.loads(page.locator('#factor-json').input_value())==[]
+                assert page.locator('#enabled').input_value()=='false'
+                page.locator('#factor-json').fill('[{"标的":"ETH","nq":"关闭","符号":1,"因子":"factor_036"}]')
+                with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
+                    page.locator('#save').click()
+                assert saved.value.status==200
+                created=root/'config/cta_factor_spread/top-5_spread01_okx_bn_1min.json'
+                assert json.loads(created.read_text())['symbol_group']=='top-5'
+                page.locator('#symbol-group').select_option('')
+                assert len(json.loads(page.locator('#factor-json').input_value()))==34
+                # Group JSON edits use the same revision guard, with preview before save.
+                page.locator('details summary').click()
+                definitions=json.loads(page.locator('#symbol-groups-json').input_value())
+                definitions['custom']=['BTCUSDT']
+                page.locator('#symbol-groups-json').fill(json.dumps(definitions))
+                groups_file=root/'config/cta_factor_spread/symbol_groups.json'
+                old_groups=groups_file.read_bytes()
+                with page.expect_response(lambda response: '/api/symbol-groups/preview' in response.url) as preview:
+                    page.locator('#validate-groups').click()
+                assert preview.value.status==200 and groups_file.read_bytes()==old_groups
+                with page.expect_response(lambda response: response.url.split('?')[0].endswith('/api/symbol-groups')) as saved:
+                    page.locator('#save-groups').click()
+                assert saved.value.status==200 and json.loads(groups_file.read_text())['custom']==['BTCUSDT']
+                assert 'custom' not in json.loads((root/'config/cta_prep_binance_futures/symbol_groups.json').read_text())
+                page.locator('#symbol-group').select_option('top-5')
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'desktop.png'), full_page=True)
@@ -210,7 +257,7 @@ def main():
                     page.screenshot(path=str(args.screenshot_dir/'mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-                print('Delist navigation and frequency JSON editor passed: factor row JSON, isolated save, conflict, single format and mobile layout')
+                print('CTA symbol groups passed: Delist navigation, pool isolation, membership checks, new Spread scope, JSON definitions, save conflicts and mobile layout')
         finally:
             if gateway:
                 gateway.shutdown();gateway.server_close()

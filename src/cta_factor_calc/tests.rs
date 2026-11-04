@@ -8,6 +8,7 @@ fn combination(name: &str, factors: &[(&str, f64)]) -> Combination {
         signal: None,
         name: name.into(),
         strategy_group: "prep01".into(),
+        symbol_group: None,
         venue: Market::BinanceFutures,
         interval: Interval::Minute,
         reference_venue: None,
@@ -243,6 +244,158 @@ fn strategy_groups_require_explicit_safe_names() {
     let mut value = serde_json::to_value(c).unwrap();
     value.as_object_mut().unwrap().remove("strategy_group");
     assert!(serde_json::from_value::<Combination>(value).is_err());
+}
+
+#[test]
+fn symbol_groups_share_factor_state_but_keep_independent_strategy_ownership() {
+    let groups: SymbolGroups = serde_json::from_value(serde_json::json!({
+        "top-5":["ETHUSDT"], "top-20":["ETHUSDT","SOLUSDT"]
+    }))
+    .unwrap();
+    for spread in [false, true] {
+        let mut first: Combination = serde_json::from_value(serde_json::json!({
+            "name":"first","strategy_group":"prep02","symbol_group":"top-5",
+            "venue":"binance-futures","interval":"1min",
+            "factor_rules":[{"标的":"ETH","nq":"0.50","符号":1,"因子":"factor_036"}],
+            "signal":{"enabled":false,"max_pos_u":100,"entry":{},"execution":{}}
+        }))
+        .unwrap();
+        if spread {
+            first.strategy_group = "spread01".into();
+            first.venue = Market::OkexFutures;
+            first.reference_venue = Some(Market::BinanceFutures);
+            first.factor_rules[0].venue = Some(Market::BinanceFutures);
+            first.signal.as_mut().unwrap().spread = Some(SpreadFilters {
+                long_quantile: 0.3,
+                short_quantile: 0.7,
+            });
+        }
+        let mut second = first.clone();
+        second.name = "second".into();
+        second.symbol_group = Some("top-20".into());
+        second.signal.as_mut().unwrap().max_pos_u = 500.0;
+        let plan = Plan::merge_with_symbol_groups([first.clone(), second.clone()], groups.clone())
+            .unwrap();
+        assert_eq!(plan.combinations.len(), 2);
+        assert_eq!(plan.calculations.len(), if spread { 3 } else { 2 });
+        assert!(plan
+            .calculations
+            .values()
+            .all(|c| c.combinations.len() == 2));
+        assert_eq!(
+            first.manager_strategy_name(),
+            if spread {
+                "cta-top-5-spread01-okx-bn-1min-pos"
+            } else {
+                "cta-top-5-prep02-bn-1min-pos"
+            }
+        );
+        assert_ne!(
+            first.manager_strategy_name(),
+            second.manager_strategy_name()
+        );
+        let mut outside = second.clone();
+        outside.factor_rules[0].symbol = "BTC".into();
+        assert!(Plan::merge_with_symbol_groups([outside], groups.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("outside symbol group"));
+        let mut unknown = second.clone();
+        unknown.symbol_group = Some("missing".into());
+        assert!(Plan::merge_with_symbol_groups([unknown], groups.clone()).is_err());
+        let mut duplicate = first.clone();
+        duplicate.name = "duplicate".into();
+        assert!(Plan::merge_with_symbol_groups([first, duplicate], groups.clone()).is_err());
+    }
+}
+
+#[test]
+fn symbol_group_json_rejects_ambiguous_names_symbols_and_duplicate_keys() {
+    for value in [
+        serde_json::json!({"前5":["BTCUSDT"]}),
+        serde_json::json!({"all":["BTCUSDT"]}),
+        serde_json::json!({"top-5":["BTC"]}),
+        serde_json::json!({"top-5":["btcusdt"]}),
+        serde_json::json!({"top-5":["BTCUSDT","BTCUSDT"]}),
+        serde_json::json!({"top-5":[]}),
+    ] {
+        assert!(serde_json::from_value::<SymbolGroups>(value)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+    assert!(
+        serde_json::from_str::<SymbolGroups>(r#"{"top-5":["BTCUSDT"],"top-5":["ETHUSDT"]}"#)
+            .is_err()
+    );
+}
+
+#[test]
+fn empty_symbol_group_strategy_is_a_valid_zero_target_scope() {
+    let mut c: Combination = serde_json::from_value(serde_json::json!({
+        "name":"empty","strategy_group":"prep02","symbol_group":"top-20",
+        "venue":"binance-futures","interval":"5min","factor_rules":[],
+        "signal":{"enabled":false,"max_pos_u":200,"entry":{},"execution":{}}
+    }))
+    .unwrap();
+    c.validate().unwrap();
+    assert!(c.signal_table().unwrap().is_empty());
+    assert!(c.factors().unwrap().is_empty());
+    c.symbol_group = None;
+    assert!(c.validate().is_err());
+    c.symbol_group = Some("top-20".into());
+    c.signal = None;
+    assert!(c.validate().is_err());
+}
+
+#[test]
+fn prep02_symbol_group_templates_match_all_requested_rules_without_cross_pool_deduplication() {
+    let plan = Plan::load(std::path::Path::new("config/cta_prep_binance_futures")).unwrap();
+    let fixture: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../tests/fixtures/cta_prep02_symbol_groups.json"
+    ))
+    .unwrap();
+    let mut expected = BTreeSet::new();
+    for row in fixture {
+        for symbol in row["symbols"].as_array().unwrap() {
+            expected.insert((
+                row["symbol_group"].as_str().unwrap().to_owned(),
+                row["interval"].as_str().unwrap().to_owned(),
+                format!("{}USDT", symbol.as_str().unwrap()),
+                row["factor"].as_str().unwrap().to_owned(),
+                row["nq"].as_str().unwrap().to_owned(),
+                row["weight"].as_i64().unwrap(),
+            ));
+        }
+    }
+    let mut actual = BTreeSet::new();
+    let mut tables = 0;
+    for c in plan
+        .combinations
+        .values()
+        .filter(|c| c.strategy_group == "prep02")
+    {
+        tables += 1;
+        assert!(!c.signal.as_ref().unwrap().enabled);
+        for rule in &c.factor_rules {
+            actual.insert((
+                c.symbol_group.clone().unwrap(),
+                c.interval.name().to_owned(),
+                rule.symbol.clone(),
+                rule.factor.clone(),
+                rule.nq.clone(),
+                rule.weight as i64,
+            ));
+        }
+    }
+    assert_eq!(tables, 9);
+    assert_eq!(expected.len(), 102);
+    assert_eq!(actual, expected);
+    assert_eq!(plan.symbol_groups.0["top-5"].len(), 5);
+    assert_eq!(plan.symbol_groups.0["top-20"].len(), 20);
+    assert_eq!(plan.symbol_groups.0["last-20"].len(), 20);
+    let spread = Plan::load(std::path::Path::new("config/cta_factor_spread")).unwrap();
+    assert_eq!(spread.symbol_groups, plan.symbol_groups);
 }
 
 #[test]

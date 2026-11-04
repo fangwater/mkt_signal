@@ -279,6 +279,9 @@ pub struct Combination {
     pub name: String,
     /// Independent position ownership, e.g. prep01, prep02 or spread01.
     pub strategy_group: String,
+    /// Optional symbol universe; overlapping universes own separate positions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_group: Option<String>,
     pub venue: Market,
     pub interval: Interval,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,20 +324,24 @@ where
     deserializer.deserialize_map(Visitor(std::marker::PhantomData))
 }
 impl Combination {
-    /// Manager ownership follows strategy group, market and frequency, independently of the
-    /// configuration filename and the factor rules inside the strategy.
+    /// Manager ownership follows strategy group, symbol group, market and frequency,
+    /// independently of the configuration filename and the factor rules inside the strategy.
     pub fn manager_strategy_name(&self) -> String {
+        let owner = self.symbol_group.as_ref().map_or_else(
+            || self.strategy_group.clone(),
+            |group| format!("{group}-{}", self.strategy_group),
+        );
         match self.reference_venue {
             Some(reference) => format!(
                 "cta-{}-{}-{}-{}-pos",
-                self.strategy_group,
+                owner,
                 self.venue.short_name(),
                 reference.short_name(),
                 self.interval.name()
             ),
             None => format!(
                 "cta-{}-{}-{}-pos",
-                self.strategy_group,
+                owner,
                 self.venue.short_name(),
                 self.interval.name()
             ),
@@ -381,6 +388,7 @@ impl Combination {
         let combination = Self {
             name,
             strategy_group,
+            symbol_group: None,
             venue,
             interval,
             reference_venue: None,
@@ -446,6 +454,9 @@ impl Combination {
         Ok(factors)
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(group) = &self.symbol_group {
+            validate_symbol_group_name(group)?;
+        }
         ensure!(
             (1..=32).contains(&self.strategy_group.len())
                 && self.strategy_group.as_bytes()[0].is_ascii_lowercase()
@@ -454,6 +465,7 @@ impl Combination {
         );
         ensure!(
             !self.name.is_empty()
+                && self.name != SYMBOL_GROUPS_FILE.trim_end_matches(".json")
                 && self.name.len() <= 96
                 && self
                     .name
@@ -461,9 +473,11 @@ impl Combination {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
             "invalid combination name"
         );
+        let empty_strategy =
+            self.factor_rules.is_empty() && self.symbol_group.is_some() && self.signal.is_some();
         ensure!(
-            !self.factor_rules.is_empty() && self.factor_rules.len() <= 8192,
-            "combination requires 1..=8192 factor rows"
+            (empty_strategy || !self.factor_rules.is_empty()) && self.factor_rules.len() <= 8192,
+            "combination requires factor rows; only a named symbol-group strategy may be empty"
         );
         let mut seen = BTreeSet::new();
         for rule in &self.factor_rules {
@@ -487,7 +501,7 @@ impl Combination {
         }
         let factors = self.factors()?;
         ensure!(
-            !factors.is_empty() && factors.len() <= 8192,
+            (empty_strategy || !factors.is_empty()) && factors.len() <= 8192,
             "combination requires nonzero factor references"
         );
         for (id, parameters) in &self.parameters {
@@ -556,7 +570,10 @@ impl Combination {
                 nq: rule.nq.clone(),
             });
         }
-        ensure!(!rules.is_empty(), "signal requires nonzero factor rows");
+        ensure!(
+            !rules.is_empty() || (self.factor_rules.is_empty() && self.symbol_group.is_some()),
+            "signal requires nonzero factor rows"
+        );
         if p.position_algorithm == PositionAlgorithm::V1 {
             let expected = if p.entry.nq_change_enabled {
                 Some((p.entry.nq_long_quantile, p.entry.nq_short_quantile))
@@ -647,6 +664,81 @@ impl Combination {
     }
 }
 
+pub const SYMBOL_GROUPS_FILE: &str = "symbol_groups.json";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SymbolGroups(
+    #[serde(deserialize_with = "unique_map")] pub BTreeMap<String, Vec<String>>,
+);
+
+fn validate_symbol_group_name(name: &str) -> Result<()> {
+    ensure!(
+        (1..=32).contains(&name.len())
+            && name != "all"
+            && name.as_bytes()[0].is_ascii_lowercase()
+            && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "symbol group must start with a lowercase letter and contain 1..=32 lowercase letters, digits or hyphens; all is reserved"
+    );
+    Ok(())
+}
+
+impl SymbolGroups {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.0.len() <= 128, "too many symbol groups");
+        for (name, symbols) in &self.0 {
+            validate_symbol_group_name(name)?;
+            ensure!(
+                !symbols.is_empty() && symbols.len() <= 8192,
+                "symbol group {name} requires 1..=8192 symbols"
+            );
+            let mut seen = BTreeSet::new();
+            for symbol in symbols {
+                ensure!(
+                    symbol.ends_with("USDT")
+                        && (5..=32).contains(&symbol.len())
+                        && symbol
+                            .bytes()
+                            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
+                    "symbol group {name} requires uppercase USDT symbols: {symbol}"
+                );
+                ensure!(
+                    seen.insert(symbol),
+                    "duplicate symbol in group {name}: {symbol}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_combination(&self, combination: &Combination) -> Result<()> {
+        if let Some(group) = &combination.symbol_group {
+            let symbols = self
+                .0
+                .get(group)
+                .with_context(|| format!("unknown symbol group {group}"))?;
+            for rule in &combination.factor_rules {
+                let id = combination.rule_id(rule)?;
+                ensure!(
+                    symbols.contains(&id.symbol),
+                    "{}: symbol {} is outside symbol group {group}",
+                    combination.name,
+                    id.symbol
+                );
+            }
+            if let Some(signal) = &combination.signal {
+                for symbol in signal.symbol_overrides.keys() {
+                    ensure!(
+                        symbols.contains(symbol),
+                        "symbol override {symbol} is outside symbol group {group}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Calculation {
     pub id: FactorId,
@@ -655,19 +747,35 @@ pub struct Calculation {
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Plan {
+    #[serde(skip_serializing_if = "symbol_groups_empty")]
+    pub symbol_groups: SymbolGroups,
     pub combinations: BTreeMap<String, Combination>,
     pub calculations: BTreeMap<String, Calculation>,
 }
+fn symbol_groups_empty(groups: &SymbolGroups) -> bool {
+    groups.0.is_empty()
+}
 impl Plan {
     pub fn merge(combinations: impl IntoIterator<Item = Combination>) -> Result<Self> {
-        let mut plan = Self::default();
+        Self::merge_with_symbol_groups(combinations, SymbolGroups::default())
+    }
+    pub fn merge_with_symbol_groups(
+        combinations: impl IntoIterator<Item = Combination>,
+        symbol_groups: SymbolGroups,
+    ) -> Result<Self> {
+        symbol_groups.validate()?;
+        let mut plan = Self {
+            symbol_groups,
+            ..Self::default()
+        };
         let mut signal_owners = BTreeSet::new();
         for combination in combinations {
             combination.validate()?;
+            plan.symbol_groups.validate_combination(&combination)?;
             if combination.signal.is_some() {
                 ensure!(
                     signal_owners.insert(combination.manager_strategy_name()),
-                    "only one signal combination may own each strategy group/market/frequency"
+                    "only one signal combination may own each strategy group/symbol group/market/frequency"
                 );
             }
             ensure!(
@@ -722,6 +830,15 @@ impl Plan {
             .collect::<std::io::Result<Vec<_>>>()?;
         files.retain(|p| p.extension().is_some_and(|v| v == "json"));
         files.sort();
+        let mut symbol_groups = SymbolGroups::default();
+        if let Some(index) = files
+            .iter()
+            .position(|path| path.file_name().is_some_and(|s| s == SYMBOL_GROUPS_FILE))
+        {
+            let path = files.remove(index);
+            symbol_groups = serde_json::from_slice(&std::fs::read(&path)?)
+                .with_context(|| format!("read symbol groups {}", path.display()))?;
+        }
         let combinations = files
             .into_iter()
             .map(|path| -> Result<Combination> {
@@ -735,7 +852,7 @@ impl Plan {
                 Ok(combination)
             })
             .collect::<Result<Vec<_>>>()?;
-        Self::merge(combinations)
+        Self::merge_with_symbol_groups(combinations, symbol_groups)
     }
 }
 

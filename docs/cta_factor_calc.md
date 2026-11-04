@@ -1,10 +1,65 @@
 # CTA 因子计算与仓位表
 
-最后更新：2026-11-03 UTC（多策略组和 Prep02 已部署，发布保持关闭）
+最后更新：2026-11-04 UTC（新增 symbol group 维度，源码与模板已更新，尚未部署）
+
+## 券池维度
+
+Prep 和 Spread 现在按 `strategy_group × symbol_group × 市场 × interval` 维护独立策略。
+券池使用英文名称 `top-5`、`top-20`、`last-20`；它们是显式成员清单，不会自动按市值排名。
+同一标的可以出现在多个券池，各券池分别维护规则、开关、额度、开平仓阈值、仓位账本和
+Manager 归属。比如 `cta-top-5-prep02-bn-1min-pos` 与
+`cta-top-20-prep02-bn-1min-pos` 是两个策略，公共因子计算仍只进行一次。
+Spread 对应 `cta-top-5-spread01-okx-bn-1min-pos`。
+
+每个计算进程的组合目录内新增 `symbol_groups.json`，直接接受组名到完整 USDT 币对数组的 JSON：
+
+```json
+{
+  "top-5": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"],
+  "top-20": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "LTCUSDT", "ETCUSDT", "DOTUSDT", "BCHUSDT", "FILUSDT", "NEARUSDT", "AXSUSDT", "ATOMUSDT", "AAVEUSDT", "TRXUSDT", "UNIUSDT"],
+  "last-20": ["1INCHUSDT", "EGLDUSDT", "YFIUSDT", "KNCUSDT", "RSRUSDT", "KAVAUSDT", "ZENUSDT", "QTUMUSDT", "BELUSDT", "RLCUSDT", "DASHUSDT", "KSMUSDT", "ZRXUSDT", "IOTAUSDT", "ONTUSDT", "BANDUSDT", "SKLUSDT", "IOSTUSDT", "BATUSDT", "ICXUSDT"]
+}
+```
+
+组名以小写字母开头，长度 1–32，仅含小写字母、数字和 `-`；`all` 保留给未限定券池的旧配置。
+组内不接受重复标的，组间可以重叠。组合顶层设置 `"symbol_group":"top-5"`，
+规则和逐币阈值覆盖必须属于该券池；不属于券池、引用未知组或删除仍被引用的组都会拒绝保存。
+新增券池不会自动生成交易规则。原来没有 `symbol_group` 的 Prep01 / Spread01 配置
+在页面标为 `all`，保留原策略名与账本归属。已有带 `signal` 的组合不允许原地修改券池。
+
+页面在策略组旁增加券池选择，可分别切换频段；未配置的券池频段以空规则和关闭开关开始，
+填写规则后保存。折叠的“券池定义 JSON”支持校验和保存。定义、规则都通过整份清单校验、
+共享文件锁和内容摘要处理并发冲突；Prep 与 Spread 分别保存定义，各自热加载。
+Delist 的只读清单和备份也包含券池定义。
+
+2026-11-04 用户清单已写入本地 Prep02 模板。20 项输入中两个空标的项不展开，
+跨券池重复规则分别保留，共 102 条规则、9 张表（3 券池 × 3 频率）：
+
+| 券池 | 1min 规则 | 5min 规则 | 15min 规则 |
+|---|---:|---:|---:|
+| `top-5` | 5 | 2 | 7 |
+| `top-20` | 27 | 0（保留空策略） | 10 |
+| `last-20` | 27 | 5 | 19 |
+
+文件名示例 `top-5_prep02_binance-futures_1min.json`。所有模板发布开关为 false，
+金额和阈值沿用原 Prep02 同频段配置。原三张未分券池的 Prep02 模板已替换；
+Prep01 三张及 Spread01 一张保留，总计 13 张表，Prep 仍为 408 项共享计算。
+这次只修改源码和本地模板，没有更新线上配置、Manager 绑定或持仓。
+用户已确认自动迁移口径：唯一匹配的旧规则直接归组；跨券池重复的旧规则等分数量和入场金额，
+总仓不变。历史盈亏保留在旧策略，切换后按九个新策略统计。空策略保留身份和零目标，
+不会自动补齐规则。`cta-symbol-group-migrate` 会准备信号、Exec 和 Manager 的迁移包，
+详见 [券池迁移](cta_symbol_group_migration.md)。工具本身不执行线上切换。
+
+CLI 替换券池定义默认仅预览；加 `--execute` 才写入当前进程的组合目录：
+
+```bash
+cta-prep-binance-futures --config config/cta_prep_binance_futures.toml --put-symbol-groups /path/to/groups.json
+cta-factor-spread --config config/cta_factor_spread.toml --put-symbol-groups /path/to/groups.json
+```
 
 ## 按频段维护仓位表
 
-因子计算继续共享输入与预热状态，仓位和 Manager 归属按 `strategy_group`、市场与频段独立。
+因子计算继续共享输入与预热状态，仓位和 Manager 归属按 `strategy_group`、`symbol_group`、市场与频段独立。
 同一进程可同时维护 `prep01` / `prep02` 或 `spread01` / `spread02`，每组有自己的
 因子规则、NQ 条件、开平仓阈值、USDT 额度及各频段 `signal.enabled`。例如：
 
@@ -18,7 +73,7 @@
 组合文件名必须与 `name` 一致；用 `prep02_binance-futures_1min` 等名字区分同频段配置。
 每份 JSON 显式填写 `strategy_group`（1–32 位小写字母、数字或下划线，以字母开头）。
 Manager 策略名为 `cta-<strategy_group>-<市场缩写>-<频段>-pos`，Spread 增加参照市场缩写。
-同一组/市场/频段只允许一份带 `signal` 的组合；不同组可同时配置同市场同频段。
+同一策略组/券池/市场/频段只允许一份带 `signal` 的组合；不同组可同时配置同市场同频段。
 同一组可包含三个 Prep 频段，Spread 当前仅支持 1min。两个计算进程各持有自己的单实例运行锁。
 共享完整因子 ID 的定义必须一致；各组可以有不同符号权重、NQ 门槛及交易参数。
 
@@ -97,7 +152,7 @@ SKL × factor_170 存在两条不同 NQ 条件的交易规则，因子只计算�
 不再按 RX 编号或 1m/5m/15m 启动不同的因子程序。因子进程兼任仓位表维护和
 Manager 目标发布；交易账户绑定、份数与订单执行仍由下游 Manager/Exec 负责。
 
-## Prep02 用户清单
+## Prep02 券池拆分前的用户清单（2026-11-03）
 
 2026-11-03 用户提供 18 组规则，按标的展开 102 条，移除 3 条完全重复规则后为 99 条。
 频率 `1m` / `5m` / `15m` 分别规范为 `1min` / `5min` / `15min`，标的补 `USDT`。
@@ -115,7 +170,7 @@ bar 的 `high-close` 之和，与 Rust 实现一致。用户确认将 SOL/DOGE 1
 `TD_MI_040` 改为 `TD_MT_040`，99 条规则均通过计算器计划校验。
 原始输入、去重及名称修正回执在 `artifacts/cta_prep02_config_20261103/`。
 
-## Manager 当前仓位策略目录
+## Manager 线上仓位策略目录（2026-11-03 快照）
 
 2026-11-03 完成目录整理后，Manager 全局保留 13 个仓位策略：
 
@@ -142,7 +197,7 @@ PRC 的真实账户绑定、权限、令牌和 virtual01 保留。没有发送�
 
 新的页面路径为 `/cta/cta-prep-binance-futures/config/`，由独立
 `cta-factor-config` 提供（默认仅监听 `127.0.0.1:19220`）。这是源码中准备的
-入口。页面沿用旧 CTA Perp 配置中心的深色样式，先选择 Prep/Spread 与策略组，
+入口。页面沿用旧 CTA Perp 配置中心的深色样式，先选择 Prep/Spread、策略组与券池，
 再用 1min/5min/15min 标签切换当前频段；Spread 当前仅展示 1min。每个频段独立维护
 开关、USDT 金额、开平仓阈值和因子 JSON；页面没有仓位表、计算窗口参数、逐行编辑器
 或其他因子输入格式。配置服务器只写组合 JSON，不直接发布持仓或订单。
