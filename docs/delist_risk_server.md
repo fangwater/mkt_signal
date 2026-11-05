@@ -1,15 +1,59 @@
 # Delist Risk Server
 
-最后更新：2026-11-04 12:51 UTC（FR 日常检查首页、独立 CTA 页面及响应式布局）
+最后更新：2026-11-05 UTC（OKX 目录、日程与官方公告接入）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
-Binance, Bitget, Gate, and Bybit. Official market snapshots plus announcement LLM
+Binance, Bitget, Gate, Bybit, and OKX. Official market snapshots plus announcement LLM
 extracts land in one book. Full dump, grouped by exchange.
 
 This is a **risk hint**, not a product timetable. Spot, margin and borrowing
 cutoffs associated with a margin/spot delist use `{exchange}-margin`.
 Futures / perpetual use `{exchange}-futures` or
 `{exchange}-coin-futures`.
+
+## OKX risk sources
+
+OKX uses the existing `okex` exchange name. Scope is USDT SPOT (`okex-margin`)
+and USDT linear perpetual SWAP (`okex-futures`); inverse contracts, dated
+futures, options and other quotes are excluded. Native instrument IDs are kept
+in snapshots; only the OKX perpetual lookup strips `-SWAP` to match `BTCUSDT`.
+
+The complete unpaginated public instruments response is shared by the catalog
+and existing schedule provider. Business errors, empty/malformed/mixed-market
+responses and duplicate IDs fail validation before publication. `live` is
+listed, future `expTime` is pending and elapsed `expTime` is expired. Suspended,
+preopen, test and unknown states are unknown rather than permanently delisted.
+A failed refresh retains the previous book as unavailable evidence, while other
+successful venues publish independently. OKX catalogs expire after 48 hours.
+A partial refresh does not create a successful daily database snapshot; an
+already-complete daily snapshot remains immutable until the next UTC day.
+`exchange_info` continues to describe the existing four-exchange FR scope;
+OKX has separate `okex_spot_exchange_info`/`okex_futures_exchange_info` statuses.
+
+Announcements use official public `GET /api/v5/support/announcements` with
+`annType=announcements-delistings`, English language and bounded pagination.
+Only validated `https://www.okx.com/help/` article URLs are fetched; redirects
+are rejected and body parsing requires the rendered SSR rich-text article.
+The normal announcement interval is unchanged (deployment default 24 hours).
+The lookback is at least 97 days, capped at ten pages; repeated pages, truncated
+responses and missing bodies are errors. Requests are paced below official
+limits and 429/503 `Retry-After` or business throttling puts the shared OKX
+collector into cooldown, without immediate retries.
+
+Raw notices, bodies, input fingerprints and LLM outcomes reuse existing
+PostgreSQL/book persistence. Successful identical extracts survive restart and
+are not extracted again; failures follow the existing retry/budget rules.
+`okex_announcements`, `okex_article_detail` and `schedule:okex-*` report separate
+health. An unavailable extractor leaves detail health incomplete. CTA checks
+these sources independently of the catalog and retains either leg's known
+risk even when another source is unavailable. Source failures are shown in the
+existing CTA warning area; no page layout changes or CTA automatic trading
+operations were added. OKX listing/extraction/source messages are excluded from
+the existing FR notification channel.
+
+Official contracts and replayable public fixtures are recorded in
+`tests/fixtures/okx/README.md`. The mapping-only CLI still uses an empty risk
+book/catalog and must not be treated as production risk acceptance.
 
 ## Public URL
 
@@ -684,12 +728,12 @@ curl -sS 'http://<host>:4191/delist/venues?exchange=gate'
 ### `GET /risk`
 
 Full dump. Events keep the same fields across exchanges, but are grouped under
-`exchanges.binance` / `exchanges.bitget` / `exchanges.gate` / `exchanges.bybit`.
+`exchanges.binance` / `exchanges.bitget` / `exchanges.gate` / `exchanges.bybit` / `exchanges.okex`.
 
 | Query | Default | Notes |
 | --- | --- | --- |
 | `venue` | all | optional filter, e.g. `binance-margin` |
-| `exchange` | all | optional filter: `binance` / `bitget` / `gate` / `bybit` |
+| `exchange` | all | optional filter: `binance` / `bitget` / `gate` / `bybit` / `okex` |
 | `days` | 30 | Horizon for dated events |
 | `include_past` | false | Include events older than 7 days |
 
@@ -1185,8 +1229,8 @@ in the page summary.
 Spread uses the shared Spread worker's current tables, Manager strategy identity
 and Exec bindings. Each leg has an explicit market scope;
 Binance cash delisting is checked independently of Binance perpetuals. OKX
-listing coverage remains explicitly unavailable until its risk catalog is
-connected; known Binance hits are retained. CTA monitoring never invokes FR
+listing coverage uses its independently validated USDT SPOT/SWAP risk catalog;
+known hits from either exchange remain visible when another source fails. CTA monitoring never invokes FR
 automatic removal or flatten actions.
 
 `config/cta_manager_reader.env` is a service-user-owned 0600 file containing

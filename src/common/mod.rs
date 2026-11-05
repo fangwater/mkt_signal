@@ -16,6 +16,8 @@ pub mod exchange_info;
 pub mod gate_announcement;
 pub mod min_qty_table;
 pub mod msg_parser;
+pub mod okx_announcement;
+pub(crate) mod okx_public;
 pub mod rolling_welford;
 pub mod sliding_quantile;
 pub mod tick_math;

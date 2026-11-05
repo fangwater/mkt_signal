@@ -525,11 +525,11 @@ pub fn build_account_views_for_venues(
         let covered = !venues.is_empty()
             && matches!(
                 spec.exchange.as_str(),
-                "binance" | "bitget" | "gate" | "bybit"
+                "binance" | "bitget" | "gate" | "bybit" | "okex"
             )
             && venues.iter().all(|venue| listings.has_venue(venue));
         let mut hits_by_symbol: BTreeMap<String, AccountHit> = BTreeMap::new();
-        if redis_ok && covered {
+        if redis_ok && (covered || spec.kind == "cta") {
             if let Some(bucket) = risk.exchanges.get(&spec.exchange) {
                 for event in &bucket.items {
                     if !venues.iter().any(|venue| venue == &event.venue) {
@@ -601,10 +601,16 @@ pub fn build_account_views_for_venues(
         let risk_n = hits.iter().filter(|hit| hit.tone == "risk").count();
         let tone = if !redis_ok {
             "error"
-        } else if !covered {
-            "uncovered"
         } else if risk_n > 0 {
             "risk"
+        } else if !covered
+            || universe.iter().any(|symbol| {
+                venues.iter().any(|venue| {
+                    listings.listing_for(venue, std::slice::from_ref(symbol), &[]) == "unknown"
+                })
+            })
+        {
+            "uncovered"
         } else {
             "ok"
         };
@@ -819,6 +825,42 @@ mod tests {
     use crate::common::announcement_llm::{LlmAction, LlmExtractInput};
     use crate::common::delist_risk::RiskEventView;
     use axum::{routing::get, Json, Router};
+
+    #[test]
+    fn cta_okx_and_binance_catalogs_are_independent() {
+        let accounts = ["okex", "binance"].map(|exchange| AccountSpec {
+            slug: exchange.into(),
+            alias: exchange.into(),
+            exchange: exchange.into(),
+            kind: "cta".into(),
+            host: "jp".into(),
+            site: RedisSite::Jp,
+            config_url: String::new(),
+        });
+        let universes = accounts
+            .iter()
+            .map(|s| (s.slug.clone(), Ok(BTreeSet::from(["BTCUSDT".into()]))))
+            .collect();
+        let scopes = accounts
+            .iter()
+            .map(|s| (s.slug.clone(), vec![format!("{}-futures", s.exchange)]))
+            .collect();
+        let mut listings = ListingIndex::default();
+        listings.insert_test("okex-futures", "BTC-USDT-SWAP");
+        listings.insert_test("binance-futures", "BTCUSDT");
+        let risk = RiskBook::default().query(&Default::default());
+        let views =
+            build_account_views_for_venues(&accounts, &risk, &listings, &universes, &scopes);
+        assert!(views.iter().all(|v| v.tone == "ok"));
+        let mut refreshed = ListingIndex::default();
+        refreshed.insert_test("binance-futures", "BTCUSDT");
+        listings.merge_refresh(refreshed);
+        let views =
+            build_account_views_for_venues(&accounts, &risk, &listings, &universes, &scopes);
+        assert_eq!(views[0].tone, "uncovered");
+        assert_eq!(views[1].tone, "ok");
+        assert!(views[0].hits.is_empty());
+    }
 
     #[test]
     fn latest_announcement_keeps_elapsed_and_distant_actions_with_exact_source_identity() {

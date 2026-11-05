@@ -513,7 +513,15 @@ pub fn events_from_delist_schedule(events: &[DelistEvent]) -> Vec<RiskEvent> {
                 .delist_time
                 .map(|ts| ts.to_rfc3339_opts(SecondsFormat::Secs, true))
                 .unwrap_or_default();
-            let key = event.symbol.clone();
+            let key = if event.venue == order_common::TradingVenue::OkexFutures {
+                event
+                    .symbol
+                    .strip_suffix("-SWAP")
+                    .unwrap_or(&event.symbol)
+                    .to_string()
+            } else {
+                event.symbol.clone()
+            };
             let (assets, symbols) = if looks_like_pair(&key) {
                 (Vec::new(), vec![normalize_symbol(&key)])
             } else {

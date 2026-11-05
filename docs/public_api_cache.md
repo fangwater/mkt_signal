@@ -1,6 +1,18 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-05 02:36 UTC
+最后更新：2026-11-05 UTC（OKX Delist 官方公共来源）
+
+2026-11-05 Delist 风险服务接入 OKX 官方公共只读来源，均直接访问官方 HTTPS，
+不新增 Nginx 路由、监听或缓存：`GET /api/v5/public/instruments?instType=SPOT|SWAP`
+用于完整目录和下架日程；`GET /api/v5/support/announcements?annType=announcements-delistings&page=N`
+用于公告列表，`Accept-Language: en-US`；正文仅取 `https://www.okx.com/help/` 官方页面，
+拒绝重定向与缺失正文。沿用每日目录/日程/公告周期，每次公告最多10页，分页间隔500ms，
+无立即失败重试；429/503遵守 `Retry-After`（最低60秒），业务限流50011/50013共享60秒冷却。
+不发送任何 `OK-ACCESS-*` 头或账户凭据；私有/交易请求不进入此路径。
+官方契约：[Instruments](https://www.okx.com/docs-v5/en/#public-data-rest-api-get-instruments)、
+[Announcements](https://www.okx.com/docs-v5/en/#announcement-get-announcements)。
+公共公告结果受请求IP地区限制；成功解析不表示全球覆盖。公告、正文/抽取和各市场目录/日程分别记录健康，
+失败不会被解释为空且健康。运行时样本与最终发布验收见 `docs/delist_risk_server.md`。
 
 2026-11-05 Gate FR 集中度风控增加现货估值补价：对同账户 Gate 现货/合约配对中，
 持有现货、没有合约持仓且缺合约 mark 的资产，异步直连官方无鉴权

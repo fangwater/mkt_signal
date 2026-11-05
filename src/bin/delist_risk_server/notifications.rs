@@ -103,7 +103,9 @@ pub fn now_ms() -> i64 {
 }
 
 pub fn fr_source(source: &str, active_fr: &BTreeSet<String>) -> bool {
-    if matches!(source, "llm" | "fr_unimmr_close_list")
+    if source.starts_with("okex_")
+        || source.starts_with("schedule:okex-")
+        || matches!(source, "llm" | "fr_unimmr_close_list")
         || source.starts_with("cta_")
         || source.contains("_cta_")
     {
@@ -984,6 +986,10 @@ mod tests {
     fn fr_channel_excludes_cta_and_retired_fr_source_history() {
         let active = BTreeSet::from(["binance_fr_arb02".into()]);
         for source in [
+            "okex_announcements",
+            "okex_article_detail",
+            "okex_spot_exchange_info",
+            "schedule:okex-futures",
             "cta_backup_catalog",
             "cta_backup_quality_binance-cta-perp-rx02",
             "cos_cta_backup_active",

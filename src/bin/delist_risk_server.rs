@@ -35,7 +35,6 @@ use mkt_signal::common::bitget_announcement::{
     article_body_processed, fetch_delist_notices, fetch_offtime_snapshot, has_article_body,
     hydrate_notice_body, mark_article_body_processed,
 };
-use mkt_signal::common::bybit_announcement;
 use mkt_signal::common::delist_accounts::{
     build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_fr_symbol_list,
     load_universes, nav_login, summarize, AccountRiskResponse, AccountRiskView, AccountSpec,
@@ -62,6 +61,7 @@ use mkt_signal::common::exchange_info::{fetch_listing_index, ListingIndex};
 use mkt_signal::common::gate_announcement::{
     fetch_market_snapshot, parse_ws_text, ping_frame, subscribe_frame, ANN_WS_URL,
 };
+use mkt_signal::common::{bybit_announcement, okx_announcement};
 use order_common::TradingVenue;
 use parking_lot::Mutex;
 use reqwest::Client;
@@ -1311,7 +1311,9 @@ async fn query_cta_strategies(
     let listings = state.listings.read().await.clone();
     listings.decorate(&mut risk);
     drop(book);
-    Json(cta_mapping::load(&state.cta_mapping, &risk, &listings).await)
+    let mut response = cta_mapping::load(&state.cta_mapping, &risk, &listings).await;
+    cta_mapping::apply_source_health(&mut response, &*state.status.read().await);
+    Json(response)
 }
 
 #[derive(Deserialize)]
@@ -2296,30 +2298,59 @@ async fn refresh_official(state: &AppState, public: &Client, binance: &Client, d
 
 async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIndex> {
     let (index, errors) = fetch_listing_index(public).await;
-    if errors.is_empty() {
-        if let Some(notifier) = &state.fr_notifications {
-            if let Err(err) = notifier.listings(&index.snapshot_rows()).await {
-                warn!("queue listing changes failed: {err}");
-            }
+    // A failed source cannot freeze healthy exchange catalogs or certify an old one.
+    let mut current = state.listings.write().await;
+    current.merge_refresh(index.clone());
+    drop(current);
+    for venue in ["okex-margin", "okex-futures"] {
+        let source = if venue == "okex-margin" {
+            "okex_spot_exchange_info"
+        } else {
+            "okex_futures_exchange_info"
+        };
+        if let Some((_, error)) = errors.iter().find(|(name, _)| name == source) {
+            mark_err(state, source, "fetch", error).await;
+        } else {
+            mark_ok(state, source, "fetch").await;
         }
-        *state.listings.write().await = index.clone();
+    }
+    if let Some(notifier) = &state.fr_notifications {
+        let rows = index
+            .snapshot_rows()
+            .into_iter()
+            .filter(|row| row.exchange != "okex")
+            .collect::<Vec<_>>();
+        if let Err(err) = notifier.listings(&rows).await {
+            warn!("queue listing changes failed: {err}");
+        }
+    }
+    let legacy_errors = errors
+        .iter()
+        .filter(|(source, _)| !source.starts_with("okex_"))
+        .collect::<Vec<_>>();
+    if legacy_errors.is_empty() {
         mark_ok(state, "exchange_info", "fetch").await;
-        info!("official exchange_info refreshed");
         if state.auto_remove_redis {
             run_confirmed_delist_prune(state).await;
         }
-        return Ok(index);
+    } else {
+        let error = legacy_errors
+            .iter()
+            .map(|(source, err)| format!("{source}: {err}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        warn!("partial exchange_info refresh: {error}");
+        mark_err(state, "exchange_info", "fetch", &error).await;
     }
-    for (source, err) in &errors {
-        warn!("exchange_info {source} failed: {err}");
+    if !errors.is_empty() {
+        anyhow::bail!(errors
+            .iter()
+            .map(|(source, err)| format!("{source}: {err}"))
+            .collect::<Vec<_>>()
+            .join("; "));
     }
-    let error = errors
-        .iter()
-        .map(|(source, err)| format!("{source}: {err}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    mark_err(state, "exchange_info", "fetch", &error).await;
-    anyhow::bail!(error)
+    // Only current successful venues are persisted; failed books stay unavailable in memory.
+    Ok(index)
 }
 
 async fn run_confirmed_delist_prune(state: &AppState) {
@@ -3355,6 +3386,8 @@ async fn ingest_binance_official(state: &AppState, client: &Client) {
 async fn ingest_schedule_venues(state: &AppState, days: i64) {
     let query = DelistScheduleQuery::next_days(days.max(1));
     for venue in [
+        TradingVenue::OkexMargin,
+        TradingVenue::OkexFutures,
         TradingVenue::BinanceFutures,
         TradingVenue::BinanceCoinFutures,
         TradingVenue::GateFutures,
@@ -3501,6 +3534,32 @@ async fn refresh_announcements(
         }
         Err(err) => mark_err(state, "bybit_announcements", "fetch", &format!("{err:#}")).await,
     }
+    match okx_announcement::fetch_delist_notices(public, state.default_days.max(90) + 7).await {
+        Ok(items) => {
+            mark_ok(state, "okex_announcements", "fetch").await;
+            let mut errors = Vec::new();
+            for mut item in items {
+                if let Err(err) = okx_announcement::hydrate_notice_body(public, &mut item).await {
+                    errors.push(format!("{}: {err:#}", item.id));
+                    continue;
+                }
+                let input = LlmExtractInput::from_raw(&item);
+                remember_raw(state, &item).await;
+                if !maybe_extract(state, llm, llm_client, llm_budget, &input).await {
+                    errors.push(format!(
+                        "{}: extraction unavailable or pending retry",
+                        item.id
+                    ));
+                }
+            }
+            if errors.is_empty() {
+                mark_ok(state, "okex_article_detail", "fetch").await;
+            } else {
+                mark_err(state, "okex_article_detail", "fetch", &errors.join("; ")).await;
+            }
+        }
+        Err(err) => mark_err(state, "okex_announcements", "fetch", &format!("{err:#}")).await,
+    }
     if bitget_detail_errors.is_empty() {
         mark_ok(state, "bitget_article_detail", "fetch").await;
     } else {
@@ -3622,6 +3681,19 @@ async fn maybe_extract(
     extract_announcement(state, llm, llm_client, llm_budget, input, false).await
 }
 
+async fn extraction_event(
+    input: &LlmExtractInput,
+    state: &AppState,
+    kind: &str,
+    message: String,
+) -> bool {
+    // OKX is a CTA risk source, outside the existing FR delivery channel.
+    if input.exchange == "okex" {
+        return true;
+    }
+    fr_event(state, kind, message).await
+}
+
 async fn extract_announcement(
     state: &AppState,
     llm: Option<&LlmConfig>,
@@ -3658,7 +3730,8 @@ async fn extract_announcement(
             // Save events before the durable success marker so restart dedup cannot lose a result.
             if !persist(state).await {
                 mark_llm(state, input, false, Some("save extracted risk book failed")).await;
-                fr_event(
+                extraction_event(
+                    input,
                     state,
                     "luna_failed",
                     notifications::luna_message(input, Some(&value), false),
@@ -3666,7 +3739,8 @@ async fn extract_announcement(
                 .await;
                 return false;
             }
-            if !fr_event(
+            if !extraction_event(
+                input,
                 state,
                 "luna_ok",
                 notifications::luna_message(input, Some(&value), true),
@@ -3687,7 +3761,8 @@ async fn extract_announcement(
         }
         Err(err) => {
             mark_llm(state, input, false, Some(&format!("{err:#}"))).await;
-            fr_event(
+            extraction_event(
+                input,
                 state,
                 "luna_failed",
                 notifications::luna_message(input, None, false),

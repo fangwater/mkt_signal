@@ -379,71 +379,18 @@ struct OkxSwapDelistProvider;
 #[derive(Default)]
 struct OkxSpotDelistProvider;
 
-#[derive(Debug, Deserialize)]
-struct OkxResponse<T> {
-    code: String,
-    msg: String,
-    data: Vec<T>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OkxInstrument {
-    #[serde(rename = "instId")]
-    inst_id: String,
-    #[serde(rename = "instType")]
-    inst_type: String,
-    #[serde(rename = "ctType")]
-    #[serde(default)]
-    ct_type: String,
-    #[serde(rename = "settleCcy")]
-    #[serde(default)]
-    settle_ccy: String,
-    #[serde(rename = "expTime")]
-    exp_time: String,
-    state: String,
-}
-
 async fn fetch_okx_delists(
     venue: TradingVenue,
     market: DelistMarket,
     inst_type: &'static str,
     query: &DelistScheduleQuery,
 ) -> Result<Vec<DelistEvent>> {
-    let url = format!("https://www.okx.com/api/v5/public/instruments?instType={inst_type}");
-    let response = http_client()?
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("request OKX instruments failed: instType={inst_type}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .context("read OKX instruments response failed")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "OKX instruments request failed: status={} body={}",
-            status,
-            body
-        );
-    }
-    let parsed: OkxResponse<OkxInstrument> =
-        serde_json::from_str(&body).context("parse OKX instruments JSON failed")?;
-    if parsed.code != "0" {
-        anyhow::bail!(
-            "OKX instruments API error: code={} msg={}",
-            parsed.code,
-            parsed.msg
-        );
-    }
+    let instruments =
+        crate::common::okx_public::fetch_instruments(&http_client()?, inst_type).await?;
 
     let mut events = Vec::new();
-    for item in parsed.data {
-        if item.inst_type != inst_type {
-            continue;
-        }
-        if inst_type == "SWAP" && (item.ct_type != "linear" || item.settle_ccy != "USDT") {
+    for item in instruments {
+        if !item.target_market() {
             continue;
         }
         let Some(delist_time) = parse_millis_str(&item.exp_time, "expTime")? else {

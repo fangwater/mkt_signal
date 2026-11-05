@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use signal_common::public_api::bitget_public_api_url;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
 use crate::common::delist_schedule::{fetch_bybit_instruments, BybitInstrument};
@@ -17,6 +17,8 @@ const LISTED_STATUS: &[&str] = &["trading", "online", "tradable", "listed", "nor
 pub struct ListingIndex {
     /// venue -> compact symbol -> row
     books: BTreeMap<String, BTreeMap<String, ListingRow>>,
+    unavailable: BTreeSet<String>,
+    expires_ms: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -41,12 +43,18 @@ pub struct ListingRow {
 
 impl ListingIndex {
     pub fn has_venue(&self, venue: &str) -> bool {
-        self.books.get(venue).is_some_and(|book| !book.is_empty())
+        !self.unavailable.contains(venue)
+            && !self
+                .expires_ms
+                .get(venue)
+                .is_some_and(|ms| *ms <= chrono::Utc::now().timestamp_millis())
+            && self.books.get(venue).is_some_and(|book| !book.is_empty())
     }
 
     pub fn snapshot_rows(&self) -> Vec<ListingSnapshotRow> {
         self.books
             .iter()
+            .filter(|(venue, _)| !self.unavailable.contains(*venue))
             .flat_map(|(venue, book)| {
                 let (exchange, market_type) = snapshot_scope(venue);
                 book.iter()
@@ -65,8 +73,26 @@ impl ListingIndex {
     }
 
     pub fn listing_for(&self, venue: &str, symbols: &[String], assets: &[String]) -> String {
+        if self.unavailable.contains(venue)
+            || self
+                .expires_ms
+                .get(venue)
+                .is_some_and(|ms| *ms <= chrono::Utc::now().timestamp_millis())
+        {
+            return "unknown".to_string();
+        }
         let Some(book) = self.books.get(venue) else {
             return "unknown".to_string();
+        };
+        let scoped_symbols;
+        let symbols = if venue == "okex-futures" {
+            scoped_symbols = symbols
+                .iter()
+                .map(|symbol| symbol.strip_suffix("-SWAP").unwrap_or(symbol).to_string())
+                .collect::<Vec<_>>();
+            scoped_symbols.as_slice()
+        } else {
+            symbols
         };
         let keys = lookup_keys(symbols, assets);
         if keys.is_empty() {
@@ -75,9 +101,11 @@ impl ListingIndex {
         let mut any_found = false;
         let mut any_listed = false;
         let mut any_pending = false;
+        let mut any_unknown = false;
         for key in keys {
             if let Some(row) = book.get(&key) {
                 any_found = true;
+                any_unknown |= row.status.starts_with("okx:") && !row.listed && !row.pending;
                 if row.listed {
                     any_listed = true;
                 }
@@ -90,6 +118,8 @@ impl ListingIndex {
             "delisted".to_string()
         } else if any_pending {
             "pending".to_string()
+        } else if any_unknown {
+            "unknown".to_string()
         } else if any_listed {
             "listed".to_string()
         } else {
@@ -106,7 +136,11 @@ impl ListingIndex {
     }
 
     fn insert(&mut self, venue: &str, symbol: &str, mut row: ListingRow) {
-        let key = normalize_symbol(symbol);
+        let key = if venue == "okex-futures" {
+            normalize_symbol(symbol.strip_suffix("-SWAP").unwrap_or(symbol))
+        } else {
+            normalize_symbol(symbol)
+        };
         if key.is_empty() {
             return;
         }
@@ -115,6 +149,18 @@ impl ListingIndex {
             .entry(venue.to_string())
             .or_default()
             .insert(key, row);
+    }
+
+    /// Publish successful venues independently, retaining failed books as unavailable evidence.
+    pub fn merge_refresh(&mut self, fresh: Self) {
+        for venue in self.books.keys() {
+            self.unavailable.insert(venue.clone());
+        }
+        self.expires_ms.extend(fresh.expires_ms);
+        for (venue, book) in fresh.books {
+            self.unavailable.remove(&venue);
+            self.books.insert(venue, book);
+        }
     }
 
     #[cfg(test)]
@@ -181,6 +227,14 @@ pub async fn fetch_listing_index(client: &Client) -> (ListingIndex, Vec<(String,
     let mut errors = Vec::new();
     for (source, result) in [
         (
+            "okex_spot_exchange_info",
+            fetch_okx(client, &mut index, "SPOT", now_ms).await,
+        ),
+        (
+            "okex_futures_exchange_info",
+            fetch_okx(client, &mut index, "SWAP", now_ms).await,
+        ),
+        (
             "binance_spot_exchange_info",
             fetch_binance_spot(client, &mut index, now_ms).await,
         ),
@@ -230,6 +284,65 @@ pub async fn fetch_listing_index(client: &Client) -> (ListingIndex, Vec<(String,
         }
     }
     (index, errors)
+}
+
+async fn fetch_okx(
+    client: &Client,
+    index: &mut ListingIndex,
+    inst_type: &str,
+    now_ms: i64,
+) -> Result<()> {
+    let instruments = crate::common::okx_public::fetch_instruments(client, inst_type).await?;
+    ingest_okx(instruments, index, inst_type, now_ms)
+}
+
+fn ingest_okx(
+    instruments: Vec<crate::common::okx_public::Instrument>,
+    index: &mut ListingIndex,
+    inst_type: &str,
+    now_ms: i64,
+) -> Result<()> {
+    let mut complete = ListingIndex::default();
+    for item in instruments {
+        if !item.target_market() {
+            continue;
+        }
+        let expiry = item.expiry_ms()?;
+        let pending = expiry.is_some_and(|ms| ms > now_ms);
+        // Suspension, preopen, test and unknown states are not permanent removal.
+        let listed = item.state == "live" && expiry.is_none();
+        let expired = expiry.is_some_and(|ms| ms <= now_ms);
+        let status = if expired {
+            "expired".to_string()
+        } else {
+            format!("okx:{}", item.state)
+        };
+        complete.insert(
+            if inst_type == "SPOT" {
+                "okex-margin"
+            } else {
+                "okex-futures"
+            },
+            &item.inst_id,
+            ListingRow {
+                symbol: String::new(),
+                status,
+                listed,
+                pending,
+            },
+        );
+    }
+    index.books.extend(complete.books);
+    index.expires_ms.insert(
+        if inst_type == "SPOT" {
+            "okex-margin"
+        } else {
+            "okex-futures"
+        }
+        .into(),
+        now_ms.saturating_add(2 * 86_400_000),
+    );
+    Ok(())
 }
 
 async fn fetch_bybit(
@@ -598,6 +711,66 @@ struct GateFutures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn okx_catalog_market_mapping_status_and_failed_refresh() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut index = ListingIndex::default();
+        let spot = serde_json::json!({"code":"0","data":[
+            {"instId":"BTC-USDT","instType":"SPOT","quoteCcy":"USDT","expTime":"","state":"live"},
+            {"instId":"BTC-USDC","instType":"SPOT","quoteCcy":"USDC","expTime":"","state":"live"},
+            {"instId":"HALT-USDT","instType":"SPOT","quoteCcy":"USDT","expTime":"","state":"suspend"}
+        ]});
+        ingest_okx(
+            crate::common::okx_public::parse_instruments(&spot.to_string(), "SPOT").unwrap(),
+            &mut index,
+            "SPOT",
+            now,
+        )
+        .unwrap();
+        let swap = serde_json::json!({"code":"0","data":[
+            {"instId":"BTC-USDT-SWAP","instType":"SWAP","ctType":"linear","settleCcy":"USDT","expTime":"","state":"live"},
+            {"instId":"FUTURE-USDT-SWAP","instType":"SWAP","ctType":"linear","settleCcy":"USDT","expTime":(now+3600000).to_string(),"state":"live"},
+            {"instId":"OLD-USDT-SWAP","instType":"SWAP","ctType":"linear","settleCcy":"USDT","expTime":(now-1).to_string(),"state":"live"},
+            {"instId":"MYSTERY-USDT-SWAP","instType":"SWAP","ctType":"linear","settleCcy":"USDT","expTime":"","state":"new_state"},
+            {"instId":"BTC-USD-SWAP","instType":"SWAP","ctType":"inverse","settleCcy":"BTC","expTime":"","state":"live"}
+        ]});
+        ingest_okx(
+            crate::common::okx_public::parse_instruments(&swap.to_string(), "SWAP").unwrap(),
+            &mut index,
+            "SWAP",
+            now,
+        )
+        .unwrap();
+        let lookup =
+            |i: &ListingIndex, venue, symbol: &str| i.listing_for(venue, &[symbol.into()], &[]);
+        assert_eq!(lookup(&index, "okex-futures", "BTCUSDT"), "listed");
+        assert_eq!(lookup(&index, "okex-futures", "BTC-USDT-SWAP"), "listed");
+        assert_eq!(lookup(&index, "okex-margin", "BTCUSDT"), "listed");
+        assert_eq!(lookup(&index, "okex-margin", "HALTUSDT"), "unknown");
+        assert_eq!(lookup(&index, "okex-futures", "MYSTERYUSDT"), "unknown");
+        assert_eq!(lookup(&index, "okex-futures", "FUTUREUSDT"), "pending");
+        assert_eq!(lookup(&index, "okex-futures", "OLDUSDT"), "delisted");
+        assert_eq!(lookup(&index, "okex-futures", "MISSINGUSDT"), "delisted");
+        assert!(!index
+            .snapshot_rows()
+            .iter()
+            .any(|r| r.symbol == "BTC-USD-SWAP" || r.symbol == "BTC-USDC"));
+        assert!(index
+            .snapshot_rows()
+            .iter()
+            .any(|r| r.symbol == "BTC-USDT-SWAP" && r.normalized_symbol == "BTCUSDT"));
+        let mut fresh = ListingIndex::default();
+        fresh.insert_test("binance-futures", "BTCUSDT");
+        index.merge_refresh(fresh);
+        assert_eq!(lookup(&index, "okex-futures", "BTCUSDT"), "unknown");
+        assert_eq!(lookup(&index, "binance-futures", "BTCUSDT"), "listed");
+        assert!(index.books.contains_key("okex-futures"));
+        index.unavailable.clear();
+        index.expires_ms.insert("okex-futures".into(), now - 1);
+        assert!(!index.has_venue("okex-futures"));
+        assert_eq!(lookup(&index, "okex-futures", "MISSINGUSDT"), "unknown");
+    }
 
     #[test]
     fn bybit_catalog_separates_usdt_perpetuals_and_scheduled_delists() {

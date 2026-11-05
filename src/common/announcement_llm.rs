@@ -37,7 +37,7 @@ Example: "Gate disables ARIA and BANK lending on October 19; outstanding loans a
 Return JSON only. Do not invent tickers, venues, or times that are not in the text.
 If a field is unknown, use an empty string or empty array.
 utc must be ISO-8601 UTC like 2026-09-03T03:00:00Z, or "".
-exchange must be one of: binance, bitget, gate, bybit, unknown.
+exchange must be one of: binance, bitget, gate, bybit, okex, unknown.
 venue is only the trading book:
 - {exchange}-futures or {exchange}-coin-futures for perpetual / delivery / futures contracts
 - {exchange}-margin for EVERYTHING else: spot, margin, loan, borrow, isolated, cross, portfolio margin
@@ -56,6 +56,7 @@ assets vs symbols:
 - assets = tokens whose listing / loan / margin is ending as a whole (the token itself leaves, or every market of that token stops). Example: "Binance Will Delist ICX, SCRT, STORJ" → assets=["ICX","SCRT","STORJ"], symbols=[].
 - Never treat quote currencies (USDT, USDC, BNB, BTC, ETH, FDUSD, BUSD) as assets just because they appear as the quote of a pair.
 - Tickers only (ICX, SCRT), not full names (ICON).
+For OKX use exchange okex; native BTC-USDT-SWAP means okex-futures symbol BTCUSDT. BTC-USDT means okex-margin. Keep individual pair removals pair-scoped; never expand USD/USDC pair removal to all USDT markets of that asset. A notice postponing or cancelling a delist supersedes the prior deadline; do not emit the cancelled deadline.
 Use the exchange hint if the text does not name the venue."#;
 
 #[derive(Debug, Clone)]
@@ -423,6 +424,11 @@ fn normalize_extract(input: &LlmExtractInput, extract: &mut LlmExtract) {
         action.exchange = normalize_exchange(&action.exchange, &input.exchange);
         action.action = normalize_action(&action.action);
         action.venue = normalize_venue(&action.exchange, &action.venue, &action.action);
+        if action.exchange == "okex" && action.venue == "okex-futures" {
+            for symbol in &mut action.symbols {
+                *symbol = symbol.strip_suffix("-SWAP").unwrap_or(symbol).to_string();
+            }
+        }
         let (assets, symbols) = split_assets_and_symbols(&action.assets, &action.symbols);
         action.assets = assets;
         action.symbols = symbols;
@@ -438,11 +444,13 @@ pub fn normalize_exchange(raw: &str, hint: &str) -> String {
         "bitget".into()
     } else if key.contains("bybit") {
         "bybit".into()
+    } else if key == "okx" || key.contains("okex") {
+        "okex".into()
     } else if key.contains("gate") {
         "gate".into()
     } else {
         match hint.trim().to_ascii_lowercase().as_str() {
-            "binance" | "bitget" | "gate" | "bybit" => hint.trim().to_ascii_lowercase(),
+            "binance" | "bitget" | "gate" | "bybit" | "okex" => hint.trim().to_ascii_lowercase(),
             _ => "unknown".into(),
         }
     }
@@ -585,6 +593,49 @@ fn clip(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn okx_native_swap_symbols_and_independent_actions() {
+        let input = LlmExtractInput {
+            exchange: "okex".into(),
+            id: "test".into(),
+            title: "test".into(),
+            url: "https://www.okx.com/help/test".into(),
+            published_ms: 1,
+            body: String::new(),
+        };
+        let mut extract = LlmExtract {
+            relevant: true,
+            actions: vec![
+                LlmAction {
+                    action: "disable_open".into(),
+                    venue: "OKX swap".into(),
+                    exchange: "OKX".into(),
+                    utc: "2026-12-01T07:30:00Z".into(),
+                    assets: vec![],
+                    symbols: vec!["BTC-USDT-SWAP".into()],
+                    note: String::new(),
+                },
+                LlmAction {
+                    action: "delist".into(),
+                    venue: "OKX perpetual".into(),
+                    exchange: String::new(),
+                    utc: "2026-12-01T08:00:00Z".into(),
+                    assets: vec![],
+                    symbols: vec!["BTC-USDT-SWAP".into()],
+                    note: String::new(),
+                },
+            ],
+        };
+        normalize_extract(&input, &mut extract);
+        assert_eq!(extract.actions.len(), 2);
+        for action in &extract.actions {
+            assert_eq!(action.exchange, "okex");
+            assert_eq!(action.venue, "okex-futures");
+            assert_eq!(action.symbols, ["BTCUSDT"]);
+        }
+        assert_ne!(extract.actions[0].utc, extract.actions[1].utc);
+    }
 
     #[test]
     fn joins_responses_url() {

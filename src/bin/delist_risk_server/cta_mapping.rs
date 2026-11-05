@@ -170,6 +170,55 @@ pub struct Response {
     errors: Vec<String>,
 }
 
+/// Catalog availability does not prove announcement/detail/schedule availability.
+pub fn apply_source_health(
+    response: &mut Response,
+    status: &mkt_signal::common::delist_store::StatusBook,
+) {
+    let now = chrono::Utc::now().timestamp_millis();
+    for strategy in &mut response.strategies {
+        for view in &mut strategy.risk_by_venue {
+            if view.exchange != "okex" {
+                continue;
+            }
+            let venue = &view.venues[0];
+            let catalog = if venue == "okex-margin" {
+                "okex_spot_exchange_info"
+            } else {
+                "okex_futures_exchange_info"
+            };
+            let schedule = format!("schedule:{venue}");
+            for source in [
+                catalog,
+                schedule.as_str(),
+                "okex_announcements",
+                "okex_article_detail",
+            ] {
+                let fresh = status.source(source).is_some_and(|s| {
+                    s.ok && s
+                        .last_success_ms
+                        .is_some_and(|ms| now.saturating_sub(ms) < 2 * 86_400_000)
+                });
+                if !fresh {
+                    let detail = status
+                        .source(source)
+                        .and_then(|s| s.last_error.as_deref())
+                        .unwrap_or("未就绪或数据已过期");
+                    strategy
+                        .errors
+                        .push(format!("{venue} 风险源 {source}: {detail}"));
+                    if view.risk_n == 0 {
+                        view.tone = "uncovered".into();
+                    }
+                    if strategy.risk.risk_n == 0 {
+                        strategy.risk.tone = "uncovered".into();
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn valid_slug(s: &str) -> bool {
     signal_family(s).is_some()
         && s.len() <= 128
@@ -892,6 +941,76 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn spread_retains_either_legs_known_risk_when_catalogs_are_unavailable() {
+        use mkt_signal::common::announcement_llm::{LlmAction, LlmExtractInput};
+        use mkt_signal::common::delist_risk::RiskBook;
+        let signal = Signal {
+            slug: "okex-binance-cta-spread-rx01".into(),
+            combination_name: "test".into(),
+            worker: Worker::Spread,
+            family: "spread",
+            venues: vec!["okex-futures".into(), "binance-futures".into()],
+            enabled: true,
+            bar_interval: "1m".into(),
+            updated_ms: 0,
+            stale: false,
+            names: BTreeSet::new(),
+            symbols: BTreeSet::from(["BTCUSDT".into()]),
+            publishes_to_jp: true,
+        };
+        let mut book = RiskBook::default();
+        let (empty, views) = signal_risk_views(
+            &signal,
+            &book.query(&Default::default()),
+            &ListingIndex::default(),
+        );
+        assert_eq!(empty.tone, "uncovered");
+        assert!(views.iter().all(|v| v.tone == "uncovered"));
+        for exchange in ["okex", "binance"] {
+            let input = LlmExtractInput {
+                exchange: exchange.into(),
+                id: exchange.into(),
+                title: "future delist".into(),
+                url: "https://www.okx.com/help/test".into(),
+                published_ms: 1,
+                body: String::new(),
+            };
+            let utc = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+            book.ingest_llm(
+                &input,
+                true,
+                &[LlmAction {
+                    action: "delist".into(),
+                    venue: format!("{exchange}-futures"),
+                    exchange: exchange.into(),
+                    utc,
+                    assets: vec![],
+                    symbols: vec!["BTCUSDT".into()],
+                    note: String::new(),
+                }],
+            );
+            let (aggregate, views) = signal_risk_views(
+                &signal,
+                &book.query(&Default::default()),
+                &ListingIndex::default(),
+            );
+            assert_eq!(aggregate.tone, "risk");
+            assert!(
+                views
+                    .iter()
+                    .find(|v| v.exchange == exchange)
+                    .unwrap()
+                    .risk_n
+                    > 0
+            );
+            assert_eq!(
+                aggregate.hits[0].events.len(),
+                if exchange == "okex" { 1 } else { 2 }
+            );
+        }
     }
 
     #[test]

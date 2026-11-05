@@ -664,7 +664,7 @@
           const configLink = s.risk?.config_url ? `<a class="config-link" href="${escapeHtml(s.risk.config_url)}" target="_blank" rel="noopener">策略配置 ↗</a>` : '';
           const backupKind = s.kind === 'spread' ? 'cta_spread' : 'cta_perp';
           const backupButton = s.backup_env ? `<button class="refresh backup-action" type="button" data-kind="${backupKind}" data-env="${escapeHtml(s.backup_env)}">立即备份</button>${backupState(backupKind, s.backup_env)}` : '';
-          const riskLabel = s.risk?.tone === 'uncovered' ? '风险源待接入' : String(s.risk?.risk_n || 0);
+          const riskLabel = s.risk?.tone === 'uncovered' ? '风险源未就绪' : String(s.risk?.risk_n || 0);
           return `<tr data-strategy="${escapeHtml(s.slug)}"><td><span class="account-name">${escapeHtml(title)}</span><code class="account-slug">${escapeHtml(s.slug)}</code><span class="account-venues">${escapeHtml(factorCount)}</span>${signalLink} ${configLink} ${backupButton}</td><td>${escapeHtml(status)}${warnings}</td><td>${s.risk?.universe_n || 0}</td><td>${escapeHtml(riskLabel)}</td><td>${execs}</td></tr>${hits ? `<tr class="hit-row"><td colspan="5"><div class="hit-list">${hits}</div></td></tr>` : ''}`;
         }).join('');
         root.innerHTML = `<section class="exchange"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">CTA 策略与因子</span><span class="exchange__site">${escapeHtml(managers)}</span></div></div>${factorBlock}${errors.map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}<div class="exchange__body"><table class="account-table cta-table"><thead><tr><th>组合仓位策略</th><th>状态</th><th>标的</th><th>风险</th><th>关联执行账户</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
