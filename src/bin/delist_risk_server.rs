@@ -2296,6 +2296,40 @@ async fn refresh_official(state: &AppState, public: &Client, binance: &Client, d
     ingest_schedule_venues(state, days).await;
 }
 
+#[derive(Debug)]
+struct ListingRefreshFailure(Vec<(String, String)>);
+impl std::fmt::Display for ListingRefreshFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.0
+                .iter()
+                .map(|(source, error)| format!("{source}: {error}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    }
+}
+impl std::error::Error for ListingRefreshFailure {}
+
+fn snapshot_failure_source(error: &anyhow::Error) -> &'static str {
+    if error
+        .downcast_ref::<ListingRefreshFailure>()
+        .is_some_and(|failure| {
+            !failure.0.is_empty()
+                && failure
+                    .0
+                    .iter()
+                    .all(|(source, _)| source.starts_with("okex_"))
+        })
+    {
+        "okex_exchange_symbol_snapshot"
+    } else {
+        "exchange_symbol_snapshot"
+    }
+}
+
 async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIndex> {
     let (index, errors) = fetch_listing_index(public).await;
     // A failed source cannot freeze healthy exchange catalogs or certify an old one.
@@ -2343,11 +2377,7 @@ async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIn
         mark_err(state, "exchange_info", "fetch", &error).await;
     }
     if !errors.is_empty() {
-        anyhow::bail!(errors
-            .iter()
-            .map(|(source, err)| format!("{source}: {err}"))
-            .collect::<Vec<_>>()
-            .join("; "));
+        return Err(ListingRefreshFailure(errors).into());
     }
     // Only current successful venues are persisted; failed books stay unavailable in memory.
     Ok(index)
@@ -2418,6 +2448,9 @@ async fn persist_symbol_snapshot(state: &AppState, index: &ListingIndex, snapsho
     {
         Ok(created) => {
             mark_ok(state, "exchange_symbol_snapshot", "persist").await;
+            if index.has_venue("okex-margin") && index.has_venue("okex-futures") {
+                mark_ok(state, "okex_exchange_symbol_snapshot", "persist").await;
+            }
             if created {
                 let venues = rows
                     .iter()
@@ -2453,7 +2486,7 @@ async fn record_symbol_snapshot_failure(
     err: &anyhow::Error,
 ) {
     let message = format!("{err:#}");
-    mark_err(state, "exchange_symbol_snapshot", "persist", &message).await;
+    mark_err(state, snapshot_failure_source(err), "persist", &message).await;
     let Some(store) = state.store.as_ref() else {
         return;
     };
@@ -4101,6 +4134,31 @@ mod tests {
         assert_eq!(RiskBook::load(&state.book_path).unwrap().events.len(), 1);
         server.abort();
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn okx_only_snapshot_failure_stays_outside_fr_sources() {
+        let okx: anyhow::Error =
+            ListingRefreshFailure(vec![("okex_spot_exchange_info".into(), "throttled".into())])
+                .into();
+        assert_eq!(
+            snapshot_failure_source(&okx),
+            "okex_exchange_symbol_snapshot"
+        );
+        assert!(!notifications::fr_source(
+            snapshot_failure_source(&okx),
+            &BTreeSet::new()
+        ));
+        let mixed: anyhow::Error = ListingRefreshFailure(vec![
+            ("okex_spot_exchange_info".into(), "failed".into()),
+            ("binance_spot_exchange_info".into(), "failed".into()),
+        ])
+        .into();
+        assert_eq!(snapshot_failure_source(&mixed), "exchange_symbol_snapshot");
+        assert_eq!(
+            snapshot_failure_source(&anyhow::anyhow!("database unavailable")),
+            "exchange_symbol_snapshot"
+        );
     }
 
     #[test]
