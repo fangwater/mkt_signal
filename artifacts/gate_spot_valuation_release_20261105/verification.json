@@ -1,0 +1,138 @@
+{
+  "updated_utc": "2026-11-05T03:14:44.257908+00:00",
+  "source_commit": "6a5d6416ffb4638ed1bc7f03da780dac178fa57f",
+  "binary": "pre_trade",
+  "binary_sha256": "acdf14a029ff5c09568f809fe4c13ab52a78fac2f302e1c6e80b0ec308a53c0e",
+  "binary_size": 20331232,
+  "build_host": "local maintained arbmm worktree",
+  "tests": {
+    "lib_passed": 1489,
+    "lib_ignored": 3,
+    "pre_trade_check": true,
+    "format_check": true,
+    "release_build": true
+  },
+  "targets": {
+    "gate_fr_arb01": {
+      "state": "waiting_for_existing_closes",
+      "last_step": {
+        "env": "gate_fr_arb01",
+        "event": "drain",
+        "utc_ms": 1793848473701,
+        "drained": false,
+        "snapshot_ts_ms": 1793848471533,
+        "abs_net_u": 224.1913575900084,
+        "largest_net_u": 69.28042250499999,
+        "futures_orders": 2,
+        "spot_orders": 0,
+        "active_hedges": [],
+        "tail_count": 7,
+        "tail_max_u": 1.23504,
+        "largest_concentration_ratio": 0.13501356755380065
+      }
+    },
+    "gate_fr_arb02": {
+      "state": "deployed",
+      "last_step": {
+        "env": "gate_fr_arb02",
+        "event": "restart_complete",
+        "utc_ms": 1793847223003,
+        "source_commit": "6a5d6416ffb4638ed1bc7f03da780dac178fa57f",
+        "sha256": "acdf14a029ff5c09568f809fe4c13ab52a78fac2f302e1c6e80b0ec308a53c0e",
+        "backup": "/home/ubuntu/gate_fr_arb02/run/gate_spot_valuation_20261105_verified",
+        "protected_count": 136,
+        "drained_before_stop": {
+          "snapshot_ts_ms": 1793847156042,
+          "abs_net_u": 141.435231269593,
+          "largest_net_u": 16.466028599999845,
+          "futures_orders": 0,
+          "spot_orders": 0,
+          "active_hedges": [],
+          "tail_count": 23,
+          "tail_max_u": 7.715312000000038,
+          "largest_concentration_ratio": 0.09221778333916164
+        }
+      },
+      "processes": [
+        {
+          "comm": "fr_signal_dashb",
+          "pid": 62454,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "comm": "pre_trade",
+          "pid": 925127,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "comm": "trade_signal",
+          "pid": 925266,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "comm": "python3",
+          "pid": 3319943,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "comm": "viz_server",
+          "pid": 3320213,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "comm": "persist_manager",
+          "pid": 3320546,
+          "cpu": "15"
+        },
+        {
+          "comm": "trade_engine",
+          "pid": 3323074,
+          "cpu": "0-5,48-95"
+        },
+        {
+          "comm": "account_monitor",
+          "pid": 3323698,
+          "cpu": "0-5,48-95"
+        }
+      ],
+      "backup": "/home/ubuntu/gate_fr_arb02/run/gate_spot_valuation_20261105_verified",
+      "protected_process_count": 136,
+      "drained_before_stop": {
+        "snapshot_ts_ms": 1793847156042,
+        "abs_net_u": 141.435231269593,
+        "largest_net_u": 16.466028599999845,
+        "futures_orders": 0,
+        "spot_orders": 0,
+        "active_hedges": [],
+        "tail_count": 23,
+        "tail_max_u": 7.715312000000038,
+        "largest_concentration_ratio": 0.09221778333916164
+      },
+      "verification": {
+        "utc_ms": 1793847692001,
+        "running_sha256": "acdf14a029ff5c09568f809fe4c13ab52a78fac2f302e1c6e80b0ec308a53c0e",
+        "installed_sha256": "acdf14a029ff5c09568f809fe4c13ab52a78fac2f302e1c6e80b0ec308a53c0e",
+        "main_loop_ready": true,
+        "spot_poller_started": true,
+        "refreshes": [
+          "[2026-11-05T02:58:27Z INFO  mkt_signal::pre_trade::fr_position_concentration_guard] FR position concentration refreshed: priced_assets=50 unknown_assets=0 events=0 pos_dump_count=0 sync=ok",
+          "[2026-11-05T02:59:27Z INFO  mkt_signal::pre_trade::fr_position_concentration_guard] FR position concentration refreshed: priced_assets=50 unknown_assets=0 events=0 pos_dump_count=0 sync=ok",
+          "[2026-11-05T03:00:27Z INFO  mkt_signal::pre_trade::fr_position_concentration_guard] FR position concentration refreshed: priced_assets=50 unknown_assets=0 events=0 pos_dump_count=0 sync=ok",
+          "[2026-11-05T03:01:27Z INFO  mkt_signal::pre_trade::fr_position_concentration_guard] FR position concentration refreshed: priced_assets=50 unknown_assets=0 events=0 pos_dump_count=0 sync=ok"
+        ],
+        "quote_errors": [],
+        "whole_round_missing_skip_count": 0,
+        "risk_unchanged": true,
+        "lists_unchanged": true,
+        "changed_files": [],
+        "snapshot_fresh": true
+      }
+    }
+  },
+  "first_arb01_attempt": {
+    "state": "rolled_back_and_original_signal_restored",
+    "reason": "stdout-only readiness probe missed startup completion written to stderr",
+    "probe_fixed": true
+  },
+  "raw_evidence_directory": "data/ops/gate_spot_valuation_release_20261105"
+}
