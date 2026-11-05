@@ -1,6 +1,17 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-03 15:39 UTC
+最后更新：2026-11-05 02:36 UTC
+
+2026-11-05 Gate FR 集中度风控增加现货估值补价：对同账户 Gate 现货/合约配对中，
+持有现货、没有合约持仓且缺合约 mark 的资产，异步直连官方无鉴权
+`GET /api/v4/spot/tickers?currency_pair=<ASSET>_USDT`。仅使用有效买一/卖一中间价，
+不使用可能陈旧的 `last`；默认每 10 秒刷新，每轮最多 16 次请求，串行间隔 100ms，
+超时 5 秒，按轮转覆盖待补价资产。进程内估值最长保留 30 秒，请求失败即使该资产
+报价失效；429 遵守数值型 `Retry-After`，缺省全局退避 60 秒。
+补价仅供集中度检查，不写合约 mark 表或下单报价。缺价资产保留已有告警/dump 状态，
+其他有价资产继续检查；不修改阈值。此变更尚未发布线上，不新增 Nginx 白名单、
+缓存监听或代理，不携带账户凭据。Gate 公共共享缓存仍未部署。
+官方契约：[List spot tickers](https://www.gate.com/docs/developers/apiv4/en/#list-tickers)。
 
 2026-11-03 15:18 UTC恢复Bitget仓位档位sidecar至独立目录
 `~/bitget_position_tier_sidecar`，替换已不存在的服务器仓库路径。公共请求仍显式使用

@@ -3346,6 +3346,48 @@ fn missing_position_mark_assets(
     missing
 }
 
+fn gate_spot_only_quantity(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    (open_qty, hedge_qty): (f64, f64),
+) -> Option<f64> {
+    let (spot_qty, futures_qty) = match (open_venue, hedge_venue) {
+        (TradingVenue::GateMargin, TradingVenue::GateFutures) => (open_qty, hedge_qty),
+        (TradingVenue::GateFutures, TradingVenue::GateMargin) => (hedge_qty, open_qty),
+        _ => return None,
+    };
+    (spot_qty.is_finite()
+        && futures_qty.is_finite()
+        && spot_qty.abs() > POSITION_MARK_QTY_EPSILON
+        && futures_qty.abs() <= POSITION_MARK_QTY_EPSILON)
+        .then_some(spot_qty.abs())
+}
+
+fn concentration_positions_with_spot_quotes(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    exposures: &HashMap<String, (f64, f64)>,
+    marks: &HashMap<String, f64>,
+    positions: &HashMap<String, f64>,
+    spot_quotes: &HashMap<String, f64>,
+) -> (HashMap<String, f64>, Vec<String>) {
+    let mut priced = positions.clone();
+    let mut unknown = Vec::new();
+    for asset in missing_position_mark_assets(exposures, marks) {
+        let valuation = gate_spot_only_quantity(open_venue, hedge_venue, exposures[&asset])
+            .zip(spot_quotes.get(&asset).copied())
+            .filter(|(_, price)| price.is_finite() && *price > 0.0)
+            .map(|(qty, price)| qty * price)
+            .filter(|value| value.is_finite() && *value > 0.0);
+        if let Some(value) = valuation {
+            priced.insert(asset, value);
+        } else {
+            unknown.push(asset);
+        }
+    }
+    (priced, unknown)
+}
+
 fn top_two_gross_position_symbols(positions_by_asset: &HashMap<String, f64>) -> Vec<String> {
     const POSITION_EPSILON_USDT: f64 = 1e-6;
     const LIMIT: usize = 2;
@@ -4942,6 +4984,46 @@ impl MonitorChannel {
         Self::with_inner(|_inner| {
             let state = Self::basic_state_cached();
             missing_position_mark_assets(&state.exposures, &state.mark_usdt_by_asset)
+        })
+    }
+
+    /// Gate spot-only holdings that have no derivatives mark. The public quote
+    /// poller reads this list without introducing REST work into risk checks.
+    pub(crate) fn gate_spot_valuation_assets(&self) -> Vec<String> {
+        Self::with_inner(|inner| {
+            Self::with_basic_state_cached(|state| {
+                missing_position_mark_assets(&state.exposures, &state.mark_usdt_by_asset)
+                    .into_iter()
+                    .filter(|asset| {
+                        gate_spot_only_quantity(
+                            inner.open_venue,
+                            inner.hedge_venue,
+                            state.exposures[asset],
+                        )
+                        .is_some()
+                    })
+                    .collect()
+            })
+        })
+    }
+
+    /// Concentration-only valuation. A spot quote can supplement a spot-only
+    /// holding, but cannot replace a futures mark or become an execution quote.
+    pub(crate) fn concentration_position_usdt_snapshot(
+        &self,
+        spot_quotes: &HashMap<String, f64>,
+    ) -> (HashMap<String, f64>, Vec<String>) {
+        Self::with_inner(|inner| {
+            Self::with_basic_state_cached(|state| {
+                concentration_positions_with_spot_quotes(
+                    inner.open_venue,
+                    inner.hedge_venue,
+                    &state.exposures,
+                    &state.mark_usdt_by_asset,
+                    &state.position_usdt_by_asset,
+                    spot_quotes,
+                )
+            })
         })
     }
 
@@ -8088,6 +8170,84 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    #[test]
+    fn concentration_spot_fallback_does_not_replace_a_mark_or_price_futures() {
+        let exposures = HashMap::from([
+            ("BTC".into(), (1.0, -1.0)),
+            ("SLVON".into(), (0.01, 0.0)),
+            ("UNPRICED_FUT".into(), (2.0, -2.0)),
+            ("UNKNOWN".into(), (0.2, 0.0)),
+        ]);
+        let marks = HashMap::from([("BTC".into(), 100.0)]);
+        let positions = HashMap::from([("BTC".into(), 200.0)]);
+        let spots = HashMap::from([
+            ("BTC".into(), 1.0),
+            ("SLVON".into(), 40.0),
+            ("UNPRICED_FUT".into(), 10.0),
+        ]);
+        let (values, unknown) = concentration_positions_with_spot_quotes(
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+            &exposures,
+            &marks,
+            &positions,
+            &spots,
+        );
+        assert_eq!(values["BTC"], 200.0);
+        assert!((values["SLVON"] - 0.4).abs() < 1e-12);
+        assert_eq!(unknown, vec!["UNKNOWN", "UNPRICED_FUT"]);
+        let (values, unknown) = concentration_positions_with_spot_quotes(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+            &exposures,
+            &marks,
+            &positions,
+            &spots,
+        );
+        assert_eq!(values, positions);
+        assert!(unknown.contains(&"SLVON".to_string()));
+    }
+
+    #[test]
+    fn concentration_spot_fallback_accepts_reverse_gate_pair_and_rejects_bad_value() {
+        assert_eq!(
+            gate_spot_only_quantity(
+                TradingVenue::GateFutures,
+                TradingVenue::GateMargin,
+                (0.0, -2.0)
+            ),
+            Some(2.0)
+        );
+        assert_eq!(
+            gate_spot_only_quantity(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+                (2.0, 1.0)
+            ),
+            None
+        );
+        assert_eq!(
+            gate_spot_only_quantity(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+                (f64::NAN, 0.0)
+            ),
+            None
+        );
+        let exposures = HashMap::from([("A".into(), (1.0, 0.0))]);
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let (priced, unknown) = concentration_positions_with_spot_quotes(
+                TradingVenue::GateMargin,
+                TradingVenue::GateFutures,
+                &exposures,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::from([("A".into(), value)]),
+            );
+            assert!(priced.is_empty());
+            assert_eq!(unknown, vec!["A"]);
+        }
+    }
     fn hyperliquid_test_order_update(
         venue: TradingVenue,
         client_order_id: i64,

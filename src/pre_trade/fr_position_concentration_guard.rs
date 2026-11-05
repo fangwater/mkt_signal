@@ -5,10 +5,12 @@ use order_common::TradingVenue;
 use runtime_common::redis_client::{BlockingRedisClient, RedisSettings};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 use trade_signal::ArbMode;
 
+use crate::pre_trade::gate_spot_valuation::{self, GateSpotValuation};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
@@ -36,6 +38,7 @@ struct GuardState {
     alerting_symbols: BTreeSet<String>,
     continuous_symbols: BTreeSet<String>,
     notification_throttle: NotificationThrottle,
+    spot_valuation: Rc<RefCell<GateSpotValuation>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -221,29 +224,44 @@ impl FrPositionConcentrationGuard {
             config.unimmr_key,
             config.notification
         );
+        let spot_valuation = Rc::new(RefCell::new(GateSpotValuation::default()));
         GUARD_STATE.with(|state| {
             *state.borrow_mut() = Some(GuardState {
                 config,
                 alerting_symbols: BTreeSet::new(),
                 continuous_symbols: pos_dump_symbols,
                 notification_throttle: NotificationThrottle::default(),
+                spot_valuation: spot_valuation.clone(),
             });
         });
+        if matches!(
+            (open_venue, hedge_venue),
+            (TradingVenue::GateMargin, TradingVenue::GateFutures)
+                | (TradingVenue::GateFutures, TradingVenue::GateMargin)
+        ) {
+            gate_spot_valuation::start_poll(&spot_valuation);
+        }
         Ok(())
     }
 
     pub fn refresh_blocking() -> Result<()> {
-        let Some((config, mut alerting_symbols, mut continuous_symbols, mut notification_throttle)) =
-            GUARD_STATE.with(|state| {
-                state.borrow().as_ref().map(|state| {
-                    (
-                        state.config.clone(),
-                        state.alerting_symbols.clone(),
-                        state.continuous_symbols.clone(),
-                        state.notification_throttle.clone(),
-                    )
-                })
+        let Some((
+            config,
+            mut alerting_symbols,
+            mut continuous_symbols,
+            mut notification_throttle,
+            spot_valuation,
+        )) = GUARD_STATE.with(|state| {
+            state.borrow().as_ref().map(|state| {
+                (
+                    state.config.clone(),
+                    state.alerting_symbols.clone(),
+                    state.continuous_symbols.clone(),
+                    state.notification_throttle.clone(),
+                    state.spot_valuation.clone(),
+                )
             })
+        })
         else {
             return Ok(());
         };
@@ -268,6 +286,7 @@ impl FrPositionConcentrationGuard {
         let alert_ratio = params.fr_position_concentration_alert_ratio();
         let dump_ratio = params.fr_position_concentration_dump_ratio();
         let max_leverage = params.max_leverage();
+        let spot_prices = spot_valuation.borrow().fresh_prices(Instant::now());
         let result = evaluate_and_sync(
             &mut client,
             &config,
@@ -279,6 +298,7 @@ impl FrPositionConcentrationGuard {
             alert_ratio,
             dump_ratio,
             max_leverage,
+            &spot_prices,
         );
         UnimmrOpenLock::replace_fr_close_symbol_lists(
             &dump_symbols,
@@ -334,10 +354,12 @@ fn evaluate_and_sync(
     alert_ratio: f64,
     dump_ratio: f64,
     max_leverage: f64,
+    spot_prices: &HashMap<String, f64>,
 ) -> Result<()> {
     let original_pos_dump_symbols = pos_dump_symbols.clone();
 
-    let missing_mark_assets = MonitorChannel::instance().missing_gross_position_mark_assets();
+    let (positions_by_asset, missing_mark_assets) =
+        MonitorChannel::instance().concentration_position_usdt_snapshot(spot_prices);
     if !missing_mark_assets.is_empty() {
         let sample = missing_mark_assets
             .iter()
@@ -346,14 +368,12 @@ fn evaluate_and_sync(
             .collect::<Vec<_>>()
             .join(",");
         warn!(
-            "FR position concentration skipped: missing mark prices count={} samples=[{}] action=preserve_pos_dump_and_alert_state",
+            "FR position concentration unknown prices: count={} samples=[{}] action=check_priced_assets_preserve_unknown_state",
             missing_mark_assets.len(),
             sample
         );
-        return Ok(());
     }
 
-    let (positions_by_asset, _) = MonitorChannel::instance().gross_position_usdt_snapshot();
     let (_, total_equity_usdt, _, _, _) = MonitorChannel::instance().basic_state_snapshot();
     let Some(position_capacity_usdt) =
         calculate_position_capacity_usdt(total_equity_usdt, max_leverage)
@@ -364,72 +384,18 @@ fn evaluate_and_sync(
         );
         return Ok(());
     };
-    let mut positions_by_symbol = BTreeMap::new();
-    for (asset, position_usdt) in positions_by_asset {
-        if !(position_usdt.is_finite() && position_usdt > POSITION_EPSILON_USDT) {
-            continue;
-        }
-        let Some(symbol) = asset_to_symbol(&asset) else {
-            continue;
-        };
-        *positions_by_symbol.entry(symbol).or_insert(0.0) += position_usdt;
-    }
-
-    let mut symbols: BTreeSet<String> = positions_by_symbol.keys().cloned().collect();
-    symbols.extend(pos_dump_symbols.iter().cloned());
-    symbols.extend(alerting_symbols.iter().cloned());
-    symbols.extend(continuous_symbols.iter().cloned());
-
-    let mut events = Vec::new();
-    for symbol in symbols {
-        let position_usdt = positions_by_symbol.get(&symbol).copied().unwrap_or(0.0);
-        let ratio = (position_usdt / position_capacity_usdt).max(0.0);
-        let in_dump = dump_symbols.contains(&symbol);
-        let in_pos_dump = pos_dump_symbols.contains(&symbol);
-        let was_alerting = alerting_symbols.contains(&symbol);
-        let was_continuous = continuous_symbols.contains(&symbol);
-        let action = decide_dump_action(ratio, alert_ratio, dump_ratio, in_dump, in_pos_dump);
-
-        match action {
-            DumpAction::AddPosDump => {
-                pos_dump_symbols.insert(symbol.clone());
-            }
-            DumpAction::RemovePosDump => {
-                pos_dump_symbols.remove(&symbol);
-            }
-            _ => {}
-        }
-
-        let transition = decide_notification_transition(
-            ratio,
-            alert_ratio,
-            dump_ratio,
-            was_alerting,
-            was_continuous,
-        );
-        if transition.alerting {
-            alerting_symbols.insert(symbol.clone());
-        } else {
-            alerting_symbols.remove(&symbol);
-        }
-        if transition.continuous {
-            continuous_symbols.insert(symbol.clone());
-        } else {
-            continuous_symbols.remove(&symbol);
-        }
-        if transition.emit || action == DumpAction::RemovePosDump {
-            events.push(ConcentrationEvent {
-                symbol,
-                position_usdt,
-                position_capacity_usdt,
-                ratio,
-                action,
-                in_dump,
-                continuous: transition.continuous,
-                recovered: ratio < alert_ratio,
-            });
-        }
-    }
+    let priced_assets = positions_by_asset.len();
+    let events = evaluate_positions(
+        positions_by_asset,
+        &missing_mark_assets,
+        position_capacity_usdt,
+        alert_ratio,
+        dump_ratio,
+        dump_symbols,
+        pos_dump_symbols,
+        alerting_symbols,
+        continuous_symbols,
+    );
 
     let changed = *pos_dump_symbols != original_pos_dump_symbols;
     let sync_result = if changed {
@@ -503,7 +469,101 @@ fn evaluate_and_sync(
         }
     }
 
+    info!(
+        "FR position concentration refreshed: priced_assets={} unknown_assets={} events={} pos_dump_count={} sync={}",
+        priced_assets, missing_mark_assets.len(), events.len(), pos_dump_symbols.len(), sync_label
+    );
     sync_result
+}
+
+fn evaluate_positions(
+    positions_by_asset: HashMap<String, f64>,
+    missing_assets: &[String],
+    position_capacity_usdt: f64,
+    alert_ratio: f64,
+    dump_ratio: f64,
+    dump_symbols: &BTreeSet<String>,
+    pos_dump_symbols: &mut BTreeSet<String>,
+    alerting_symbols: &mut BTreeSet<String>,
+    continuous_symbols: &mut BTreeSet<String>,
+) -> Vec<ConcentrationEvent> {
+    let unknown_symbols: BTreeSet<_> = missing_assets
+        .iter()
+        .filter_map(|asset| asset_to_symbol(asset))
+        .collect();
+    let mut positions_by_symbol = BTreeMap::new();
+    for (asset, position_usdt) in positions_by_asset {
+        if !(position_usdt.is_finite() && position_usdt > POSITION_EPSILON_USDT) {
+            continue;
+        }
+        let Some(symbol) = asset_to_symbol(&asset) else {
+            continue;
+        };
+        *positions_by_symbol.entry(symbol).or_insert(0.0) += position_usdt;
+    }
+
+    let mut symbols: BTreeSet<String> = positions_by_symbol.keys().cloned().collect();
+    symbols.extend(pos_dump_symbols.iter().cloned());
+    symbols.extend(alerting_symbols.iter().cloned());
+    symbols.extend(continuous_symbols.iter().cloned());
+
+    let mut events = Vec::new();
+    for symbol in symbols {
+        // Unknown is not a zero position: preserve all existing per-symbol
+        // locks and dump ownership until a usable price or a zero balance arrives.
+        if unknown_symbols.contains(&symbol) {
+            continue;
+        }
+        let position_usdt = positions_by_symbol.get(&symbol).copied().unwrap_or(0.0);
+        let ratio = (position_usdt / position_capacity_usdt).max(0.0);
+        let in_dump = dump_symbols.contains(&symbol);
+        let in_pos_dump = pos_dump_symbols.contains(&symbol);
+        let was_alerting = alerting_symbols.contains(&symbol);
+        let was_continuous = continuous_symbols.contains(&symbol);
+        let action = decide_dump_action(ratio, alert_ratio, dump_ratio, in_dump, in_pos_dump);
+
+        match action {
+            DumpAction::AddPosDump => {
+                pos_dump_symbols.insert(symbol.clone());
+            }
+            DumpAction::RemovePosDump => {
+                pos_dump_symbols.remove(&symbol);
+            }
+            _ => {}
+        }
+
+        let transition = decide_notification_transition(
+            ratio,
+            alert_ratio,
+            dump_ratio,
+            was_alerting,
+            was_continuous,
+        );
+        if transition.alerting {
+            alerting_symbols.insert(symbol.clone());
+        } else {
+            alerting_symbols.remove(&symbol);
+        }
+        if transition.continuous {
+            continuous_symbols.insert(symbol.clone());
+        } else {
+            continuous_symbols.remove(&symbol);
+        }
+        if transition.emit || action == DumpAction::RemovePosDump {
+            events.push(ConcentrationEvent {
+                symbol,
+                position_usdt,
+                position_capacity_usdt,
+                ratio,
+                action,
+                in_dump,
+                continuous: transition.continuous,
+                recovered: ratio < alert_ratio,
+            });
+        }
+    }
+
+    events
 }
 
 fn build_notification_semantic_state(
@@ -726,6 +786,77 @@ mod tests {
     }
 
     #[test]
+    fn missing_asset_preserves_its_locks_while_priced_assets_are_checked() {
+        let mut dump = normalized_set(["UNKNOWNUSDT", "ETHUSDT"]);
+        let mut alerting = dump.clone();
+        let mut continuous = dump.clone();
+        let events = evaluate_positions(
+            HashMap::from([("BTC".into(), 18_000.0), ("ETH".into(), 2_000.0)]),
+            &["UNKNOWN".into(), "NEW_UNKNOWN".into()],
+            100_000.0,
+            ALERT_RATIO,
+            DUMP_RATIO,
+            &BTreeSet::new(),
+            &mut dump,
+            &mut alerting,
+            &mut continuous,
+        );
+        assert_eq!(dump, normalized_set(["BTCUSDT", "UNKNOWNUSDT"]));
+        assert_eq!(alerting, dump);
+        assert_eq!(continuous, dump);
+        assert!(events
+            .iter()
+            .any(|e| e.symbol == "BTCUSDT" && e.action == DumpAction::AddPosDump));
+        assert!(events.iter().any(|e| e.symbol == "ETHUSDT" && e.recovered));
+        assert!(events.iter().all(|e| !e.symbol.contains("UNKNOWN")));
+    }
+
+    #[test]
+    fn missing_price_cannot_clear_alert_only_state_or_partial_symbol_value() {
+        let mut dump = BTreeSet::new();
+        let mut alerting = normalized_set(["SLVONUSDT"]);
+        let mut continuous = BTreeSet::new();
+        let events = evaluate_positions(
+            HashMap::from([("SLVON".into(), 0.4)]),
+            &["SLVON".into()],
+            100_000.0,
+            ALERT_RATIO,
+            DUMP_RATIO,
+            &BTreeSet::new(),
+            &mut dump,
+            &mut alerting,
+            &mut continuous,
+        );
+        assert!(events.is_empty());
+        assert!(alerting.contains("SLVONUSDT"));
+        assert!(dump.is_empty());
+    }
+
+    #[test]
+    fn restored_valuation_allows_recovery_but_preserves_manual_dump() {
+        let mut pos_dump = normalized_set(["SLVONUSDT"]);
+        let mut alerting = pos_dump.clone();
+        let mut continuous = pos_dump.clone();
+        let manual_dump = pos_dump.clone();
+        let events = evaluate_positions(
+            HashMap::from([("SLVON".into(), 0.4)]),
+            &[],
+            100_000.0,
+            ALERT_RATIO,
+            DUMP_RATIO,
+            &manual_dump,
+            &mut pos_dump,
+            &mut alerting,
+            &mut continuous,
+        );
+        assert!(pos_dump.is_empty() && alerting.is_empty() && continuous.is_empty());
+        assert!(manual_dump.contains("SLVONUSDT"));
+        assert_eq!(events.len(), 1);
+        assert!(events[0].recovered);
+        assert_eq!(events[0].action, DumpAction::RemovePosDump);
+    }
+
+    #[test]
     fn alerts_at_twelve_percent_without_dumping() {
         assert_eq!(
             decide_dump_action(ALERT_RATIO, ALERT_RATIO, DUMP_RATIO, false, false),
@@ -903,6 +1034,7 @@ mod tests {
                 alerting_symbols: BTreeSet::from(["BTCUSDT".to_string()]),
                 continuous_symbols: BTreeSet::new(),
                 notification_throttle: NotificationThrottle::default(),
+                spot_valuation: Rc::new(RefCell::new(GateSpotValuation::default())),
             });
         });
 

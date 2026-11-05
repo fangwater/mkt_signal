@@ -24,6 +24,7 @@ pub mod exec_volatility_channel;
 pub mod exec_volume_channel;
 pub mod fr_position_concentration_guard;
 pub mod gate_fr_risk_limit_guard;
+mod gate_spot_valuation;
 pub mod intra_bwd_symbol_list;
 pub mod kalman_filter;
 pub mod lazy_taker_action;
