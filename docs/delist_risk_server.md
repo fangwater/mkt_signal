@@ -29,6 +29,8 @@ A partial refresh does not create a successful daily database snapshot; an
 already-complete daily snapshot remains immutable until the next UTC day.
 `exchange_info` continues to describe the existing four-exchange FR scope;
 OKX has separate `okex_spot_exchange_info`/`okex_futures_exchange_info` statuses.
+An OKX-only daily snapshot failure uses `okex_exchange_symbol_snapshot` and
+remains outside the FR alert channel; mixed/legacy failures retain their existing attribution.
 
 Announcements use official public `GET /api/v5/support/announcements` with
 `annType=announcements-delistings`, English language and bounded pagination.
@@ -45,7 +47,8 @@ PostgreSQL/book persistence. Successful identical extracts survive restart and
 are not extracted again; failures follow the existing retry/budget rules.
 `okex_announcements`, `okex_article_detail` and `schedule:okex-*` report separate
 health. An unavailable extractor leaves detail health incomplete. CTA checks
-these sources independently of the catalog and retains either leg's known
+these sources independently of the catalog, checks the Binance leg's CMS and
+market-specific official sources separately, and retains either leg's known
 risk even when another source is unavailable. Source failures are shown in the
 existing CTA warning area; no page layout changes or CTA automatic trading
 operations were added. OKX listing/extraction/source messages are excluded from
@@ -54,6 +57,59 @@ the existing FR notification channel.
 Official contracts and replayable public fixtures are recorded in
 `tests/fixtures/okx/README.md`. The mapping-only CLI still uses an empty risk
 book/catalog and must not be treated as production risk acceptance.
+
+## OKX production acceptance (2026-11-05 UTC)
+
+Published source `8e30fd1f` from synchronized local `arbmm`; the release was built
+in `/home/fanghaizhou/mkt_signal`, uploaded to an explicit temporary file,
+SHA-256 checked and atomically installed on `jp-meta-elvpn:~/delist_risk_server`.
+Final binary SHA-256:
+`d74927a769072c83a9985ce0cf50d663efae0c44751d8178f4a2b2e4113f97f7`.
+Page SHA-256:
+`fb0a710ad18d953ff75c15f9fd10864c801c65294654e982e055022c463b33f7`.
+Only the binary and local CTA unavailable-source wording were published. The
+online start/stop scripts and private configuration were preserved; restart
+used the environment-local scripts. CPU affinity and source IPs were unchanged.
+The original binary/page/scripts are backed up at
+`~/delist_risk_server/backups/okx-6259ec3d-before/`; subsequent binary-only
+backups are in `okx-205e38a6-before/` and `okx-8e30fd1f-before/`. Rollback must
+restore the selected exact files atomically and use the same environment scripts.
+
+Real official requests from JP succeeded. Read-only queries of the running
+service's persistence confirmed both OKX catalogs, both schedules, announcement
+list and article/extraction sources successful. Eight public notices and eight
+bodies were archived; all eight extracts succeeded with durable input
+fingerprints, producing nine book events. Both current schedule responses had
+zero future events. A restart replay kept the eight extraction attempts and the
+last extraction timestamp unchanged, proving successful input dedup. These
+counts are a point-in-time observation, subject to the official API's IP/region
+restrictions. Existing four-exchange sources remained healthy.
+
+The eleven FR accounts remained fresh and complete, with no collection errors;
+the FR notification outbox was empty with no send error and no OKX catalog
+entered its listing state. All 156 previously captured non-target deployed PIDs
+remained present. Anonymous page requests redirected to login (303), while
+status, announcements and CTA data continued returning 401. No usable normal
+login cookie was available, so **the authenticated production CTA/page response
+was not inspected**. Official collection, durable processing and offline risk
+semantics were checked independently; the empty mapping-only CLI was not used
+as risk acceptance. The pre-existing complete daily snapshot is immutable, so
+new OKX snapshot rows begin with the next successful UTC-day capture.
+
+Validation: `cargo fmt --check`, `cargo check --bin delist_risk_server`, local
+release builds, 1496 library tests (3 ignored), and 59 focused Delist tests
+passed. The spread regression covers independent source health on both legs,
+either leg's known risk surviving outages, and both sources unavailable. The
+browser regression passed against the locally built release and published page
+at 320–1440px, including FR/CTA routing, navigation/config/backup links,
+announcement/exposure expansion and refresh state.
+
+Two existing Delist tests still assert 408 Prep jobs while the current repository
+catalog contains 404; the focused run excludes exactly those two tests. A full
+`cargo test` was attempted and passed the library before stopping on eight
+unrelated `cme_tas_census` column-rule tests: the source rules include eight event
+types while that binary still expects four. These existing failures were not
+hidden or repaired by changing the user's factor/replay configuration.
 
 ## Public URL
 
