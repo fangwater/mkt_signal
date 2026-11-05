@@ -151,6 +151,8 @@ excluded tails are retired as a policy change, not sent as price-data recoveries
 The wrapper accepts `DELIST_EXPOSURE_INTERVAL_SECS`,
 `DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS`,
 `DELIST_EXPOSURE_ASSET_LIMIT_USDT` and `DELIST_EXPOSURE_ACCOUNT_LIMIT_USDT`.
+`DELIST_DATA_PERSISTENCE_SECS` (default `60`) requires continuously incomplete
+FR position data before alerting; complete data recovers immediately.
 The identical report is atomically saved beside the risk book as
 `data/fr_exposure_check.json` for private operator diagnostics. The protected API
 also reevaluates freshness at request time; an old file is historical evidence.

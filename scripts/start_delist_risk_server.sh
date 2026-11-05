@@ -101,6 +101,7 @@ ARGS=(
   --exposure-interval-secs "${DELIST_EXPOSURE_INTERVAL_SECS:-10}"
   --exposure-max-age-secs "${DELIST_EXPOSURE_MAX_AGE_SECS:-90}"
   --exposure-persistence-secs "${DELIST_EXPOSURE_PERSISTENCE_SECS:-30}"
+  --data-persistence-secs "${DELIST_DATA_PERSISTENCE_SECS:-60}"
   --exposure-asset-limit-usdt "${DELIST_EXPOSURE_ASSET_LIMIT_USDT:-100}"
   --exposure-account-limit-usdt "${DELIST_EXPOSURE_ACCOUNT_LIMIT_USDT:-500}"
   --nav-strategies-url "${DELIST_NAV_STRATEGIES_URL:-http://127.0.0.1:4191/nav-api/strategies}"

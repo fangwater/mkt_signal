@@ -174,6 +174,8 @@ struct Args {
     exposure_max_age_secs: u64,
     #[arg(long, default_value_t = 30)]
     exposure_persistence_secs: u64,
+    #[arg(long, default_value_t = 60)]
+    data_persistence_secs: u64,
     #[arg(long, default_value_t = 100.0)]
     exposure_asset_limit_usdt: f64,
     #[arg(long, default_value_t = 500.0)]
@@ -519,6 +521,7 @@ async fn main() -> Result<()> {
         interval_secs: args.exposure_interval_secs,
         max_age_secs: args.exposure_max_age_secs,
         persistence_secs: args.exposure_persistence_secs,
+        data_persistence_secs: args.data_persistence_secs,
         asset_limit_usdt: args.exposure_asset_limit_usdt,
         account_limit_usdt: args.exposure_account_limit_usdt,
         catalog_max_age_secs: args.nav_strategy_interval_secs.saturating_mul(3).max(90),
@@ -1151,7 +1154,7 @@ async fn main() -> Result<()> {
 
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
     info!(
-        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s nav_strategies={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U",
+        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s nav_strategies={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U data_persistence={}s",
         args.official_interval_secs,
         args.listing_interval_secs,
         args.announcement_interval_secs,
@@ -1163,6 +1166,7 @@ async fn main() -> Result<()> {
         args.position_risk_threshold_usdt,
         args.flatten_window_hours,
         args.flatten_manual_threshold_usdt,
+        args.data_persistence_secs,
     );
     axum::serve(
         tokio::net::TcpListener::bind(addr)

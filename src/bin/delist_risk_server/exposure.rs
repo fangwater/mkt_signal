@@ -15,6 +15,7 @@ pub struct Settings {
     pub interval_secs: u64,
     pub max_age_secs: u64,
     pub persistence_secs: u64,
+    pub data_persistence_secs: u64,
     pub asset_limit_usdt: f64,
     pub account_limit_usdt: f64,
     pub catalog_max_age_secs: u64,
@@ -44,6 +45,7 @@ impl Default for Settings {
             interval_secs: 10,
             max_age_secs: 90,
             persistence_secs: 30,
+            data_persistence_secs: 60,
             asset_limit_usdt: 100.0,
             account_limit_usdt: 500.0,
             catalog_max_age_secs: 180,
@@ -65,6 +67,10 @@ impl Settings {
         ensure!(
             self.persistence_secs <= 3600,
             "exposure persistence must be at most 3600 seconds"
+        );
+        ensure!(
+            self.data_persistence_secs <= 3600,
+            "data persistence must be at most 3600 seconds"
         );
         for limit in [self.asset_limit_usdt, self.account_limit_usdt] {
             ensure!(
@@ -142,6 +148,8 @@ pub struct Account {
     pub data_status: &'static str,
     pub risk_status: &'static str,
     pub complete: bool,
+    pub data_incomplete_since_ms: Option<i64>,
+    pub data_incomplete_confirmed: bool,
     pub abs_usdt: Option<f64>,
     pub risk_abs_usdt: Option<f64>,
     pub ignored_spot_tail_n: usize,
@@ -166,6 +174,8 @@ impl Account {
             data_status: "unavailable",
             risk_status: "unknown",
             complete: false,
+            data_incomplete_since_ms: None,
+            data_incomplete_confirmed: false,
             abs_usdt: None,
             risk_abs_usdt: None,
             ignored_spot_tail_n: 0,
@@ -244,7 +254,6 @@ impl Monitor {
             let Some(account) = self.accounts.get_mut(&slug) else {
                 continue;
             };
-            account.checked_ms = now;
             match result {
                 Err(err) => {
                     account.complete = false;
@@ -367,6 +376,24 @@ impl Monitor {
                     account.errors = sample.errors;
                 }
             }
+            // Match report completeness, including an unavailable account catalog.
+            // Failed reads and repeated incomplete snapshots are observations of
+            // missing data, even when they cannot advance exposure confirmation.
+            if account.complete && catalog_current {
+                account.data_incomplete_since_ms = None;
+                account.data_incomplete_confirmed = false;
+            } else {
+                if !account.data_incomplete_confirmed
+                    && now.saturating_sub(account.checked_ms)
+                        > (self.settings.interval_secs * 3) as i64 * 1000
+                {
+                    account.data_incomplete_since_ms = None;
+                }
+                let since = *account.data_incomplete_since_ms.get_or_insert(now);
+                account.data_incomplete_confirmed |=
+                    now.saturating_sub(since) >= self.settings.data_persistence_secs as i64 * 1000;
+            }
+            account.checked_ms = now;
             account.classify();
         }
         self.checked_ms = now;
@@ -739,6 +766,84 @@ mod tests {
 
     fn account(m: &Monitor, now: i64) -> Account {
         m.report(now, true).accounts.remove(0)
+    }
+
+    fn data_problem(m: &Monitor, now: i64) -> Option<bool> {
+        let report = m.report(now, true);
+        let observation = super::super::notifications::exposure_observations(&report)
+            .into_iter()
+            .find(|o| o.key == "data/gate_fr_arb04")
+            .unwrap();
+        assert_eq!(observation.title, "gate_fr_arb04 持仓数据");
+        observation.problem
+    }
+
+    #[test]
+    fn incomplete_data_requires_persistence_and_complete_data_recovers_immediately() {
+        let mut m = Monitor::new(Settings::default());
+        // Repeated reads of the same incomplete snapshot still prove missing data.
+        let incomplete = snapshot(vec![json!({"asset":"UNPRICED"})], NOW);
+        for t in [0, 10_000, 20_000, 30_000, 40_000, 50_000, 59_999, 60_000] {
+            let now = NOW + t;
+            let sample = parse(&incomplete, now, &m.settings).unwrap();
+            m.apply(
+                &[spec("gate_fr_arb04", RedisSite::Jp)],
+                vec![("gate_fr_arb04".into(), Ok(sample))],
+                now,
+                true,
+            );
+            assert_eq!(data_problem(&m, now), (t >= 60_000).then_some(true));
+        }
+        apply(&mut m, vec![row("BTC", 0.0)], NOW + 60_001);
+        assert_eq!(data_problem(&m, NOW + 60_001), Some(false));
+        let a = account(&m, NOW + 60_001);
+        assert_eq!(a.data_incomplete_since_ms, None);
+        assert!(!a.data_incomplete_confirmed);
+
+        apply(&mut m, vec![json!({"asset":"UNPRICED"})], NOW + 70_000);
+        assert_eq!(data_problem(&m, NOW + 70_000), None);
+        assert_eq!(
+            account(&m, NOW + 70_000).data_incomplete_since_ms,
+            Some(NOW + 70_000)
+        );
+    }
+
+    #[test]
+    fn failed_reads_confirm_data_incompleteness_but_observation_gaps_reset_pending() {
+        let mut m = Monitor::new(Settings::default());
+        for t in [
+            0, 10_000, 20_000, 60_000, 70_000, 80_000, 90_000, 100_000, 110_000, 120_000,
+        ] {
+            m.apply(
+                &[spec("gate_fr_arb04", RedisSite::Jp)],
+                vec![("gate_fr_arb04".into(), Err(anyhow::anyhow!("timeout")))],
+                NOW + t,
+                true,
+            );
+            assert_eq!(data_problem(&m, NOW + t), (t >= 120_000).then_some(true));
+        }
+        assert_eq!(
+            account(&m, NOW + 120_000).data_incomplete_since_ms,
+            Some(NOW + 60_000)
+        );
+        apply(&mut m, vec![row("BTC", 0.0)], NOW + 120_001);
+        assert_eq!(data_problem(&m, NOW + 120_001), Some(false));
+    }
+
+    #[test]
+    fn transient_incomplete_data_clears_and_uses_configured_persistence() {
+        let mut m = Monitor::new(Settings {
+            data_persistence_secs: 20,
+            ..Settings::default()
+        });
+        apply(&mut m, vec![json!({"asset":"BAD"})], NOW);
+        assert_eq!(data_problem(&m, NOW), None);
+        apply(&mut m, vec![], NOW + 10_000);
+        assert_eq!(data_problem(&m, NOW + 10_000), Some(false));
+        for t in [20_000, 30_000, 40_000] {
+            apply(&mut m, vec![json!({"asset":"BAD"})], NOW + t);
+            assert_eq!(data_problem(&m, NOW + t), (t >= 40_000).then_some(true));
+        }
     }
 
     #[test]
@@ -1180,8 +1285,20 @@ mod tests {
                 max_age_secs: 1,
                 ..Settings::default()
             },
+            Settings {
+                data_persistence_secs: 3601,
+                ..Settings::default()
+            },
         ] {
             assert!(settings.validate().is_err());
+        }
+        for data_persistence_secs in [0, 60, 3600] {
+            Settings {
+                data_persistence_secs,
+                ..Settings::default()
+            }
+            .validate()
+            .unwrap();
         }
     }
 }

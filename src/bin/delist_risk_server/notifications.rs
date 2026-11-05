@@ -563,7 +563,13 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
         observations.push(Observation {
             key: format!("data/{}", account.slug),
             title: format!("{} 持仓数据", account.slug),
-            problem: Some(!account.complete),
+            problem: if account.complete {
+                Some(false)
+            } else if account.data_incomplete_confirmed {
+                Some(true)
+            } else {
+                None
+            },
             detail: if account.complete {
                 "敞口与账户监控快照已完整恢复".into()
             } else {
@@ -1031,6 +1037,8 @@ mod tests {
             data_status: "partial",
             risk_status: "unknown",
             complete: false,
+            data_incomplete_since_ms: None,
+            data_incomplete_confirmed: false,
             abs_usdt: Some(0.0),
             risk_abs_usdt: Some(0.0),
             ignored_spot_tail_n: 0,
