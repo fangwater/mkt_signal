@@ -178,22 +178,30 @@ pub fn apply_source_health(
     let now = chrono::Utc::now().timestamp_millis();
     for strategy in &mut response.strategies {
         for view in &mut strategy.risk_by_venue {
-            if view.exchange != "okex" {
-                continue;
-            }
             let venue = &view.venues[0];
-            let catalog = if venue == "okex-margin" {
-                "okex_spot_exchange_info"
-            } else {
-                "okex_futures_exchange_info"
-            };
             let schedule = format!("schedule:{venue}");
-            for source in [
-                catalog,
-                schedule.as_str(),
-                "okex_announcements",
-                "okex_article_detail",
-            ] {
+            let sources: Vec<&str> = match venue.as_str() {
+                "okex-margin" => vec![
+                    "okex_spot_exchange_info",
+                    &schedule,
+                    "okex_announcements",
+                    "okex_article_detail",
+                ],
+                "okex-futures" => vec![
+                    "okex_futures_exchange_info",
+                    &schedule,
+                    "okex_announcements",
+                    "okex_article_detail",
+                ],
+                "binance-margin" => vec![
+                    "binance_cms",
+                    "binance_spot_delist",
+                    "binance_margin_delist",
+                ],
+                "binance-futures" | "binance-coin-futures" => vec!["binance_cms", &schedule],
+                _ => continue,
+            };
+            for source in sources {
                 let fresh = status.source(source).is_some_and(|s| {
                     s.ok && s
                         .last_success_ms
@@ -969,6 +977,56 @@ mod tests {
         );
         assert_eq!(empty.tone, "uncovered");
         assert!(views.iter().all(|v| v.tone == "uncovered"));
+        let response_for = |risk, risk_by_venue| Response {
+            as_of_ms: 0,
+            managers: vec![],
+            factor_processes: vec![],
+            errors: vec![],
+            strategies: vec![StrategyView {
+                slug: signal.slug.clone(),
+                name: "test".into(),
+                factor_worker: "test",
+                kind: "spread",
+                risk_by_venue,
+                factor_count: None,
+                backup_env: None,
+                enabled: true,
+                bar_interval: "1m".into(),
+                updated_ms: 0,
+                stale: false,
+                errors: vec![],
+                accounts: vec![],
+                risk,
+            }],
+        };
+        // Test source health independently of the catalog result computed above.
+        let mut ready_risk = empty.clone();
+        ready_risk.tone = "ok".into();
+        let mut ready_views = views.clone();
+        for view in &mut ready_views {
+            view.tone = "ok".into();
+        }
+        let mut healthy = mkt_signal::common::delist_store::StatusBook::default();
+        for source in [
+            "okex_futures_exchange_info",
+            "schedule:okex-futures",
+            "okex_announcements",
+            "okex_article_detail",
+            "binance_cms",
+            "schedule:binance-futures",
+        ] {
+            healthy.mark_ok(source, "fetch");
+        }
+        let mut response = response_for(ready_risk.clone(), ready_views.clone());
+        apply_source_health(&mut response, &healthy);
+        assert_eq!(response.strategies[0].risk.tone, "ok");
+        assert!(response.strategies[0].errors.is_empty());
+        healthy.mark_err("binance_cms", "fetch", "offline");
+        let mut response = response_for(ready_risk, ready_views);
+        apply_source_health(&mut response, &healthy);
+        assert_eq!(response.strategies[0].risk.tone, "uncovered");
+        assert_eq!(response.strategies[0].risk_by_venue[0].tone, "ok");
+        assert_eq!(response.strategies[0].risk_by_venue[1].tone, "uncovered");
         for exchange in ["okex", "binance"] {
             let input = LlmExtractInput {
                 exchange: exchange.into(),
@@ -998,6 +1056,13 @@ mod tests {
                 &ListingIndex::default(),
             );
             assert_eq!(aggregate.tone, "risk");
+            let mut response = response_for(aggregate.clone(), views.clone());
+            apply_source_health(
+                &mut response,
+                &mkt_signal::common::delist_store::StatusBook::default(),
+            );
+            assert_eq!(response.strategies[0].risk.tone, "risk");
+            assert!(!response.strategies[0].errors.is_empty());
             assert!(
                 views
                     .iter()
