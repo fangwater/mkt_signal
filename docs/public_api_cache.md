@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-05 02:59 UTC（Gate现货估值发布；OKX Delist官方公共来源）
+最后更新：2026-11-05 03:46 UTC（Gate现货估值发布；OKX Delist官方公共来源）
 
 2026-11-05 Delist 风险服务接入 OKX 官方公共只读来源，均直接访问官方 HTTPS，
 不新增 Nginx 路由、监听或缓存：`GET /api/v5/public/instruments?instType=SPOT|SWAP`
@@ -21,8 +21,8 @@
 超时 5 秒，按轮转覆盖待补价资产。进程内估值最长保留 30 秒，请求失败即使该资产
 报价失效；429 遵守数值型 `Retry-After`，缺省全局退避 60 秒。
 补价仅供集中度检查，不写合约 mark 表或下单报价。缺价资产保留已有告警/dump 状态，
-其他有价资产继续检查；不修改阈值。`gate_fr_arb02` 已于 02:53 UTC 发布，
-arb01 等待在途平仓收尾；不新增 Nginx 白名单、缓存监听或代理，不携带账户凭据。
+其他有价资产继续检查；不修改阈值。`gate_fr_arb02` / `gate_fr_arb01` 已分别于
+02:53 / 03:41 UTC 发布并恢复信号；不新增 Nginx 白名单、缓存监听或代理，不携带账户凭据。
 Gate 公共共享缓存仍未部署。
 官方契约：[List spot tickers](https://www.gate.com/docs/developers/apiv4/en/#list-tickers)。
 
