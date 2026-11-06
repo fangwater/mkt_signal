@@ -1,7 +1,18 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-06 08:48 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-06 14:40 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-06 14:39–14:40 UTC，按操作员要求将 JP Delist 与轻载 Redis 共用 CPU28。
+先在线迁移全部线程，再仅通过 `~/delist_risk_server/scripts/start_delist_risk_server.sh`
+重启 Delist 和其 SG 隧道，验证持久化：Delist PID1367608、隧道 PID1367582，
+全部线程均 CPU28；环境新增 `env.sh` 的 `DELIST_CORE=28`，启动脚本经 taskset
+启动两者，PM2 自动重启也保留绑定。线上脚本仅增 CPU 前缀，保留其 CTA 参数差异。
+Redis PID2769589、7个线程及 systemd CPUAffinity=28 保持，无 Redis 重启。
+214个其他长期进程身份及仍存活的原线程 CPU mask 保持；二进制、私有配置和网络未改。
+迁移后200次长连接只读 PING 全通过，P95 0.349ms、最大2.991ms；JP/SG参数
+监控恢复、11个FR账户快照完整、通知队列为空。shell语法及无绑核/绑核/无效CPU
+三种模拟启动验证通过。回退与核验：`~/delist_risk_server/run/cpu28-20261106T143858Z/`。
 
 2026-11-06 08:43–08:48 UTC，发布全部参数页变更审计和钉钉通知。JP 只重启
 Delist/其托管隧道、CTA配置、10个FR配置及OKX MM83777配置，SG只重启Bybit FR配置；
@@ -1449,7 +1460,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 24 | crypto_cta_manager / cta_web | PID281673；OKX未确认分钟保留缺口重试；okex_binace_cross_1min单账户 |
 | 25 | binance_exec_spread01 account_monitor | PID1361356；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID4133978 / PID3939283 |
-| 28 | 空闲 | RX04 旧因子/信号/页面已停止，旧 5min 已清仓解绑并移除 Manager 入口 |
+| 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID1367608、隧道 PID1367582 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |

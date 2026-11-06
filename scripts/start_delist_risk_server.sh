@@ -35,6 +35,16 @@ if [[ -f "$FR_DINGTALK_FILE" ]]; then
   source "$FR_DINGTALK_FILE"
 fi
 
+CPU_PREFIX=()
+if [[ -n "${DELIST_CORE:-}" ]]; then
+  TASKSET_BIN="$(command -v taskset || true)"
+  if [[ -z "$TASKSET_BIN" ]] || ! "$TASKSET_BIN" -c "$DELIST_CORE" true; then
+    echo "[ERROR] DELIST_CORE requires taskset and an available CPU list" >&2
+    exit 1
+  fi
+  CPU_PREFIX=("$TASKSET_BIN" -c "$DELIST_CORE")
+fi
+
 BIN_CANDIDATES=(
   "${BASE_DIR}/delist_risk_server"
   "${BASE_DIR}/target/release/delist_risk_server"
@@ -50,6 +60,7 @@ if [[ -z "$BIN_PATH" ]]; then
   echo "[ERROR] delist_risk_server binary not found; build/deploy first" >&2
   exit 1
 fi
+APP_COMMAND=("${CPU_PREFIX[@]}" "$BIN_PATH")
 
 BIND="${DELIST_BIND:-127.0.0.1:8787}"
 PORT="${BIND##*:}"
@@ -164,7 +175,9 @@ if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
     fi
     SG_FORWARDS+=(-L "127.0.0.1:${DELIST_SG_WEB_TUNNEL_PORT}:127.0.0.1:4191")
   fi
-  npx pm2 start "$SSH_BIN" --name "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" --interpreter none -- \
+  SG_COMMAND=("${CPU_PREFIX[@]}" "$SSH_BIN")
+  npx pm2 start "${SG_COMMAND[0]}" --name "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" --interpreter none -- \
+    "${SG_COMMAND[@]:1}" \
     -NT \
     -o BatchMode=yes \
     -o ExitOnForwardFailure=yes \
@@ -256,14 +269,14 @@ echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} 
   OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
   OPENAI_BASE_URL="${OPENAI_BASE_URL:-}" \
   RUST_LOG="${RUST_LOG:-info}" \
-  npx pm2 start "$BIN_PATH" \
+  npx pm2 start "${APP_COMMAND[0]}" \
     --name "$APP_NAME" \
     --namespace "$NAMESPACE" \
     --interpreter none \
     --time \
     --restart-delay 3000 \
     --kill-timeout 10000 \
-    -- "${ARGS[@]}"
+    -- "${APP_COMMAND[@]:1}" "${ARGS[@]}"
 )
 
 echo "[INFO] started: npx pm2 status --namespace ${NAMESPACE} ${APP_NAME}"

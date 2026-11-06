@@ -1,6 +1,16 @@
 # Delist Risk Server
 
-最后更新：2026-11-06 08:48 UTC（全部参数页变更审计与钉钉通知；共享 CTA／MM 备份）
+最后更新：2026-11-06 14:40 UTC（Delist 与 Redis 共用 CPU28；全部参数页变更审计与钉钉通知）
+
+2026-11-06 14:39–14:40 UTC，按操作员要求将 Delist 和其 SG 隧道迁至 CPU28，
+与已隔离的轻载 Redis 共用。Delist PID1367608、隧道 PID1367582 的全部线程
+核验为28；Redis PID2769589及全部7线程保持，无 Redis 重启。新增环境本地
+`env.sh` 的 `DELIST_CORE=28`，启动脚本对两项 PM2 命令使用 taskset 前缀；
+仅经环境本地脚本重启这两项，后续自动重启仍保留绑核。线上脚本只增 CPU 启动
+前缀，保留它与仓库 CTA 默认参数的既有差异；二进制和私有配置未改。
+214个其他长期进程身份/既有存活线程绑核保持。JP/SG参数监控正常，11个FR快照
+完整，通知队列为空；迁移后200次长连接 PING 全通过，P95 0.349ms、最大2.991ms。
+回退及核验在 `~/delist_risk_server/run/cpu28-20261106T143858Z/`。
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, Bybit, and OKX. Official market snapshots plus announcement LLM
@@ -1686,6 +1696,7 @@ Environment (see `config/delist_risk_server.env.example`):
 | Variable | Purpose |
 | --- | --- |
 | `DELIST_BIND` | default `127.0.0.1:8787` |
+| `DELIST_CORE` | Optional CPU list for Delist, its SG tunnel and child collectors; JP uses `28` with Redis. Unset inherits affinity. |
 | `DELIST_PG_URL` | `postgres://delist_risk:...@127.0.0.1:5432/delist_risk` |
 | `DELIST_REDIS_URL` | JP Redis, default `redis://127.0.0.1:6379/0` |
 | `DELIST_SG_REDIS_URL` | SG Bybit Redis through a local SSH tunnel, `redis://127.0.0.1:16379/0` |
