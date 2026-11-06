@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-06 14:40 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-06 15:40 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-06 15:29–15:40 UTC，JP Manager 发布 `b8eb962` 的目标推送异步 PG 副本。
+既有本地工作区 release `--no-default-features` 构建，按上次线上源码清单核对保留
+既有功能；SCP临时路径、SHA-256核验及6个来源的不可变分仓指纹预检通过后原子
+安装，只替换 `cta_web` 并重启其原 systemd 用户服务。新 PID1475583，全部线程
+仍 CPU24、NRestarts=0，8个可发布来源的启动账户模式检查通过，理论索引已就绪。
+验收窗口785次自然请求全200，P95 25ms；其中rbf_small 129次全成功，两账户Chase
+通道的33个目标与模板乘份数一致。12个活跃策略的PG副本追齐，27条绑定及11张
+配置/不可变快照表摘要保持。25份非二进制运行文件、前端指向及215个其他长期
+进程身份/存活原线程CPU mask保持；一个sleep辅助进程结束。Redis/Delist继续CPU28，
+未改交易源IP、网络或交易进程。回退及核验分别在
+`~/crypto_cta_manager/backups/target-pg-async-20261106T152335Z/` 与同名 `run/`。
 
 2026-11-06 14:39–14:40 UTC，按操作员要求将 JP Delist 与轻载 Redis 共用 CPU28。
 先在线迁移全部线程，再仅通过 `~/delist_risk_server/scripts/start_delist_risk_server.sh`
@@ -1457,7 +1469,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 21 | okex_exec_trade01 account_monitor | PID1397233；原MM停止 |
 | 22 | okex_exec_trade01 exec-pre-trade | PID4127465；规则刷新按venue隔离 |
 | 23 | okex_exec_trade01 trade_engine | PID3936778 |
-| 24 | crypto_cta_manager / cta_web | PID281673；OKX未确认分钟保留缺口重试；okex_binace_cross_1min单账户 |
+| 24 | crypto_cta_manager / cta_web | PID1475583；目标推送使用内存/RocksDB/Redis，PG最新副本异步更新；理论索引已就绪 |
 | 25 | binance_exec_spread01 account_monitor | PID1361356；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID4133978 / PID3939283 |
 | 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID1367608、隧道 PID1367582 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
