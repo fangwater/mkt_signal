@@ -1,4 +1,4 @@
-//! FR configuration archives; the source Redis is read only.
+//! FR and MM parameter archives; the source Redis is read only.
 
 use anyhow::{bail, Context, Result};
 use chrono::{NaiveDate, NaiveDateTime, Utc};
@@ -68,10 +68,10 @@ const MAX_FILE_SIZE: u64 = 32 * 1024 * 1024;
 const MAX_ENV_SIZE: u64 = 64 * 1024 * 1024;
 
 fn config_keys(account: &AccountSpec) -> Result<Vec<ConfigKey>> {
-    if account.kind != "funding_rate"
+    if !matches!(account.kind.as_str(), "funding_rate" | "market_making")
         || !["binance", "okex", "bybit", "bitget", "gate"].contains(&account.exchange.as_str())
     {
-        bail!("unsupported FR account kind or exchange");
+        bail!("unsupported parameter backup account kind or exchange");
     }
     if account.slug.is_empty()
         || account.slug.len() > 128
@@ -80,9 +80,44 @@ fn config_keys(account: &AccountSpec) -> Result<Vec<ConfigKey>> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
-        bail!("invalid FR environment identifier");
+        bail!("invalid parameter environment identifier");
     }
     let env = &account.slug;
+    if account.kind == "market_making" {
+        let venue = format!("{}-futures", account.exchange);
+        let mut keys = vec![
+            ConfigKey {
+                name: format!("mm_trade_symbols:{venue}"),
+                kind: "string",
+                shared: true,
+            },
+            ConfigKey {
+                name: format!("mm_strategy_params_{venue}"),
+                kind: "hash",
+                shared: true,
+            },
+            ConfigKey {
+                name: format!("{env}:{venue}:{venue}:pre_trade_risk_params"),
+                kind: "hash",
+                shared: false,
+            },
+        ];
+        for suffix in [
+            "amount_u",
+            "max_pos_u",
+            "open_offset_lower",
+            "hedge_price_offset_limits",
+            "hedge_price_offset_limit_upper",
+            "hedge_price_offset_limit_lower",
+        ] {
+            keys.push(ConfigKey {
+                name: format!("{env}:{venue}:mm:{suffix}"),
+                kind: "string",
+                shared: false,
+            });
+        }
+        return Ok(keys);
+    }
     let open = format!("{}-margin", account.exchange);
     let hedge = format!("{}-futures", account.exchange);
     let pair = format!("{open}_{hedge}");
@@ -140,6 +175,133 @@ fn config_keys(account: &AccountSpec) -> Result<Vec<ConfigKey>> {
         });
     }
     Ok(keys)
+}
+
+fn mm_model_keys(strategy: &serde_json::Value) -> Result<Vec<ConfigKey>> {
+    let mut names = BTreeSet::new();
+    for field in ["return_model_service", "environment_model_service"] {
+        let Some(value) = strategy.get(field) else {
+            continue;
+        };
+        let model = value
+            .as_str()
+            .context("MM model service must be a string")?
+            .trim();
+        if model.is_empty() || model == "-" {
+            continue;
+        }
+        if model.len() > 256
+            || !model.as_bytes()[0].is_ascii_alphanumeric()
+            || !model
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            bail!("invalid MM model service name");
+        }
+        names.insert(format!("model_score_rolling_params_{model}"));
+    }
+    Ok(names
+        .into_iter()
+        .map(|name| ConfigKey {
+            name,
+            kind: "hash",
+            shared: true,
+        })
+        .collect())
+}
+
+/// Values only: no DUMP, TTL changes, scans or writes on the source Redis.
+pub async fn parameter_values(
+    url: &str,
+    account: &AccountSpec,
+) -> Result<BTreeMap<String, serde_json::Value>> {
+    use mkt_signal::common::parameter_audit::normalise_redis;
+    let mut conn = redis::Client::open(url)?
+        .get_multiplexed_async_connection()
+        .await?;
+    let mut keys = config_keys(account)?;
+    if account.kind == "market_making" {
+        let strategy: BTreeMap<String, String> = redis::cmd("HGETALL")
+            .arg(format!("mm_strategy_params_{}-futures", account.exchange))
+            .query_async(&mut conn)
+            .await?;
+        keys.extend(mm_model_keys(&serde_json::to_value(strategy)?)?);
+    }
+    let mut pipe = redis::pipe();
+    pipe.atomic();
+    for key in &keys {
+        pipe.cmd("TYPE").arg(&key.name);
+        pipe.cmd(if key.kind == "hash" { "HGETALL" } else { "GET" })
+            .arg(&key.name);
+    }
+    let values: Vec<redis::Value> = pipe.query_async(&mut conn).await?;
+    anyhow::ensure!(
+        values.len() == keys.len() * 2,
+        "incomplete parameter snapshot"
+    );
+    keys.into_iter()
+        .enumerate()
+        .map(|(i, key)| {
+            let kind: String = redis::from_redis_value(&values[i * 2])?;
+            let value = match kind.as_str() {
+                "none" => serde_json::Value::Null,
+                "hash" => serde_json::to_value(
+                    redis::from_redis_value::<BTreeMap<String, String>>(&values[i * 2 + 1])?,
+                )?,
+                "string" => {
+                    serde_json::to_value(redis::from_redis_value::<String>(&values[i * 2 + 1])?)?
+                }
+                _ => bail!("unexpected parameter type"),
+            };
+            Ok((key.name, normalise_redis(&kind, value)))
+        })
+        .collect()
+}
+
+pub fn allowed_parameter_key(account: &AccountSpec, key: &str) -> bool {
+    config_keys(account).is_ok_and(|keys| keys.iter().any(|entry| entry.name == key))
+        || (account.kind == "market_making"
+            && key
+                .strip_prefix("model_score_rolling_params_")
+                .is_some_and(|name| {
+                    !name.is_empty()
+                        && name.len() <= 256
+                        && name.as_bytes()[0].is_ascii_alphanumeric()
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+                }))
+}
+
+fn check_required_keys(account: &AccountSpec, entries: &[Entry]) -> Result<()> {
+    let has = |suffix: &str| {
+        entries
+            .iter()
+            .any(|entry| entry.key.ends_with(suffix) && entry.dump_file.is_some())
+    };
+    if account.kind == "market_making" {
+        let venue = format!("{}-futures", account.exchange);
+        if !has(":pre_trade_risk_params")
+            || !has(&format!("mm_strategy_params_{venue}"))
+            || !has(&format!("mm_trade_symbols:{venue}"))
+        {
+            bail!("MM configuration incomplete: risk parameters, strategy parameters and symbol list are required");
+        }
+    } else {
+        let strategy = entries
+            .iter()
+            .any(|entry| entry.key.starts_with("fr_strategy_params_") && entry.dump_file.is_some());
+        let lists = entries.iter().any(|entry| {
+            (entry.key.contains(":fr_dump_symbols:")
+                || entry.key.contains(":fr_fwd_trade_symbols:")
+                || entry.key.contains(":fr_bwd_trade_symbols:"))
+                && entry.dump_file.is_some()
+        });
+        if !has(":pre_trade_risk_params") || !strategy || !lists {
+            bail!("parameter configuration incomplete: risk parameters, strategy parameters and at least one symbol list are required");
+        }
+    }
+    Ok(())
 }
 
 pub async fn backup_today(
@@ -231,11 +393,11 @@ async fn backup_snapshot(
         .recursive(true)
         .mode(0o700)
         .create(&dir)
-        .context("create FR backup directory")?;
+        .context("create parameter backup directory")?;
     for path in [root.to_path_buf(), root.join(site), dir.clone()] {
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.file_type().is_dir() || metadata.permissions().mode() & 0o077 != 0 {
-            bail!("FR backup directories must be private directories (mode 0700)");
+            bail!("parameter backup directories must be private directories (mode 0700)");
         }
     }
     let date = Utc::now().date_naive();
@@ -254,7 +416,7 @@ async fn backup_snapshot(
     let (mut manifest, dumps) =
         tokio::time::timeout(Duration::from_secs(20), capture(site, url, account, &keys))
             .await
-            .context("FR Redis backup timed out")??;
+            .context("parameter Redis backup timed out")??;
     let files = match site {
         "jp" => capture_local_files(&env_root.join(&account.slug))?,
         "sg" => capture_sg_files(sg_ssh_host, &account.slug).await?,
@@ -281,10 +443,11 @@ async fn backup_snapshot(
             .create_new(true)
             .mode(0o600)
             .open(&temp)
-            .context("create temporary FR backup")?;
+            .context("create temporary parameter backup")?;
         let gzip = GzEncoder::new(file, Compression::default());
         let mut tar = tar::Builder::new(gzip);
-        let json = serde_json::to_vec_pretty(&manifest).context("encode FR config manifest")?;
+        let json =
+            serde_json::to_vec_pretty(&manifest).context("encode parameter config manifest")?;
         append(&mut tar, "config.json", &json)?;
         for (name, bytes) in dumps {
             append(&mut tar, &name, &bytes)?;
@@ -292,8 +455,8 @@ async fn backup_snapshot(
         for file in &files {
             append(&mut tar, &format!("files/{}", file.path), &file.bytes)?;
         }
-        let gzip = tar.into_inner().context("finish FR backup tar")?;
-        let mut file = gzip.finish().context("finish FR backup gzip")?;
+        let gzip = tar.into_inner().context("finish parameter backup tar")?;
+        let mut file = gzip.finish().context("finish parameter backup gzip")?;
         file.flush()?;
         file.sync_all()?;
         validate_archive(&temp, site, account, &keys)?;
@@ -303,7 +466,7 @@ async fn backup_snapshot(
                 validate_archive(&path, site, account, &keys)?;
                 return Ok(Outcome::AlreadyExists);
             }
-            Err(e) => return Err(e).context("publish FR backup"),
+            Err(e) => return Err(e).context("publish parameter backup"),
         }
         File::open(&dir)?.sync_all()?;
         if !preserve_for_upload {
@@ -321,11 +484,23 @@ async fn capture(
     account: &AccountSpec,
     keys: &[ConfigKey],
 ) -> Result<(Manifest, Vec<(String, Vec<u8>)>)> {
-    let client = redis::Client::open(url).context("open FR Redis")?;
+    let client = redis::Client::open(url).context("open parameter Redis")?;
     let mut conn = client
         .get_multiplexed_async_connection()
         .await
-        .context("connect FR Redis")?;
+        .context("connect parameter Redis")?;
+    let base_key_count = keys.len();
+    let mut capture_keys = keys.to_vec();
+    if account.kind == "market_making" {
+        let strategy_key = format!("mm_strategy_params_{}-futures", account.exchange);
+        let strategy: BTreeMap<String, String> = redis::cmd("HGETALL")
+            .arg(&strategy_key)
+            .query_async(&mut conn)
+            .await
+            .context("read MM model dependency names")?;
+        capture_keys.extend(mm_model_keys(&serde_json::to_value(strategy)?)?);
+    }
+    let keys = &capture_keys;
     let mut pipe = redis::pipe();
     pipe.atomic();
     for key in keys {
@@ -336,26 +511,26 @@ async fn capture(
     let values: Vec<redis::Value> = pipe
         .query_async(&mut conn)
         .await
-        .context("read FR configuration transaction")?;
+        .context("read parameter configuration transaction")?;
     if values.len() != keys.len() * 3 {
-        bail!("incomplete FR configuration response");
+        bail!("incomplete parameter configuration response");
     }
     let mut entries = Vec::new();
     let mut dumps = Vec::new();
     for (idx, key) in keys.iter().enumerate() {
         let dump: Option<Vec<u8>> =
-            redis::from_redis_value(&values[idx * 3]).context("decode FR Redis dump")?;
+            redis::from_redis_value(&values[idx * 3]).context("decode parameter Redis dump")?;
         let ttl_ms: i64 =
-            redis::from_redis_value(&values[idx * 3 + 1]).context("decode FR Redis TTL")?;
+            redis::from_redis_value(&values[idx * 3 + 1]).context("decode parameter Redis TTL")?;
         let value = if dump.is_none() {
             serde_json::Value::Null
         } else if key.kind == "hash" {
-            let map: BTreeMap<String, String> =
-                redis::from_redis_value(&values[idx * 3 + 2]).context("decode FR Redis hash")?;
+            let map: BTreeMap<String, String> = redis::from_redis_value(&values[idx * 3 + 2])
+                .context("decode parameter Redis hash")?;
             serde_json::to_value(map)?
         } else {
-            let text: String =
-                redis::from_redis_value(&values[idx * 3 + 2]).context("decode FR Redis string")?;
+            let text: String = redis::from_redis_value(&values[idx * 3 + 2])
+                .context("decode parameter Redis string")?;
             serde_json::Value::String(text)
         };
         let (dump_file, sha256) = if let Some(bytes) = dump {
@@ -376,22 +551,16 @@ async fn capture(
             sha256,
         });
     }
-    let has = |suffix: &str| {
-        entries
+    check_required_keys(account, &entries)?;
+    if account.kind == "market_making" {
+        let strategy = entries
             .iter()
-            .any(|entry| entry.key.ends_with(suffix) && entry.dump_file.is_some())
-    };
-    let has_strategy = entries
-        .iter()
-        .any(|entry| entry.key.starts_with("fr_strategy_params_") && entry.dump_file.is_some());
-    let has_lists = entries.iter().any(|entry| {
-        (entry.key.contains(":fr_dump_symbols:")
-            || entry.key.contains(":fr_fwd_trade_symbols:")
-            || entry.key.contains(":fr_bwd_trade_symbols:"))
-            && entry.dump_file.is_some()
-    });
-    if !has(":pre_trade_risk_params") || !has_strategy || !has_lists {
-        bail!("FR configuration incomplete: risk parameters, strategy parameters and at least one symbol list are required");
+            .find(|entry| entry.key == format!("mm_strategy_params_{}-futures", account.exchange))
+            .context("MM strategy capture missing")?;
+        let expected = mm_model_keys(&strategy.value)?;
+        if capture_keys[base_key_count..] != expected {
+            bail!("MM model dependency names changed during backup; retry");
+        }
     }
     Ok((
         Manifest {
@@ -440,31 +609,33 @@ fn check_files(files: &[CapturedFile]) -> Result<()> {
     let mut total = 0u64;
     for file in files {
         if !valid_file_path(&file.path) || !names.insert(file.path.as_str()) {
-            bail!("invalid or duplicate FR configuration file path");
+            bail!("invalid or duplicate parameter configuration file path");
         }
         total = total
             .checked_add(file.bytes.len() as u64)
-            .context("FR configuration size overflow")?;
+            .context("parameter configuration size overflow")?;
         if file.bytes.len() as u64 > MAX_FILE_SIZE || total > MAX_ENV_SIZE || names.len() > 1024 {
-            bail!("FR configuration files exceed backup limits");
+            bail!("parameter configuration files exceed backup limits");
         }
     }
     if !names.contains("env.sh")
         || !(names.contains("trade_engine.toml") || names.contains("trade engine.toml"))
         || !names.iter().any(|name| name.starts_with("config/"))
     {
-        bail!("FR environment is missing env.sh, trade engine configuration, or config files");
+        bail!(
+            "parameter environment is missing env.sh, trade engine configuration, or config files"
+        );
     }
     Ok(())
 }
 
 fn capture_local_files(env: &Path) -> Result<Vec<CapturedFile>> {
     if !fs::symlink_metadata(env)
-        .context("inspect FR environment directory")?
+        .context("inspect parameter environment directory")?
         .file_type()
         .is_dir()
     {
-        bail!("FR environment directory is missing or a symlink");
+        bail!("parameter environment directory is missing or a symlink");
     }
     let mut files = Vec::new();
     capture_local_file(env, Path::new("env.sh"), &mut files)?;
@@ -486,14 +657,16 @@ fn walk_config(
     depth: usize,
 ) -> Result<()> {
     if depth > 16 {
-        bail!("FR configuration directory nesting exceeds limit");
+        bail!("parameter configuration directory nesting exceeds limit");
     }
-    let metadata =
-        fs::symlink_metadata(env.join(relative)).context("inspect FR configuration directory")?;
+    let metadata = fs::symlink_metadata(env.join(relative))
+        .context("inspect parameter configuration directory")?;
     if !metadata.file_type().is_dir() {
-        bail!("FR configuration directory is missing or a symlink");
+        bail!("parameter configuration directory is missing or a symlink");
     }
-    for entry in fs::read_dir(env.join(relative)).context("list FR configuration directory")? {
+    for entry in
+        fs::read_dir(env.join(relative)).context("list parameter configuration directory")?
+    {
         let entry = entry?;
         let name = relative.join(entry.file_name());
         if is_backup_path(&name) {
@@ -505,7 +678,7 @@ fn walk_config(
         } else if kind.is_file() {
             capture_local_file(env, &name, files)?;
         } else {
-            bail!("FR configuration contains a symlink or unsupported file type");
+            bail!("parameter configuration contains a symlink or unsupported file type");
         }
     }
     Ok(())
@@ -514,20 +687,21 @@ fn walk_config(
 fn capture_local_file(env: &Path, relative: &Path, files: &mut Vec<CapturedFile>) -> Result<()> {
     let path = relative
         .to_str()
-        .context("FR configuration path is not UTF-8")?;
+        .context("parameter configuration path is not UTF-8")?;
     if !valid_file_path(path) {
-        bail!("invalid FR configuration path");
+        bail!("invalid parameter configuration path");
     }
     let full_path = env.join(relative);
-    let before = fs::symlink_metadata(&full_path).context("inspect FR configuration file")?;
+    let before =
+        fs::symlink_metadata(&full_path).context("inspect parameter configuration file")?;
     if !before.file_type().is_file() || before.len() > MAX_FILE_SIZE {
-        bail!("FR configuration file is not a regular file or is too large");
+        bail!("parameter configuration file is not a regular file or is too large");
     }
     let mut reader = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(&full_path)
-        .context("open FR configuration file")?;
+        .context("open parameter configuration file")?;
     let mut bytes = Vec::new();
     std::io::Read::by_ref(&mut reader)
         .take(MAX_FILE_SIZE + 1)
@@ -539,7 +713,7 @@ fn capture_local_file(env: &Path, relative: &Path, files: &mut Vec<CapturedFile>
         || before.len() != after.len()
         || before.modified().ok() != after.modified().ok()
     {
-        bail!("FR configuration changed while reading");
+        bail!("parameter configuration changed while reading");
     }
     files.push(CapturedFile {
         path: path.to_string(),
@@ -553,7 +727,7 @@ fn capture_local_file(env: &Path, relative: &Path, files: &mut Vec<CapturedFile>
 fn check_file_limits(files: &[CapturedFile]) -> Result<()> {
     if files.len() > 1024 || files.iter().map(|f| f.bytes.len() as u64).sum::<u64>() > MAX_ENV_SIZE
     {
-        bail!("FR configuration files exceed backup limits");
+        bail!("parameter configuration files exceed backup limits");
     }
     Ok(())
 }
@@ -655,7 +829,7 @@ fn append(tar: &mut tar::Builder<GzEncoder<File>>, name: &str, bytes: &[u8]) -> 
     header.set_mode(0o600);
     header.set_cksum();
     tar.append_data(&mut header, name, bytes)
-        .context("write FR archive entry")
+        .context("write parameter archive entry")
 }
 
 fn validate_archive(
@@ -664,41 +838,53 @@ fn validate_archive(
     account: &AccountSpec,
     keys: &[ConfigKey],
 ) -> Result<()> {
-    let gzip = GzDecoder::new(File::open(path).context("open FR backup")?);
+    let gzip = GzDecoder::new(File::open(path).context("open parameter backup")?);
     let mut tar = tar::Archive::new(gzip);
     let mut files = BTreeMap::new();
     let mut total = 0u64;
-    for entry in tar.entries().context("read FR backup tar")? {
+    for entry in tar.entries().context("read parameter backup tar")? {
         let mut entry = entry?;
         if !entry.header().entry_type().is_file() || entry.size() > 32 * 1024 * 1024 {
-            bail!("invalid FR archive entry");
+            bail!("invalid parameter archive entry");
         }
         total = total
             .checked_add(entry.size())
-            .context("FR archive size overflow")?;
+            .context("parameter archive size overflow")?;
         if total > 128 * 1024 * 1024 || files.len() >= 2048 {
-            bail!("FR archive exceeds validation limits");
+            bail!("parameter archive exceeds validation limits");
         }
         let name = entry.path()?.to_string_lossy().into_owned();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes)?;
         if files.insert(name, bytes).is_some() {
-            bail!("duplicate FR archive entry");
+            bail!("duplicate parameter archive entry");
         }
     }
-    std::io::copy(&mut tar.into_inner(), &mut std::io::sink()).context("check FR gzip checksum")?;
+    std::io::copy(&mut tar.into_inner(), &mut std::io::sink())
+        .context("check parameter gzip checksum")?;
     let manifest: Manifest = serde_json::from_slice(
         &files
             .remove("config.json")
-            .context("FR backup missing config.json")?,
+            .context("parameter backup missing config.json")?,
     )
-    .context("decode FR backup manifest")?;
+    .context("decode parameter backup manifest")?;
+    let mut expected_keys = keys.to_vec();
+    if account.kind == "market_making" {
+        let strategy = manifest
+            .keys
+            .iter()
+            .find(|entry| entry.key == format!("mm_strategy_params_{}-futures", account.exchange))
+            .context("MM archive strategy parameters missing")?;
+        expected_keys.extend(mm_model_keys(&strategy.value)?);
+    }
+    let keys = &expected_keys;
+    check_required_keys(account, &manifest.keys)?;
     if manifest.site != site
         || manifest.environment != account.slug
         || manifest.exchange != account.exchange
         || manifest.keys.len() != keys.len()
     {
-        bail!("FR backup metadata mismatch");
+        bail!("parameter backup metadata mismatch");
     }
     let mut names = BTreeSet::new();
     for (entry, expected) in manifest.keys.iter().zip(keys) {
@@ -706,20 +892,22 @@ fn validate_archive(
             || entry.kind != expected.kind
             || entry.shared != expected.shared
         {
-            bail!("FR backup key set mismatch");
+            bail!("parameter backup key set mismatch");
         }
         match (&entry.dump_file, &entry.sha256) {
             (Some(name), Some(hash)) => {
                 if !names.insert(name.clone()) {
-                    bail!("duplicate FR backup dump");
+                    bail!("duplicate parameter backup dump");
                 }
-                let bytes = files.remove(name).context("FR backup dump missing")?;
+                let bytes = files
+                    .remove(name)
+                    .context("parameter backup dump missing")?;
                 if format!("{:x}", Sha256::digest(&bytes)) != *hash {
-                    bail!("FR backup dump checksum mismatch");
+                    bail!("parameter backup dump checksum mismatch");
                 }
             }
             (None, None) => {}
-            _ => bail!("invalid FR backup dump metadata"),
+            _ => bail!("invalid parameter backup dump metadata"),
         }
     }
     let mut config_files = Vec::new();
@@ -728,15 +916,15 @@ fn validate_archive(
             || entry.archive_file != format!("files/{}", entry.path)
             || entry.original_mode > 0o777
         {
-            bail!("invalid FR configuration file metadata");
+            bail!("invalid parameter configuration file metadata");
         }
         let bytes = files
             .remove(&entry.archive_file)
-            .context("FR configuration file missing from archive")?;
+            .context("parameter configuration file missing from archive")?;
         if bytes.len() as u64 != entry.size
             || format!("{:x}", Sha256::digest(&bytes)) != entry.sha256
         {
-            bail!("FR configuration file checksum mismatch");
+            bail!("parameter configuration file checksum mismatch");
         }
         config_files.push(CapturedFile {
             path: entry.path.clone(),
@@ -746,7 +934,7 @@ fn validate_archive(
     }
     check_files(&config_files)?;
     if !files.is_empty() || names.is_empty() {
-        bail!("invalid or empty FR backup");
+        bail!("invalid or empty parameter backup");
     }
     Ok(())
 }
@@ -773,7 +961,7 @@ pub fn archive_paths(root: &Path, site: &str, account: &AccountSpec) -> Result<V
     let dir = root.join(site).join(&account.slug);
     let now = Utc::now().naive_utc();
     let mut archives = Vec::new();
-    for entry in fs::read_dir(dir).context("list local FR backups")? {
+    for entry in fs::read_dir(dir).context("list local parameter backups")? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -825,7 +1013,7 @@ fn prune(dir: &Path, keep: usize, today: NaiveDate) -> Result<()> {
         if *count < keep {
             *count += 1;
         } else {
-            fs::remove_file(path).context("remove expired FR archive")?;
+            fs::remove_file(path).context("remove expired parameter archive")?;
         }
     }
     Ok(())
@@ -901,6 +1089,168 @@ mod tests {
             site: RedisSite::Jp,
             config_url: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn mm_archives_restore_scoped_and_shared_parameters_without_running_processes() {
+        let root = std::env::temp_dir().join(format!("mm-backup-{}", uuid::Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let (_redis, url) = start_redis(&root).await;
+        let mut spec = account("okex_mm_83777");
+        spec.kind = "market_making".into();
+        spec.exchange = "okex".into();
+        let env_root = root.join("envs");
+        let env = env_root.join(&spec.slug);
+        fs::create_dir_all(env.join("config")).unwrap();
+        for (path, data) in [
+            ("env.sh", "TRADE_ENGINE_READ_ONLY=1\n"),
+            ("trade_engine.toml", "local_ips=[]\n"),
+            ("config/mm_config_server.env", "PORT=18112\n"),
+            ("config/ignored.bak", "old credential snapshot"),
+        ] {
+            fs::write(env.join(path), data).unwrap();
+        }
+        let mut conn = redis::Client::open(url.as_str())
+            .unwrap()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        let risk = "okex_mm_83777:okex-futures:okex-futures:pre_trade_risk_params";
+        let model = "model_score_rolling_params_okex-futures-test";
+        redis::cmd("HSET")
+            .arg(risk)
+            .arg("max_pos_u")
+            .arg("123")
+            .query_async::<()>(&mut conn)
+            .await
+            .unwrap();
+        redis::cmd("HSET")
+            .arg("mm_strategy_params_okex-futures")
+            .arg("return_model_service")
+            .arg("okex-futures-test")
+            .arg("environment_model_service")
+            .arg("-")
+            .query_async::<()>(&mut conn)
+            .await
+            .unwrap();
+        redis::cmd("HSET")
+            .arg(model)
+            .arg("rolling_window")
+            .arg("17")
+            .query_async::<()>(&mut conn)
+            .await
+            .unwrap();
+        for (key, value) in [
+            ("mm_trade_symbols:okex-futures", "[\"BTCUSDT\"]"),
+            (
+                "okex_mm_83777:okex-futures:mm:max_pos_u",
+                "{\"BTCUSDT\":500}",
+            ),
+            ("another_mm:okex-futures:mm:max_pos_u", "unrelated"),
+        ] {
+            redis::cmd("SET")
+                .arg(key)
+                .arg(value)
+                .query_async::<()>(&mut conn)
+                .await
+                .unwrap();
+        }
+        let backups = root.join("backups");
+        let path = match backup_today(&backups, "jp", &url, &spec, 30, &env_root, "sg", false)
+            .await
+            .unwrap()
+        {
+            Outcome::Created(path) => path,
+            _ => panic!("first MM daily archive must be created"),
+        };
+        validate_for_account(&path, "jp", &spec).unwrap();
+        let initial = fs::read(&path).unwrap();
+        let mut archive = tar::Archive::new(GzDecoder::new(File::open(&path).unwrap()));
+        let mut payloads = BTreeMap::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            payloads.insert(name, bytes);
+        }
+        let manifest: Manifest = serde_json::from_slice(&payloads["config.json"]).unwrap();
+        assert_eq!(manifest.keys.len(), 10);
+        assert!(!manifest
+            .files
+            .iter()
+            .any(|entry| entry.path.ends_with(".bak")));
+        assert!(!manifest
+            .keys
+            .iter()
+            .any(|entry| entry.key.starts_with("another_mm:")));
+        assert!(manifest
+            .keys
+            .iter()
+            .any(|entry| entry.key == model && entry.shared));
+        assert!(manifest.keys.iter().any(|entry| entry.key
+            == "okex_mm_83777:okex-futures:mm:amount_u"
+            && entry.dump_file.is_none()));
+        for key in [risk, model] {
+            let entry = manifest.keys.iter().find(|entry| entry.key == key).unwrap();
+            redis::cmd("RESTORE")
+                .arg(format!("restored:{key}"))
+                .arg(0)
+                .arg(&payloads[entry.dump_file.as_ref().unwrap()])
+                .arg("REPLACE")
+                .query_async::<()>(&mut conn)
+                .await
+                .unwrap();
+        }
+        let restored: String = redis::cmd("HGET")
+            .arg(format!("restored:{risk}"))
+            .arg("max_pos_u")
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(restored, "123");
+        let restored: String = redis::cmd("HGET")
+            .arg(format!("restored:{model}"))
+            .arg("rolling_window")
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(restored, "17");
+        assert!(matches!(
+            backup_today(&backups, "jp", &url, &spec, 30, &env_root, "sg", false)
+                .await
+                .unwrap(),
+            Outcome::AlreadyExists
+        ));
+        assert!(matches!(
+            backup_manual(&backups, "jp", &url, &spec, 30, &env_root, "sg", false)
+                .await
+                .unwrap(),
+            Outcome::Created(_)
+        ));
+        redis::cmd("DEL")
+            .arg(risk)
+            .query_async::<()>(&mut conn)
+            .await
+            .unwrap();
+        assert!(
+            backup_manual(&backups, "jp", &url, &spec, 30, &env_root, "sg", false)
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(path).unwrap(), initial);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mm_model_dependencies_are_deduplicated_and_reject_invalid_names() {
+        let keys = mm_model_keys(&serde_json::json!({
+            "return_model_service": " model.test-1 ", "environment_model_service": "model.test-1"
+        }))
+        .unwrap();
+        assert_eq!(keys.len(), 1);
+        assert!(mm_model_keys(&serde_json::json!({"return_model_service":"../other"})).is_err());
+        assert!(mm_model_keys(&serde_json::json!({"return_model_service":17})).is_err());
     }
 
     #[tokio::test]

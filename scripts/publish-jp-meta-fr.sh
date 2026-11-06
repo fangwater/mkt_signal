@@ -199,6 +199,7 @@ LOCAL_RELATIVE=(
   "target/release/trade_engine"
   "target/release/persist_manager"
   "scripts/fr_config_server.py"
+  "scripts/parameter_audit.py"
   "scripts/print_fr_risk_params.py"
   "scripts/sync_fr_risk_params.py"
   "scripts/start_trade_engine.sh"
@@ -217,6 +218,7 @@ UPLOAD_NAMES=(
   "trade_engine"
   "persist_manager"
   "fr_config_server.py"
+  "parameter_audit.py"
   "print_fr_risk_params.py"
   "sync_fr_risk_params.py"
   "start_trade_engine.sh"
@@ -326,6 +328,7 @@ publish_file pre_trade pre_trade
 publish_file trade_engine trade_engine
 publish_file persist_manager persist_manager
 publish_file fr_config_server.py scripts/fr_config_server.py
+publish_file parameter_audit.py scripts/parameter_audit.py
 publish_file print_fr_risk_params.py scripts/print_fr_risk_params.py
 publish_file sync_fr_risk_params.py scripts/sync_fr_risk_params.py
 publish_file start_trade_engine.sh scripts/start_trade_engine.sh

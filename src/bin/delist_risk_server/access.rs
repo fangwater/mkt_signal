@@ -50,6 +50,7 @@ pub(super) struct Access {
     sessions: Mutex<BTreeMap<String, Session>>,
     attempts: Mutex<BTreeMap<String, (Instant, usize)>>,
     login_slots: tokio::sync::Semaphore,
+    manager_client: reqwest::Client,
 }
 
 impl Access {
@@ -64,6 +65,10 @@ impl Access {
 
     fn new(config: Config) -> Result<Self> {
         ensure!(!config.username.is_empty(), "access username is required");
+        ensure!(
+            axum::http::HeaderValue::from_str(&config.username).is_ok(),
+            "invalid access username"
+        );
         ensure!(
             (600_000..=2_000_000).contains(&config.password_iterations),
             "invalid password iterations"
@@ -93,6 +98,11 @@ impl Access {
             sessions: Mutex::new(BTreeMap::new()),
             attempts: Mutex::new(BTreeMap::new()),
             login_slots: tokio::sync::Semaphore::new(2),
+            manager_client: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
         })
     }
 
@@ -200,6 +210,8 @@ pub(super) fn protect(app: Router, access: Arc<Access>) -> Router {
             .route("/logout", post(logout))
             .route("/open", get(open_panel))
             .route("/auth/verify", get(verify))
+            .route("/auth/verify-login", get(verify_login))
+            .route("/auth/verify-cta", get(verify_cta))
             .layer(DefaultBodyLimit::max(4096))
             .with_state(access),
     )
@@ -401,7 +413,67 @@ async fn verify(State(access): State<Arc<Access>>, headers: HeaderMap) -> Respon
     if ((!matches!(method, "GET" | "HEAD")) || websocket) && !access.same_origin(&headers) {
         return denied(StatusCode::FORBIDDEN, "请求来源无效");
     }
-    private(StatusCode::NO_CONTENT.into_response())
+    verified(&access)
+}
+
+fn verified(access: &Access) -> Response {
+    let mut response = private(StatusCode::NO_CONTENT.into_response());
+    response
+        .headers_mut()
+        .insert("x-parameter-actor", access.config.username.parse().unwrap());
+    response
+}
+
+async fn verify_login(State(access): State<Arc<Access>>, headers: HeaderMap) -> Response {
+    if !access.authorized(&headers, None) {
+        return denied(StatusCode::UNAUTHORIZED, "请先登录 Delist");
+    }
+    let method = headers
+        .get("x-original-method")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if !matches!(method, "GET" | "HEAD") && !access.same_origin(&headers) {
+        return denied(StatusCode::FORBIDDEN, "请求来源无效");
+    }
+    verified(&access)
+}
+
+async fn verify_cta(State(access): State<Arc<Access>>, headers: HeaderMap) -> Response {
+    verify_cta_with_manager(access, headers, "http://127.0.0.1:18201/api/auth/verify").await
+}
+async fn verify_cta_with_manager(
+    access: Arc<Access>,
+    headers: HeaderMap,
+    manager_url: &str,
+) -> Response {
+    let login = verify_login(State(access.clone()), headers.clone()).await;
+    if !login.status().is_success() {
+        return login;
+    }
+    // One verifier composes both checks; nested Nginx auth subrequests can skip
+    // access handlers. The URL is fixed and the source allowlist is supplied by
+    // the internal proxy location, never by the browser.
+    let Some(sources) = headers.get("x-cta-source-id") else {
+        return denied(StatusCode::FORBIDDEN, "缺少 Manager 权限范围");
+    };
+    let mut request = access
+        .manager_client
+        .get(manager_url)
+        .header("x-cta-source-id", sources)
+        .header("x-cta-access", "configure");
+    if let Some(cookie) = headers.get(header::COOKIE) {
+        request = request.header(header::COOKIE, cookie);
+    }
+    match request.send().await {
+        Ok(response) if response.status().is_success() => verified(&access),
+        Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
+            denied(StatusCode::UNAUTHORIZED, "请登录 Manager")
+        }
+        Ok(response) if response.status() == StatusCode::FORBIDDEN => {
+            denied(StatusCode::FORBIDDEN, "Manager 未授予配置权限")
+        }
+        _ => denied(StatusCode::SERVICE_UNAVAILABLE, "Manager 鉴权暂不可用"),
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +535,69 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn parameter_gate_requires_delist_origin_and_manager_then_forwards_verified_actor() {
+        let access = access();
+        let token = access.create_session().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-original-method", "POST".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://example.test:4191".parse().unwrap());
+        assert_eq!(
+            verify_login(State(access.clone()), headers.clone())
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        headers.insert(header::COOKIE, format!("{COOKIE}={token}").parse().unwrap());
+        headers.insert("x-parameter-actor", "forged".parse().unwrap());
+        let response = verify_login(State(access.clone()), headers.clone()).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()["x-parameter-actor"], "tester");
+        headers.remove(header::ORIGIN);
+        assert_eq!(
+            verify_login(State(access.clone()), headers.clone())
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        headers.insert(header::ORIGIN, "http://example.test:4191".parse().unwrap());
+        headers.insert("x-cta-source-id", "test-source".parse().unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/ok",
+                get(|headers: HeaderMap| async move {
+                    assert_eq!(headers["x-cta-source-id"], "test-source");
+                    assert_eq!(headers["x-cta-access"], "configure");
+                    assert!(headers.contains_key(header::COOKIE));
+                    StatusCode::NO_CONTENT
+                }),
+            )
+            .route("/denied", get(|| async { StatusCode::FORBIDDEN }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        assert_eq!(
+            verify_cta_with_manager(access.clone(), headers.clone(), &format!("{base}/ok"))
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            verify_cta_with_manager(access.clone(), headers.clone(), &format!("{base}/denied"))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        headers.remove(header::COOKIE);
+        assert_eq!(
+            verify_cta_with_manager(access, headers, &format!("{base}/ok"))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        server.abort();
     }
 
     #[tokio::test]

@@ -30,6 +30,12 @@ def main():
         for name in ('cta_prep_binance_futures', 'cta_factor_spread'):
             shutil.copytree(ROOT/'config'/name, root/'config'/name)
             shutil.copyfile(ROOT/'config'/(name+'.toml'), root/'config'/(name+'.toml'))
+        # Saving only position amount must retain the loaded exit thresholds.
+        regression=root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_5min.json'
+        fixture=json.loads(regression.read_text())
+        fixture['signal']['execution']['factor_exit_quantile_long']=0.7
+        fixture['signal']['execution']['factor_exit_quantile_short']=0.3
+        regression.write_text(json.dumps(fixture))
         history=root/'data/cta_prep_binance_futures'
         history.mkdir(parents=True)
         (history/'state.json').write_text(json.dumps({
@@ -43,7 +49,8 @@ def main():
             port = sock.getsockname()[1]
         server = subprocess.Popen([
             str(ROOT/'target/debug/cta-factor-config'), '--config', str(root/'config/cta_prep_binance_futures.toml'),
-            '--spread-config', str(root/'config/cta_factor_spread.toml'), '--port', str(port)
+            '--spread-config', str(root/'config/cta_factor_spread.toml'), '--port', str(port),
+            '--parameter-audit-dir', str(root/'audit')
         ], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         base = f'http://127.0.0.1:{port}/'
@@ -165,6 +172,8 @@ def main():
                 assert all(set(row)=={'标的','nq','符号','因子'} and isinstance(row['标的'],str) for row in rows)
                 assert len(rows)==2
                 untouched=(root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_1min.json').read_bytes()
+                assert page.locator('#exit-long').input_value()=='0.7'
+                assert page.locator('#exit-short').input_value()=='0.3'
                 page.locator('#max-pos').fill('250')
                 with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
                     page.locator('#save').click()
@@ -172,6 +181,8 @@ def main():
                 recipe=root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_5min.json'
                 data=json.loads(recipe.read_text())
                 assert data['signal']['max_pos_u']==250 and len(data['factor_rules'])==2
+                assert data['signal']['execution']['factor_exit_quantile_long']==0.7
+                assert data['signal']['execution']['factor_exit_quantile_short']==0.3
                 assert (root/'config/cta_prep_binance_futures/top-5_prep02_binance-futures_1min.json').read_bytes()==untouched
                 current=api('config')
                 external=current['plan']['combinations']['binance-futures_1min']

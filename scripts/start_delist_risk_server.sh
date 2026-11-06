@@ -116,6 +116,7 @@ ARGS=(
   --redis-backup-env-root "${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}"
   --redis-backup-sg-ssh-host "${DELIST_SG_REDIS_SSH_HOST:-sg}"
   --cta-backup-dir "${DELIST_CTA_BACKUP_DIR:-${BASE_DIR}/data/cta_backups}"
+  --mm-backup-dir "${DELIST_MM_BACKUP_DIR:-${BASE_DIR}/data/mm_backups}"
   --cta-factor-env "${DELIST_CTA_FACTOR_ENV:-${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}/cta-prep-binance-futures}"
   --cta-spread-factor-env "${DELIST_CTA_SPREAD_FACTOR_ENV:-${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}/cta-factor-spread}"
   --llm-max "${DELIST_LLM_MAX:-0}"
@@ -209,7 +210,10 @@ fi
 if [[ -n "${DELIST_CTA_BACKUP_COS_TARGET:-}" ]]; then
   ARGS+=(--cta-backup-cos-target "${DELIST_CTA_BACKUP_COS_TARGET}")
 fi
-if [[ -n "${DELIST_REDIS_BACKUP_COS_TARGET:-}${DELIST_CTA_BACKUP_COS_TARGET:-}" ]]; then
+if [[ -n "${DELIST_MM_BACKUP_COS_TARGET:-}" ]]; then
+  ARGS+=(--mm-backup-cos-target "${DELIST_MM_BACKUP_COS_TARGET}")
+fi
+if [[ -n "${DELIST_REDIS_BACKUP_COS_TARGET:-}${DELIST_CTA_BACKUP_COS_TARGET:-}${DELIST_MM_BACKUP_COS_TARGET:-}" ]]; then
   ARGS+=(--redis-backup-cos-config "${DELIST_REDIS_BACKUP_COS_CONFIG:-${HOME}/.config/rclone/fr-cos.conf}")
 fi
 if [[ "${DELIST_AUTO_REMOVE_REDIS:-0}" == "1" ]]; then

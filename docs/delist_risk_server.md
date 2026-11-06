@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-06 UTC（共享 CTA 备份及钉钉失败／恢复告警）
+最后更新：2026-11-06 08:48 UTC（全部参数页变更审计与钉钉通知；共享 CTA／MM 备份）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, Bybit, and OKX. Official market snapshots plus announcement LLM
@@ -268,7 +268,7 @@ stale/read-failure retention, escaping, automatic refresh and desktop/mobile UI.
 
 The FR channel uses its own robot URL and signing secret, independently of CTA
 trading notifications. The same robot also receives the current shared CTA
-Prep/Spread backup failure and recovery notices.
+Prep/Spread and MM parameter backup failure and recovery notices.
 The environment-local wrapper reads `config/fr_dingtalk.env` (owned by the service
 user, mode 0600), containing `FR_DINGTALK_WEBHOOK_URL` and optional
 `FR_DINGTALK_SECRET`. A populated URL enables `--fr-notify` unless
@@ -1236,6 +1236,173 @@ these keys. `/status` exposes `redis_fr_backup_catalog` and
 `redis_fr_backup_<env>` success/error states. No live restore is performed:
 inspect the archive and reconcile its values, shared keys, TTLs, positions and
 orders before any separately authorized restoration.
+
+## Parameter changes and DingTalk
+
+All current CTA Prep/Spread, FR and MM parameter pages journal actual writes.
+Python config services wrap their existing Redis writes and transactions; the
+shared CTA editor wraps combination save/delete and symbol-group edits. Each
+host keeps a private durable journal at
+`~/.local/state/mkt_signal/parameter_changes` (directory 0700, records 0600).
+A pending record is fsynced before a write and a completed before/after record
+before the save returns. Preview and unchanged values do not notify. Rapid
+A → B → A page edits retain both changes. Requests that partially write before
+failing retain the factual changes. Interrupted records are reconciled by
+observing current values or the next journalled before-value; no old value is
+written back.
+
+Delist consumes the JP journal every two seconds and the SG journal over its
+existing SSH alias every five seconds. Cursors, the current comparison baseline
+and DingTalk outbox commit together in the private notification state. Delivery
+retries use the existing robot and backoff; restarts resume pending work.
+Initial comparison baselines are silent. Long-lived lock contention or collection
+failures produce a monitoring failure/recovery notification. A successful robot
+response is required; a crash between remote acceptance and local acknowledgement
+can still cause a retry, since DingTalk has no idempotent send contract.
+
+Read-only snapshots also compare the exact FR/MM trading-parameter keys used by
+backups, MM configured-model rolling parameters, and CTA combination/symbol-group
+files. They exclude credentials, env files, runtime factor values and position
+ledgers. Stable journal watermarks prevent double-reporting page changes in the
+fallback. Persistent changes made through Redis scripts or SSH are reported as
+outside-page changes with unknown writer. Polling cannot reconstruct a transient
+outside-page A → B → A that occurs entirely between snapshots.
+
+Messages include changed fields and old/new values, UTC time, environment/site,
+source, verified login principal, source IP and a hashed session fingerprint when
+available. Sensitive credential-like fields are redacted before journalling and
+notification. A shared login identifies the login principal, not an individual
+human. `/delist/parameter-changes` shows the latest 200 complete records; each
+notification links to its full protected archive under
+`data/parameter_changes/<site>/<event-id>.json`. The matching authenticated JSON
+endpoints are `/api/parameter-changes` and `/api/parameter-change?site=jp&id=...`.
+Full archives remain available through the individual record links.
+
+The FR per-environment Delist grants remain in place. MM configuration now
+requires a Delist login. The CTA internal verifier requires both a valid Delist
+session/write origin and the existing Manager `configure` permission for the
+same explicit source IDs. One combined verifier avoids nested Nginx auth-request
+semantics. Nginx overwrites actor/IP headers; internal verification endpoints
+are blocked externally. All current configuration backends bind only loopback,
+including the SG Bybit service reached through the existing private gateway.
+
+The 2026-11-06 investigation compared the current Prep files with that day's
+immutable archive. `top-5_prep02_binance-futures_1min` and
+`last-20_prep02_binance-futures_1min` changed long exit quantile 0.7 → 0.3 and
+short exit quantile 0.3 → 0.7. File mtimes were 07:27:11 and 07:28:24 UTC;
+Nginx recorded successful combination-save POSTs at 07:27:14 and 07:28:26.
+There was no per-change principal audit then, so the person and intent cannot
+be established. Delist restart/backup paths do not restore trading parameters.
+A disposable browser regression confirms amount-only saves preserve loaded
+exit quantiles 0.7/0.3.
+
+Published 2026-11-06 08:43–08:48 UTC from locally built synchronized `arbmm`
+base `103b1333` plus this scoped patch. Release SHA-256 values:
+
+- Delist: `6dcabd838d1bab6d26d3575bd0293b847939ec63b6b621224ed1113a91a08edc`.
+- CTA config: `92754c185d50c18ff982a73dd3754522886c6d8d4183e67c61cc0967dd68f242`.
+
+Exact temporary uploads were checksum-verified and atomically installed. Only
+Delist/its managed tunnel, CTA config, ten JP FR config services, OKX MM 83777
+config and SG Bybit FR config restarted, through their env-local scripts.
+Operator env.sh, trading parameters, trading processes and source-IP settings
+were preserved; only config-service HOST settings changed to loopback.
+JP 130 and SG 12 other running process identities/CPU masks matched the baseline.
+Delist PID594573, tunnel PID594544 and CTA config PID602445 use CPU0–5;
+SG Bybit config PID1016740 retains CPU0–7. Baselines cover JP 196 and SG 20
+unique parameter objects; collection is healthy, no startup parameter events
+were generated, and the notification queue is empty.
+
+Validation: library tests, 69 Delist tests, two CTA HTTP tests, five isolated
+real-Redis Python tests, CTA amount-only browser regression, FR/CTA/MM browser
+regressions, format/syntax checks and staged/live Nginx validation passed.
+Live checks confirmed healthy config APIs, denied anonymous config/history
+access and blocked external verifier endpoints. No production parameter was
+changed to test notification delivery. Evidence:
+`../artifacts/parameter_changes_20261106/`; private backups and rollout logs:
+`~/delist_risk_server/run/parameter-changes-20261106/` and
+SG `~/bybit_fr_arb01/run/parameter-changes-20261106/`.
+
+## MM parameter backups
+
+NAV `market_making` entries on JP/SG participate in the existing five-minute
+parameter-backup task. The MM process may be stopped: capture depends on the
+current NAV catalog, Redis and environment files. `DELIST_MM_BACKUP_DIR`
+(default `data/mm_backups`) and `DELIST_MM_BACKUP_COS_TARGET` configure an
+independent local root and cloud prefix. Retention, private rclone config,
+environment roots and SG SSH access reuse the existing backup settings.
+
+Each MM archive preserves these exact current keys and their presence/TTL:
+
+- Shared `mm_trade_symbols:<venue>` string and `mm_strategy_params_<venue>` hash.
+- Environment-specific `<env>:<venue>:<venue>:pre_trade_risk_params` hash.
+- Environment-specific `<env>:<venue>:mm:` strings: `amount_u`, `max_pos_u`,
+  `open_offset_lower`, `hedge_price_offset_limits`,
+  `hedge_price_offset_limit_upper`, `hedge_price_offset_limit_lower`.
+- Shared `model_score_rolling_params_<model>` hashes for the strategy's configured
+  return/environment model services. Disabled services are skipped; identical
+  dependencies are captured once. A dependency change during the capture
+  rejects that attempt for retry.
+
+The symbol list, strategy hash and risk hash must exist; missing required keys
+fail the backup. Optional override/model keys retain their factual absence.
+All selected keys are read in one read-only Redis transaction with readable
+values, Redis DUMP bytes and SHA-256 metadata. Shared keys are explicitly marked:
+restoring them affects other MM environments using that venue/model. The archive
+also contains the current `env.sh`, `trade_engine.toml` and `config/` regular
+files, excluding historical `.bak`/`.bk`/`.backup` variants. Credentials in these
+files require 0600 archives, 0700 directories and private cloud storage.
+
+The account row under **做市** / **全部账户** exposes **立即备份** and MM cloud
+status. The authenticated request uses `kind=market_making`; it resolves that
+exact current NAV entry. Automatic daily archives and independently timestamped
+manual archives retain 30 successful versions each by default. Local capture,
+COS upload/read-back and retention failures use `redis_mm_backup_<env>`,
+`cos_mm_backup_<env>` and `cos_mm_retention_<env>`. The existing private DingTalk
+outbox reports each first failure and confirmed recovery, retries delivery and
+suppresses continuing duplicates independently of FR exposure discovery.
+
+Restarting Delist resumes backup/check/upload work and reloads its own monitoring
+and notification history. It does not restore archives into Redis or synchronize
+old trading thresholds. An already successful UTC-day archive remains immutable;
+**立即备份** creates a new capture of the current parameters and files. Parameter
+restoration requires a separately authorized, reviewed operation.
+
+On 2026-11-06, the MM backup release was built locally from synchronized `arbmm`
+base `103b1333` plus this scoped patch; uploaded hashes were verified before
+atomic installation. Binary SHA-256:
+`24aa40cb817a99f118d6f6c8e65dab04c397f79ec1a5ee2ca9fea8d4462ca44a`.
+The existing environment-local startup script was patched only for the MM
+options, preserving its pre-existing differences. The final restart was
+07:15 UTC: Delist PID406318 and SG tunnel PID406290 use CPU `0-5,48-95`.
+156 pre-existing service process identities/CPU masks and all previous FR/CTA
+archive hashes matched. MM startup/stop and parameter files were not changed
+by this rollout; concurrent operator MM changes were preserved.
+
+The first `okex_mm_83777` daily archive was captured at 07:11 UTC with nine
+selected Redis keys (three present core keys; six absent optional overrides)
+and five configuration files. Every DUMP/file checksum and an independent exact
+COS read-back passed. The next natural five-minute pass also passed without
+rewriting the archive. The initial top-level COS prefix returned 403, so the
+configured target uses the already authorized subtree
+`tencent-fr:jp-fr-config-1307417638/fr-config-backups/mm-config-backups`.
+Its site/environment scope is separate from FR/CTA retention. Both the real
+upload failure and its subsequent recovery were acknowledged by DingTalk once;
+all three current MM backup statuses passed and the delivery queue was empty.
+
+The operator updated MM `env.sh` at 07:18:52 UTC, after this daily snapshot,
+and started MM-related components independently. Those changes were preserved;
+the 07:11 archive remains a historical snapshot, and a manual capture can save a
+new version. An archive is not evidence that a rotated exchange credential,
+account UID or trading readiness has been verified.
+
+Validation: all 62 Delist tests passed with a real isolated Redis, including
+MM DUMP restore, shared/environment scope, optional/required keys, immutable
+daily/manual versions and durable alert recovery. The focused release build,
+format check, shell syntax and 320–1440px browser regression passed; the latter
+includes MM filtering, cloud status and its manual backup request. Evidence:
+`../artifacts/mm_parameter_backup_20261106/`; private rollout/rollback records:
+`~/delist_risk_server/run/mm-parameter-backup-20261106/`.
 
 ## CTA combinations, shared factors and Exec mapping
 

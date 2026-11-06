@@ -1,7 +1,32 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-06 06:38 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-06 08:48 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-06 08:43–08:48 UTC，发布全部参数页变更审计和钉钉通知。JP 只重启
+Delist/其托管隧道、CTA配置、10个FR配置及OKX MM83777配置，SG只重启Bybit FR配置；
+全部使用环境本地脚本。Delist PID594573、隧道 PID594544、CTA配置 PID602445保留
+CPU0–5，SG Bybit配置 PID1016740保留CPU0–7；其余配置进程保留各自原mask。
+JP 130及SG 12个其他运行进程身份和CPU mask均保持，未改交易参数、隔离核或源IP。
+所有配置后端收回loopback，MM补Delist登录，CTA保留Manager权限并增加Delist前置。
+release精确上传、SHA-256核验及原子安装；JP196/SG20个参数对象基线正常、无启动
+参数通知。详见 `docs/delist_risk_server.md`；证据
+`../artifacts/parameter_changes_20261106/`，私有回退
+`~/delist_risk_server/run/parameter-changes-20261106/`。
+
+2026-11-06 07:15 UTC，JP `~/delist_risk_server` 发布MM参数备份；本地同步arbmm
+`103b1333`加本次补丁构建release，上传核验SHA-256并原子安装，环境本地脚本重启。
+Delist PID406318、SG隧道 PID406290，CPU均为 `0-5,48-95`；156个既有服务进程
+身份/CPU mask及既有FR/CTA归档哈希保持。未操作MM启停或写入其参数，保留操作员
+同期对MM凭据和进程的变更。独立 `data/mm_backups` 保存参数及env/config文件；
+COS新顶层前缀403后改用既有授权树下 `fr-config-backups/mm-config-backups`。
+`okex_mm_83777` 首份日归档7:11 UTC完成，9个Redis键中3个核心键存在、6个可选
+覆盖键缺失，5个配置文件；逐项校验及独立云端回读通过，下一自然5分钟轮次通过。
+本次真实云端失败/恢复各钉钉确认一次；当前3项MM备份状态正常、发送队列为空。
+62项Delist测试（含隔离Redis真实恢复）、shell/格式及320–1440px浏览器验证通过。
+源IP与隔离核分配保持；详情 `docs/delist_risk_server.md`，证据
+`../artifacts/mm_parameter_backup_20261106/`，回退及核验
+`~/delist_risk_server/run/mm-parameter-backup-20261106/`。
 
 2026-11-06 06:38 UTC，JP `~/delist_risk_server` 发布当前共享 CTA 备份的钉钉告警。
 本地同步arbmm构建release，临时路径上传、SHA-256核验并原子安装，环境本地脚本

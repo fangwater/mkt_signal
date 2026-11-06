@@ -42,6 +42,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 import arb_per_symbol_overrides as ps_overrides  # noqa: E402
 import check_fr_collateral as collateral  # noqa: E402
+import parameter_audit  # noqa: E402
 
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -995,7 +996,7 @@ def try_import_redis():
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Funding Rate 配置服务器 (fr_config_server)")
-    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     parser.add_argument(
         "--default-exchange",
@@ -1958,6 +1959,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         self._send_error(404, "not found")
 
+    @parameter_audit.audit_post("funding_rate", lambda handler: infer_dir_prefix_from_cwd() or "")
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -2294,7 +2296,7 @@ def main() -> int:
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    context = ServerContext(redis_client=rds, default_exchange=default_exchange)
+    context = ServerContext(redis_client=parameter_audit.wrap_redis(rds), default_exchange=default_exchange)
     try:
         server = FrConfigServer((args.host, args.port), RequestHandler, context)
     except OSError as exc:

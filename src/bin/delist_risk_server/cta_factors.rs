@@ -140,6 +140,30 @@ fn combination_files(root: &Path, rel: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Only editable parameter objects; excludes runtime ledgers and factor history.
+pub fn parameter_values(env: &Path, worker: Worker) -> Result<BTreeMap<String, Value>> {
+    let root = clean_path(env)?;
+    let config = Config::load(&root.join(worker.default_config()))?;
+    let rel = relative(&root, &config.combinations_dir)?;
+    let mut values = BTreeMap::new();
+    for path in combination_files(&root, &rel)? {
+        let bytes = read(&root, &path)?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("invalid parameter filename")?;
+        let value = if name == "symbol_groups.json" {
+            serde_json::to_value(serde_json::from_slice::<
+                mkt_signal::cta_factor_calc::config::SymbolGroups,
+            >(&bytes)?)?
+        } else {
+            serde_json::to_value(serde_json::from_slice::<Combination>(&bytes)?)?
+        };
+        values.insert(format!("{}/{name}", worker.name()), value);
+    }
+    Ok(values)
+}
+
 pub fn snapshot(env: &Path, worker: Worker) -> Result<Snapshot> {
     let root = if env.is_absolute() {
         env.to_path_buf()

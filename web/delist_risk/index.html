@@ -276,7 +276,7 @@
         <a href="/delist/?view=cta" data-page="cta">CTA 策略与因子</a>
       </nav>
       <section class="overview" aria-labelledby="page-title">
-        <div><h1 id="page-title">FR 日常检查</h1><p class="page-description" id="page-description">账户风险、敞口与备份状态</p><p class="as-of" id="as-of">正在同步</p></div>
+        <div><a href="/delist/parameter-changes">参数变更记录</a><h1 id="page-title">FR 日常检查</h1><p class="page-description" id="page-description">账户风险、敞口与备份状态</p><p class="as-of" id="as-of">正在同步</p></div>
         <div class="filters" id="filters" data-view="fr" aria-label="策略类型筛选"></div>
       </section>
       <section class="metrics" id="metrics" aria-label="风险摘要"></section>
@@ -590,7 +590,7 @@
         const configLink = account.config_url
           ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无配置入口</span>';
-        const backupButton = account.kind === 'funding_rate' ? `<button class="refresh backup-action" type="button" data-kind="funding_rate" data-env="${escapeHtml(account.slug)}">立即备份</button>${backupState('funding_rate', account.slug)}` : '';
+        const backupButton = ['funding_rate','market_making'].includes(account.kind) ? `<button class="refresh backup-action" type="button" data-kind="${escapeHtml(account.kind)}" data-env="${escapeHtml(account.slug)}">立即备份</button>${backupState(account.kind, account.slug)}` : '';
         const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td><span class="account-nav">${vizLink}${configLink}${backupButton}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
@@ -601,7 +601,7 @@
       }
       function backupState(kind, env) {
         const sources = backupStatus?.sources || [];
-        const prefix = ['cta_perp','cta_spread'].includes(kind) ? 'cos_cta_backup_' : 'cos_fr_backup_';
+        const prefix = ['cta_perp','cta_spread'].includes(kind) ? 'cos_cta_backup_' : kind === 'market_making' ? 'cos_mm_backup_' : 'cos_fr_backup_';
         const row = sources.find(item => item.source === prefix + env);
         const quality = ['cta_perp','cta_spread'].includes(kind) ? sources.find(item => item.source === `cta_backup_quality_${env}`) : null;
         if (!row) return '<span class="account-venues">备份状态待检查</span>';

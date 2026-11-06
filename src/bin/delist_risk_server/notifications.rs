@@ -108,6 +108,8 @@ pub fn fr_source(source: &str, active_fr: &BTreeSet<String>) -> bool {
         || matches!(source, "llm" | "fr_unimmr_close_list")
         || source.starts_with("cta_")
         || source.contains("_cta_")
+        || source.starts_with("redis_mm_backup_")
+        || source.starts_with("cos_mm_")
     {
         return false;
     }
@@ -145,6 +147,39 @@ pub fn cta_backup_observation(
                 format!("{name} 的{stage}已恢复；本通知仅表示该环节检查通过。")
             } else {
                 format!("{name} 的{stage}失败，系统将自动重试。详情见 Delist 状态页与服务日志。")
+            },
+        });
+    }
+    None
+}
+
+pub fn mm_backup_observation(
+    source: &mkt_signal::common::delist_store::SourceStatus,
+) -> Option<Observation> {
+    for (prefix, stage) in [
+        ("redis_mm_backup_", "本地参数归档"),
+        ("cos_mm_backup_", "COS 上传及回读校验"),
+        ("cos_mm_retention_", "COS 保留清理"),
+    ] {
+        let Some(name) = source.source.strip_prefix(prefix) else {
+            continue;
+        };
+        if name.is_empty()
+            || name.len() > 128
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return None;
+        }
+        return Some(Observation {
+            key: format!("source/{}", source.source),
+            title: format!("MM 参数备份 {name}：{stage}"),
+            problem: Some(!source.ok),
+            detail: if source.ok {
+                format!("{stage}已恢复；本通知仅表示该环节检查通过。")
+            } else {
+                format!("{stage}失败，系统将自动重试。详情见 Delist 状态页与服务日志。")
             },
         });
     }
@@ -212,6 +247,8 @@ struct Book {
     last_heartbeat_ms: Option<i64>,
     #[serde(default)]
     listing_catalog: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    parameters: super::parameter_changes::State,
     #[serde(skip)]
     sending: Option<u64>,
     #[serde(skip)]
@@ -431,6 +468,12 @@ impl Notifications {
         tokio::fs::rename(temporary, &self.path)
             .await
             .context("save FR notification state")?;
+        std::fs::File::open(
+            self.path
+                .parent()
+                .context("notification parent unavailable")?,
+        )?
+        .sync_all()?;
         book.needs_save = false;
         Ok(())
     }
@@ -456,6 +499,88 @@ impl Notifications {
         self.save(&mut book).await?;
         self.wake.notify_one();
         Ok(())
+    }
+
+    pub async fn parameter_cursor(&self, site: &str) -> u64 {
+        self.book
+            .lock()
+            .await
+            .parameters
+            .sites
+            .get(site)
+            .map(|s| s.cursor)
+            .unwrap_or(0)
+    }
+
+    pub async fn parameters(
+        &self,
+        site: &str,
+        batch: mkt_signal::common::parameter_audit::Batch,
+        snapshot: Option<BTreeMap<String, super::parameter_changes::Watched>>,
+    ) -> Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        ensure!(matches!(site, "jp" | "sg"), "invalid audit site");
+        let mut current = self.book.lock().await;
+        let mut next = current.clone();
+        let history = next.parameters.ingest(site, batch, snapshot)?;
+        if history.is_empty()
+            && serde_json::to_vec(&next.parameters)? == serde_json::to_vec(&current.parameters)?
+        {
+            return Ok(());
+        }
+        let root = self
+            .path
+            .parent()
+            .context("notification parent unavailable")?
+            .join("parameter_changes")
+            .join(site);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&root)?;
+        for entry in &history {
+            let path = root.join(format!("{:020}.json", entry.event.id));
+            mkt_signal::common::parameter_audit::atomic(&path, entry)?;
+            next.queue(
+                "parameter_change",
+                super::parameter_changes::message(entry),
+                1,
+                None,
+                false,
+                now_ms(),
+            )?;
+        }
+        next.needs_save = true;
+        self.save(&mut next).await?;
+        *current = next;
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn parameter_history(&self) -> serde_json::Value {
+        let book = self.book.lock().await;
+        serde_json::json!({"sites":book.parameters.sites.keys().map(|site| (site,book.parameters.sites[site].cursor)).collect::<BTreeMap<_,_>>(),"changes":book.parameters.recent})
+    }
+
+    pub async fn parameter_record(
+        &self,
+        site: &str,
+        id: u64,
+    ) -> Result<super::parameter_changes::History> {
+        ensure!(matches!(site, "jp" | "sg"), "invalid audit site");
+        let path = self
+            .path
+            .parent()
+            .context("notification parent unavailable")?
+            .join("parameter_changes")
+            .join(site)
+            .join(format!("{id:020}.json"));
+        ensure!(
+            tokio::fs::metadata(&path).await?.len()
+                <= mkt_signal::common::parameter_audit::MAX_RECORD,
+            "audit record too large"
+        );
+        Ok(serde_json::from_slice(&tokio::fs::read(path).await?)?)
     }
 
     pub async fn listings(
@@ -812,6 +937,55 @@ mod tests {
         d
     }
 
+    #[tokio::test]
+    async fn parameter_cursor_outbox_and_full_history_commit_together_across_restart() {
+        use mkt_signal::common::parameter_audit::{Batch, Record};
+        let root = std::env::temp_dir().join(format!("parameter-outbox-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("state.json");
+        let sender =
+            || DingTalk::test_sender(reqwest::Url::parse("http://127.0.0.1:1/mock").unwrap());
+        let event = |id, before, after| {
+            serde_json::from_value(serde_json::json!({"id":id,"time_us":1700000000000000i64,"storage":"cta","writer":{"pid":1,"start_ticks":"1"},"family":"cta_prep","environment":"cta-prep-binance-futures","source":"config_page","actor":"tester","source_ip":null,"session_id":null,"request_path":null,"objects":{"cta-prep-binance-futures/one.json":{"before":{"amount":before},"after":{"amount":after}}}})).unwrap()
+        };
+        let batch = Batch {
+            watermark: 2,
+            complete: true,
+            records: vec![
+                Record {
+                    event: event(1, 1, 2),
+                    pending: false,
+                },
+                Record {
+                    event: event(2, 2, 1),
+                    pending: false,
+                },
+            ],
+        };
+        let notifier = Notifications::open(path.clone(), sender()).await.unwrap();
+        notifier
+            .parameters("jp", batch.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(notifier.parameter_cursor("jp").await, 2);
+        assert_eq!(notifier.book.lock().await.outbox.len(), 2);
+        assert_eq!(
+            notifier.parameter_record("jp", 1).await.unwrap().event.id,
+            1
+        );
+        drop(notifier);
+        let notifier = Notifications::open(path, sender()).await.unwrap();
+        notifier.parameters("jp", batch, None).await.unwrap();
+        let mut book = notifier.book.lock().await;
+        assert_eq!(book.outbox.len(), 2);
+        let pending = book.claim(now_ms()).unwrap();
+        book.finish(&pending, false, now_ms()).unwrap();
+        assert_eq!(book.outbox.len(), 2);
+        drop(book);
+        drop(notifier);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn first_alert_and_recovery_only_survive_restart() {
         let mut book = Book::default();
@@ -1118,6 +1292,39 @@ mod tests {
                 last_error_ms: Some(1),
             };
             assert!(cta_backup_observation(&source).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn mm_backup_failure_and_recovery_use_the_durable_outbox_without_fr_catalog() {
+        for prefix in ["redis_mm_backup_", "cos_mm_backup_", "cos_mm_retention_"] {
+            let mut source = mkt_signal::common::delist_store::SourceStatus {
+                source: format!("{prefix}okex_mm_83777"),
+                kind: "backup".into(),
+                ok: false,
+                last_attempt_ms: 1,
+                last_success_ms: None,
+                last_error: Some("private credential".into()),
+                last_error_ms: Some(1),
+            };
+            assert!(!fr_source(&source.source, &BTreeSet::new()));
+            let mut book = Book::default();
+            book.observe(vec![mm_backup_observation(&source).unwrap()], 1)
+                .unwrap();
+            let failed = book.claim(1).unwrap();
+            assert!(failed.body.contains("MM 参数备份 okex_mm_83777"));
+            assert!(!failed.body.contains("private credential"));
+            book.finish(&failed, false, 1).unwrap();
+            let mut book: Book =
+                serde_json::from_slice(&serde_json::to_vec(&book).unwrap()).unwrap();
+            assert!(!deliver(&mut book, 20_000).recovery);
+            book.observe(vec![mm_backup_observation(&source).unwrap()], 20_001)
+                .unwrap();
+            assert!(book.outbox.is_empty());
+            source.ok = true;
+            book.observe(vec![mm_backup_observation(&source).unwrap()], 20_002)
+                .unwrap();
+            assert!(deliver(&mut book, 20_003).recovery);
         }
     }
 

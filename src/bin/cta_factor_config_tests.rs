@@ -22,12 +22,14 @@ async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions(
     let original = std::fs::read(&prep_groups_path).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let root_for_server = root.clone();
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
             router(App {
                 config,
                 worker: Worker::Perp,
+                audit_dir: Some(root_for_server.join("audit")),
                 spread_config: Some(spread_config),
             }),
         )
@@ -57,6 +59,7 @@ async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions(
         .unwrap();
     assert_eq!(preview.status(), StatusCode::OK);
     assert_eq!(std::fs::read(&prep_groups_path).unwrap(), original);
+    assert!(!root.join("audit/.sequence").exists());
     let denied = http
         .post(format!("{url}/api/symbol-groups"))
         .header("origin", "https://other.example")
@@ -134,6 +137,9 @@ async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions(
     let spread_saved = http.post(format!("{url}/api/symbol-groups")).json(&json!({"worker":"cta-factor-spread","symbol_groups":expanded,"expected_revision":spread["revision"]})).send().await.unwrap();
     assert_eq!(spread_saved.status(), StatusCode::OK);
     assert_eq!(std::fs::read(&prep_groups_path).unwrap(), prep_after);
+    let audit = parameter_audit::read_batch(&root.join("audit"), 0).unwrap();
+    assert!(audit.complete && audit.records.iter().any(|r| !r.event.objects.is_empty()));
+    assert!(audit.records.iter().all(|r| !r.pending));
     server.abort();
     let _ = server.await;
     std::fs::remove_dir_all(root).unwrap();
@@ -161,6 +167,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
     let untouched = std::fs::read(root.join("two.json")).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let root_for_server = root.clone();
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
@@ -168,6 +175,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
                 config,
                 worker: Worker::Perp,
                 spread_config: None,
+                audit_dir: Some(root_for_server.join("audit")),
             }),
         )
         .await
@@ -295,6 +303,9 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
     assert_eq!(deleted["unique_factor_count"], 180);
     assert!(!root.join("one.json").exists());
     assert_eq!(std::fs::read(root.join("two.json")).unwrap(), untouched);
+    let audit = parameter_audit::read_batch(&root.join("audit"), 0).unwrap();
+    assert!(audit.complete && audit.records.iter().any(|r| !r.event.objects.is_empty()));
+    assert!(audit.records.iter().all(|r| !r.pending));
     server.abort();
     let _ = server.await;
     std::fs::remove_dir_all(root).unwrap();

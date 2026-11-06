@@ -8,7 +8,7 @@ usage() {
 用法: scripts/deploy_fr_config_server.sh --env-name <exchange>_fr_<suffix>
                                        [--exchange <binance|okex|gate|bybit|bitget>]
                                        [--target <path>]
-                                       [--bind 0.0.0.0] [--port <default>]
+                                       [--bind 127.0.0.1] [--port <default>]
                                        [--nginx-prefix /fr/<env-name>/config]
                                        [--nginx-port 4191]
                                        [--nginx-mapping-file $HOME/nginx_locations.txt]
@@ -38,7 +38,7 @@ EXCHANGE=""
 ENV_NAME=""
 TARGET_DIR=""
 
-BIND="0.0.0.0"
+BIND="127.0.0.1"
 PORT=""
 
 NGINX_PREFIX=""
@@ -259,6 +259,7 @@ mkdir -p "$TARGET_DIR/config"
 
 FILES=(
   "scripts/fr_config_server.py"
+  "scripts/parameter_audit.py"
   "scripts/check_fr_collateral.py"
   "scripts/arb_per_symbol_overrides.py"
   "scripts/start_fr_config_server.sh"

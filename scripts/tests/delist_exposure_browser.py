@@ -122,10 +122,11 @@ def main():
                     'accounts': [{'source_id': 'binance_exec_rx01', 'alias': 'CTA execution account',
                                   'site': 'jp', 'active': True, 'viz_url': '/exec/rx01/viz/'}]}]}
                 other = {**accounts[0], 'slug': 'fixture_intra', 'alias': '所内测试账户', 'kind': 'intra_exchange'}
+                mm = {**accounts[0], 'slug': 'okex_mm_83777', 'alias': '做市测试账户', 'kind': 'market_making', 'exchange': 'okex'}
                 legacy_cta = {**accounts[0], 'slug': 'fixture_cta', 'alias': '旧 CTA 账户', 'kind': 'cta'}
-                fixtures = {'/delist/accounts': {'accounts': accounts+[other, legacy_cta], 'summary': {}, 'as_of_ms': int(time.time()*1000)},
+                fixtures = {'/delist/accounts': {'accounts': accounts+[other, mm, legacy_cta], 'summary': {}, 'as_of_ms': int(time.time()*1000)},
                             '/delist/flatten-candidates': {'items': []}, '/delist/cta-strategies': cta,
-                            '/delist/status': {'sources': []}}
+                            '/delist/status': {'sources': [{'source': 'cos_mm_backup_okex_mm_83777', 'ok': True, 'last_success_ms': int(time.time()*1000)}]}}
                 if self.path in fixtures:
                     return self.respond(fixtures[self.path])
                 if self.path.startswith('/delist/'):
@@ -238,9 +239,23 @@ def main():
                 assert page.locator('[data-announcement="gate"]').evaluate('e => e.open')
                 assert page.locator('#exchange-list .backup-action').count() == 3
                 page.locator('[data-filter="all"]').click()
-                assert page.locator('#metrics strong').first.inner_text() == '4'
+                assert page.locator('#metrics strong').first.inner_text() == '5'
                 assert '所内测试账户' in page.locator('#exchange-list').inner_text()
                 assert '旧 CTA 账户' not in page.locator('#exchange-list').inner_text()
+                page.locator('[data-filter="market_making"]').click()
+                assert page.locator('#metrics strong').first.inner_text() == '1'
+                assert page.locator('#exchange-list .backup-action').count() == 1
+                assert '今日云备份已校验' in page.locator('#exchange-list').inner_text()
+                for width in (320, 390, 1440):
+                    page.set_viewport_size({'width': width, 'height': 1000})
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+                    assert page.locator('#exchange-list .backup-action').evaluate('e => e.getBoundingClientRect().right <= innerWidth'), width
+                if args.screenshot_dir:
+                    page.screenshot(path=str(args.screenshot_dir/'mm-desktop.png'), full_page=True)
+                page.once('dialog', lambda dialog: dialog.accept())
+                page.locator('#exchange-list .backup-action[data-env="okex_mm_83777"]').click()
+                page.wait_for_function('!document.querySelector("#exchange-list .backup-action").disabled')
+                assert backups[-1] == {'kind': 'market_making', 'env': 'okex_mm_83777'}
                 page.locator('[data-filter="funding_rate"]').click()
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)

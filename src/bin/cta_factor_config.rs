@@ -8,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
+use mkt_signal::common::parameter_audit;
 use mkt_signal::cta_factor_calc::{
     config::{Combination, Config, Plan, SymbolGroups, Worker},
     runtime::{
@@ -37,12 +38,15 @@ struct Args {
     spread_config: Option<PathBuf>,
     #[arg(long)]
     check: bool,
+    #[arg(long)]
+    parameter_audit_dir: Option<PathBuf>,
 }
 #[derive(Clone)]
 struct App {
     config: Config,
     worker: Worker,
     spread_config: Option<Config>,
+    audit_dir: Option<PathBuf>,
 }
 impl App {
     fn profile(&self, requested: Option<Worker>) -> Result<(&Config, Worker)> {
@@ -98,7 +102,9 @@ type ApiResult = std::result::Result<Json<Value>, (StatusCode, Json<Value>)>;
 #[path = "cta_factor_config_tests.rs"]
 mod tests;
 fn error(err: anyhow::Error) -> (StatusCode, Json<Value>) {
-    let code = if err.downcast_ref::<CatalogConflict>().is_some() {
+    let code = if err.downcast_ref::<CatalogConflict>().is_some()
+        || err.downcast_ref::<parameter_audit::Busy>().is_some()
+    {
         StatusCode::CONFLICT
     } else {
         StatusCode::BAD_REQUEST
@@ -134,6 +140,72 @@ fn response(plan: Plan, worker: Worker) -> Result<Value> {
         json!({"worker":worker,"revision":catalog_revision(&plan)?,"topics":plan.topics(),"unique_factor_count":plan.calculations.len(),"position_strategies":position_strategies,"plan":plan}),
     )
 }
+
+fn audited<T>(
+    app: &App,
+    config: &Config,
+    worker: Worker,
+    headers: &HeaderMap,
+    name: &str,
+    write: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    ensure!(
+        name.strip_suffix(".json")
+            .is_some_and(|stem| !stem.is_empty()
+                && stem.len() <= 128
+                && stem
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))),
+        "invalid parameter object name"
+    );
+    let Some(root) = &app.audit_dir else {
+        return write();
+    };
+    let metadata = parameter_audit::Metadata {
+        family: if worker == Worker::Perp {
+            "cta_prep"
+        } else {
+            "cta_spread"
+        }
+        .into(),
+        environment: worker.name().into(),
+        source: "config_page".into(),
+        actor: headers
+            .get("x-parameter-actor")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
+        source_ip: headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
+        session_id: headers.get("cookie").map(|value| {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(value.as_bytes()))[..16].to_string()
+        }),
+        request_path: Some(format!("{}/{}", worker.name(), name)),
+    };
+    let path = config.combinations_dir.join(name);
+    let key = format!("{}/{}", worker.name(), name);
+    parameter_audit::apply(
+        root,
+        metadata,
+        "cta",
+        || {
+            let value = if path.exists() {
+                let bytes = std::fs::read(&path)?;
+                if name == "symbol_groups.json" {
+                    serde_json::to_value(serde_json::from_slice::<SymbolGroups>(&bytes)?)?
+                } else {
+                    serde_json::to_value(serde_json::from_slice::<Combination>(&bytes)?)?
+                }
+            } else {
+                Value::Null
+            };
+            Ok(std::collections::BTreeMap::from([(key.clone(), value)]))
+        },
+        write,
+    )
+}
 async fn catalog(State(app): State<Arc<App>>, Query(profile): Query<Profile>) -> ApiResult {
     let (config, worker) = app.profile(profile.worker).map_err(error)?;
     let plan = Plan::load(&config.combinations_dir).map_err(error)?;
@@ -144,15 +216,24 @@ async fn edit(app: Arc<App>, headers: HeaderMap, request: Save, execute: bool) -
     same_origin(&headers)
         .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
     ensure_revision(&request.expected_revision)?;
+    request.combination.validate().map_err(error)?;
     let (config, worker) = app.profile(request.worker).map_err(error)?;
-    let plan = edit_combination_checked(
-        config,
-        Some(request.combination),
-        None,
-        execute,
-        worker,
-        Some(&request.expected_revision),
-    )
+    let name = format!("{}.json", request.combination.name);
+    let write = || {
+        edit_combination_checked(
+            config,
+            Some(request.combination),
+            None,
+            execute,
+            worker,
+            Some(&request.expected_revision),
+        )
+    };
+    let plan = if execute {
+        audited(&app, config, worker, &headers, &name, write)
+    } else {
+        write()
+    }
     .map_err(error)?;
     Ok(Json(app.response(plan, worker).map_err(error)?))
 }
@@ -189,13 +270,20 @@ async fn edit_groups(
         .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
     ensure_revision(&request.expected_revision)?;
     let (config, worker) = app.profile(request.worker).map_err(error)?;
-    let plan = edit_symbol_groups_checked(
-        config,
-        request.symbol_groups,
-        execute,
-        worker,
-        Some(&request.expected_revision),
-    )
+    let write = || {
+        edit_symbol_groups_checked(
+            config,
+            request.symbol_groups,
+            execute,
+            worker,
+            Some(&request.expected_revision),
+        )
+    };
+    let plan = if execute {
+        audited(&app, config, worker, &headers, "symbol_groups.json", write)
+    } else {
+        write()
+    }
     .map_err(error)?;
     Ok(Json(app.response(plan, worker).map_err(error)?))
 }
@@ -223,13 +311,22 @@ async fn remove(
         .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
     ensure_revision(&request.expected_revision)?;
     let (config, worker) = app.profile(request.worker).map_err(error)?;
-    let plan = edit_combination_checked(
+    let plan = audited(
+        &app,
         config,
-        None,
-        Some(&name),
-        true,
         worker,
-        Some(&request.expected_revision),
+        &headers,
+        &format!("{name}.json"),
+        || {
+            edit_combination_checked(
+                config,
+                None,
+                Some(&name),
+                true,
+                worker,
+                Some(&request.expected_revision),
+            )
+        },
     )
     .map_err(error)?;
     Ok(Json(app.response(plan, worker).map_err(error)?))
@@ -308,6 +405,10 @@ async fn main() -> Result<()> {
         config,
         worker,
         spread_config,
+        audit_dir: Some(
+            args.parameter_audit_dir
+                .unwrap_or(parameter_audit::default_root()?),
+        ),
     };
     if args.check {
         println!(

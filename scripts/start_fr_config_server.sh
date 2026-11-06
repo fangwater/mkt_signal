@@ -34,7 +34,7 @@ case "$dir_name" in
 esac
 
 EXCHANGE="${EXCHANGE:-${detected_exchange:-okex}}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 DEFAULT_EXCHANGE="${DEFAULT_EXCHANGE:-$EXCHANGE}"
 APP_NAME="${PM2_NAME:-fr_config_server_${dir_tag}}"
 if [[ -z "${PYTHON_BIN:-}" ]]; then

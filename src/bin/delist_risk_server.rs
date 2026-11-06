@@ -90,6 +90,8 @@ mod cta_mapping;
 mod exposure;
 #[path = "delist_risk_server/notifications.rs"]
 mod notifications;
+#[path = "delist_risk_server/parameter_changes.rs"]
+mod parameter_changes;
 #[path = "delist_risk_server/upload.rs"]
 mod upload;
 
@@ -289,6 +291,14 @@ struct Args {
     #[arg(long)]
     cta_spread_factor_env: Option<PathBuf>,
 
+    /// Local MM parameter archive directory.
+    #[arg(long, default_value = "data/mm_backups")]
+    mm_backup_dir: PathBuf,
+
+    /// COS destination for MM parameter archives.
+    #[arg(long, requires = "redis_backup_cos_config")]
+    mm_backup_cos_target: Option<String>,
+
     /// Local CTA configuration archive directory.
     #[arg(long, default_value = "data/cta_backups")]
     cta_backup_dir: PathBuf,
@@ -305,7 +315,7 @@ struct Args {
     #[arg(long)]
     redis_backup_cos_config: Option<PathBuf>,
 
-    /// Disable daily FR configuration backups.
+    /// Disable daily FR/MM and CTA configuration backups.
     #[arg(long)]
     skip_redis_backup: bool,
 
@@ -357,11 +367,13 @@ struct AppState {
 struct ManualBackupSettings {
     enabled: bool,
     fr_dir: PathBuf,
+    mm_dir: PathBuf,
     cta_dir: PathBuf,
     env_root: PathBuf,
     sg_ssh_host: String,
     keep: usize,
     fr_cos: Option<upload::UploadConfig>,
+    mm_cos: Option<upload::UploadConfig>,
     cta_cos: Option<upload::UploadConfig>,
 }
 
@@ -602,12 +614,21 @@ async fn main() -> Result<()> {
         backups: ManualBackupSettings {
             enabled: !args.skip_redis_backup,
             fr_dir: args.redis_backup_dir.clone(),
+            mm_dir: args.mm_backup_dir.clone(),
             cta_dir: args.cta_backup_dir.clone(),
             env_root: args.redis_backup_env_root.clone(),
             sg_ssh_host: args.redis_backup_sg_ssh_host.clone(),
             keep: args.redis_backup_keep,
             fr_cos: args
                 .redis_backup_cos_target
+                .clone()
+                .zip(args.redis_backup_cos_config.clone())
+                .map(|(target, config_path)| upload::UploadConfig {
+                    target,
+                    config_path,
+                }),
+            mm_cos: args
+                .mm_backup_cos_target
                 .clone()
                 .zip(args.redis_backup_cos_config.clone())
                 .map(|(target, config_path)| upload::UploadConfig {
@@ -669,11 +690,26 @@ async fn main() -> Result<()> {
                 }
                 mark_ok(&backup_state, "redis_fr_backup_catalog", "backup").await;
                 let accounts = backup_state.accounts.read().await.clone();
-                for account in accounts.iter().filter(|a| a.kind == "funding_rate") {
+                for account in accounts
+                    .iter()
+                    .filter(|a| matches!(a.kind.as_str(), "funding_rate" | "market_making"))
+                {
+                    let is_mm = account.kind == "market_making";
+                    let family = if is_mm { "mm" } else { "fr" };
+                    let backup_dir = if is_mm {
+                        &backup_state.backups.mm_dir
+                    } else {
+                        &backup_dir
+                    };
+                    let cos = if is_mm {
+                        &backup_state.backups.mm_cos
+                    } else {
+                        &cos
+                    };
                     let _backup_guard = backup_state.backup_lock.lock().await;
                     let today = Utc::now().date_naive();
                     let id = format!("{}:{}:{}", account.host, account.slug, account.exchange);
-                    let source = format!("redis_fr_backup_{}", account.slug);
+                    let source = format!("redis_{family}_backup_{}", account.slug);
                     let target = match account.site {
                         mkt_signal::common::delist_accounts::RedisSite::Jp => {
                             Some(("jp", backup_state.jp_redis.as_str()))
@@ -698,13 +734,13 @@ async fn main() -> Result<()> {
                             .await
                         } else {
                             Err(anyhow::anyhow!(
-                                "FR account Redis site is unsupported or unavailable"
+                                "parameter backup account Redis site is unsupported or unavailable"
                             ))
                         };
                         match result {
                             Ok(backup::Outcome::Created(path)) => {
                                 info!(
-                                    "FR Redis backup completed env={} path={}",
+                                    "Redis parameter backup completed env={} path={}",
                                     account.slug,
                                     path.display()
                                 );
@@ -717,18 +753,21 @@ async fn main() -> Result<()> {
                             }
                             Err(err) => {
                                 let message = format!("{err:#}");
-                                warn!("FR Redis backup failed env={}: {message}", account.slug);
+                                warn!(
+                                    "Redis parameter backup failed env={}: {message}",
+                                    account.slug
+                                );
                                 mark_err(&backup_state, &source, "backup", &message).await;
                             }
                         }
                     }
                     if let Some(cos) = cos.as_ref() {
-                        let source = format!("cos_fr_backup_{}", account.slug);
+                        let source = format!("cos_{family}_backup_{}", account.slug);
                         let result = if let Some((site, _)) = target {
                             upload::sync_archives(cos, &backup_dir, site, account, keep).await
                         } else {
                             Err(anyhow::anyhow!(
-                                "FR account backup site is unsupported or unavailable"
+                                "parameter backup account site is unsupported or unavailable"
                             ))
                         };
                         match result {
@@ -742,13 +781,13 @@ async fn main() -> Result<()> {
                                 mark_ok(&backup_state, &source, "upload").await;
                                 if cleaned.get(&id) != Some(&today) {
                                     let cleanup_source =
-                                        format!("cos_fr_retention_{}", account.slug);
+                                        format!("cos_{family}_retention_{}", account.slug);
                                     let result = if let Some((site, _)) = target {
                                         upload::prune_remote(cos, &backup_dir, site, account, keep)
                                             .await
                                     } else {
                                         Err(anyhow::anyhow!(
-                                            "FR account backup site is unsupported or unavailable"
+                                            "parameter backup account site is unsupported or unavailable"
                                         ))
                                     };
                                     match result {
@@ -783,6 +822,14 @@ async fn main() -> Result<()> {
                                 mark_err(&backup_state, &source, "upload", &message).await;
                             }
                         }
+                    } else if is_mm {
+                        mark_err(
+                            &backup_state,
+                            &format!("cos_mm_backup_{}", account.slug),
+                            "upload",
+                            "MM COS target is not configured",
+                        )
+                        .await;
                     }
                 }
             }
@@ -992,6 +1039,8 @@ async fn main() -> Result<()> {
 
     if let Some(notifications) = state.fr_notifications.clone() {
         tokio::spawn(notifications.run());
+        tokio::spawn(parameter_changes::run(state.clone(), "jp"));
+        tokio::spawn(parameter_changes::run(state.clone(), "sg"));
     }
     let exposure_state = state.clone();
     let exposure_client = Client::builder()
@@ -1086,6 +1135,9 @@ async fn main() -> Result<()> {
         .route("/accounts", get(query_accounts))
         .route("/exposures", get(query_exposures))
         .route("/notifications", get(query_notifications))
+        .route("/parameter-changes", get(parameter_history_page))
+        .route("/api/parameter-changes", get(parameter_history))
+        .route("/api/parameter-change", get(parameter_record))
         .route("/cta-strategies", get(query_cta_strategies))
         .route("/backup-now", post(manual_backup))
         .route("/removal-candidates", get(query_removal_candidates))
@@ -1284,7 +1336,8 @@ async fn manual_backup(
         return fail(StatusCode::CONFLICT, "备份正在进行，请稍后重试".into());
     };
     let (account, site, dir, cos, created, warnings) = match request.kind.as_str() {
-        "funding_rate" => {
+        "funding_rate" | "market_making" => {
+            let is_mm = request.kind == "market_making";
             if !nav_accounts_ready(&state).await {
                 return fail(StatusCode::SERVICE_UNAVAILABLE, "策略名单暂不可用".into());
             }
@@ -1293,10 +1346,10 @@ async fn manual_backup(
                 .read()
                 .await
                 .iter()
-                .find(|a| a.kind == "funding_rate" && a.slug == request.env)
+                .find(|a| a.kind == request.kind && a.slug == request.env)
                 .cloned()
             else {
-                return fail(StatusCode::NOT_FOUND, "未找到该 FR 策略".into());
+                return fail(StatusCode::NOT_FOUND, "未找到该参数备份策略".into());
             };
             let (site, redis) = match account.site {
                 mkt_signal::common::delist_accounts::RedisSite::Jp => {
@@ -1308,13 +1361,41 @@ async fn manual_backup(
                 mkt_signal::common::delist_accounts::RedisSite::Unsupported => ("", None),
             };
             let Some(redis) = redis else {
+                if is_mm {
+                    mark_err(
+                        &state,
+                        &format!("redis_mm_backup_{}", account.slug),
+                        "backup",
+                        "MM Redis is unavailable",
+                    )
+                    .await;
+                }
                 return fail(StatusCode::SERVICE_UNAVAILABLE, "策略 Redis 不可用".into());
             };
-            let Some(cos) = state.backups.fr_cos.as_ref() else {
-                return fail(StatusCode::SERVICE_UNAVAILABLE, "FR 云端备份未配置".into());
+            let cos = if is_mm {
+                &state.backups.mm_cos
+            } else {
+                &state.backups.fr_cos
+            };
+            let dir = if is_mm {
+                &state.backups.mm_dir
+            } else {
+                &state.backups.fr_dir
+            };
+            let Some(cos) = cos.as_ref() else {
+                if is_mm {
+                    mark_err(
+                        &state,
+                        &format!("cos_mm_backup_{}", account.slug),
+                        "upload",
+                        "MM COS target is not configured",
+                    )
+                    .await;
+                }
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "参数云端备份未配置".into());
             };
             let result = backup::backup_manual(
-                &state.backups.fr_dir,
+                dir,
                 site,
                 redis,
                 &account,
@@ -1330,20 +1411,22 @@ async fn manual_backup(
                     return fail(StatusCode::CONFLICT, "备份版本冲突，请重试".into())
                 }
                 Err(err) => {
+                    if is_mm {
+                        mark_err(
+                            &state,
+                            &format!("redis_mm_backup_{}", account.slug),
+                            "backup",
+                            &format!("{err:#}"),
+                        )
+                        .await;
+                    }
                     return fail(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("本地备份失败：{err:#}"),
-                    )
+                    );
                 }
             };
-            (
-                account,
-                site,
-                state.backups.fr_dir.clone(),
-                cos.clone(),
-                path,
-                Vec::new(),
-            )
+            (account, site, dir.clone(), cos.clone(), path, Vec::new())
         }
         "cta_perp" | "cta_spread" => {
             let Some(worker) = cta_backup::worker(&request.env) else {
@@ -1424,20 +1507,25 @@ async fn manual_backup(
         .unwrap_or("backup.tar.gz")
         .to_string();
     let is_cta = matches!(account.kind.as_str(), "cta_perp" | "cta_spread");
+    let family = if account.kind == "market_making" {
+        "mm"
+    } else {
+        "fr"
+    };
     let local_source = if is_cta {
         format!("cta_backup_{}", account.slug)
     } else {
-        format!("redis_fr_backup_{}", account.slug)
+        format!("redis_{family}_backup_{}", account.slug)
     };
     let cloud_source = if is_cta {
         format!("cos_cta_backup_{}", account.slug)
     } else {
-        format!("cos_fr_backup_{}", account.slug)
+        format!("cos_{family}_backup_{}", account.slug)
     };
     let retention_source = if is_cta {
         format!("cos_cta_retention_{}", account.slug)
     } else {
-        format!("cos_fr_retention_{}", account.slug)
+        format!("cos_{family}_retention_{}", account.slug)
     };
     mark_ok(&state, &local_source, "backup").await;
     if is_cta {
@@ -1959,6 +2047,33 @@ async fn query_exposures(State(state): State<AppState>) -> Json<exposure::Report
             .await
             .report(Utc::now().timestamp_millis(), current),
     )
+}
+
+async fn parameter_history_page() -> Html<&'static str> {
+    Html(include_str!("../../web/delist_risk/parameter_changes.html"))
+}
+async fn parameter_history(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(match &state.fr_notifications {
+        Some(notifier) => notifier.parameter_history().await,
+        None => json!({"disabled":true,"changes":[]}),
+    })
+}
+#[derive(Deserialize)]
+struct ParameterRecordQuery {
+    site: String,
+    id: u64,
+}
+async fn parameter_record(
+    State(state): State<AppState>,
+    Query(query): Query<ParameterRecordQuery>,
+) -> Response {
+    let Some(notifier) = &state.fr_notifications else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    match notifier.parameter_record(&query.site, query.id).await {
+        Ok(record) => Json(record).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn query_notifications(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -3827,10 +3942,11 @@ async fn persist_source(state: &AppState, row: &mkt_signal::common::delist_store
     // account catalog, and a short failure cannot disappear between scans.
     if let (Some(notifier), Some(observation)) = (
         &state.fr_notifications,
-        notifications::cta_backup_observation(row),
+        notifications::cta_backup_observation(row)
+            .or_else(|| notifications::mm_backup_observation(row)),
     ) {
         if let Err(err) = notifier.observe(vec![observation]).await {
-            warn!("queue CTA backup notification failed: {err}");
+            warn!("queue backup notification failed: {err}");
         }
     }
 }
@@ -4023,11 +4139,13 @@ mod tests {
             backups: ManualBackupSettings {
                 enabled: false,
                 fr_dir: dir.clone(),
+                mm_dir: dir.clone(),
                 cta_dir: dir.clone(),
                 env_root: dir.clone(),
                 sg_ssh_host: "sg".into(),
                 keep: 30,
                 fr_cos: None,
+                mm_cos: None,
                 cta_cos: None,
             },
             backup_lock: Arc::new(AsyncMutex::new(())),
