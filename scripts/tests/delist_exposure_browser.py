@@ -112,7 +112,10 @@ def main():
                 cta = {'managers': [{'site': 'jp', 'ok': True}], 'factor_processes': [{
                     'name': 'cta-prep-binance-futures', 'config_url': config_url,
                     'configured': True, 'plan_matches_config': True, 'unique_factor_count': 42,
-                    'combinations': combinations}], 'strategies': [{
+                    'combinations': combinations}, {
+                    'name': 'cta-factor-spread', 'config_url': config_url+'?worker=cta-factor-spread',
+                    'configured': True, 'plan_matches_config': True, 'unique_factor_count': 50,
+                    'combinations': []}], 'strategies': [{
                     'slug': 'cta-prep02-bn-1min-pos', 'name': combinations[0]['name'],
                     'enabled': True, 'factor_count': 42,
                     'risk': {'tone': 'ok', 'config_url': config_url, 'universe_n': 42},
@@ -250,6 +253,12 @@ def main():
                 assert page.locator('#exchange-list, #exposure-panel, #filters').count() == 0
                 assert page.locator('#metrics strong').first.inner_text() == '1'
                 assert page.locator('#cta-config-entries a').count() == 2
+                assert page.locator('#cta-strategies .backup-action').count() == 2
+                for worker, kind in [('cta-prep-binance-futures', 'cta_perp'), ('cta-factor-spread', 'cta_spread')]:
+                    page.once('dialog', lambda dialog: dialog.accept())
+                    page.locator(f'#cta-strategies .backup-action[data-env="{worker}"]').click()
+                    page.wait_for_function('!document.querySelector("#cta-strategies .backup-action").disabled')
+                    assert backups[-1] == {'kind': kind, 'env': worker}
                 assert not any(url.endswith(('/accounts', '/exposures', '/flatten-candidates', '/notifications')) for url in requests)
                 for width in (1440, 1024, 768, 390, 320):
                     page.set_viewport_size({'width': width, 'height': 1000})

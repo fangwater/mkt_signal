@@ -761,7 +761,7 @@ pub fn validate_for_account(path: &Path, site: &str, account: &AccountSpec) -> R
 
 pub fn archive_paths(root: &Path, site: &str, account: &AccountSpec) -> Result<Vec<PathBuf>> {
     if matches!(account.kind.as_str(), "cta_perp" | "cta_spread") {
-        if site != "jp" || !super::cta_mapping::valid_slug(&account.slug) {
+        if site != "jp" || super::cta_backup::worker(&account.slug).is_none() {
             bail!("invalid CTA backup identity");
         }
     } else {

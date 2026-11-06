@@ -809,63 +809,11 @@ async fn main() -> Result<()> {
             let mut cleaned = BTreeMap::new();
             loop {
                 interval.tick().await;
-                let (signals, errors) = match cta_mapping::read_signals(&env_root) {
-                    Ok(result) => result,
-                    Err(err) => {
-                        mark_err(
-                            &backup_state,
-                            "cta_backup_catalog",
-                            "backup",
-                            &format!("{err:#}"),
-                        )
-                        .await;
-                        continue;
-                    }
-                };
-                if errors.is_empty() {
-                    mark_ok(&backup_state, "cta_backup_catalog", "backup").await;
-                } else {
-                    mark_err(
-                        &backup_state,
-                        "cta_backup_catalog",
-                        "backup",
-                        &errors.join("; "),
-                    )
-                    .await;
-                }
-                let mut name_counts = BTreeMap::<String, usize>::new();
-                for signal in &signals {
-                    for name in &signal.names {
-                        *name_counts.entry(name.clone()).or_default() += 1;
-                    }
-                }
-                for signal in signals {
+                for worker in [cta_factors::Worker::Perp, cta_factors::Worker::Spread] {
                     let _backup_guard = backup_state.backup_lock.lock().await;
                     let today = Utc::now().date_naive();
-                    let account = AccountSpec {
-                        slug: signal.slug.clone(),
-                        alias: signal.slug.clone(),
-                        exchange: signal.exchange().into(),
-                        kind: signal.kind().into(),
-                        host: "jp".into(),
-                        site: mkt_signal::common::delist_accounts::RedisSite::Jp,
-                        config_url: String::new(),
-                    };
-                    let slug = &signal.slug;
-                    if signal
-                        .names
-                        .iter()
-                        .any(|name| name_counts.get(name).copied().unwrap_or(0) > 1)
-                    {
-                        mark_err(
-                            &backup_state,
-                            &format!("cta_backup_{slug}"),
-                            "backup",
-                            "duplicate CTA strategy identifier; backup scope is ambiguous",
-                        )
-                        .await;
-                        continue;
-                    }
+                    let account = cta_backup::account(worker);
+                    let slug = &account.slug;
                     if completed.get(slug) != Some(&today) {
                         let result = match backup_state.cta_mapping.jp_database.as_deref() {
                             Some(url) => {
@@ -874,9 +822,8 @@ async fn main() -> Result<()> {
                                     &env_root,
                                     &backup_state.jp_redis,
                                     url,
-                                    backup_state.cta_mapping.factor_environment(signal.worker),
-                                    &signal,
-                                    &account,
+                                    backup_state.cta_mapping.factor_environment(worker),
+                                    worker,
                                 )
                                 .await
                             }
@@ -1399,69 +1346,59 @@ async fn manual_backup(
             )
         }
         "cta_perp" | "cta_spread" => {
-            if !cta_mapping::valid_slug(&request.env) {
-                return fail(StatusCode::BAD_REQUEST, "无效的 CTA 策略".into());
-            }
-            let (signals, _) = match cta_mapping::read_signals(&state.backups.env_root) {
-                Ok(value) => value,
-                Err(err) => {
-                    return fail(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!("读取策略失败：{err:#}"),
-                    )
-                }
+            let Some(worker) = cta_backup::worker(&request.env) else {
+                return fail(StatusCode::BAD_REQUEST, "无效的 CTA 共享进程".into());
             };
-            let Some(signal) = signals.iter().find(|s| s.slug == request.env) else {
-                return fail(
-                    StatusCode::NOT_FOUND,
-                    "未找到 CTA 策略或信号状态不可用".into(),
-                );
-            };
-            if signal
-                .names
-                .iter()
-                .any(|name| signals.iter().filter(|s| s.names.contains(name)).count() > 1)
-            {
-                return fail(
-                    StatusCode::CONFLICT,
-                    "策略标识重复，无法安全确定备份范围".into(),
-                );
+            let account = cta_backup::account(worker);
+            if request.kind != account.kind {
+                return fail(StatusCode::BAD_REQUEST, "CTA 备份类型与进程不一致".into());
             }
             let Some(url) = state.cta_mapping.jp_database.as_deref() else {
+                mark_err(
+                    &state,
+                    &format!("cta_backup_{}", account.slug),
+                    "backup",
+                    "CTA Manager database is not configured",
+                )
+                .await;
                 return fail(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "Manager 数据库未配置".into(),
                 );
             };
             let Some(cos) = state.backups.cta_cos.as_ref() else {
+                mark_err(
+                    &state,
+                    &format!("cos_cta_backup_{}", account.slug),
+                    "upload",
+                    "CTA COS target is not configured",
+                )
+                .await;
                 return fail(StatusCode::SERVICE_UNAVAILABLE, "CTA 云端备份未配置".into());
-            };
-            let account = AccountSpec {
-                slug: signal.slug.clone(),
-                alias: signal.slug.clone(),
-                exchange: signal.exchange().into(),
-                kind: signal.kind().into(),
-                host: "jp".into(),
-                site: mkt_signal::common::delist_accounts::RedisSite::Jp,
-                config_url: String::new(),
             };
             let result = cta_backup::backup_manual(
                 &state.backups.cta_dir,
                 &state.backups.env_root,
                 &state.jp_redis,
                 url,
-                state.cta_mapping.factor_environment(signal.worker),
-                signal,
-                &account,
+                state.cta_mapping.factor_environment(worker),
+                worker,
             )
             .await;
             let created = match result {
                 Ok(created) => created,
                 Err(err) => {
+                    mark_err(
+                        &state,
+                        &format!("cta_backup_{}", account.slug),
+                        "backup",
+                        &format!("{err:#}"),
+                    )
+                    .await;
                     return fail(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("本地备份失败：{err:#}"),
-                    )
+                    );
                 }
             };
             let path = match created.outcome {
@@ -3884,6 +3821,16 @@ async fn persist_source(state: &AppState, row: &mkt_signal::common::delist_store
     if let Some(store) = state.store.as_ref() {
         if let Err(err) = store.upsert_source(row).await {
             warn!("persist source_status {} failed: {err:#}", row.source);
+        }
+    }
+    // Observe backup outcomes directly so CTA alerts also work without a NAV/FR
+    // account catalog, and a short failure cannot disappear between scans.
+    if let (Some(notifier), Some(observation)) = (
+        &state.fr_notifications,
+        notifications::cta_backup_observation(row),
+    ) {
+        if let Err(err) = notifier.observe(vec![observation]).await {
+            warn!("queue CTA backup notification failed: {err}");
         }
     }
 }

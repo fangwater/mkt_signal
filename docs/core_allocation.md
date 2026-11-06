@@ -1,7 +1,29 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-05 03:46 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-06 06:38 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-06 06:38 UTC，JP `~/delist_risk_server` 发布当前共享 CTA 备份的钉钉告警。
+本地同步arbmm构建release，临时路径上传、SHA-256核验并原子安装，环境本地脚本
+重启；Delist PID320612、SG隧道 PID320586，CPU均为 `0-5,48-95`。
+163个其他服务进程身份/CPU mask保持，私有配置与现有CTA归档哈希保持。
+复用现有钉钉机器人和持久化outbox，当前Prep/Spread的本地归档、完整性、COS
+上传回读及保留清理失败分别首报与恢复；连续失败不重复，通知失败持久化重试。
+59项Delist测试通过，线上鉴权配置只校验未发送测试消息；8个CTA备份状态正常、
+发送队列为空。源IP与隔离核分配保持；证据
+`../artifacts/cta_backup_alerts_20261106/`，回退产物及核验在
+`~/delist_risk_server/run/cta-backup-alerts-20261106/`。
+
+2026-11-06 06:18 UTC，JP `~/delist_risk_server` 发布共享 CTA Prep／Spread 备份迁移。
+本地同步 `arbmm bf0d5c94` 加本次备份补丁构建 release，经临时路径上传、SHA-256
+核验及原子安装，沿用环境本地脚本重启。Delist PID274437、SG隧道 PID274411，
+均 CPU `0-5,48-95`；163个其他进程身份、CPU mask及全部Delist配置哈希保持。
+新归档覆盖12个Prep组合、1个Spread组合及4个关联Exec，校验云端回读后删除
+旧4个signal环境的10份本地归档/回执与16个COS对象，并清理本次初始验收版本。
+两套备份/完整性/上传/保留状态通过；57项Delist测试及320–1440px浏览器回归通过。
+未改源IP或隔离核分配，详见 `docs/delist_risk_server.md`；证据
+`../artifacts/cta_shared_backup_20261106/`，回退产物及删除清单
+`~/delist_risk_server/run/cta-shared-backup-20261106/`。
 
 2026-11-05 03:40–03:41 UTC，Gate arb01最后一笔O对冲成交，连续三次原生零挂单、
 停信号后再次核验零挂单，仅剩净尾差合计140.47 U、单币最大27.90 U，随后发布

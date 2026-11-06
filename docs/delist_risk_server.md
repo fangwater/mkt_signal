@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-05 UTC（OKX 目录、日程与官方公告接入）
+最后更新：2026-11-06 UTC（共享 CTA 备份及钉钉失败／恢复告警）
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, Bybit, and OKX. Official market snapshots plus announcement LLM
@@ -104,8 +104,9 @@ browser regression passed against the locally built release and published page
 at 320–1440px, including FR/CTA routing, navigation/config/backup links,
 announcement/exposure expansion and refresh state.
 
-Two existing Delist tests still assert 408 Prep jobs while the current repository
-catalog contains 404; the focused run excludes exactly those two tests. A full
+At the November 5 validation, two Delist tests still expected 408 Prep jobs
+while the catalog contained 404. The November 6 backup migration aligns both
+fixture assertions with the current 404-job catalog. A full
 `cargo test` was attempted and passed the library before stopping on eight
 unrelated `cme_tas_census` column-rule tests: the source rules include eight event
 types while that binary still expects four. These existing failures were not
@@ -265,7 +266,9 @@ stale/read-failure retention, escaping, automatic refresh and desktop/mobile UI.
 
 ## Independent FR DingTalk
 
-The FR channel uses its own robot URL and signing secret, independently of CTA.
+The FR channel uses its own robot URL and signing secret, independently of CTA
+trading notifications. The same robot also receives the current shared CTA
+Prep/Spread backup failure and recovery notices.
 The environment-local wrapper reads `config/fr_dingtalk.env` (owned by the service
 user, mode 0600), containing `FR_DINGTALK_WEBHOOK_URL` and optional
 `FR_DINGTALK_SECRET`. A populated URL enables `--fr-notify` unless
@@ -292,12 +295,32 @@ one explicit setup test and exits. No extra scheduler or GPT model is introduced
   once on first detection and once on confirmed recovery. There is no periodic
   repeat or severity-change repeat. Unknown/missing/stale data never recover a
   prior issue. A fully closed asset requires complete fresh coverage to recover.
-  Provider/backup source notices are scoped to FR and the current FR catalog;
-  CTA backup history and retired FR accounts are excluded from this channel.
+  Provider/FR backup source notices are scoped to FR and the current FR catalog;
+  retired FR accounts and old CTA backup history are excluded. Current shared
+  CTA Prep/Spread backup outcomes are the explicit exception: local archive,
+  archive quality, COS upload/read-back and COS retention failures each send one
+  alert and one confirmed recovery. They are observed directly as the outcome
+  is recorded, independently of NAV/FR account discovery, using the same durable
+  outbox, bounded retry and restart-safe deduplication. Raw provider errors and
+  archive contents are never included in robot messages. Manual CTA capture and
+  configuration failures enter the same status/notification path.
 - Actual successful dump/list-removal mutations and completed flatten-script
   outcomes queue operation logs. The notification module itself submits no order
   and does not change trading settings. It reports these service operations,
   rather than claiming to audit every external operator or trading log.
+
+On 2026-11-06 at 06:38 UTC, current shared CTA backup failure/recovery alerts
+were published through the environment-local scripts. Final local-release
+SHA-256: `af36cf57f1c7721bc880b1f845f2de1ccedba394da208a34570545ec56759807`.
+Delist PID 320612 and SG tunnel PID 320586 use CPU `0-5,48-95`. Existing private
+configuration and CTA archive hashes remained unchanged; 163 other service
+process identities/CPU masks matched. All eight current CTA backup statuses
+passed, with no current CTA issues, no queued notifications and no sender error.
+The signed robot configuration was validated without sending. All 59 Delist
+tests passed, including stage/worker isolation, failure retry across restart,
+first-alert/recovery deduplication and credential exclusion using local fixtures.
+Evidence: `../artifacts/cta_backup_alerts_20261106/`; rollback and verification:
+`~/delist_risk_server/run/cta-backup-alerts-20261106/`.
 
 `data/fr_notifications.json` holds the private atomic outbox, acknowledged issue
 states, product baseline and a bounded processing/operation journal. Pending sends
@@ -1302,61 +1325,85 @@ rollback copies are in `run/cta-mapping-deploy-20261102/` on JP.
 
 ## CTA configuration backups and manual backups
 
-JP CTA Prep and Spread signal environments are discovered independently of NAV and backed
-up individually. The startup pass and subsequent five-minute retries create one
-archive per UTC day under `data/cta_backups/jp/<signal>/YYYY-MM-DD.tar.gz`;
-midnight UTC is 08:00 Shanghai time. The optional COS target is configured by
-`DELIST_CTA_BACKUP_COS_TARGET`; the configured Tokyo destination is
-`tencent-fr:jp-fr-config-1307417638/lgq-cta-backup`. The existing private rclone
-config and `DELIST_REDIS_BACKUP_KEEP` are shared with FR.
+The maintained backup units are the two shared workers, `cta-prep-binance-futures`
+and `cta-factor-spread`. Both automatic and authenticated manual backups use
+those exact identities and the same capture path. They do not discover retired
+standalone signal directories. On startup and every five minutes, each worker
+independently creates its missing UTC-day archive, retries failed uploads and
+performs verified retention. Archives are written to
+`data/cta_backups/jp/<worker>/YYYY-MM-DD.tar.gz`. Midnight UTC is 08:00 Shanghai
+time. The private COS destination remains
+`tencent-fr:jp-fr-config-1307417638/lgq-cta-backup`; its rclone configuration
+and `DELIST_REDIS_BACKUP_KEEP` are shared with FR.
 
-Each CTA archive contains the signal `env.sh`, regular files under `config/`,
-available release metadata, the runtime status and, when readable, position
-flags. When the shared factor catalog contains that signal's combination, the
-archive also includes the worker TOML, all combination JSON files, available
-`env.sh` and release metadata, a resolved
-merged plan, and the available runtime state under
-`files/factor/<worker>/`. Saving the complete shared catalog
-preserves other strategies' dependencies during a reviewed restoration. Factor
-history, Kafka records and a fabricated factor Redis key are not captured.
-Missing shared configuration/status or a config/active-plan mismatch is a
-completeness warning; existing archives without the shared dependency are also
-labelled incomplete. No existing archive is overwritten. Manifest checks reject
-missing, duplicate or corrupt shared-factor members.
-It includes each dynamically associated JP Exec's `env.sh`,
-`trade_engine.toml`, configuration directory and release metadata. A
-repeatable-read Manager snapshot contains the associated virtual accounts,
-bindings, follows, position and order strategies, source metadata, leverage,
-grants, and user IDs/names; user password hashes are excluded. The shared
-`cta-manager.toml` is included and can reference other accounts. Redis DUMP
-payloads cover each associated Exec's strategy
-indexes/configurations, risk parameters, algorithm-switch state, leverage-init
-state and position-allocation evidence;
-missing selected keys are recorded. `.bk`, `.bak`, `.backup` and dated variants
-are excluded. All captured file and dump payloads have SHA-256 checksums in the
-archive manifest. The files can contain account credentials and Manager tokens;
-local archives are 0600 in private directories and the COS bucket must remain
-private. These archives are not client-side encrypted.
+Each archive includes the worker TOML, the complete config directory (including
+symbol groups and every combination), available `env.sh` and release metadata,
+the resolved merged plan, the available `state.json` and all frequency position
+ledgers. Kafka and factor history are excluded. Missing or stale runtime state
+is reported as a quality warning while preserving the configuration backup;
+invalid or changing configuration prevents publication. The manifest requires
+the complete current combination inventory and checks every payload's SHA-256.
 
-Spread archives use `cta-factor-spread` dependencies and the corresponding
-Spread runtime status, position flags and ownership ledger. Exec Redis captures
-follow each source's configured venue, including native OKX unified cash and
-perpetual scopes; Binance and OKX keys are not mixed. An unregistered Spread
-combination is reported as incomplete rather than associated with another
-combination by guessing its symbols.
+Manager capture uses every configured position strategy and runtime table,
+including retiring tables, to preserve their associated virtual accounts,
+bindings, follows, position/order strategies, account leverage, permissions and
+user identities (excluding password hashes). Each associated Exec contributes
+its `env.sh`, `trade_engine.toml`, config and available release metadata. Redis
+DUMP payloads include venue-scoped execution/risk/switch configuration,
+leverage-init and position-allocation evidence; absent required risk hashes are
+quality warnings. Native OKX cash/perpetual keys follow that source's configured
+market ownership. `.bk`, `.bak`, `.backup` and their dated variants are excluded.
 
-The FR and CTA rows provide an authenticated, same-origin **立即备份** action.
-Each click captures a new `YYYY-MM-DDTHHMMSSnnnnnnnnnZ.tar.gz` version, uploads
-it and verifies the exact cloud object by reading it back and hashing it. The
-page reports failure or completeness warnings. Daily and manual versions each
-retain their own 30 most recent objects by default, so manual backups do not
-evict daily backups. A backup or read-back failure retains unverified local
-archives for retry and prevents cloud cleanup. Retention is scoped to the exact
-site/environment and destination prefix. `/status` includes
-`cta_backup_<env>`, `cta_backup_quality_<env>`, `cos_cta_backup_<env>` and
-`cos_cta_retention_<env>`; the quality entry reports absent Exec Redis keys or
-differences between the unified combination and the signal's active snapshot.
-Signal snapshots written before this cutover are explicitly identified.
+The CTA page provides one **立即备份** button and cloud/quality status per shared
+worker, even if it has no combinations. Each manual request creates a new
+`YYYY-MM-DDTHHMMSSnnnnnnnnnZ.tar.gz`, uploads it and verifies the exact object
+by reading it back and hashing it. Daily and manual versions retain 30 objects
+each by default. Failed/unverified uploads remain local for retry and cannot
+trigger cleanup. Local files are 0600 inside 0700 directories; archives can
+contain credentials and Manager tokens and require a private COS bucket.
+They are not client-side encrypted. `/status` reports
+`cta_backup_<worker>`, `cta_backup_quality_<worker>`,
+`cos_cta_backup_<worker>` and `cos_cta_retention_<worker>`.
+
+On 2026-11-06 at 06:18 UTC, the shared-worker migration was published from the
+synchronized local `arbmm` worktree (`bf0d5c94` plus the scoped backup patch).
+The release was built locally, uploaded to an explicit temporary path, SHA-256
+verified and atomically installed. Final binary SHA-256:
+`dc02ee00be5898b50921c6f5ee8468224f785a632fa453fa08f6c905fc837be1`.
+Only the deployed environment's start/stop scripts were used; its existing
+startup script and private configuration were preserved. Delist PID 274437 and
+SG tunnel PID 274411 retain CPU `0-5,48-95`; the 163 recorded other process
+identities/CPU masks and all Delist configuration hashes are unchanged.
+
+The first current daily archives independently passed every manifest payload
+checksum and exact COS read-back: Prep contains 12 combinations, 74 payloads,
+15 position ledgers (including three retired tables), and Exec RX01/RX03;
+Spread contains one combination, 37 payloads and Binance Spread01/OKX Exec01.
+Retired tables remain in the evidence and Manager capture scope; absent Manager
+records for tables no longer configured do not create a false quality warning.
+Both workers' backup, quality, upload and retention statuses passed. The next
+automatic five-minute pass at 06:22:59 UTC also passed; both daily archive
+checksums remained unchanged and no duplicate archive was created. After this
+verification, the operator-authorized cleanup removed ten retired per-signal
+local archives and their receipts, sixteen retired COS objects and the initial
+migration candidate (one local archive/receipt and one COS object). The four
+retired archive prefixes are empty; current worker archives and FR backups are
+retained. The obsolete seventeen per-signal/catalog status rows were removed.
+
+Validation: 57 Delist tests passed, `cargo fmt --check` and the focused build
+passed, and desktop/mobile browser regression at 320–1440px verified both
+shared-worker manual requests and FR behavior. Evidence and source diff:
+`../artifacts/cta_shared_backup_20261106/`; deployment rollback artifacts and
+checksum/deletion inventories:
+`~/delist_risk_server/run/cta-shared-backup-20261106/`.
+
+Current CTA backup outcomes also feed the existing private DingTalk outbox
+(`FR_DINGTALK_*`, enabled by `--fr-notify`). Each worker/stage has its own
+first-failure/recovery issue; repeated failures stay silent and failed notification
+requests retry durably. This does not enable other CTA risk/trading notifications.
+
+The following November 2 records describe the retired per-signal backup and
+recovery history. They do not describe the current archive identities.
 
 On 2026-11-02, the JP service was updated with this backup and manual action;
 the final server SHA-256 is

@@ -363,7 +363,7 @@ mod tests {
         let snapshot = snapshot(&env.0.join("config/.."), Worker::Perp).unwrap();
         let view = view(Ok(&snapshot), Worker::Perp);
         assert_eq!(view.name, "cta-prep-binance-futures");
-        assert_eq!(view.unique_factor_count, 408);
+        assert_eq!(view.unique_factor_count, 404);
         assert_eq!(view.topics, ["binance-futures"]);
         let counts = view
             .combinations

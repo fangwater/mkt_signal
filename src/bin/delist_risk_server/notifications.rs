@@ -117,6 +117,40 @@ pub fn fr_source(source: &str, active_fr: &BTreeSet<String>) -> bool {
     true
 }
 
+pub fn cta_backup_observation(
+    source: &mkt_signal::common::delist_store::SourceStatus,
+) -> Option<Observation> {
+    for (prefix, stage) in [
+        ("cta_backup_quality_", "归档完整性"),
+        ("cta_backup_", "本地归档"),
+        ("cos_cta_backup_", "COS 上传及回读校验"),
+        ("cos_cta_retention_", "COS 保留清理"),
+    ] {
+        let Some(name) = source.source.strip_prefix(prefix) else {
+            continue;
+        };
+        let worker = super::cta_backup::worker(name)?;
+        let label = if worker == super::cta_factors::Worker::Perp {
+            "CTA Prep"
+        } else {
+            "CTA Spread"
+        };
+        return Some(Observation {
+            key: format!("source/{}", source.source),
+            title: format!("{label} 备份：{stage}"),
+            problem: Some(!source.ok),
+            // Backup errors can contain connection strings or private paths.
+            // Keep the robot message independent of raw provider errors.
+            detail: if source.ok {
+                format!("{name} 的{stage}已恢复；本通知仅表示该环节检查通过。")
+            } else {
+                format!("{name} 的{stage}失败，系统将自动重试。详情见 Delist 状态页与服务日志。")
+            },
+        });
+    }
+    None
+}
+
 pub fn clip(s: &str, bytes: usize) -> String {
     if s.len() <= bytes {
         return s.to_owned();
@@ -1006,6 +1040,84 @@ mod tests {
             "bybit_announcements",
         ] {
             assert!(fr_source(source, &active), "{source}");
+        }
+    }
+
+    #[test]
+    fn current_cta_backup_failures_retry_deduplicate_and_recover_after_restart() {
+        use mkt_signal::common::delist_store::SourceStatus;
+        for worker in ["cta-prep-binance-futures", "cta-factor-spread"] {
+            for prefix in [
+                "cta_backup_",
+                "cta_backup_quality_",
+                "cos_cta_backup_",
+                "cos_cta_retention_",
+            ] {
+                let mut source = SourceStatus {
+                    source: format!("{prefix}{worker}"),
+                    kind: "backup".into(),
+                    ok: true,
+                    last_attempt_ms: 1,
+                    last_success_ms: Some(1),
+                    last_error: Some("postgres://private-user:private-secret@localhost/db".into()),
+                    last_error_ms: None,
+                };
+                let mut book = Book::default();
+                book.observe(vec![cta_backup_observation(&source).unwrap()], 1)
+                    .unwrap();
+                assert!(book.outbox.is_empty(), "healthy startup must stay silent");
+                source.ok = false;
+                for now in [2, 3] {
+                    book.observe(vec![cta_backup_observation(&source).unwrap()], now)
+                        .unwrap();
+                }
+                assert_eq!(book.outbox.len(), 1);
+                let failed = book.claim(3).unwrap();
+                assert!(failed.body.contains(if worker.contains("spread") {
+                    "CTA Spread"
+                } else {
+                    "CTA Prep"
+                }));
+                assert!(!failed.body.contains("private-secret"));
+                book.finish(&failed, false, 3).unwrap();
+                let mut book: Book =
+                    serde_json::from_slice(&serde_json::to_vec(&book).unwrap()).unwrap();
+                assert!(!deliver(&mut book, 20_000).recovery);
+                book.observe(vec![cta_backup_observation(&source).unwrap()], 20_001)
+                    .unwrap();
+                assert!(book.outbox.is_empty(), "continuing failure must not repeat");
+                source.ok = true;
+                book.observe(vec![cta_backup_observation(&source).unwrap()], 20_002)
+                    .unwrap();
+                assert!(deliver(&mut book, 20_003).recovery);
+                book.observe(vec![cta_backup_observation(&source).unwrap()], 20_004)
+                    .unwrap();
+                assert!(book.outbox.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn cta_backup_alerts_exclude_retired_archives_and_unrelated_cta_state() {
+        use mkt_signal::common::delist_store::SourceStatus;
+        for name in [
+            "cta_backup_catalog",
+            "cta_backup_binance-cta-perp-rx01",
+            "cos_cta_backup_cta-prep-binance-futures-extra",
+            "cta_backup_quality_cta-factor-spread/../other",
+            "cta_factor_catalog",
+            "cos_fr_backup_binance_fr_arb02",
+        ] {
+            let source = SourceStatus {
+                source: name.into(),
+                kind: "backup".into(),
+                ok: false,
+                last_attempt_ms: 1,
+                last_success_ms: None,
+                last_error: None,
+                last_error_ms: Some(1),
+            };
+            assert!(cta_backup_observation(&source).is_none(), "{name}");
         }
     }
 

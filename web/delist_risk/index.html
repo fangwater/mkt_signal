@@ -646,7 +646,9 @@
         const factorBlock = (ctaPayload.factor_processes || []).map(factor => {
         const factorState = !factor?.configured ? '配置不可用' : factor.stale ? '运行状态不可用或过期' : factor.warming ? '正在回放新计划' : !factor.plan_matches_config ? '计划待同步' : '状态已更新';
         const factorCombinations = (factor?.combinations || []).map(c => `<div class="account-nav"><a class="config-link" href="${escapeHtml(c.config_url)}"><code>${escapeHtml(c.name)}</code></a><span>${c.factor_count} 项因子 · ${c.symbols.length} 个标的 · ${c.position_strategies.length ? `仓位策略 ${c.position_strategies.map(escapeHtml).join('、')}` : '未配置仓位策略'}</span></div>`).join('');
-        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · <a class="config-link" href="${escapeHtml(factor.config_url)}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="factor-combinations">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
+        const backupKind = factor.name === 'cta-factor-spread' ? 'cta_spread' : 'cta_perp';
+        const workerBackup = `<button class="refresh backup-action" type="button" data-kind="${backupKind}" data-env="${escapeHtml(factor.name)}">立即备份</button>${backupState(backupKind, factor.name)}`;
+        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · ${workerBackup} · <a class="config-link" href="${escapeHtml(factor.config_url)}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="factor-combinations">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
         }).join('');
         const rows = (ctaPayload.strategies || []).map(s => {
           const title = s.name;
@@ -662,10 +664,8 @@
           const hits = (s.risk?.hits || []).map(hit => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
           const signalLink = s.risk?.viz_url ? `<a class="config-link" href="${escapeHtml(s.risk.viz_url)}" target="_blank" rel="noopener">信号面板 ↗</a>` : '';
           const configLink = s.risk?.config_url ? `<a class="config-link" href="${escapeHtml(s.risk.config_url)}" target="_blank" rel="noopener">策略配置 ↗</a>` : '';
-          const backupKind = s.kind === 'spread' ? 'cta_spread' : 'cta_perp';
-          const backupButton = s.backup_env ? `<button class="refresh backup-action" type="button" data-kind="${backupKind}" data-env="${escapeHtml(s.backup_env)}">立即备份</button>${backupState(backupKind, s.backup_env)}` : '';
           const riskLabel = s.risk?.tone === 'uncovered' ? '风险源未就绪' : String(s.risk?.risk_n || 0);
-          return `<tr data-strategy="${escapeHtml(s.slug)}"><td><span class="account-name">${escapeHtml(title)}</span><code class="account-slug">${escapeHtml(s.slug)}</code><span class="account-venues">${escapeHtml(factorCount)}</span>${signalLink} ${configLink} ${backupButton}</td><td>${escapeHtml(status)}${warnings}</td><td>${s.risk?.universe_n || 0}</td><td>${escapeHtml(riskLabel)}</td><td>${execs}</td></tr>${hits ? `<tr class="hit-row"><td colspan="5"><div class="hit-list">${hits}</div></td></tr>` : ''}`;
+          return `<tr data-strategy="${escapeHtml(s.slug)}"><td><span class="account-name">${escapeHtml(title)}</span><code class="account-slug">${escapeHtml(s.slug)}</code><span class="account-venues">${escapeHtml(factorCount)}</span>${signalLink} ${configLink}</td><td>${escapeHtml(status)}${warnings}</td><td>${s.risk?.universe_n || 0}</td><td>${escapeHtml(riskLabel)}</td><td>${execs}</td></tr>${hits ? `<tr class="hit-row"><td colspan="5"><div class="hit-list">${hits}</div></td></tr>` : ''}`;
         }).join('');
         root.innerHTML = `<section class="exchange"><div class="exchange__header"><div class="exchange__identity"><span class="exchange__name">CTA 策略与因子</span><span class="exchange__site">${escapeHtml(managers)}</span></div></div>${factorBlock}${errors.map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}<div class="exchange__body"><table class="account-table cta-table"><thead><tr><th>组合仓位策略</th><th>状态</th><th>标的</th><th>风险</th><th>关联执行账户</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
         root.querySelectorAll('.backup-action').forEach((button) => button.addEventListener('click', () => executeBackup(button)));

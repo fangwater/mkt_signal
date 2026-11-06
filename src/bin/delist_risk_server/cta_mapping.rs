@@ -9,7 +9,6 @@ use mkt_signal::common::delist_accounts::{
 };
 use mkt_signal::common::delist_risk::RiskQueryResponse;
 use mkt_signal::common::exchange_info::ListingIndex;
-use mkt_signal::cta_spread::config::SpreadMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -34,25 +33,6 @@ impl Settings {
 }
 
 #[derive(Deserialize)]
-struct Status {
-    updated_ts_us: i64,
-    #[serde(default)]
-    enabled: bool,
-    bar_interval: String,
-    #[serde(default)]
-    combination_name: Option<String>,
-    #[serde(default)]
-    mode: Option<SpreadMode>,
-    manager_strategy_name: String,
-    #[serde(default)]
-    strategies: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
-    #[serde(default)]
-    symbol_factors: BTreeMap<String, serde_json::Value>,
-    #[serde(default)]
-    manager_publications: Vec<Publication>,
-}
-
-#[derive(Deserialize)]
 struct Publication {
     manager_url: String,
 }
@@ -61,7 +41,6 @@ pub(crate) struct Signal {
     pub(crate) slug: String,
     pub(crate) combination_name: String,
     pub(crate) worker: Worker,
-    pub(crate) family: &'static str,
     pub(crate) venues: Vec<String>,
     enabled: bool,
     pub(crate) bar_interval: String,
@@ -151,7 +130,6 @@ pub struct StrategyView {
     kind: &'static str,
     risk_by_venue: Vec<AccountRiskView>,
     factor_count: Option<usize>,
-    backup_env: Option<String>,
     enabled: bool,
     bar_interval: String,
     updated_ms: i64,
@@ -225,226 +203,6 @@ pub fn apply_source_health(
             }
         }
     }
-}
-
-pub(crate) fn valid_slug(s: &str) -> bool {
-    signal_family(s).is_some()
-        && s.len() <= 128
-        && s.bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'_')
-}
-
-pub(crate) fn signal_family(slug: &str) -> Option<&'static str> {
-    if slug.starts_with("binance-cta-perp-")
-        || canonical_parts(slug).is_some()
-        || (slug.starts_with("cta-prep-") && slug.ends_with("-pos"))
-    {
-        Some("cta_perp")
-    } else if slug.starts_with("okex-binance-cta-spread-") || slug.starts_with("cta-spread-okx-bn-")
-    {
-        Some("cta_cross_spread")
-    } else if slug.starts_with("binance-cta-spread-") || slug.starts_with("cta-spread-bn-spot-bn-")
-    {
-        Some("cta_spread")
-    } else {
-        None
-    }
-}
-pub(crate) fn worker_for_slug(slug: &str) -> Option<Worker> {
-    signal_family(slug).map(|family| {
-        if family == "cta_perp" {
-            Worker::Perp
-        } else {
-            Worker::Spread
-        }
-    })
-}
-
-impl Signal {
-    pub(crate) fn exchange(&self) -> &str {
-        self.venues
-            .first()
-            .and_then(|venue| venue.split('-').next())
-            .unwrap_or("unknown")
-    }
-    pub(crate) fn kind(&self) -> &'static str {
-        if self.worker == Worker::Perp {
-            "cta_perp"
-        } else {
-            "cta_spread"
-        }
-    }
-    pub(crate) fn relative_status(&self) -> String {
-        format!("run/{}_status.json", self.family)
-    }
-    pub(crate) fn relative_positions(&self) -> String {
-        format!("run/{}_position_flags.json", self.family)
-    }
-    pub(crate) fn relative_ledger(&self) -> String {
-        format!("run/{}_manager_strategy.json", self.family)
-    }
-}
-
-fn canonical_parts(s: &str) -> Option<(&str, &str)> {
-    let (name, period) = s.split_once("_binance-futures_")?;
-    let number = name.strip_prefix("rx")?;
-    (!number.is_empty()
-        && number.bytes().all(|b| b.is_ascii_digit())
-        && matches!(period, "1min" | "5min" | "15min"))
-    .then_some((name, period))
-}
-
-pub(crate) fn combination_name(slug: &str, interval: &str) -> Result<String> {
-    let period = match interval {
-        "1m" | "1min" => "1min",
-        "5m" | "5min" => "5min",
-        "15m" | "15min" => "15min",
-        _ => bail!("unsupported CTA interval"),
-    };
-    if worker_for_slug(slug) == Some(Worker::Spread) {
-        let mode = if signal_family(slug) == Some("cta_cross_spread") {
-            SpreadMode::OkexBinance
-        } else {
-            SpreadMode::BinanceSpot
-        };
-        anyhow::ensure!(period == "1min", "Spread status requires a 1min interval");
-        return Ok(mode.manager_strategy_name().into());
-    }
-    if slug.starts_with("cta-prep-") && slug.ends_with("-pos") {
-        return Ok(slug.into());
-    }
-    if let Some((_, named_period)) = canonical_parts(slug) {
-        if named_period != period {
-            bail!("CTA environment name disagrees with runtime interval");
-        }
-        return Ok(format!("binance-futures_{period}"));
-    }
-    slug.strip_prefix("binance-cta-perp-")
-        .context("invalid CTA signal environment")?;
-    Ok(format!("binance-futures_{period}"))
-}
-
-pub(crate) fn read_signals(root: &Path) -> Result<(Vec<Signal>, Vec<String>)> {
-    let mut signals = Vec::new();
-    let mut errors = Vec::new();
-    for entry in std::fs::read_dir(root).context("list CTA environments")? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let Some(slug) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if !valid_slug(&slug) {
-            continue;
-        }
-        let family = signal_family(&slug).context("unknown CTA family")?;
-        let worker = worker_for_slug(&slug).context("unknown CTA worker")?;
-        let status = entry.path().join(format!("run/{family}_status.json"));
-        let read = || -> Result<Signal> {
-            let meta = std::fs::symlink_metadata(&status).context("inspect signal status")?;
-            if !meta.is_file() || meta.len() > 16 * 1024 * 1024 {
-                bail!("invalid signal status file");
-            }
-            let state: Status =
-                serde_json::from_slice(&std::fs::read(&status)?).context("decode signal status")?;
-            let venues = if worker == Worker::Perp {
-                vec!["binance-futures".into()]
-            } else {
-                let mode = state.mode.context("Spread status has no market mode")?;
-                anyhow::ensure!(
-                    mode.family() == family,
-                    "Spread mode disagrees with its environment"
-                );
-                vec![
-                    if mode == SpreadMode::OkexBinance {
-                        "okex-futures"
-                    } else {
-                        "binance-margin"
-                    }
-                    .into(),
-                    "binance-futures".into(),
-                ]
-            };
-            let combination_name = match &state.combination_name {
-                Some(name) => name.clone(),
-                None => combination_name(&slug, &state.bar_interval)?,
-            };
-            anyhow::ensure!(
-                !combination_name.is_empty()
-                    && combination_name.len() <= 96
-                    && combination_name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
-                "invalid combination name in signal status"
-            );
-            if state.manager_strategy_name.is_empty()
-                || state.manager_strategy_name.len() > 160
-                || !state
-                    .manager_strategy_name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            {
-                bail!("invalid Manager strategy name");
-            }
-            let names = BTreeSet::from([state.manager_strategy_name]);
-            let mut symbols: BTreeSet<String> = state.symbol_factors.keys().cloned().collect();
-            for (name, rows) in &state.strategies {
-                if name.is_empty()
-                    || !name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                {
-                    bail!("invalid signal strategy identifier");
-                }
-                symbols.extend(rows.keys().cloned());
-            }
-            if symbols.iter().any(|s| {
-                s.is_empty()
-                    || s.len() > 32
-                    || !s
-                        .bytes()
-                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-            }) {
-                bail!("invalid signal symbol");
-            }
-            let publishes_to_jp = state.manager_publications.iter().any(|publication| {
-                reqwest::Url::parse(&publication.manager_url)
-                    .ok()
-                    .is_some_and(|u| {
-                        matches!(
-                            (u.host_str(), u.port_or_known_default()),
-                            (Some("127.0.0.1" | "localhost" | "::1"), Some(4191 | 18201))
-                        )
-                    })
-            });
-            let updated_ms = state.updated_ts_us / 1000;
-            let age = Utc::now().timestamp_millis().saturating_sub(updated_ms);
-            Ok(Signal {
-                slug: slug.clone(),
-                combination_name,
-                worker,
-                family,
-                venues,
-                enabled: state.enabled,
-                bar_interval: state.bar_interval,
-                updated_ms,
-                stale: updated_ms <= 0 || age > 180_000 || age < -30_000,
-                names,
-                symbols,
-                publishes_to_jp,
-            })
-        };
-        match read() {
-            Ok(s) => signals.push(s),
-            Err(e) => errors.push(format!("{slug}: {e:#}")),
-        }
-    }
-    signals.sort_by(|a, b| a.slug.cmp(&b.slug));
-    if signals.is_empty() && errors.is_empty() {
-        errors.push("没有发现 CTA 信号环境".into());
-    }
-    Ok((signals, errors))
 }
 
 #[derive(Deserialize, Default)]
@@ -551,11 +309,6 @@ fn current_worker_signals(
                 slug: name.clone(),
                 combination_name: combination.name.clone(),
                 worker,
-                family: if worker == Worker::Perp {
-                    "cta_perp"
-                } else {
-                    "cta_cross_spread"
-                },
                 venues,
                 enabled: table.is_some_and(|t| t.enabled && !t.retired && !t.retiring),
                 bar_interval: combination.interval.name().into(),
@@ -892,7 +645,6 @@ pub async fn load(
             },
             risk_by_venue,
             factor_count: factor_combination.map(|c| c.factor_count),
-            backup_env: None,
             slug: signal.slug,
             enabled: signal.enabled,
             bar_interval: signal.bar_interval,
@@ -916,6 +668,7 @@ pub async fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkt_signal::cta_spread::config::SpreadMode;
 
     fn write_worker_runtime(env: &Path, worker: Worker) {
         let snapshot = cta_factors::snapshot(env, worker).unwrap();
@@ -959,7 +712,6 @@ mod tests {
             slug: "okex-binance-cta-spread-rx01".into(),
             combination_name: "test".into(),
             worker: Worker::Spread,
-            family: "spread",
             venues: vec!["okex-futures".into(), "binance-futures".into()],
             enabled: true,
             bar_interval: "1m".into(),
@@ -989,7 +741,6 @@ mod tests {
                 kind: "spread",
                 risk_by_venue,
                 factor_count: None,
-                backup_env: None,
                 enabled: true,
                 bar_interval: "1m".into(),
                 updated_ms: 0,
@@ -1076,26 +827,6 @@ mod tests {
                 if exchange == "okex" { 1 } else { 2 }
             );
         }
-    }
-
-    #[test]
-    fn native_spread_uses_its_status_file_and_checks_cash_and_futures_markets() {
-        let env = cta_factors::test_environment();
-        let run = env.0.join("binance-cta-spread-rx01/run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mut state = serde_json::json!({"updated_ts_us":Utc::now().timestamp_micros(),"enabled":true,"bar_interval":"1m","mode":"binance_spot","manager_strategy_name":SpreadMode::BinanceSpot.manager_strategy_name(),"strategies":{"factor_036":{"BTCUSDT":{}}},"symbol_factors":{}});
-        let path = run.join("cta_spread_status.json");
-        std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let (signals, errors) = read_signals(&env.0).unwrap();
-        assert!(errors.is_empty());
-        assert_eq!(signals[0].venues, ["binance-margin", "binance-futures"]);
-        assert_eq!(signals[0].worker, Worker::Spread);
-        assert_eq!(signals[0].kind(), "cta_spread");
-        state["mode"] = serde_json::json!("okex_binance");
-        std::fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let (signals, errors) = read_signals(&env.0).unwrap();
-        assert!(signals.is_empty());
-        assert_eq!(errors.len(), 1);
     }
 
     #[tokio::test]
@@ -1199,7 +930,6 @@ mod tests {
             slug: "binance-cta-perp-rx01".into(),
             combination_name: "binance-futures_15min".into(),
             worker: Worker::Perp,
-            family: "cta_perp",
             venues: vec!["binance-futures".into()],
             enabled: true,
             bar_interval: "15m".into(),
@@ -1227,67 +957,6 @@ mod tests {
             shares,
             source_enabled: true,
             alias: id.into(),
-        }
-    }
-    #[test]
-    fn reads_runtime_period_strategy_names_and_symbols() {
-        let root = std::env::temp_dir().join(format!(
-            "cta-mapping-{}-{}",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        let run = root.join("binance-cta-perp-rx02/run");
-        std::fs::create_dir_all(&run).unwrap();
-        let input = serde_json::json!({
-            "updated_ts_us": Utc::now().timestamp_micros(),
-            "enabled": false,
-            "bar_interval": "1m",
-            "manager_strategy_name": "cta-prep-bn-1min-pos",
-            "manager_publications": [{"manager_url": "http://127.0.0.1:4191/manager"}],
-            "strategies": {"symbol_mean": {"BTCUSDT": {}, "ETHUSDT": {}}},
-            "symbol_factors": {}
-        });
-        std::fs::write(
-            run.join("cta_perp_status.json"),
-            serde_json::to_vec(&input).unwrap(),
-        )
-        .unwrap();
-        let (signals, errors) = read_signals(&root).unwrap();
-        assert!(errors.is_empty());
-        assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0].bar_interval, "1m");
-        assert_eq!(signals[0].combination_name, "binance-futures_1min");
-        assert_eq!(
-            signals[0].names,
-            BTreeSet::from(["cta-prep-bn-1min-pos".to_string()])
-        );
-        assert_eq!(
-            signals[0].symbols,
-            BTreeSet::from(["BTCUSDT".to_string(), "ETHUSDT".to_string()])
-        );
-        assert!(signals[0].publishes_to_jp && !signals[0].stale);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn canonical_names_preserve_frequency_and_do_not_accept_the_factor_process_as_a_signal() {
-        for (rx, period) in [("rx01", "15min"), ("rx03", "1min"), ("rx04", "5min")] {
-            let name = format!("binance-futures_{period}");
-            assert_eq!(
-                combination_name(&format!("binance-cta-perp-{rx}"), period).unwrap(),
-                name
-            );
-            let environment = format!("{rx}_binance-futures_{period}");
-            assert!(valid_slug(&environment));
-            assert_eq!(combination_name(&environment, period).unwrap(), name);
-        }
-        assert!(combination_name("rx01_binance-futures_15min", "1m").is_err());
-        for bad in [
-            "cta-prep-binance-futures",
-            "../rx01_binance-futures_15min",
-            "rx01_binance-futues_15min",
-            "rx01_binance-futures_30min",
-        ] {
-            assert!(!valid_slug(bad));
         }
     }
 
@@ -1320,7 +989,7 @@ mod tests {
             .query(&mkt_signal::common::delist_risk::RiskQuery::default());
         let response = load(&settings, &risk, &ListingIndex::default()).await;
         assert_eq!(response.strategies.len(), 12);
-        assert_eq!(response.factor_processes[0].unique_factor_count, 408);
+        assert_eq!(response.factor_processes[0].unique_factor_count, 404);
         assert!(response.factor_processes[0]
             .combinations
             .iter()
@@ -1337,14 +1006,7 @@ mod tests {
                         .any(|group| row.slug.starts_with(&format!("cta-{group}-prep02-")))
             );
             assert!(row.errors.is_empty(), "{:?}", row.errors);
-            assert!(row.backup_env.is_none());
         }
-        let (signals, errors) = read_signals(&env.0).unwrap();
-        assert!(errors.is_empty());
-        assert_eq!(
-            signals[0].names,
-            BTreeSet::from(["cta-prep-bn-15min-pos".into()])
-        );
     }
     #[test]
     fn missing_or_wrong_runtime_tables_cannot_claim_current_strategy_health() {
