@@ -1,0 +1,13 @@
+# Internal transport targets only. NAV still owns the active account catalog.
+# SG Bybit uses a loopback SSH forward to its Viz port, never the web gateway.
+[snapshots]
+binance_fr_arb02 = "http://127.0.0.1:20132/snapshot"
+binance_fr_arb03 = "http://127.0.0.1:20133/snapshot"
+binance_fr_arb04 = "http://127.0.0.1:20134/snapshot"
+bitget_fr_arb02 = "http://127.0.0.1:20152/snapshot"
+bitget_fr_arb03 = "http://127.0.0.1:20153/snapshot"
+bybit_fr_arb01 = "http://127.0.0.1:24141/snapshot"
+gate_fr_arb01 = "http://127.0.0.1:20121/snapshot"
+gate_fr_arb02 = "http://127.0.0.1:20122/snapshot"
+gate_fr_arb03 = "http://127.0.0.1:20123/snapshot"
+gate_fr_arb04 = "http://127.0.0.1:20124/snapshot"

@@ -134,6 +134,9 @@ install_tree() {
     else
       echo "[INFO] preserving existing credential config"
     fi
+    if [[ ! -f "$dest/config/delist_snapshot_targets.toml" ]]; then
+      cp "$ROOT_DIR/config/delist_snapshot_targets.toml" "$dest/config/delist_snapshot_targets.toml"
+    fi
   fi
 }
 
@@ -330,6 +333,9 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
     echo "[WARN] created remote credential config"
   else
     echo "[INFO] preserving remote credential config"
+  fi
+  if ! "${SSH[@]}" "$SSH_HOST" "test -f ~/delist_risk_server/config/delist_snapshot_targets.toml"; then
+    "${SCP[@]}" "$ROOT_DIR/config/delist_snapshot_targets.toml" "$SSH_HOST:~/delist_risk_server/config/delist_snapshot_targets.toml"
   fi
 fi
 

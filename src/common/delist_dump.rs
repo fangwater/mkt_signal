@@ -2,7 +2,6 @@
 
 use anyhow::{bail, Context, Result};
 use futures_util::future::join_all;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +10,7 @@ use crate::common::delist_accounts::{
     matched_symbols, redis_keys, AccountHitEvent, AccountSpec, RedisSite,
 };
 use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
+use crate::common::delist_snapshot::SnapshotClient;
 
 /// Both venue legs below this notional are dust for symbol removal and flattening.
 pub const POSITION_REMOVAL_THRESHOLD_USDT: f64 = 1.0;
@@ -84,8 +84,7 @@ struct PositionRow {
 }
 
 pub async fn position_dump_candidates(
-    client: &Client,
-    snapshot_base_url: &str,
+    snapshots: &SnapshotClient,
     accounts: &[AccountSpec],
     risk: &RiskQueryResponse,
     threshold_usdt: f64,
@@ -121,12 +120,7 @@ pub async fn position_dump_candidates(
             (!events.is_empty()).then_some((spec, events))
         });
     let snapshots = join_all(scans.map(|(spec, events)| async move {
-        let url = format!(
-            "{}/fr/{}/snapshot",
-            snapshot_base_url.trim_end_matches('/'),
-            spec.slug
-        );
-        (spec, events, fetch_snapshot(client, &url).await)
+        (spec, events, fetch_snapshot(snapshots, &spec.slug).await)
     }))
     .await;
 
@@ -218,18 +212,13 @@ pub async fn position_dump_candidates(
 /// A completed catalog delist may remove a symbol from Redis only after a fresh
 /// account snapshot confirms neither FR leg retains material exposure.
 pub async fn snapshot_symbol_is_flat(
-    client: &Client,
-    snapshot_base_url: &str,
+    snapshots: &SnapshotClient,
     account_slug: &str,
     symbol: &str,
     max_snapshot_age_ms: i64,
     threshold_usdt: f64,
 ) -> Result<bool> {
-    let url = format!(
-        "{}/fr/{account_slug}/snapshot",
-        snapshot_base_url.trim_end_matches('/')
-    );
-    let snapshot = fetch_snapshot(client, &url).await?;
+    let snapshot = fetch_snapshot(snapshots, account_slug).await?;
     let (snapshot_ms, positions) =
         positions_from_snapshot(&snapshot).context("pre_trade_exposure missing")?;
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -282,18 +271,13 @@ pub fn position_close_statuses(
     statuses
 }
 
-async fn fetch_snapshot(client: &Client, url: &str) -> Result<DashboardSnapshot> {
-    client
-        .get(url)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .with_context(|| format!("fetch position snapshot failed: {url}"))?
-        .error_for_status()
-        .with_context(|| format!("position snapshot returned error: {url}"))?
-        .json()
-        .await
-        .with_context(|| format!("decode position snapshot failed: {url}"))
+async fn fetch_snapshot(snapshots: &SnapshotClient, slug: &str) -> Result<DashboardSnapshot> {
+    serde_json::from_value(
+        snapshots
+            .fetch(slug, std::time::Duration::from_secs(10))
+            .await?,
+    )
+    .with_context(|| format!("decode position snapshot failed: account={slug}"))
 }
 
 fn positions_from_snapshot(
@@ -557,14 +541,14 @@ mod tests {
     #[tokio::test]
     async fn bybit_fr_uses_own_snapshot_and_rejects_stale_or_missing_exposure() {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let app = Router::new().route("/fr/bybit_fr_arb01/snapshot", get(move || async move {
-            Json(serde_json::json!({"entries": [{"channel": "pre_trade_exposure",
-                "entry": {"ts_ms": now_ms, "rows": [{"asset": "HFT", "open_usdt": 75.0, "hedge_usdt": -80.0}]}}]}))
-        })).route("/fr/bybit_fr_stale/snapshot", get(move || async move {
-            Json(serde_json::json!({"entries": [{"channel": "pre_trade_exposure",
-                "entry": {"ts_ms": now_ms - 300_000, "rows": []}}]}))
-        })).route("/fr/bybit_fr_pending/snapshot", get(|| async {
-            Json(serde_json::json!({"entries": []}))
+        let app = Router::new().route("/snapshot", get(move || async move {
+            Json(serde_json::json!({"entries": [
+                {"namespace":"bybit_fr_arb01", "channel":"pre_trade_exposure",
+                    "entry":{"ts_ms":now_ms,"rows":[{"asset":"HFT","open_usdt":75.0,"hedge_usdt":-80.0}]}},
+                {"namespace":"bybit_fr_stale", "channel":"pre_trade_exposure",
+                    "entry":{"ts_ms":now_ms-300_000,"rows":[]}},
+                {"namespace":"bybit_fr_pending", "channel":"pre_trade_risk", "entry":{}}
+            ]}))
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -609,8 +593,15 @@ mod tests {
                 site: RedisSite::Sg,
                 config_url: String::new(),
             });
+        let snapshots = SnapshotClient::from_urls(
+            accounts
+                .iter()
+                .map(|a| (a.slug.clone(), format!("{base}/snapshot")))
+                .collect(),
+        )
+        .unwrap();
         let (candidates, errors) =
-            position_dump_candidates(&Client::new(), &base, &accounts, &risk, 50.0, 120_000).await;
+            position_dump_candidates(&snapshots, &accounts, &risk, 50.0, 120_000).await;
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].account_slug, "bybit_fr_arb01");
         assert_eq!(candidates[0].redis_site, "sg");
@@ -620,26 +611,16 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.contains("pre_trade_exposure missing")));
-        assert!(!snapshot_symbol_is_flat(
-            &Client::new(),
-            &base,
-            "bybit_fr_arb01",
-            "HFTUSDT",
-            120_000,
-            1.0
-        )
-        .await
-        .unwrap());
-        assert!(snapshot_symbol_is_flat(
-            &Client::new(),
-            &base,
-            "bybit_fr_pending",
-            "HFTUSDT",
-            120_000,
-            1.0
-        )
-        .await
-        .is_err());
+        assert!(
+            !snapshot_symbol_is_flat(&snapshots, "bybit_fr_arb01", "HFTUSDT", 120_000, 1.0)
+                .await
+                .unwrap()
+        );
+        assert!(
+            snapshot_symbol_is_flat(&snapshots, "bybit_fr_pending", "HFTUSDT", 120_000, 1.0)
+                .await
+                .is_err()
+        );
         server.abort();
     }
 
@@ -649,12 +630,13 @@ mod tests {
         let snapshot_ms = now_ms + 30_000;
         let app = Router::new().fallback(get(move || async move {
             Json(serde_json::json!({
-                "entries": [{
+                "entries": (["gate_fr_arb01", "gate_fr_arb02"].map(|namespace| serde_json::json!({
+                    "namespace": namespace,
                     "channel": "pre_trade_exposure",
                     "entry": {"ts_ms": snapshot_ms, "rows": [{
                         "asset": "TSLAX", "open_usdt": 1227.0, "hedge_usdt": -1232.0
                     }]}
-                }]
+                })))
             }))
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -695,15 +677,15 @@ mod tests {
             gate_fr_account("gate_fr_arb01"),
             gate_fr_account("gate_fr_arb02"),
         ];
-        let (candidates, errors) = position_dump_candidates(
-            &Client::new(),
-            &format!("http://{address}"),
-            &accounts,
-            &risk,
-            50.0,
-            120_000,
+        let snapshots = SnapshotClient::from_urls(
+            accounts
+                .iter()
+                .map(|a| (a.slug.clone(), format!("http://{address}/snapshot")))
+                .collect(),
         )
-        .await;
+        .unwrap();
+        let (candidates, errors) =
+            position_dump_candidates(&snapshots, &accounts, &risk, 50.0, 120_000).await;
         assert!(errors.is_empty());
         assert_eq!(candidates.len(), 2);
         assert!(candidates

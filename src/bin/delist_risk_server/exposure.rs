@@ -4,7 +4,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use futures_util::stream::{self, StreamExt};
 use mkt_signal::common::delist_accounts::{AccountSpec, RedisSite};
-use reqwest::Client;
+use mkt_signal::common::delist_snapshot::SnapshotClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -672,8 +672,7 @@ fn parse_for_exchange(
 }
 
 pub async fn collect(
-    client: &Client,
-    base: &str,
+    snapshots: &SnapshotClient,
     specs: &[AccountSpec],
     settings: &Settings,
 ) -> Vec<(String, Result<Sample>)> {
@@ -688,26 +687,8 @@ pub async fn collect(
                 if spec.site == RedisSite::Unsupported {
                     bail!("账户主机不受支持");
                 }
-                let mut url = reqwest::Url::parse(base).context("无效的快照地址")?;
-                url.path_segments_mut()
-                    .map_err(|_| anyhow::anyhow!("无效的快照路径"))?
-                    .pop_if_empty()
-                    .push("fr")
-                    .push(&spec.slug)
-                    .push("snapshot");
                 // One slow account cannot hold up the remaining accounts or the UI.
-                let response = client
-                    .get(url)
-                    .timeout(Duration::from_secs(5))
-                    .send()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("读取持仓快照失败或超时"))?;
-                let status = response.status();
-                ensure!(status.is_success(), "持仓快照 HTTP {status}");
-                let snapshot = response
-                    .json::<Value>()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("解析持仓快照失败"))?;
+                let snapshot = snapshots.fetch(&spec.slug, Duration::from_secs(5)).await?;
                 parse_for_exchange(
                     &snapshot,
                     chrono::Utc::now().timestamp_millis(),
@@ -1206,17 +1187,22 @@ mod tests {
 
     #[tokio::test]
     async fn collector_discovers_gate04_sg_and_isolates_account_failures() {
-        use axum::{extract::Path, routing::get, Json, Router};
+        use axum::{routing::get, Json, Router};
         let app = Router::new().route(
-            "/fr/:slug/snapshot",
-            get(|Path(slug): Path<String>| async move {
-                if slug == "broken" {
-                    return Json(json!({"error":"bad snapshot"}));
-                }
-                Json(snapshot(
+            "/snapshot",
+            get(|| async move {
+                let value = snapshot(
                     vec![row("BTC", 10.0)],
                     chrono::Utc::now().timestamp_millis(),
-                ))
+                );
+                let mut entries = Vec::new();
+                for namespace in ["gate_fr_arb04", "bybit_fr_arb01"] {
+                    for mut entry in value["entries"].as_array().unwrap().clone() {
+                        entry["namespace"] = json!(namespace);
+                        entries.push(entry);
+                    }
+                }
+                Json(json!({"entries":entries}))
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1231,13 +1217,14 @@ mod tests {
             spec("unsupported", RedisSite::Unsupported),
             cta,
         ];
-        let results = collect(
-            &Client::builder().no_proxy().build().unwrap(),
-            &base,
-            &specs,
-            &Settings::default(),
+        let snapshots = SnapshotClient::from_urls(
+            specs
+                .iter()
+                .map(|s| (s.slug.clone(), format!("{base}/snapshot")))
+                .collect(),
         )
-        .await;
+        .unwrap();
+        let results = collect(&snapshots, &specs, &Settings::default()).await;
         assert_eq!(results.len(), 4);
         assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 2);
         let mut m = Monitor::new(Settings::default());

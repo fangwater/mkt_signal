@@ -201,8 +201,31 @@ controls wrap within their cells. Browser regression covers independent page/API
 loading, filter counts, navigation/backup containment at 320–1440px, fixture-only
 backup requests, exposure updates and round trips through unified CTA config.
 
-Every 10 seconds, the service concurrently reads each account's existing
-`/fr/<env>/snapshot` through the loopback gateway (five-second request timeout).
+Every 10 seconds, the service concurrently reads each account's Viz directly
+(five-second request timeout). `config/delist_snapshot_targets.toml` maps NAV
+account slugs to explicit `http://127.0.0.1:<port>/snapshot` targets. This is a
+transport inventory; NAV remains the source of truth for active account coverage.
+The same client serves exposure checks, positioned-delist scans, manual flatten
+prechecks and flat-position verification before Redis removal.
+
+JP accounts use their existing Viz listeners. SG Bybit uses the managed SSH
+forward `127.0.0.1:24141 -> sg:127.0.0.1:20141`, configured with
+`DELIST_SG_VIZ_TUNNEL_PORT=24141` and `DELIST_SG_VIZ_REMOTE_PORT=20141`; the
+existing Redis and web forwards remain available. No Viz port is opened publicly.
+Browser entry points retain their Nginx/Delist session and per-account permissions.
+
+Set `DELIST_SNAPSHOT_TARGETS` (CLI `--snapshot-targets`) to override the mapping
+file. Targets must be explicit loopback HTTP `/snapshot` URLs without credentials,
+query strings or fragments. The client disables proxies and redirects, selects
+only entries whose `namespace` exactly matches the requested account, and reports
+missing targets or mismatched namespaces as unavailable data. There is no gateway
+fallback. When adding or moving an FR environment, update its transport target.
+Use `delist_risk_server --snapshot-targets <file> --check-snapshot-targets` to
+GET every target and verify its namespace without starting services, writing
+Redis, executing orders or sending notifications. Existing deployments must
+replace `DELIST_SNAPSHOT_BASE_URL` with the target-file setting when publishing
+the matching binary and start script.
+
 It keeps raw account net position differences visible, but alerts only on the
 **uncovered difference** after subtracting same-direction strategy hedge-plan
 coverage. The coverage is capped at the actual net quantity: a larger plan cannot

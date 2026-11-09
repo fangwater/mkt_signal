@@ -121,7 +121,7 @@ ARGS=(
   --flatten-manual-threshold-usdt "${DELIST_FLATTEN_MANUAL_THRESHOLD_USDT:-1000}"
   --flatten-env-root "${DELIST_FLATTEN_ENV_ROOT:-/home/ubuntu}"
   --flatten-timeout-secs "${DELIST_FLATTEN_TIMEOUT_SECS:-300}"
-  --snapshot-base-url "${DELIST_SNAPSHOT_BASE_URL:-http://127.0.0.1:4191}"
+  --snapshot-targets "${DELIST_SNAPSHOT_TARGETS:-${BASE_DIR}/config/delist_snapshot_targets.toml}"
   --redis-backup-dir "${DELIST_REDIS_BACKUP_DIR:-${BASE_DIR}/data/redis_backups}"
   --redis-backup-keep "${DELIST_REDIS_BACKUP_KEEP:-30}"
   --redis-backup-env-root "${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}"
@@ -174,6 +174,16 @@ if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
       exit 1
     fi
     SG_FORWARDS+=(-L "127.0.0.1:${DELIST_SG_WEB_TUNNEL_PORT}:127.0.0.1:4191")
+  fi
+  if [[ -n "${DELIST_SG_VIZ_TUNNEL_PORT:-}" ]]; then
+    SG_VIZ_REMOTE_PORT="${DELIST_SG_VIZ_REMOTE_PORT:-20141}"
+    for viz_port in "$DELIST_SG_VIZ_TUNNEL_PORT" "$SG_VIZ_REMOTE_PORT"; do
+      if [[ ! "$viz_port" =~ ^[0-9]+$ ]] || (( viz_port < 1024 || viz_port > 65535 )); then
+        echo "[ERROR] invalid SG Viz tunnel port" >&2
+        exit 1
+      fi
+    done
+    SG_FORWARDS+=(-L "127.0.0.1:${DELIST_SG_VIZ_TUNNEL_PORT}:127.0.0.1:${SG_VIZ_REMOTE_PORT}")
   fi
   SG_COMMAND=("${CPU_PREFIX[@]}" "$SSH_BIN")
   npx pm2 start "${SG_COMMAND[0]}" --name "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" --interpreter none -- \

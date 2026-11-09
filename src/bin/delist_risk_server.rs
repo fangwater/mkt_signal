@@ -56,6 +56,7 @@ use mkt_signal::common::delist_risk::{
     events_from_gate_snapshot, events_from_official_snapshot, RiskBook, RiskQuery,
 };
 use mkt_signal::common::delist_schedule::{provider_for_venue, DelistScheduleQuery};
+use mkt_signal::common::delist_snapshot::SnapshotClient;
 use mkt_signal::common::delist_store::{DelistStore, FlattenExecutionAudit, StatusBook};
 use mkt_signal::common::exchange_info::{fetch_listing_index, ListingIndex};
 use mkt_signal::common::gate_announcement::{
@@ -223,9 +224,13 @@ struct Args {
     #[arg(long)]
     sg_flatten_ssh_host: Option<String>,
 
-    /// Base URL serving /fr/<env>/snapshot.
-    #[arg(long, default_value = "http://127.0.0.1:4191")]
-    snapshot_base_url: String,
+    /// Explicit per-environment loopback Viz snapshot targets.
+    #[arg(long, default_value = "config/delist_snapshot_targets.toml")]
+    snapshot_targets: PathBuf,
+
+    /// Read and verify every configured Viz namespace, then exit without starting services.
+    #[arg(long)]
+    check_snapshot_targets: bool,
 
     /// NAV strategy catalog used as the delist account source of truth.
     #[arg(long, default_value = "http://127.0.0.1:4191/nav-api/strategies")]
@@ -351,8 +356,7 @@ struct AppState {
     flatten_inflight: Arc<AsyncMutex<BTreeSet<String>>>,
     notification_client: Option<LocalNotificationClient>,
     flatten_api_token: Option<String>,
-    snapshot_base_url: String,
-    snapshot_client: Client,
+    snapshots: SnapshotClient,
     nav_strategies_url: String,
     nav_login_url: String,
     nav_username: Option<String>,
@@ -390,6 +394,17 @@ struct RiskParams {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    if args.check_snapshot_targets {
+        let snapshots = SnapshotClient::load(&args.snapshot_targets)?;
+        for slug in snapshots.environments() {
+            snapshots.fetch(slug, Duration::from_secs(5)).await?;
+            println!(
+                "{}",
+                serde_json::json!({"environment":slug,"viz_namespace_verified":true})
+            );
+        }
+        return Ok(());
+    }
     if args.fr_notify_check || args.fr_notify_send_check {
         let sender = notifications::DingTalk::from_env()?;
         if args.fr_notify_send_check {
@@ -424,6 +439,7 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
+    let snapshots = SnapshotClient::load(&args.snapshot_targets)?;
     let access = access::Access::load(&args.access_config)?;
     let mut book = RiskBook::load(&args.book).unwrap_or_else(|err| {
         warn!("load risk book failed, start empty: {err:#}");
@@ -585,8 +601,7 @@ async fn main() -> Result<()> {
         flatten_inflight: Arc::new(AsyncMutex::new(BTreeSet::new())),
         notification_client,
         flatten_api_token,
-        snapshot_base_url: args.snapshot_base_url.clone(),
-        snapshot_client: public_http_client()?,
+        snapshots,
         nav_strategies_url: args.nav_strategies_url.clone(),
         nav_login_url: format!(
             "{}auth/login",
@@ -1043,10 +1058,6 @@ async fn main() -> Result<()> {
         tokio::spawn(parameter_changes::run(state.clone(), "sg"));
     }
     let exposure_state = state.clone();
-    let exposure_client = Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(5))
-        .build()?;
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(
             exposure_state.exposure_settings.interval_secs,
@@ -1056,8 +1067,7 @@ async fn main() -> Result<()> {
             interval.tick().await;
             let specs = exposure_state.accounts.read().await.clone();
             let samples = exposure::collect(
-                &exposure_client,
-                &exposure_state.snapshot_base_url,
+                &exposure_state.snapshots,
                 &specs,
                 &exposure_state.exposure_settings,
             )
@@ -2570,8 +2580,7 @@ async fn collect_position_candidates(
     listings.decorate(&mut risk);
     drop(book);
     Ok(position_dump_candidates(
-        &state.snapshot_client,
-        &state.snapshot_base_url,
+        &state.snapshots,
         accounts,
         &risk,
         threshold_usdt,
@@ -3365,8 +3374,7 @@ async fn prune_candidate(
     candidate: &RedisRemovalCandidate,
 ) -> Result<bool> {
     if !snapshot_symbol_is_flat(
-        &state.snapshot_client,
-        &state.snapshot_base_url,
+        &state.snapshots,
         &candidate.account_slug,
         &candidate.symbol,
         state.position_snapshot_max_age_ms,
@@ -4123,8 +4131,7 @@ mod tests {
             flatten_inflight: Arc::new(AsyncMutex::new(BTreeSet::new())),
             notification_client: None,
             flatten_api_token: None,
-            snapshot_base_url: String::new(),
-            snapshot_client: Client::new(),
+            snapshots: SnapshotClient::from_urls(BTreeMap::new()).unwrap(),
             nav_strategies_url: String::new(),
             nav_login_url: String::new(),
             nav_username: None,

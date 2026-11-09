@@ -11,6 +11,7 @@ pub mod delist_flatten;
 pub mod delist_prune;
 pub mod delist_risk;
 pub mod delist_schedule;
+pub mod delist_snapshot;
 pub mod delist_store;
 pub mod exchange_info;
 pub mod gate_announcement;
