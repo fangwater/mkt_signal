@@ -10,7 +10,7 @@ use axum::{
 use clap::Parser;
 use mkt_signal::common::parameter_audit;
 use mkt_signal::cta_factor_calc::{
-    config::{Combination, Config, Plan, SymbolGroups, Worker},
+    config::{Combination, Config, Interval, Plan, SymbolGroups, Worker},
     runtime::{
         catalog_revision, edit_combination_checked, edit_symbol_groups_checked, CatalogConflict,
     },
@@ -37,6 +37,9 @@ struct Args {
     /// Optional independent Spread catalog shown in the same configuration page.
     #[arg(long)]
     spread_config: Option<PathBuf>,
+    /// Separate hourly Prep runtime, edited through this same catalog API.
+    #[arg(long)]
+    hourly_config: Option<PathBuf>,
     #[arg(long)]
     check: bool,
     #[arg(long)]
@@ -46,6 +49,7 @@ struct App {
     config: Config,
     worker: Worker,
     spread_config: Option<Config>,
+    hourly_config: Option<Config>,
     audit_dir: Option<PathBuf>,
     symbol_filter: ConfigurationSymbolFilter,
 }
@@ -63,6 +67,95 @@ impl App {
             worker,
         ))
     }
+    fn hourly(&self, worker: Worker) -> Option<&Config> {
+        (worker == Worker::Perp)
+            .then_some(self.hourly_config.as_ref())
+            .flatten()
+    }
+    fn combine(&self, worker: Worker, main: Plan, hourly: Option<Plan>) -> Result<Plan> {
+        if let Some(hourly) = hourly {
+            ensure!(
+                main.symbol_groups == hourly.symbol_groups,
+                "Prep catalogs must share symbol-group definitions"
+            );
+            ensure!(
+                main.combinations
+                    .values()
+                    .all(|c| c.interval != Interval::Hour)
+                    && main
+                        .calculations
+                        .values()
+                        .all(|c| c.id.interval != Interval::Hour),
+                "hourly combinations must belong to the independent hourly runtime"
+            );
+            ensure!(
+                hourly
+                    .combinations
+                    .values()
+                    .all(|c| c.interval == Interval::Hour)
+                    && hourly
+                        .calculations
+                        .values()
+                        .all(|c| c.id.interval == Interval::Hour),
+                "hourly runtime only accepts 1h combinations"
+            );
+            let groups = main.symbol_groups;
+            let merged = Plan::merge_with_symbol_groups(
+                main.combinations
+                    .into_values()
+                    .chain(hourly.combinations.into_values()),
+                groups,
+            )?;
+            worker.validate_plan(&merged)?;
+            Ok(merged)
+        } else {
+            worker.validate_plan(&main)?;
+            Ok(main)
+        }
+    }
+    fn plan(&self, worker: Worker) -> Result<Plan> {
+        let (main, _) = self.profile(Some(worker))?;
+        self.combine(
+            worker,
+            Plan::load(&main.combinations_dir)?,
+            self.hourly(worker)
+                .map(|c| Plan::load(&c.combinations_dir))
+                .transpose()?,
+        )
+    }
+    fn target(&self, worker: Worker, interval: Interval) -> Result<&Config> {
+        if interval == Interval::Hour {
+            if let Some(config) = self.hourly(worker) {
+                return Ok(config);
+            }
+        }
+        Ok(self.profile(Some(worker))?.0)
+    }
+    fn replace_plan(&self, worker: Worker, target: &Config, replacement: Plan) -> Result<Plan> {
+        let (main, _) = self.profile(Some(worker))?;
+        if let Some(hourly) = self.hourly(worker) {
+            if target.combinations_dir == hourly.combinations_dir {
+                return self.combine(
+                    worker,
+                    Plan::load(&main.combinations_dir)?,
+                    Some(replacement),
+                );
+            }
+            return self.combine(
+                worker,
+                replacement,
+                Some(Plan::load(&hourly.combinations_dir)?),
+            );
+        }
+        self.combine(worker, replacement, None)
+    }
+    fn require_revision(&self, worker: Worker, revision: &str) -> Result<Plan> {
+        let plan = self.plan(worker)?;
+        if catalog_revision(&plan)? != revision {
+            return Err(CatalogConflict("configuration changed; reload before saving").into());
+        }
+        Ok(plan)
+    }
     fn response(&self, plan: Plan, worker: Worker) -> Result<Value> {
         let mut value = response(plan, worker)?;
         let mut workers = vec![self.worker];
@@ -76,6 +169,7 @@ impl App {
 #[derive(Default, Deserialize)]
 struct Profile {
     worker: Option<Worker>,
+    interval: Option<Interval>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,10 +301,29 @@ fn audited<T>(
         write,
     )
 }
+fn ensure_same_identity(previous: &Combination, next: &Combination) -> Result<()> {
+    ensure!((previous.signal.is_none() && next.signal.is_none()) ||
+        previous.manager_strategy_name()==next.manager_strategy_name(),
+        "signal strategy group/symbol group/market/frequency cannot change in place; create a new combination");
+    ensure!(
+        previous.interval == next.interval,
+        "combination cannot move between runtime directories in place"
+    );
+    Ok(())
+}
+fn ensure_shared_groups(main: &Config, hourly: &Config) -> Result<()> {
+    let name = mkt_signal::cta_factor_calc::config::SYMBOL_GROUPS_FILE;
+    ensure!(
+        std::fs::canonicalize(main.combinations_dir.join(name))?
+            == std::fs::canonicalize(hourly.combinations_dir.join(name))?,
+        "hourly symbol_groups.json must link to the main Prep symbol-group file"
+    );
+    Ok(())
+}
+
 async fn catalog(State(app): State<Arc<App>>, Query(profile): Query<Profile>) -> ApiResult {
-    let (config, worker) = app.profile(profile.worker).map_err(error)?;
-    let plan = Plan::load(&config.combinations_dir).map_err(error)?;
-    worker.validate_plan(&plan).map_err(error)?;
+    let (_, worker) = app.profile(profile.worker).map_err(error)?;
+    let plan = app.plan(worker).map_err(error)?;
     Ok(Json(app.response(plan, worker).map_err(error)?))
 }
 async fn edit(app: Arc<App>, headers: HeaderMap, request: Save, execute: bool) -> ApiResult {
@@ -218,29 +331,48 @@ async fn edit(app: Arc<App>, headers: HeaderMap, request: Save, execute: bool) -
         .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
     ensure_revision(&request.expected_revision)?;
     request.combination.validate().map_err(error)?;
-    let (config, worker) = app.profile(request.worker).map_err(error)?;
+    let (_, worker) = app.profile(request.worker).map_err(error)?;
     let (combination, excluded_symbols) = app
         .symbol_filter
         .filter(request.combination)
         .await
         .map_err(error)?;
-    let name = format!("{}.json", combination.name);
-    let write = || {
-        edit_combination_checked(
-            config,
-            Some(combination),
-            None,
-            execute,
-            worker,
-            Some(&request.expected_revision),
-        )
-    };
-    let plan = if execute {
-        audited(&app, config, worker, &headers, &name, write)
-    } else {
-        write()
+    let current = app
+        .require_revision(worker, &request.expected_revision)
+        .map_err(error)?;
+    if let Some(previous) = current.combinations.get(&combination.name) {
+        ensure_same_identity(previous, &combination).map_err(error)?;
     }
+    let config = app.target(worker, combination.interval).map_err(error)?;
+    let local = Plan::load(&config.combinations_dir).map_err(error)?;
+    let revision = catalog_revision(&local).map_err(error)?;
+    let candidate = edit_combination_checked(
+        config,
+        Some(combination.clone()),
+        None,
+        false,
+        worker,
+        Some(&revision),
+    )
     .map_err(error)?;
+    let preview = app.replace_plan(worker, config, candidate).map_err(error)?;
+    let name = format!("{}.json", combination.name);
+    let plan = if execute {
+        audited(&app, config, worker, &headers, &name, || {
+            edit_combination_checked(
+                config,
+                Some(combination),
+                None,
+                true,
+                worker,
+                Some(&revision),
+            )
+        })
+        .map_err(error)?;
+        app.plan(worker).map_err(error)?
+    } else {
+        preview
+    };
     let mut response = app.response(plan, worker).map_err(error)?;
     response["excluded_symbols"] = json!(excluded_symbols);
     Ok(Json(response))
@@ -278,21 +410,31 @@ async fn edit_groups(
         .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
     ensure_revision(&request.expected_revision)?;
     let (config, worker) = app.profile(request.worker).map_err(error)?;
-    let write = || {
-        edit_symbol_groups_checked(
-            config,
-            request.symbol_groups,
-            execute,
-            worker,
-            Some(&request.expected_revision),
-        )
-    };
-    let plan = if execute {
-        audited(&app, config, worker, &headers, "symbol_groups.json", write)
-    } else {
-        write()
-    }
+    let current = app
+        .require_revision(worker, &request.expected_revision)
+        .map_err(error)?;
+    let preview = Plan::merge_with_symbol_groups(
+        current.combinations.into_values(),
+        request.symbol_groups.clone(),
+    )
     .map_err(error)?;
+    worker.validate_plan(&preview).map_err(error)?;
+    let revision =
+        catalog_revision(&Plan::load(&config.combinations_dir).map_err(error)?).map_err(error)?;
+    if execute {
+        if let Some(hourly) = app.hourly(worker) {
+            ensure_shared_groups(config, hourly).map_err(error)?;
+        }
+        audited(&app, config, worker, &headers, "symbol_groups.json", || {
+            edit_symbol_groups_checked(config, request.symbol_groups, true, worker, Some(&revision))
+        })
+        .map_err(error)?;
+    }
+    let plan = if execute {
+        app.plan(worker).map_err(error)?
+    } else {
+        preview
+    };
     Ok(Json(app.response(plan, worker).map_err(error)?))
 }
 async fn save_groups(
@@ -318,30 +460,34 @@ async fn remove(
     same_origin(&headers)
         .map_err(|e| (StatusCode::FORBIDDEN, Json(json!({"error":e.to_string()}))))?;
     ensure_revision(&request.expected_revision)?;
-    let (config, worker) = app.profile(request.worker).map_err(error)?;
-    let plan = audited(
+    let (_, worker) = app.profile(request.worker).map_err(error)?;
+    let current = app
+        .require_revision(worker, &request.expected_revision)
+        .map_err(error)?;
+    let combination = current
+        .combinations
+        .get(&name)
+        .context("unknown combination")
+        .map_err(error)?;
+    let config = app.target(worker, combination.interval).map_err(error)?;
+    let revision =
+        catalog_revision(&Plan::load(&config.combinations_dir).map_err(error)?).map_err(error)?;
+    audited(
         &app,
         config,
         worker,
         &headers,
         &format!("{name}.json"),
-        || {
-            edit_combination_checked(
-                config,
-                None,
-                Some(&name),
-                true,
-                worker,
-                Some(&request.expected_revision),
-            )
-        },
+        || edit_combination_checked(config, None, Some(&name), true, worker, Some(&revision)),
     )
     .map_err(error)?;
+    let plan = app.plan(worker).map_err(error)?;
     Ok(Json(app.response(plan, worker).map_err(error)?))
 }
 async fn status(State(app): State<Arc<App>>, Query(profile): Query<Profile>) -> Json<Value> {
     let read = (|| -> Result<Value> {
-        let (config, worker) = app.profile(profile.worker)?;
+        let (_, worker) = app.profile(profile.worker)?;
+        let config = app.target(worker, profile.interval.unwrap_or(Interval::Minute))?;
         let path = config.history_dir.join("state.json");
         ensure!(
             std::fs::metadata(&path)?.len() <= 32 * 1024 * 1024,
@@ -398,8 +544,7 @@ async fn main() -> Result<()> {
         Worker::Perp
     };
     let config = Config::load(&args.config).context("load shared factor configuration")?;
-    let plan = Plan::load(&config.combinations_dir)?;
-    worker.validate_plan(&plan)?;
+    worker.validate_plan(&Plan::load(&config.combinations_dir)?)?;
     let spread_config = args
         .spread_config
         .map(|path| -> Result<Config> {
@@ -409,16 +554,35 @@ async fn main() -> Result<()> {
             Ok(config)
         })
         .transpose()?;
+    let hourly_config = args
+        .hourly_config
+        .map(|path| -> Result<Config> {
+            ensure!(
+                worker == Worker::Perp,
+                "hourly Prep requires the Prep configuration server"
+            );
+            let hourly = Config::load(&path)?;
+            ensure!(
+                hourly.combinations_dir != config.combinations_dir
+                    && hourly.history_dir != config.history_dir,
+                "hourly runtime must use separate combination and history directories"
+            );
+            ensure_shared_groups(&config, &hourly)?;
+            Ok(hourly)
+        })
+        .transpose()?;
     let app = App {
         config,
         worker,
         spread_config,
+        hourly_config,
         symbol_filter: ConfigurationSymbolFilter::from_env()?,
         audit_dir: Some(
             args.parameter_audit_dir
                 .unwrap_or(parameter_audit::default_root()?),
         ),
     };
+    let plan = app.plan(worker)?;
     if args.check {
         println!(
             "{}",

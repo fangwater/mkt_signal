@@ -437,3 +437,28 @@ fn native_history_continues_long_formulas_and_nq_without_replaying_overlap() {
         .seed_hourly_history(&archive, START + 721 * HOUR)
         .is_err());
 }
+
+#[test]
+fn independent_hourly_output_keeps_default_minute_service_and_rejects_ambiguous_names() {
+    use crate::cta_factor_calc::runtime::output_service_path;
+    assert_eq!(
+        output_service_path(Worker::Perp, None).unwrap(),
+        "factor_output/cta-prep-binance-futures"
+    );
+    assert_eq!(
+        output_service_path(
+            Worker::Perp,
+            Some("factor_output/cta-prep-binance-futures-1h")
+        )
+        .unwrap(),
+        "factor_output/cta-prep-binance-futures-1h"
+    );
+    for invalid in [
+        "",
+        "factor_output/",
+        "factor_output/../minutes",
+        "other/service",
+    ] {
+        assert!(output_service_path(Worker::Perp, Some(invalid)).is_err());
+    }
+}

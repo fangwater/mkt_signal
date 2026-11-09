@@ -48,6 +48,7 @@ async fn preview_and_save_filter_settling_contracts_before_persisting() {
         config,
         worker: Worker::Perp,
         spread_config: None,
+        hourly_config: None,
         audit_dir: None,
         symbol_filter: test_symbol_filter(&["ICXUSDT"]).await,
     });
@@ -126,6 +127,7 @@ async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions(
                 worker: Worker::Perp,
                 audit_dir: Some(root_for_server.join("audit")),
                 spread_config: Some(spread_config),
+                hourly_config: None,
                 symbol_filter: test_symbol_filter(&[]).await,
             }),
         )
@@ -271,6 +273,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
                 config,
                 worker: Worker::Perp,
                 spread_config: None,
+                hourly_config: None,
                 audit_dir: Some(root_for_server.join("audit")),
                 symbol_filter: test_symbol_filter(&[]).await,
             }),
@@ -405,5 +408,154 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
     assert!(audit.records.iter().all(|r| !r.pending));
     server.abort();
     let _ = server.await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn independent_hourly_runtime_shares_catalog_and_routes_edits_without_touching_minutes() {
+    use mkt_signal::cta_factor_calc::runtime::atomic_json;
+    let root = std::env::temp_dir().join(format!("cta-hourly-routing-{}", uuid::Uuid::new_v4()));
+    let mut config =
+        Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
+    config.combinations_dir = root.join("minutes");
+    config.history_dir = root.join("minute-history");
+    let mut hourly = config.clone();
+    hourly.combinations_dir = root.join("hourly");
+    hourly.history_dir = root.join("hourly-history");
+    let groups = json!({"top-5":["ETHUSDT","SOLUSDT"]});
+    atomic_json(&config.combinations_dir.join("symbol_groups.json"), &groups).unwrap();
+    std::fs::create_dir_all(&hourly.combinations_dir).unwrap();
+    std::os::unix::fs::symlink(
+        config.combinations_dir.join("symbol_groups.json"),
+        hourly.combinations_dir.join("symbol_groups.json"),
+    )
+    .unwrap();
+    let doc = |name: &str, interval: &str, symbol: &str| {
+        json!({"name":name,"strategy_group":"prep02","symbol_group":"top-5","venue":"binance-futures","interval":interval,
+        "factor_rules":[{"标的":symbol,"因子":"factor_036","符号":1,"nq":"关闭"}],
+        "signal":{"enabled":false,"max_pos_u":100,"entry":{},"execution":{}}})
+    };
+    atomic_json(
+        &config.combinations_dir.join("minutes.json"),
+        &doc("minutes", "5min", "ETH"),
+    )
+    .unwrap();
+    atomic_json(
+        &hourly.combinations_dir.join("hours.json"),
+        &doc("hours", "1h", "SOL"),
+    )
+    .unwrap();
+    let before = std::fs::read(config.combinations_dir.join("minutes.json")).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let app = App {
+        config: config.clone(),
+        worker: Worker::Perp,
+        spread_config: None,
+        hourly_config: Some(hourly.clone()),
+        audit_dir: None,
+        symbol_filter: test_symbol_filter(&[]).await,
+    };
+    let server = tokio::spawn(async move { axum::serve(listener, router(app)).await.unwrap() });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let initial: Value = client
+        .get(format!("{url}/api/config"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        initial["plan"]["combinations"].as_object().unwrap().len(),
+        2
+    );
+    let mut hours = initial["plan"]["combinations"]["hours"].clone();
+    hours["signal"]["max_pos_u"] = json!(50);
+    let response = client
+        .post(format!("{url}/api/combinations"))
+        .json(&json!({"combination":hours,"expected_revision":initial["revision"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved: Value = response.json().await.unwrap();
+    assert_eq!(
+        Combination::load(&hourly.combinations_dir.join("hours.json"))
+            .unwrap()
+            .signal
+            .unwrap()
+            .max_pos_u,
+        50.0
+    );
+    assert_eq!(
+        std::fs::read(config.combinations_dir.join("minutes.json")).unwrap(),
+        before
+    );
+    assert!(!config.combinations_dir.join("hours.json").exists());
+    let stale=client.post(format!("{url}/api/combinations")).json(&json!({"combination":saved["plan"]["combinations"]["minutes"],"expected_revision":initial["revision"]})).send().await.unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let invalid = client
+        .post(format!("{url}/api/symbol-groups/preview"))
+        .json(&json!({"symbol_groups":{"top-5":["ETHUSDT"]},"expected_revision":saved["revision"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let expanded = json!({"top-5":["ETHUSDT","SOLUSDT","BTCUSDT"]});
+    let response = client
+        .post(format!("{url}/api/symbol-groups"))
+        .json(&json!({"symbol_groups":expanded,"expected_revision":saved["revision"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let changed: Value = response.json().await.unwrap();
+    assert!(hourly
+        .combinations_dir
+        .join("symbol_groups.json")
+        .is_symlink());
+    assert_eq!(
+        Plan::load(&config.combinations_dir).unwrap().symbol_groups,
+        Plan::load(&hourly.combinations_dir).unwrap().symbol_groups
+    );
+    for (c, generation) in [(&config, "minute-running"), (&hourly, "hour-running")] {
+        atomic_json(
+            &c.history_dir.join("state.json"),
+            &json!({"worker":"cta-prep-binance-futures","generation":generation,"warming":false}),
+        )
+        .unwrap();
+    }
+    let status: Value = client
+        .get(format!("{url}/api/status?interval=1h"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["generation"], "hour-running");
+    let status: Value = client
+        .get(format!("{url}/api/status?interval=5min"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(status["generation"], "minute-running");
+    let removed = client
+        .delete(format!("{url}/api/combinations/hours"))
+        .json(&json!({"expected_revision":changed["revision"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(removed.status(), StatusCode::OK);
+    assert!(!hourly.combinations_dir.join("hours.json").exists());
+    assert_eq!(
+        std::fs::read(config.combinations_dir.join("minutes.json")).unwrap(),
+        before
+    );
+    server.abort();
     std::fs::remove_dir_all(root).unwrap();
 }

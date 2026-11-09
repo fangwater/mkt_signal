@@ -10,22 +10,30 @@ config_service=0; execute=0
 for option in "$@"; do
   case "$option" in --config-service) config_service=1 ;; --execute) execute=1 ;; *) echo 'Usage: cta_factor_process.sh perp|spread start|stop [--config-service] [--execute]' >&2; exit 1 ;; esac
 done
+[[ ! -f "$BASE_DIR/env.sh" ]] || source "$BASE_DIR/env.sh"
 name="cta-factor-$kind"
 config="config/cta_factor_$kind.toml"
 [[ "$kind" != perp ]] || { name="cta-prep-binance-futures"; config="config/cta_prep_binance_futures.toml"; }
 binary="$name"
+name="${CTA_FACTOR_PROCESS_NAME:-$name}"
+[[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo '[ERROR] invalid CTA_FACTOR_PROCESS_NAME' >&2; exit 1; }
 if [[ "$config_service" == 1 ]]; then
   name="${name}-config"; binary=cta-factor-config
 fi
 echo "[PLAN] env=$BASE_DIR process=$name exchange=merged-factor-markets symbol_scope=$config mutation=$action-process"
 [[ "$execute" == 1 ]] || { echo '[DRY-RUN] no process changes'; exit 0; }
-[[ ! -f "$BASE_DIR/env.sh" ]] || source "$BASE_DIR/env.sh"
 process_args=(--config "$config")
+if [[ "$config_service" == 0 && -n "${CTA_FACTOR_OUTPUT_SERVICE:-}" ]]; then
+  process_args+=(--output-service "$CTA_FACTOR_OUTPUT_SERVICE")
+fi
 if [[ "$config_service" == 1 ]]; then
   default_port=19220; [[ "$kind" != spread ]] || default_port=19221
   process_args+=(--bind 127.0.0.1 --port "${CTA_FACTOR_CONFIG_PORT:-$default_port}")
   [[ "$kind" != spread ]] || process_args+=(--spread)
   if [[ "$kind" == perp ]]; then
+    if [[ -n "${CTA_PREP_HOURLY_CONFIG:-}" ]]; then
+      process_args+=(--hourly-config "$CTA_PREP_HOURLY_CONFIG")
+    fi
     spread_config="${CTA_SPREAD_FACTOR_CONFIG:-$BASE_DIR/../cta-factor-spread/config/cta_factor_spread.toml}"
     if [[ -n "${CTA_SPREAD_FACTOR_CONFIG:-}" || -f "$spread_config" ]]; then
       process_args+=(--spread-config "$spread_config")
@@ -51,7 +59,7 @@ trap 'python3 -c "from pathlib import Path; import sys; Path(sys.argv[1]).unlink
 python3 - "$cfg_file" "$name" "$BASE_DIR" "$binary" "${process_args[@]}" <<'PY_CONFIG'
 import json, os, sys
 path, name, base, binary, *arguments = sys.argv[1:]
-allowed = ('RUST_LOG', 'RUST_BACKTRACE', 'IPC_NAMESPACE', 'CTA_PREP_BINANCE_FUTURES_CORE', 'CTA_FACTOR_SPREAD_CORE', 'LD_LIBRARY_PATH', 'CTA_MANAGER_API_URL', 'CTA_MANAGER_API_URLS', 'CTA_PUBLISH_TOKEN', 'CTA_PUBLISH_TOKENS')
+allowed = ('RUST_LOG', 'RUST_BACKTRACE', 'IPC_NAMESPACE', 'CTA_PREP_BINANCE_FUTURES_CORE', 'CTA_FACTOR_SPREAD_CORE', 'LD_LIBRARY_PATH', 'CTA_MANAGER_API_URL', 'CTA_MANAGER_API_URLS', 'CTA_PUBLISH_TOKEN', 'CTA_PUBLISH_TOKENS', 'CTA_HOURLY_HISTORY_DIR', 'BINANCE_FUTURES_PUBLIC_API_BASE')
 environment = {key: os.environ[key] for key in allowed if key in os.environ}
 environment.setdefault('RUST_LOG', 'info')
 with open(path, 'w') as output:

@@ -60,6 +60,9 @@ struct Args {
     /// Native hourly input archive; also accepts CTA_HOURLY_HISTORY_DIR.
     #[arg(long)]
     hourly_history: Option<PathBuf>,
+    /// Dedicated factor IPC output for an independent runtime instance.
+    #[arg(long)]
+    output_service: Option<String>,
     #[arg(long)]
     core: Option<usize>,
 }
@@ -69,6 +72,24 @@ pub fn now_ms() -> i64 {
 }
 pub fn service_path(worker: Worker) -> String {
     format!("factor_output/{}", worker.name())
+}
+
+pub fn output_service_path(worker: Worker, requested: Option<&str>) -> Result<String> {
+    let value = requested
+        .map(str::to_owned)
+        .unwrap_or_else(|| service_path(worker));
+    let suffix = value
+        .strip_prefix("factor_output/")
+        .context("factor output must use factor_output/")?;
+    ensure!(
+        !suffix.is_empty()
+            && suffix.len() <= 100
+            && suffix
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')),
+        "invalid factor output service"
+    );
+    Ok(value)
 }
 
 pub(crate) struct FileLock(File);
@@ -515,6 +536,7 @@ pub async fn main(worker: Worker) -> Result<()> {
 async fn run(worker: Worker) -> Result<()> {
     env_logger::init();
     let args = Args::parse();
+    let output_service = output_service_path(worker, args.output_service.as_deref())?;
     ensure!(
         !args.execute
             || args.put_combination.is_some()
@@ -625,8 +647,8 @@ async fn run(worker: Worker) -> Result<()> {
         None
     } else {
         Some(ModelPublisher::with_capacity(
-            &format!("cta_factor_{}", worker.name()),
-            &service_path(worker),
+            &format!("cta_factor_{}", output_service.replace('/', "_")),
+            &output_service,
             8192,
             8192,
         )?)
@@ -712,6 +734,7 @@ async fn run(worker: Worker) -> Result<()> {
                         write_status(
                             &config,
                             worker,
+                            &output_service,
                             active.as_ref(),
                             None,
                             thresholds_error.as_deref(),
@@ -822,6 +845,7 @@ async fn run(worker: Worker) -> Result<()> {
             write_status(
                 &config,
                 worker,
+                &output_service,
                 active.as_ref(),
                 candidate.as_ref(),
                 error
@@ -865,6 +889,7 @@ async fn run(worker: Worker) -> Result<()> {
 fn write_status(
     config: &Config,
     worker: Worker,
+    output_service: &str,
     active: Option<&Generation>,
     candidate: Option<&Generation>,
     error: Option<&str>,
@@ -877,6 +902,6 @@ fn write_status(
     let error = error.or(seed_error.map(String::as_str));
     atomic_json(
         &config.history_dir.join("state.json"),
-        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len(),"hourly_nq_warmup":{"active":active.map(|g| &g.hourly_nq_seed.status),"candidate":candidate.map(|g| &g.hourly_nq_seed.status)},"hourly_history_warmup":{"active":active.and_then(|g| g.hourly_history_status.as_ref()),"candidate":candidate.and_then(|g| g.hourly_history_status.as_ref())}}),
+        &json!({"worker":worker,"service":output_service,"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len(),"hourly_nq_warmup":{"active":active.map(|g| &g.hourly_nq_seed.status),"candidate":candidate.map(|g| &g.hourly_nq_seed.status)},"hourly_history_warmup":{"active":active.and_then(|g| g.hourly_history_status.as_ref()),"candidate":candidate.and_then(|g| g.hourly_history_status.as_ref())}}),
     )
 }

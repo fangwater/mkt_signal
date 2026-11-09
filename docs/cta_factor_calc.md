@@ -570,3 +570,20 @@ cta-hourly-history replay --history /path/to/history --rules /path/to/rx01.json 
 `replay` 是只读检查：导入历史，再消费到启动时捕获的 Kafka 末尾；
 验证小时因子时间严格递增，拒绝重复导入的历史小时，并输出未就绪及缺失因子。
 它不连接 Manager/Exec，不写策略配置或 Kafka offset。
+
+## 独立小时实例与统一配置页
+
+为保留分钟频段内存窗口，1h可由独立Prep实例运行。策略组仍为Prep01/Prep02，
+Manager策略名、账户归属和金额按各自配置维护；进程和历史目录分离。
+配置服务通过 `--hourly-config /path/to/hourly.toml` 合并展示同一Prep页面，
+1h编辑、预览和删除路由到小时组合目录；其余频段路由到原目录。
+组合不可原地跨目录改频率，完整目录revision防止并发覆盖。
+两目录的`symbol_groups.json`指向原Prep同一个文件，组定义修改会校验两个目录的所有组合。
+`GET /api/status?worker=cta-prep-binance-futures&interval=1h`读取小时运行状态。
+
+小时实例使用独立的`--output-service factor_output/cta-prep-binance-futures-1h`，
+保留公共BBO订阅。环境脚本支持`CTA_FACTOR_PROCESS_NAME`与`CTA_FACTOR_OUTPUT_SERVICE`，
+配置服务通过`CTA_PREP_HOURLY_CONFIG`传入小时TOML。`CTA_HOURLY_HISTORY_DIR`
+由环境脚本传给进程用于启动历史导入。新实例仍通过环境本地脚本启停。
+仓库小时模板位于`config/cta_prep_binance_futures_1h/`，默认为关闭：
+Prep01每规则50U，Prep02三个券池每规则100U，NQ及符号使用用户标准清单。
