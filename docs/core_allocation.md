@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-06 15:40 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 05:39 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 05:39 UTC，JP `gate_fr_arb01` / `gate_fr_arb04` 发布配对平仓敞口修复。
+在本地维护工作区内从已推送 `arbmm bf3f5698` 导出并逐文件核对3048个源码文件，
+使用锁定依赖构建release；仅SCP上传并原子替换两套 `pre_trade`，SHA-256均为
+`a4786154427bcfee7a4a22486874b12731fefedbc92fa26d472f6a6777576c2a`，远端CLI加载通过。
+两账户的trade_signal、pre_trade、trade_engine继续停止，临时maker对齐执行器已结束；
+交易所现货/合约挂单均为0，单币最大净尾差约4.85/4.68 U，绝对净尾差合计68.84/39.48 U。
+两套共10个原有常驻进程身份及CPU mask保持：persist仍CPU15，其余延续原housekeeping。
+55个已采样运行文件及Redis风险参数摘要保持，总敞口阈值均0.005，单币分别0.008/0.01；
+交易源IP仍`.231/.231`。每套旧二进制与发布回执位于
+`~/gate_fr_arb0{1,4}/backups/paired_close_bf3f5698_20261109/`；本地构建及核验记录：
+`data/ops/gate_close_patch_bf3f5698_20261109/verification.json`。
 
 2026-11-06 15:29–15:40 UTC，JP Manager 发布 `b8eb962` 的目标推送异步 PG 副本。
 既有本地工作区 release `--no-default-features` 构建，按上次线上源码清单核对保留

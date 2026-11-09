@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-04 13:02 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 05:39 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 05:39 UTC，`gate_fr_arb01` / `gate_fr_arb04` 仅更新 `pre_trade` 为
+`arbmm bf3f5698` 的配对平仓修复，原交易进程继续停止、账户监控等常驻进程保持。
+两套 `trade_engine.toml` 的 `local_ips=["172.31.35.231","172.31.35.231"]` 及文件SHA-256
+均保持；共享源IP、ENI/EIP、路由和监听配置未改。两套原生现货/合约挂单复核均为0。
+发布、回退位置及进程核对见 `docs/core_allocation.md`，本地证据：
+`data/ops/gate_close_patch_bf3f5698_20261109/verification.json`。
 
 2026-11-04 12:55–13:02 UTC，Gate arb01对冲收尾后完成最后一套ADL修复发布并恢复信号。
 三套`local_ips`全部保持：arb01/03为`.231/.231`，arb02为`.232/.233`；
