@@ -1,7 +1,20 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 10:14 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 14:28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 14:28 UTC，1h已并入现有 `cta-prep-binance-futures` 并启用。
+主进程PID2168358继续使用CPU17，13份组合包含原9份分钟配置与4份小时配置，共596项计算；
+原仓位账本保留，Kafka回放完成，小时另导入34标的×744根历史，264/265项就绪。
+临时独立小时进程已通过环境脚本停止并归档，CPU19未占用，没有新增独占核。
+原config server PID2169023继续使用19220，小时配置与分钟配置位于同一目录；
+四张小时表已启用，RX01每规则50U、RX03每规则100U，grid跟随1份；绑定分别4条/9条。
+原分钟配置与绑定保持，260/331项计算就绪，其余继续等待；启用未再次回放，
+小时从15:00 UTC新封bar开始决策。RX03 1min继续下架，无活动委托/非零目标，
+16条低于最小下单量的真实尾量约32.35U保留。交易仍使用原账户与source IP。
+备份和回执：`~/cta-hourly-history/merged-deployment/`，脱敏核验见
+`artifacts/cta_independent_1h/verified.json`；临时目录归档在
+`~/retired_data/cta-prep-binance-futures-1h_20261109T140207Z/runtime/`。
 
 2026-11-09 10:14 UTC，JP RX03 / `binance_exec_rx03` 的 Prep02 三券池1min已下架。
 58条规则、三份组合与三条跟随绑定移除，六条5min/15min绑定及其他组合保持。
@@ -1585,7 +1598,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
 | 15 | persist_manager ×N | 原FR等及新okex_exec_trade01/binance_exec_spread01只读账户持久化；旧MM停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
-| 17 | cta-prep-binance-futures | PID2970444；Prep01三张+Prep02九张活动表、三张旧退役表、404项计算；全部线程CPU17，发布开启，RX01/RX03 shares=1；ICX已清理，部分窗口未就绪 |
+| 17 | cta-prep-binance-futures | PID2168358；Prep01四频段与Prep02三券池×5min/15min/1h，同进程596项计算，回放完成且四张小时表已启用；原仓位账本保留；无额外独占核 |
 | 18 | cta-factor-spread | PID2970968；Spread01发布开启，两所绑定各1份，50项计算就绪；全部线程CPU18 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |

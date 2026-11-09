@@ -520,7 +520,7 @@ JP 共享路径为 `/home/ubuntu/cta-hourly-history/current/data`；原压缩包
 逐文件校验及 JP 原生引擎导入通过：233个普通因子中232个就绪，32个所需NQ均预热744根。
 DASH `depth_imb_bps1` 的最近48根在中间价±1bp内没有挂单，原值为空；保留未知和原门槛。
 规则内的符号与NQ参数原样保留。匹配的worker和校验二进制在 `current/bin/`，
-本次仅发布独立历史包，线上Prep/Spread二进制及进程没有切换。
+上午上传阶段仅发布独立历史包；同日14:25 UTC已完成下述同进程小时策略启用。
 全清单实际接续验证读取58,118条Kafka记录，从2026-11-07 09:58:21 UTC到
 2026-11-09 10:24:12 UTC，生成9,010个种子截止后的小时因子点；无重复、无时间回退、无缺失计算。
 最新265项计算中264项就绪，唯一未知仍为上述DASH因子。JP公共入口另做单标的完整接续，
@@ -571,19 +571,25 @@ cta-hourly-history replay --history /path/to/history --rules /path/to/rx01.json 
 验证小时因子时间严格递增，拒绝重复导入的历史小时，并输出未就绪及缺失因子。
 它不连接 Manager/Exec，不写策略配置或 Kafka offset。
 
-## 独立小时实例与统一配置页
+## 同进程小时策略
 
-为保留分钟频段内存窗口，1h可由独立Prep实例运行。策略组仍为Prep01/Prep02，
-Manager策略名、账户归属和金额按各自配置维护；进程和历史目录分离。
-配置服务通过 `--hourly-config /path/to/hourly.toml` 合并展示同一Prep页面，
-1h编辑、预览和删除路由到小时组合目录；其余频段路由到原目录。
-组合不可原地跨目录改频率，完整目录revision防止并发覆盖。
-两目录的`symbol_groups.json`指向原Prep同一个文件，组定义修改会校验两个目录的所有组合。
-`GET /api/status?worker=cta-prep-binance-futures&interval=1h`读取小时运行状态。
+1h按用户最终确认并入现有`cta-prep-binance-futures`，继续使用Prep01/Prep02策略组、
+原config server和原组合目录。Prep01四频段，Prep02为三券池×5min/15min/1h，1min保持下架。
+小时模板位于`config/cta_prep_binance_futures/`，仓库默认关闭：Prep01每规则50U，
+Prep02三个券池每规则100U，符号及NQ使用用户标准清单。线上沿用grid模板和跟随1份。
 
-小时实例使用独立的`--output-service factor_output/cta-prep-binance-futures-1h`，
-保留公共BBO订阅。环境脚本支持`CTA_FACTOR_PROCESS_NAME`与`CTA_FACTOR_OUTPUT_SERVICE`，
-配置服务通过`CTA_PREP_HOURLY_CONFIG`传入小时TOML。`CTA_HOURLY_HISTORY_DIR`
-由环境脚本传给进程用于启动历史导入。新实例仍通过环境本地脚本启停。
-仓库小时模板位于`config/cta_prep_binance_futures_1h/`，默认为关闭：
-Prep01每规则50U，Prep02三个券池每规则100U，NQ及符号使用用户标准清单。
+临时独立小时实例已停用并归档；小时计算与原分钟计算共用原Prep进程及CPU17，
+没有新增独占CPU。切换保留各频段持久化仓位账本；程序更新后重新回放Kafka，
+小时窗口先导入已上传历史，分钟频段按实际留存数据恢复，长窗口不足时继续等待。
+历史回放不模拟仓位，接管后只决策新的封闭bar。
+
+2026-11-09 14:25 UTC，四张小时表已启用，Manager发布确认及Exec策略索引/grid配置
+核验通过。RX01共4条绑定，RX03共9条绑定，均跟随1份；原分钟配置与绑定保持。
+主进程回放完成，启用没有改变计算代次。14:28 UTC核验小时264/265项就绪，唯一未知
+仍为DASH `depth_imb_bps1`；分钟260/331项就绪，其余继续等待实际有效输入。
+小时从15:00 UTC新封bar开始决策，不追开历史仓位。RX03 1min继续下架，零目标、
+无活动委托/批次；16条低于最小下单量的尾量约32.35U保留真实归属。
+部署与脱敏回执见 `artifacts/cta_independent_1h/README.md`。
+
+单独运行小时实例仍是可选能力：`--hourly-config`用于配置服务合并展示两个物理目录，
+`--output-service`用于独立因子输出，但本次最终部署不使用这两个选项。

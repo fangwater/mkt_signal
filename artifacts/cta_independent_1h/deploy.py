@@ -68,7 +68,7 @@ def prepare():
         shutil.copy2(p,HOURLY/'config/cta_prep_binance_futures_1h'/p.name)
     (HOURLY/'config/cta_prep_binance_futures_1h/symbol_groups.json').symlink_to(MAIN/'config/cta_prep_binance_futures/symbol_groups.json')
     env='\n'.join(['#!/usr/bin/env bash',f'source "{MAIN}/env.sh"',
-        'export CTA_PREP_BINANCE_FUTURES_CORE=19','export CTA_FACTOR_PROCESS_NAME=cta-prep-binance-futures-1h',
+        'export CTA_PREP_BINANCE_FUTURES_CORE=""','export CTA_FACTOR_PROCESS_NAME=cta-prep-binance-futures-1h',
         'export CTA_FACTOR_OUTPUT_SERVICE=factor_output/cta-prep-binance-futures-1h',
         'export CTA_HOURLY_HISTORY_DIR=/home/ubuntu/cta-hourly-history/current/data',''])
     (HOURLY/'env.sh').write_text(env);(HOURLY/'env.sh').chmod(0o600)
@@ -76,7 +76,7 @@ def prepare():
     checked([str(UPLOAD/'cta-factor-config'),'--config',str(MAIN/'config/cta_prep_binance_futures.toml'),'--spread-config',str(ops.SPREAD/'config/cta_factor_spread.toml'),'--hourly-config',str(HOURLY/'config/cta_prep_binance_futures.toml'),'--check'],MAIN,'shared-config-check')
     checked([str(HOURLY/'scripts/start_cta_prep_binance_futures.sh')],HOURLY,'hourly-dry-run')
     ops.save(AUDIT/'prepared.json',{'at_ms':time.time_ns()//1000000,'hourly_env':str(HOURLY),'binary_sha256':sha(HOURLY/'cta-prep-binance-futures')})
-    print(json.dumps({'prepared':True,'env':str(HOURLY),'hourly_tables':4,'rules':326,'enabled':False,'core':19}),flush=True)
+    print(json.dumps({'prepared':True,'env':str(HOURLY),'hourly_tables':4,'rules':326,'enabled':False,'cpu_scope':'shared 0-5'}),flush=True)
 
 
 def start():

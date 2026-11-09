@@ -145,6 +145,7 @@ fn frequency_strategies_own_independent_allocations_and_reject_duplicate_publish
             "cta-prep01-bn-1min-pos".into(),
             "cta-prep01-bn-5min-pos".into(),
             "cta-prep01-bn-15min-pos".into(),
+            "cta-prep01-bn-1h-pos".into(),
         ])
     );
     let before = combinations[1].signal.clone();
@@ -173,7 +174,7 @@ fn strategy_groups_share_calculations_and_own_independent_frequency_strategies()
             "prep01",
             "prep02",
             Worker::Perp,
-            6,
+            8,
         ),
         (
             "config/cta_factor_spread.toml",
@@ -380,7 +381,7 @@ fn prep02_templates_keep_5min_15min_after_icx_and_1min_retirement() {
     for c in plan
         .combinations
         .values()
-        .filter(|c| c.strategy_group == "prep02")
+        .filter(|c| c.strategy_group == "prep02" && c.interval != Interval::Hour)
     {
         tables += 1;
         assert!(!c.signal.as_ref().unwrap().enabled);
@@ -397,6 +398,31 @@ fn prep02_templates_keep_5min_15min_after_icx_and_1min_retirement() {
     }
     assert_eq!(tables, 6);
     assert_eq!(expected.len(), 41);
+    assert!(!plan
+        .combinations
+        .values()
+        .any(|c| c.strategy_group == "prep02" && c.interval == Interval::Minute));
+    let hourly = plan
+        .combinations
+        .values()
+        .filter(|c| c.interval == Interval::Hour)
+        .collect::<Vec<_>>();
+    assert_eq!(hourly.len(), 4);
+    assert_eq!(
+        hourly.iter().map(|c| c.factor_rules.len()).sum::<usize>(),
+        326
+    );
+    for c in hourly {
+        assert!(!c.signal.as_ref().unwrap().enabled);
+        assert_eq!(
+            c.signal.as_ref().unwrap().max_pos_u,
+            if c.strategy_group == "prep01" {
+                50.0
+            } else {
+                100.0
+            }
+        );
+    }
     assert!(plan
         .combinations
         .values()
@@ -444,10 +470,23 @@ fn merge_is_exactly_the_requested_union_and_rejects_parameter_conflicts() {
 }
 
 #[test]
-fn binance_worker_merges_three_frequency_configurations_with_exact_periods() {
+fn binance_worker_merges_hourly_with_existing_minute_configurations_without_redefining_them() {
     let config =
         Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
-    let plan = group_plan(&config, "prep01");
+    let full = group_plan(&config, "prep01");
+    let hour = &full.combinations["prep01_binance-futures_1h"];
+    assert_eq!(hour.factor_rules.len(), 114);
+    assert!(hour
+        .factors()
+        .unwrap()
+        .keys()
+        .all(|id| FactorId::parse(id).unwrap().interval == Interval::Hour));
+    let plan = Plan::merge(
+        full.combinations
+            .into_values()
+            .filter(|c| c.interval != Interval::Hour),
+    )
+    .unwrap();
     assert_eq!(
         plan.combinations
             .keys()

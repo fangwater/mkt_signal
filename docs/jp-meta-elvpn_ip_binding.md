@@ -1,6 +1,19 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 10:14 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 14:28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 14:28 UTC，1h已并入现有 `cta-prep-binance-futures` 并启用。
+主进程PID2168358继续使用CPU17，13份组合包含原9份分钟配置与4份小时配置，共596项计算；
+原仓位账本保留，Kafka回放完成，小时另导入34标的×744根历史，264/265项就绪。
+临时独立小时进程已通过环境脚本停止并归档，CPU19未占用，没有新增独占核。
+原config server PID2169023继续使用19220，小时配置与分钟配置位于同一目录；
+四张小时表已启用，RX01每规则50U、RX03每规则100U，grid跟随1份；绑定分别4条/9条。
+原分钟配置与绑定保持，260/331项计算就绪，其余继续等待；启用未再次回放，
+小时从15:00 UTC新封bar开始决策。RX03 1min继续下架，无活动委托/非零目标，
+16条低于最小下单量的真实尾量约32.35U保留。交易仍使用原账户与source IP。
+备份和回执：`~/cta-hourly-history/merged-deployment/`，脱敏核验见
+`artifacts/cta_independent_1h/verified.json`；临时目录归档在
+`~/retired_data/cta-prep-binance-futures-1h_20261109T140207Z/runtime/`。
 
 2026-11-09 10:14 UTC，JP RX03 / `binance_exec_rx03` 的 Prep02 三券池1min已下架。
 58条规则、三份组合与三条跟随绑定移除，六条5min/15min绑定及其他组合保持。
@@ -946,7 +959,7 @@ binance-cta-special-rx02     172.31.35.228                  已停止并归档�
 binance-cta-perp-rx02        默认出口 / 172.31.35.228       已下线，运行目录归档
 binance-cta-perp-rx03        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；Exec07已清仓解绑，旧配置410
 binance-cta-perp-rx01        默认出口 / 172.31.35.228       全部旧进程停止；Exec06永续仓位/挂单0，91旧绑定及virtual06跟随移除，旧配置410
-cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17运行，Prep01三张+Prep02九张活动表；Config loopback19220，发布开启，ICX已清理，部分窗口未就绪
+cta-prep-binance-futures     默认出口 / 172.31.35.228       CPU17运行，Prep01四频段+Prep02三券池×5min/15min/1h共13张活动表；Config loopback19220，发布开启，分钟260/331、小时264/265项就绪
 cta-factor-spread           默认出口 / 172.31.35.228       CPU18计算及Spread01发布开启，无私有交易请求
 exec_volatility_binance      默认出口 / 172.31.35.228       共享Kafka执行Vol；CPU20，无私有交易请求或独立监听
 binance-cta-perp-rx04        默认出口 / 172.31.35.228       全部旧因子/信号/页面进程停止；5min已清仓解绑，旧配置410
@@ -976,8 +989,8 @@ binance_exec_trade05         172.31.35.228                  RX02 RapidX，全部
 binance_exec_rx04_5m05       172.31.35.228                  RX04 5min已清仓至0，Manager账户和虚拟账户入口已移除；下单停止，监控/persist/Viz/Config保留
 binance_exec_trade06         172.31.35.228                  RX01旧运行目录已归档，Manager入口及绑定移除；新账户binance_exec_rx01
 binance_exec_trade07         172.31.35.228                  RX03旧运行目录已归档，Manager入口及绑定移除；新账户binance_exec_rx03
-binance_exec_rx01            172.31.35.228                  RX01全新执行账户，Prep01三频段shares=0；监控/persist/Viz/Config运行，下单关闭
-binance_exec_rx03            172.31.35.228                  Prep02三券池×5min/15min六策略shares=1/grid；1min已下架，pre-trade/trade_signal及监控/persist/Viz/Config运行
+binance_exec_rx01            172.31.35.228                  Prep01四频段shares=1/grid，1h每规则50U；Exec与监控/persist/Viz/Config运行
+binance_exec_rx03            172.31.35.228                  Prep02三券池×5min/15min/1h九策略shares=1/grid，1h每规则100U；1min已下架，Exec及监控/persist/Viz/Config运行
 binance_exec_trade08         172.31.35.228, 172.31.35.228   旧环境继续停止，lgq_ltp_81857 Manager入口已移除；历史保留，新组合另走binance_exec_spread01
 ```
 

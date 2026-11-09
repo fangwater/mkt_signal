@@ -28,7 +28,7 @@ if '--config' in sys.argv:
                 'export CTA_FACTOR_PROCESS_NAME=cta-prep-binance-futures-1h',
                 'export CTA_FACTOR_OUTPUT_SERVICE=factor_output/cta-prep-binance-futures-1h',
                 'export CTA_HOURLY_HISTORY_DIR=/history/hourly',
-                'export CTA_PREP_BINANCE_FUTURES_CORE=19','']))
+                'export CTA_PREP_BINANCE_FUTURES_CORE=""','']))
             result=subprocess.run([str(scripts/'start_cta_prep_binance_futures.sh'),'--execute'],cwd=base,text=True,capture_output=True)
             self.assertEqual(result.returncode,0,result.stderr)
             app=json.loads((base/'captured.json').read_text())['apps'][0]
@@ -36,7 +36,7 @@ if '--config' in sys.argv:
             self.assertEqual(app['cwd'],str(base))
             self.assertEqual(app['args'],['--config','config/cta_prep_binance_futures.toml','--output-service','factor_output/cta-prep-binance-futures-1h'])
             self.assertEqual(app['env']['CTA_HOURLY_HISTORY_DIR'],'/history/hourly')
-            self.assertEqual(app['env']['CTA_PREP_BINANCE_FUTURES_CORE'],'19')
+            self.assertEqual(app['env']['CTA_PREP_BINANCE_FUTURES_CORE'],'')
             calls=[json.loads(line) for line in (base/'calls.jsonl').read_text().splitlines()]
             self.assertEqual(calls[0],['delete','cta-prep-binance-futures-1h'])
             self.assertNotIn(['delete','cta-prep-binance-futures'],calls)
