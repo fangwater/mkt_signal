@@ -1,11 +1,12 @@
 [package]
-name = "native_futures"
+name = "cn_futures"
 version.workspace = true
 edition.workspace = true
 
 [features]
 default = []
 ctp-sdk = ["dep:cc"]
+yida-sdk = ["dep:cc"]
 
 [dependencies]
 anyhow.workspace = true
@@ -21,3 +22,7 @@ cc = { version = "1.2", optional = true }
 [[bin]]
 name = "ctp-trader"
 path = "src/bin/ctp_trader.rs"
+
+[[bin]]
+name = "yida-trader"
+path = "src/bin/yida_trader.rs"

@@ -1,0 +1,31 @@
+# Native Hanlin YDApi reference 1.188.78.0. Keep SDK/config files outside the repo.
+sdk_library = "/opt/yida/1.188.78.0/libyd.so"
+sdk_config = "/opt/yida/trade-server.cfg"
+flow_directory = "/tmp/mkt_yida_sim/flow"
+journal = "/tmp/mkt_yida_sim/events.jsonl"
+user_id_env = "YIDA_USER_ID"
+password_env = "YIDA_PASSWORD"
+app_id_env = "YIDA_APP_ID"
+auth_code_env = "YIDA_AUTH_CODE"
+event_capacity = 8192
+response_timeout_ms = 30000
+idle_sleep_us = 50
+
+[[symbols]]
+venue = "SHFE"
+symbol = "cu2612"
+cash_budget_per_open_lot = 250000.0
+
+[[symbols]]
+venue = "INE"
+symbol = "sc2612"
+cash_budget_per_open_lot = 250000.0
+
+[risk]
+max_order_lots = 1
+max_position_lots_per_side = 2
+max_working_lots = 2
+max_actions_per_second = 2
+minimum_cash_remaining = 10000.0
+enable_fak_fok = false
+close_priority = "today_first"

@@ -3,6 +3,54 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Venue {
+    #[serde(rename = "CFFEX")]
+    Cffex,
+    #[serde(rename = "SHFE")]
+    Shfe,
+    #[serde(rename = "INE")]
+    Ine,
+}
+impl Venue {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cffex => "CFFEX",
+            Self::Shfe => "SHFE",
+            Self::Ine => "INE",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "CFFEX" => Ok(Self::Cffex),
+            "SHFE" => Ok(Self::Shfe),
+            "INE" => Ok(Self::Ine),
+            _ => bail!("unsupported domestic-futures venue {value}"),
+        }
+    }
+    pub fn separate_close_dates(self) -> bool {
+        matches!(self, Self::Shfe | Self::Ine)
+    }
+}
+
+/// Account/market capabilities supplied by the native adapter, not inferred from symbols.
+#[derive(Debug, Clone)]
+pub struct ExecutionScope {
+    pub venues: HashSet<Venue>,
+    pub reference_limit: u64,
+    pub require_market_status: bool,
+    pub cancel_requires_system_id: bool,
+}
+impl ExecutionScope {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.venues.is_empty() && self.reference_limit > 0,
+            "empty execution scope or reference range"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     Buy,
@@ -22,6 +70,8 @@ impl Side {
 pub enum Offset {
     Open,
     Close,
+    CloseToday,
+    CloseYesterday,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,14 +92,15 @@ pub enum TimeInForce {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrderKey {
-    pub front_id: i32,
-    pub session_id: i32,
+    /// Opaque native session scope. Only the adapter interprets its contents.
+    pub session: String,
     pub order_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Intent {
+    pub venue: Venue,
     pub symbol: String,
     pub side: Side,
     pub offset: Offset,
@@ -61,6 +112,7 @@ pub struct Intent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Instrument {
+    pub venue: Venue,
     pub symbol: String,
     pub price_tick: f64,
     pub min_lots: i32,
@@ -72,8 +124,8 @@ pub struct Instrument {
 impl Instrument {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            is_cffex_future(&self.symbol),
-            "unsupported CFFEX futures symbol {}",
+            is_future_symbol(self.venue, &self.symbol),
+            "invalid domestic futures symbol {}",
             self.symbol
         );
         ensure!(
@@ -105,6 +157,22 @@ pub fn is_cffex_future(symbol: &str) -> bool {
         product,
         "IF" | "IH" | "IC" | "IM" | "TS" | "TF" | "T" | "TL"
     ) && month.bytes().all(|b| b.is_ascii_digit())
+        && month[2..]
+            .parse::<u8>()
+            .is_ok_and(|m| (1..=12).contains(&m))
+}
+
+pub fn is_future_symbol(venue: Venue, symbol: &str) -> bool {
+    if venue == Venue::Cffex {
+        return is_cffex_future(symbol);
+    }
+    if !symbol.is_ascii() || !(5..=12).contains(&symbol.len()) {
+        return false;
+    }
+    let (product, month) = symbol.split_at(symbol.len() - 4);
+    product.bytes().all(|b| b.is_ascii_lowercase())
+        && !product.is_empty()
+        && month.bytes().all(|b| b.is_ascii_digit())
         && month[2..]
             .parse::<u8>()
             .is_ok_and(|m| (1..=12).contains(&m))
@@ -159,7 +227,7 @@ impl OrderStatus {
 pub struct OrderUpdate {
     pub key: OrderKey,
     pub symbol: String,
-    pub exchange: String,
+    pub venue: Venue,
     pub system_id: String,
     pub side: Side,
     pub offset: Offset,
@@ -173,7 +241,7 @@ pub struct OrderUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TradeIdentity {
-    pub exchange: String,
+    pub venue: Venue,
     pub symbol: String,
     pub trading_day: String,
     pub trade_id: String,
@@ -191,6 +259,7 @@ pub struct Fill {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionSnapshot {
+    pub venue: Venue,
     pub symbol: String,
     pub side: Side,
     pub today: i32,
@@ -200,8 +269,7 @@ pub struct PositionSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub trading_day: String,
-    pub front_id: i32,
-    pub session_id: i32,
+    pub session: String,
     pub max_order_ref: u64,
     pub available_cash: f64,
     pub instruments: Vec<Instrument>,
@@ -253,6 +321,8 @@ pub struct Order {
     pub reserved_yesterday: i32,
     pub local_cash_held: f64,
     pub cancel_pending: bool,
+    /// Locally submitted in this process; recovered/external orders have no strategy attribution.
+    pub owned: bool,
 }
 impl Order {
     pub fn remaining(&self) -> i32 {
@@ -270,30 +340,39 @@ pub struct PreparedOrder {
 pub struct PreparedCancel {
     pub key: OrderKey,
     pub symbol: String,
+    pub venue: Venue,
     pub system_id: String,
 }
 
 pub trait Trader {
+    /// Some native SDKs own the reference allocator. Called before local reservation/send.
+    fn allocate_reference(&mut self, minimum: u64) -> Result<u64> {
+        Ok(minimum)
+    }
     /// Nonzero is a documented synchronous SDK rejection, not an asynchronous business reject.
     fn insert(&mut self, order: &PreparedOrder) -> Result<i32>;
     fn cancel(&mut self, order: &PreparedCancel) -> Result<i32>;
 }
 
-pub(crate) fn validate_snapshot(s: &Snapshot) -> Result<()> {
+pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<()> {
     ensure!(
         s.trading_day.len() == 8 && s.trading_day.bytes().all(|b| b.is_ascii_digit()),
         "invalid trading day"
     );
     ensure!(
-        s.front_id >= 0 && s.session_id >= 0,
-        "invalid login identity"
+        !s.session.is_empty() && s.session.is_ascii() && s.session.len() <= 128,
+        "invalid native session scope"
     );
     ensure!(s.available_cash.is_finite(), "nonfinite account available");
     let mut symbols = HashSet::new();
     for rule in &s.instruments {
         rule.validate()?;
         ensure!(
-            symbols.insert(&rule.symbol),
+            scope.venues.contains(&rule.venue),
+            "instrument outside deployment scope"
+        );
+        ensure!(
+            symbols.insert((rule.venue, &rule.symbol)),
             "duplicate instrument {}",
             rule.symbol
         );
@@ -302,27 +381,30 @@ pub(crate) fn validate_snapshot(s: &Snapshot) -> Result<()> {
     let mut positions = HashSet::new();
     for p in &s.positions {
         ensure!(
-            is_cffex_future(&p.symbol) && p.today >= 0 && p.yesterday >= 0,
+            scope.venues.contains(&p.venue)
+                && is_future_symbol(p.venue, &p.symbol)
+                && p.today >= 0
+                && p.yesterday >= 0,
             "invalid position {}",
             p.symbol
         );
         ensure!(
-            positions.insert((&p.symbol, p.side)),
+            positions.insert((p.venue, &p.symbol, p.side)),
             "duplicate position {}",
             p.symbol
         );
     }
     let mut trades = HashMap::new();
     for f in &s.trades {
-        validate_fill(f, &s.trading_day)?;
+        validate_fill(f, &s.trading_day, scope)?;
         if let Some(previous) = trades.insert(&f.identity, f) {
             ensure!(previous == f, "conflicting duplicate trade in snapshot");
         }
     }
     for o in &s.orders {
         ensure!(
-            o.exchange == "CFFEX" && is_cffex_future(&o.symbol),
-            "order outside CFFEX futures scope"
+            scope.venues.contains(&o.venue) && is_future_symbol(o.venue, &o.symbol),
+            "order outside deployment futures scope"
         );
         ensure!(
             o.trading_day == s.trading_day,
@@ -346,7 +428,9 @@ pub(crate) fn validate_snapshot(s: &Snapshot) -> Result<()> {
         );
         let factual_lots: i64 = trades
             .values()
-            .filter(|f| !o.system_id.is_empty() && f.system_id == o.system_id)
+            .filter(|f| {
+                f.identity.venue == o.venue && !o.system_id.is_empty() && f.system_id == o.system_id
+            })
             .map(|f| i64::from(f.lots))
             .sum();
         ensure!(
@@ -357,9 +441,11 @@ pub(crate) fn validate_snapshot(s: &Snapshot) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_fill(f: &Fill, trading_day: &str) -> Result<()> {
-    if f.identity.exchange != "CFFEX" || !is_cffex_future(&f.identity.symbol) {
-        bail!("fill outside configured CFFEX futures scope");
+pub(crate) fn validate_fill(f: &Fill, trading_day: &str, scope: &ExecutionScope) -> Result<()> {
+    if !scope.venues.contains(&f.identity.venue)
+        || !is_future_symbol(f.identity.venue, &f.identity.symbol)
+    {
+        bail!("fill outside configured futures scope");
     }
     ensure!(
         f.identity.trading_day == trading_day && !f.identity.trade_id.trim().is_empty(),

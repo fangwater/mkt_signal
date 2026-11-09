@@ -8,7 +8,7 @@
       content="中金所 CTP、上期所与能源中心易达原生交易接入的单核执行架构设计。"
     />
     <meta name="color-scheme" content="dark" />
-    <title>Native Futures · 原生期货执行架构</title>
+    <title>CN Futures · 原生期货执行架构</title>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23c6f28a'/%3E%3Cpath d='M11 28V12h4l10 16h4V12' fill='none' stroke='%23171a16' stroke-width='3'/%3E%3C/svg%3E"
@@ -19,11 +19,11 @@
   <body>
     <a class="skip-link" href="#main">跳到正文</a>
     <aside class="rail" aria-label="主导航">
-      <a class="brand" href="#overview" aria-label="Native Futures 首页"
+      <a class="brand" href="#overview" aria-label="CN Futures 首页"
         ><svg viewBox="0 0 32 32" aria-hidden="true">
           <path d="M7 25V7h5l13 18V7" /></svg
       ></a>
-      <span class="rail-word">NATIVE<br />FUTURES</span>
+      <span class="rail-word">CN<br />FUTURES</span>
       <nav>
         <a href="#architecture" class="nav-link" aria-label="执行架构"
           ><svg viewBox="0 0 24 24" aria-hidden="true">
@@ -104,7 +104,7 @@
                   d="M18 4v9m12-9v9M18 35v9m12-9v9M4 18h9m-9 12h9m22-12h9m-9 12h9"
                 />
                 <path d="m20 19 9 5-9 5z" /></svg
-              ><span>Native Core</span><small>ONE BUSINESS LOOP</small>
+              ><span>CN Futures Core</span><small>ONE BUSINESS LOOP</small>
             </div>
             <div class="floating-adapter adapter-ctp">
               <span class="small-dot"></span>CTP <small>原生交易</small>
@@ -377,7 +377,7 @@
                       </td>
                       <td>
                         本地订单 ↔ 易达原始订单标识<br /><small
-                          >字段与唯一性作用域待 SDK 核实</small
+                          >SDK 引用、交易所作用域内的系统号、原始成交标识</small
                         >
                       </td>
                     </tr>
@@ -399,7 +399,7 @@
                       <td>会话恢复、查询与回报对账</td>
                       <td>
                         使用原生恢复 / 查询能力<br /><small
-                          >顺序、重放与完成屏障待 SDK 核实</small
+                          >notifyCaughtUp 后校验持仓、冻结、委托与成交</small
                         >
                       </td>
                     </tr>
@@ -417,7 +417,7 @@
                           rel="noopener noreferrer"
                           >易达官方产品说明 ↗</a
                         ><br /><span class="status-inline blue-text"
-                          >API 文档与下载需要登录</span
+                          >1.188.78.0 原生参考 · 待柜台联调</span
                         >
                       </td>
                     </tr>
@@ -447,7 +447,7 @@
                 <h3>易达的接入边界</h3>
                 <p>
                   官网的“资金与持仓计算兼容 CTP”不能证明 API / ABI
-                  兼容。原生函数、线程模型与恢复语义以授权 SDK 为准。
+                  兼容。已按公开原生 SDK 参考实现；正式接入需核对期货公司配套版本。
                 </p>
               </article>
             </div>
@@ -687,14 +687,14 @@
               <h2>先统一交易契约，再验证两个柜台。</h2>
               <p>
                 CTP
-                初版已有代码与本地测试，待仿真联调；易达仍处于设计阶段。本页不连接交易运行时。
+                和易达初版均有代码与本地桥接联测，待期货公司仿真联调。本页不连接交易运行时。
               </p>
             </div>
           </div>
           <div class="delivery-grid">
             <article>
               <span class="phase-index">01</span
-              ><span class="phase-state">CTP 初版</span>
+              ><span class="phase-state">共享核心</span>
               <h3>核心交易契约</h3>
               <p>
                 账户与交易所作用域、开平意图、今昨仓、冻结量、原始身份、错误与恢复事件。
@@ -705,7 +705,7 @@
               ><span class="phase-state">离线验证</span>
               <h3>原生适配器</h3>
               <p>
-                CTP 6.7.11 桥接已编译、已离线加载官方库；易达原生 SDK 待接入。
+                CTP 6.7.11 与易达 1.188.78.0 原生桥接均已完成本地验证。
               </p>
             </article>
             <article>
@@ -714,7 +714,7 @@
               <h3>交易正确性</h3>
               <p>
                 CTP
-                预占、成交去重、撤单竞态与本地合成回报已验证；真实中金所仿真联调待完成。
+                与易达的预占、成交去重、撤单竞态、今昨拆单与本地合成回报已验证；柜台仿真待完成。
               </p>
             </article>
             <article>
@@ -731,7 +731,7 @@
 
         <footer>
           <div class="footer-brand">
-            <span class="small-dot"></span> NATIVE FUTURES
+            <span class="small-dot"></span> CN FUTURES
             <span>/</span> mkt_signal
           </div>
           <p>

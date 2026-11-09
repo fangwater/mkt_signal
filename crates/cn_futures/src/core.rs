@@ -10,18 +10,18 @@ use std::time::{Duration, Instant};
 pub struct TradingCore {
     limits: RiskLimits,
     day: String,
-    front: i32,
-    session: i32,
+    scope: ExecutionScope,
+    session: String,
     next_ref: u64,
     ready: bool,
     connected: bool,
     reason: String,
     cash: f64,
-    instruments: HashMap<String, Instrument>,
-    continuous: HashMap<String, bool>,
-    positions: HashMap<(String, Side), Position>,
+    instruments: HashMap<(Venue, String), Instrument>,
+    continuous: HashMap<(Venue, String), bool>,
+    positions: HashMap<(Venue, String, Side), Position>,
     orders: HashMap<OrderKey, Order>,
-    system_ids: HashMap<String, OrderKey>,
+    system_ids: HashMap<(Venue, String), OrderKey>,
     fills: HashMap<TradeIdentity, Fill>,
     actions: VecDeque<Instant>,
     _single_owner: PhantomData<Rc<()>>,
@@ -39,19 +39,21 @@ pub struct CoreView<'a> {
 }
 #[derive(Debug, Serialize)]
 pub struct PositionView<'a> {
+    pub venue: Venue,
     pub symbol: &'a str,
     pub side: Side,
     pub position: &'a Position,
 }
 
 impl TradingCore {
-    pub fn new(limits: RiskLimits) -> Result<Self> {
+    pub fn new(limits: RiskLimits, scope: ExecutionScope) -> Result<Self> {
         limits.validate()?;
+        scope.validate()?;
         Ok(Self {
             limits,
             day: String::new(),
-            front: 0,
-            session: 0,
+            scope,
+            session: String::new(),
             next_ref: 1,
             ready: false,
             connected: false,
@@ -76,7 +78,7 @@ impl TradingCore {
     }
     pub fn disconnect(&mut self) {
         self.connected = false;
-        self.block("CTP disconnected; reconciliation required");
+        self.block("native trading disconnected; reconciliation required");
     }
     pub fn connected(&mut self) {
         self.connected = true;
@@ -86,9 +88,9 @@ impl TradingCore {
     pub fn order(&self, key: &OrderKey) -> Option<&Order> {
         self.orders.get(key)
     }
-    pub fn position(&self, symbol: &str, side: Side) -> Position {
+    pub fn position(&self, venue: Venue, symbol: &str, side: Side) -> Position {
         self.positions
-            .get(&(symbol.to_owned(), side))
+            .get(&(venue, symbol.to_owned(), side))
             .cloned()
             .unwrap_or_default()
     }
@@ -103,7 +105,8 @@ impl TradingCore {
             positions: self
                 .positions
                 .iter()
-                .map(|((symbol, side), position)| PositionView {
+                .map(|((venue, symbol, side), position)| PositionView {
+                    venue: *venue,
                     symbol,
                     side: *side,
                     position,
@@ -111,9 +114,9 @@ impl TradingCore {
                 .collect(),
         }
     }
-    pub fn set_trading_status(&mut self, symbol_or_product: &str, continuous: bool) {
+    pub fn set_trading_status(&mut self, venue: Venue, symbol_or_product: &str, continuous: bool) {
         self.continuous
-            .insert(symbol_or_product.to_owned(), continuous);
+            .insert((venue, symbol_or_product.to_owned()), continuous);
     }
     /// Apply only a complete new rule set; omission immediately removes trading permission.
     pub fn replace_instruments(&mut self, instruments: Vec<Instrument>) -> Result<()> {
@@ -121,10 +124,11 @@ impl TradingCore {
         for rule in instruments {
             rule.validate()?;
             ensure!(
-                !next.contains_key(&rule.symbol),
+                self.scope.venues.contains(&rule.venue)
+                    && !next.contains_key(&(rule.venue, rule.symbol.clone())),
                 "duplicate instrument in rule refresh"
             );
-            next.insert(rule.symbol.clone(), rule);
+            next.insert((rule.venue, rule.symbol.clone()), rule);
         }
         self.instruments = next;
         Ok(())
@@ -135,12 +139,14 @@ impl TradingCore {
         self.cash = self.cash.min(available);
         Ok(())
     }
-    fn trading_status(&self, symbol: &str) -> bool {
+    fn trading_status(&self, venue: Venue, symbol: &str) -> bool {
         self.continuous
-            .get(symbol)
+            .get(&(venue, symbol.to_owned()))
             .or_else(|| {
                 let n = symbol.len().saturating_sub(4);
-                symbol.get(..n).and_then(|p| self.continuous.get(p))
+                symbol
+                    .get(..n)
+                    .and_then(|p| self.continuous.get(&(venue, p.to_owned())))
             })
             .copied()
             .unwrap_or(false)
@@ -149,33 +155,53 @@ impl TradingCore {
     /// Caller must supply a complete, reconciled account snapshot, never query fragments.
     /// Validation and reconstruction are atomic with respect to the existing core.
     pub fn restore(&mut self, s: Snapshot) -> Result<()> {
-        validate_snapshot(&s)?;
-        let mut next = Self::new(self.limits.clone())?;
+        validate_snapshot(&s, &self.scope)?;
+        for old in self.orders.values().filter(|o| o.remaining() > 0) {
+            let recovered=s.orders.iter().find(|o| o.key==old.key || (o.venue==old.request.venue && !old.system_id.is_empty() && o.system_id==old.system_id))
+                .context("snapshot omits unresolved local order; preserve reservations until a factual outcome is available")?;
+            ensure!(
+                recovered.venue == old.request.venue
+                    && recovered.symbol == old.request.symbol
+                    && recovered.side == old.request.side
+                    && recovered.offset == old.request.offset
+                    && recovered.lots == old.request.lots
+                    && recovered.traded >= old.filled,
+                "snapshot conflicts with known unresolved order identity/quantity"
+            );
+        }
+        if self.day == s.trading_day {
+            for known in self.fills.values() {
+                ensure!(
+                    s.trades.iter().any(|f| f == known),
+                    "snapshot omits or changes a known factual fill"
+                );
+            }
+        }
+        let mut next = Self::new(self.limits.clone(), self.scope.clone())?;
         next.continuous = self.continuous.clone();
         next.day = s.trading_day;
-        next.front = s.front_id;
-        next.session = s.session_id;
+        next.session = s.session;
         next.next_ref = s
             .max_order_ref
             .checked_add(1)
             .context("order ref exhausted")?;
-        if self.day == next.day && self.front == next.front && self.session == next.session {
+        if self.day == next.day && self.session == next.session {
             // Login MaxOrderRef can predate locally rejected attempts and manual reconciliation.
             next.next_ref = next.next_ref.max(self.next_ref);
         }
         ensure!(
-            next.next_ref <= 999_999_999_999,
-            "CTP order ref exceeds 12 digits"
+            next.next_ref <= self.scope.reference_limit,
+            "native order reference exhausted"
         );
         next.cash = s.available_cash;
         next.instruments = s
             .instruments
             .into_iter()
-            .map(|r| (r.symbol.clone(), r))
+            .map(|r| ((r.venue, r.symbol.clone()), r))
             .collect();
         for p in s.positions {
             next.positions.insert(
-                (p.symbol, p.side),
+                (p.venue, p.symbol, p.side),
                 Position {
                     today: p.today,
                     yesterday: p.yesterday,
@@ -191,7 +217,7 @@ impl TradingCore {
                 !next.orders.contains_key(&update.key),
                 "duplicate order identity in snapshot"
             );
-            if update.key.front_id == next.front && update.key.session_id == next.session {
+            if update.key.session == next.session {
                 if let Ok(observed) = update.key.order_ref.trim().parse::<u64>() {
                     next.next_ref = next.next_ref.max(
                         observed
@@ -199,8 +225,8 @@ impl TradingCore {
                             .context("observed order reference exhausted")?,
                     );
                     ensure!(
-                        next.next_ref <= 999_999_999_999,
-                        "observed order reference exceeds CTP capacity"
+                        next.next_ref <= self.scope.reference_limit,
+                        "observed order reference exceeds native capacity"
                     );
                 }
             }
@@ -211,6 +237,7 @@ impl TradingCore {
             };
             let mut order = Order {
                 request: Intent {
+                    venue: update.venue,
                     symbol: update.symbol.clone(),
                     side: update.side,
                     offset: update.offset,
@@ -233,21 +260,31 @@ impl TradingCore {
                 reserved_yesterday: 0,
                 local_cash_held: 0.0,
                 cancel_pending: false,
+                owned: false,
             };
-            if remaining > 0 && update.offset == Offset::Close {
-                let (today, yesterday) =
-                    next.allocate_close(&update.symbol, update.side.opposite(), remaining)?;
+            if remaining > 0 && update.offset != Offset::Open {
+                let (today, yesterday) = next.allocate_close(
+                    update.venue,
+                    &update.symbol,
+                    update.side.opposite(),
+                    update.offset,
+                    remaining,
+                )?;
                 order.reserved_today = today;
                 order.reserved_yesterday = yesterday;
                 next.adjust_frozen(&order, today, yesterday)?;
             }
             if !order.system_id.is_empty() {
                 ensure!(
-                    !next.system_ids.contains_key(&order.system_id),
-                    "duplicate CFFEX system order identity"
+                    !next
+                        .system_ids
+                        .contains_key(&(order.request.venue, order.system_id.clone())),
+                    "duplicate venue system order identity"
                 );
-                next.system_ids
-                    .insert(order.system_id.clone(), order.key.clone());
+                next.system_ids.insert(
+                    (order.request.venue, order.system_id.clone()),
+                    order.key.clone(),
+                );
             }
             next.orders.insert(order.key.clone(), order);
         }
@@ -258,14 +295,29 @@ impl TradingCore {
         Ok(())
     }
 
-    fn allocate_close(&self, symbol: &str, side: Side, lots: i32) -> Result<(i32, i32)> {
-        let p = self.position(symbol, side);
+    fn allocate_close(
+        &self,
+        venue: Venue,
+        symbol: &str,
+        side: Side,
+        offset: Offset,
+        lots: i32,
+    ) -> Result<(i32, i32)> {
+        let p = self.position(venue, symbol, side);
         let today = p.today - p.frozen_today;
         let yesterday = p.yesterday - p.frozen_yesterday;
         ensure!(
             i64::from(lots) <= i64::from(today) + i64::from(yesterday),
             "insufficient available close position"
         );
+        if offset == Offset::CloseToday {
+            ensure!(lots <= today, "insufficient today position");
+            return Ok((lots, 0));
+        }
+        if offset == Offset::CloseYesterday {
+            ensure!(lots <= yesterday, "insufficient yesterday position");
+            return Ok((0, lots));
+        }
         Ok(match self.limits.close_priority {
             ClosePriority::TodayFirst => {
                 let t = lots.min(today);
@@ -280,7 +332,11 @@ impl TradingCore {
     fn adjust_frozen(&mut self, order: &Order, today: i32, yesterday: i32) -> Result<()> {
         let p = self
             .positions
-            .entry((order.request.symbol.clone(), order.request.side.opposite()))
+            .entry((
+                order.request.venue,
+                order.request.symbol.clone(),
+                order.request.side.opposite(),
+            ))
             .or_default();
         p.frozen_today += today;
         p.frozen_yesterday += yesterday;
@@ -304,13 +360,28 @@ impl TradingCore {
 
     pub fn prepare(&mut self, intent: Intent, now: Instant) -> Result<PreparedOrder> {
         ensure!(self.is_ready(), "trading blocked: {}", self.reason);
+        ensure!(
+            self.scope.venues.contains(&intent.venue),
+            "venue outside execution scope"
+        );
+        ensure!(
+            !intent.venue.separate_close_dates() || intent.offset != Offset::Close,
+            "SHFE/INE close must be planned into explicit date orders"
+        );
+        ensure!(
+            intent.venue.separate_close_dates()
+                || matches!(intent.offset, Offset::Open | Offset::Close),
+            "explicit close dates not supported by this adapter"
+        );
         let rule = self
             .instruments
-            .get(&intent.symbol)
+            .get(&(intent.venue, intent.symbol.clone()))
             .context("symbol absent from complete rule snapshot")?
             .clone();
         ensure!(
-            rule.active && self.trading_status(&intent.symbol),
+            rule.active
+                && (!self.scope.require_market_status
+                    || self.trading_status(intent.venue, &intent.symbol)),
             "symbol inactive or outside continuous trading"
         );
         ensure!(
@@ -335,16 +406,14 @@ impl TradingCore {
             "working lot limit"
         );
         ensure!(
-            !self
-                .orders
-                .values()
-                .any(|o| o.request.symbol == intent.symbol
-                    && o.request.side != intent.side
-                    && o.remaining() > 0
-                    && match intent.side {
-                        Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
-                        Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
-                    }),
+            !self.orders.values().any(|o| o.request.venue == intent.venue
+                && o.request.symbol == intent.symbol
+                && o.request.side != intent.side
+                && o.remaining() > 0
+                && match intent.side {
+                    Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
+                    Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
+                }),
             "self-trade prevention"
         );
         let mut today = 0;
@@ -355,14 +424,16 @@ impl TradingCore {
                 .orders
                 .values()
                 .filter(|o| {
-                    o.request.symbol == intent.symbol
+                    o.request.venue == intent.venue
+                        && o.request.symbol == intent.symbol
                         && o.request.side == intent.side
                         && o.request.offset == Offset::Open
                 })
                 .map(|o| i64::from(o.remaining()))
                 .sum();
             ensure!(
-                self.position(&intent.symbol, intent.side).total()
+                self.position(intent.venue, &intent.symbol, intent.side)
+                    .total()
                     + pending
                     + i64::from(intent.lots)
                     <= i64::from(self.limits.max_position_lots_per_side),
@@ -374,14 +445,21 @@ impl TradingCore {
                 "local cash budget insufficient"
             );
         } else {
-            (today, yesterday) =
-                self.allocate_close(&intent.symbol, intent.side.opposite(), intent.lots)?;
+            (today, yesterday) = self.allocate_close(
+                intent.venue,
+                &intent.symbol,
+                intent.side.opposite(),
+                intent.offset,
+                intent.lots,
+            )?;
         }
-        ensure!(self.next_ref <= 999_999_999_999, "CTP order ref exhausted");
+        ensure!(
+            self.next_ref <= self.scope.reference_limit,
+            "native order reference exhausted"
+        );
         self.rate_check(now)?;
         let key = OrderKey {
-            front_id: self.front,
-            session_id: self.session,
+            session: self.session.clone(),
             order_ref: self.next_ref.to_string(),
         };
         self.next_ref += 1;
@@ -398,8 +476,9 @@ impl TradingCore {
             reserved_yesterday: yesterday,
             local_cash_held: cash,
             cancel_pending: false,
+            owned: true,
         };
-        if intent.offset == Offset::Close {
+        if intent.offset != Offset::Open {
             self.adjust_frozen(&order, today, yesterday)?;
         }
         self.cash -= cash;
@@ -441,7 +520,7 @@ impl TradingCore {
         if order.request.offset == Offset::Open {
             let unit = self
                 .instruments
-                .get(&order.request.symbol)
+                .get(&(order.request.venue, order.request.symbol.clone()))
                 .map(|r| r.cash_budget_per_open_lot)
                 .unwrap_or(0.0);
             let refund = (f64::from(release) * unit).min(order.local_cash_held);
@@ -472,7 +551,7 @@ impl TradingCore {
 
     pub fn on_order(&mut self, update: OrderUpdate) -> Result<()> {
         ensure!(
-            update.exchange == "CFFEX" && update.trading_day == self.day,
+            self.scope.venues.contains(&update.venue) && update.trading_day == self.day,
             "order outside current account day/scope"
         );
         let mut order = self
@@ -481,7 +560,8 @@ impl TradingCore {
             .context("untracked account order requires reconciliation")?
             .clone();
         ensure!(
-            order.request.symbol == update.symbol
+            order.request.venue == update.venue
+                && order.request.symbol == update.symbol
                 && order.request.side == update.side
                 && order.request.offset == update.offset
                 && order.request.lots == update.lots,
@@ -496,12 +576,15 @@ impl TradingCore {
                 order.system_id.is_empty() || order.system_id == update.system_id,
                 "system identity changed"
             );
-            if let Some(existing) = self.system_ids.get(&update.system_id) {
+            if let Some(existing) = self
+                .system_ids
+                .get(&(update.venue, update.system_id.clone()))
+            {
                 ensure!(existing == &update.key, "system identity collision");
             }
             order.system_id = update.system_id;
             self.system_ids
-                .insert(order.system_id.clone(), update.key.clone());
+                .insert((update.venue, order.system_id.clone()), update.key.clone());
         }
         order.reported_filled = order.reported_filled.max(update.traded).max(order.filled);
         if update.cancel_rejected {
@@ -534,19 +617,18 @@ impl TradingCore {
     }
 
     pub fn on_fill(&mut self, fill: Fill) -> Result<bool> {
-        validate_fill(&fill, &self.day)?;
+        validate_fill(&fill, &self.day, &self.scope)?;
         if let Some(previous) = self.fills.get(&fill.identity) {
             ensure!(previous == &fill, "conflicting duplicate trade identity");
             return Ok(false);
         }
         let key = self
             .system_ids
-            .get(&fill.system_id)
+            .get(&(fill.identity.venue, fill.system_id.clone()))
             .cloned()
             .or_else(|| {
                 let key = OrderKey {
-                    front_id: self.front,
-                    session_id: self.session,
+                    session: self.session.clone(),
                     order_ref: fill.order_ref.clone(),
                 };
                 self.orders
@@ -561,11 +643,12 @@ impl TradingCore {
             .context("missing correlated order")?
             .clone();
         ensure!(
-            fill.order_ref.is_empty() || fill.order_ref == order.key.order_ref,
+            !order.owned || fill.order_ref.is_empty() || fill.order_ref == order.key.order_ref,
             "fill order reference conflicts with exchange order identity"
         );
         ensure!(
-            order.request.symbol == fill.identity.symbol
+            order.request.venue == fill.identity.venue
+                && order.request.symbol == fill.identity.symbol
                 && order.request.side == fill.identity.side
                 && order.request.offset == fill.offset,
             "fill conflicts with order identity"
@@ -579,7 +662,7 @@ impl TradingCore {
         } else {
             fill.identity.side.opposite()
         };
-        let mut position = self.position(&fill.identity.symbol, side);
+        let mut position = self.position(fill.identity.venue, &fill.identity.symbol, side);
         if fill.offset == Offset::Open {
             position.today = position
                 .today
@@ -614,14 +697,17 @@ impl TradingCore {
                 "fill system identity changed"
             );
             order.system_id = fill.system_id.clone();
-            self.system_ids.insert(fill.system_id.clone(), key.clone());
+            self.system_ids
+                .insert((fill.identity.venue, fill.system_id.clone()), key.clone());
         }
         order.filled += fill.lots;
         if order.filled == order.request.lots {
             order.status = OrderStatus::Filled;
         }
-        self.positions
-            .insert((fill.identity.symbol.clone(), side), position);
+        self.positions.insert(
+            (fill.identity.venue, fill.identity.symbol.clone(), side),
+            position,
+        );
         self.orders.insert(key, order);
         self.fills.insert(fill.identity.clone(), fill);
         Ok(true)
@@ -634,9 +720,14 @@ impl TradingCore {
             !order.status.terminal() && !order.cancel_pending && order.remaining() > 0,
             "order not cancellable"
         );
+        ensure!(
+            !self.scope.cancel_requires_system_id || !order.system_id.is_empty(),
+            "native cancel requires exchange system ID; wait for acknowledgement"
+        );
         let request = PreparedCancel {
             key: key.clone(),
             symbol: order.request.symbol.clone(),
+            venue: order.request.venue,
             system_id: order.system_id.clone(),
         };
         self.rate_check(now)?;
@@ -670,6 +761,12 @@ impl<T: Trader> SingleLoop<T> {
         before_native: impl FnOnce(&PreparedOrder) -> Result<()>,
     ) -> Result<OrderKey> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
+        let reference = self.trader.allocate_reference(self.core.next_ref)?;
+        ensure!(
+            reference >= self.core.next_ref && reference <= self.core.scope.reference_limit,
+            "invalid SDK allocated reference"
+        );
+        self.core.next_ref = reference;
         let request = self.core.prepare(intent, now)?;
         if let Err(error) = before_native(&request) {
             self.core.reject(&request.key)?;
@@ -680,7 +777,7 @@ impl<T: Trader> SingleLoop<T> {
             Ok(0) => Ok(request.key),
             Ok(code) => {
                 self.core.reject(&request.key)?;
-                bail!("CTP local insert rejected: {code}");
+                bail!("native local insert rejected: {code}");
             }
             Err(error) => {
                 self.core
@@ -709,13 +806,157 @@ impl<T: Trader> SingleLoop<T> {
             Ok(0) => Ok(()),
             Ok(code) => {
                 self.core.cancel_failed(key);
-                bail!("CTP local cancel rejected: {code}");
+                bail!("native local cancel rejected: {code}");
             }
             Err(error) => {
                 self.core.block("unknown cancellation outcome; reconcile");
                 Err(error)
             }
         }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildOutcome {
+    SubmittedLocally,
+    RejectedLocally,
+    Uncertain,
+    NotSent,
+}
+#[derive(Debug, Serialize)]
+pub struct ChildReceipt {
+    pub key: OrderKey,
+    pub offset: Offset,
+    pub lots: i32,
+    pub outcome: ChildOutcome,
+    pub error: Option<String>,
+}
+#[derive(Debug, Serialize)]
+pub struct SubmitReceipt {
+    pub children: Vec<ChildReceipt>,
+    pub all_submitted_locally: bool,
+}
+impl TradingCore {
+    /// Translate a generic SHFE/INE close into explicit inventory-date requests.
+    /// A parent FOK cannot be implemented as independently executable children.
+    pub fn plan(&self, intent: Intent) -> Result<Vec<Intent>> {
+        ensure!(
+            intent.lots > 0 && intent.lots <= self.limits.max_order_lots,
+            "invalid parent quantity"
+        );
+        if !intent.venue.separate_close_dates() || intent.offset != Offset::Close {
+            return Ok(vec![intent]);
+        }
+        let (today, yesterday) = self.allocate_close(
+            intent.venue,
+            &intent.symbol,
+            intent.side.opposite(),
+            Offset::Close,
+            intent.lots,
+        )?;
+        ensure!(
+            intent.time_in_force != TimeInForce::Fok || today == 0 || yesterday == 0,
+            "cannot split FOK across today/yesterday inventory; specify one date"
+        );
+        let mut children = vec![];
+        let allocations = match self.limits.close_priority {
+            ClosePriority::TodayFirst => [
+                (Offset::CloseToday, today),
+                (Offset::CloseYesterday, yesterday),
+            ],
+            ClosePriority::YesterdayFirst => [
+                (Offset::CloseYesterday, yesterday),
+                (Offset::CloseToday, today),
+            ],
+        };
+        for (offset, lots) in allocations {
+            if lots > 0 {
+                children.push(Intent {
+                    offset,
+                    lots,
+                    ..intent.clone()
+                });
+            }
+        }
+        Ok(children)
+    }
+}
+impl<T: Trader> SingleLoop<T> {
+    /// Reserve and validate every child before sending any. After a send failure,
+    /// return all child identities and retain every uncertain reservation.
+    pub fn submit_planned_with(
+        &mut self,
+        intent: Intent,
+        now: Instant,
+        mut audit: impl FnMut(&PreparedOrder) -> Result<()>,
+    ) -> Result<SubmitReceipt> {
+        ensure!(self.execute, "read-only runtime: submissions disabled");
+        let children = self.core.plan(intent)?;
+        let mut prepared: Vec<PreparedOrder> = vec![];
+        for child in children {
+            let preparation = (|| {
+                let reference = self.trader.allocate_reference(self.core.next_ref)?;
+                ensure!(
+                    reference >= self.core.next_ref && reference <= self.core.scope.reference_limit,
+                    "invalid SDK allocated reference"
+                );
+                self.core.next_ref = reference;
+                self.core.prepare(child, now)
+            })();
+            match preparation {
+                Ok(p) => prepared.push(p),
+                Err(e) => {
+                    for p in &prepared {
+                        self.core.reject(&p.key)?;
+                    }
+                    return Err(e.context("no child was submitted"));
+                }
+            }
+        }
+        let mut receipt = SubmitReceipt {
+            children: vec![],
+            all_submitted_locally: true,
+        };
+        let mut stop = false;
+        for p in prepared {
+            let (outcome, error) = if stop {
+                self.core.reject(&p.key)?;
+                (ChildOutcome::NotSent, None)
+            } else if let Err(e) = audit(&p) {
+                self.core.reject(&p.key)?;
+                self.core.block("submission audit failed before SDK call");
+                stop = true;
+                (ChildOutcome::NotSent, Some(e.to_string()))
+            } else {
+                match self.trader.insert(&p) {
+                    Ok(0) => (ChildOutcome::SubmittedLocally, None),
+                    Ok(code) => {
+                        self.core.reject(&p.key)?;
+                        stop = true;
+                        (
+                            ChildOutcome::RejectedLocally,
+                            Some(format!("native local rejection {code}")),
+                        )
+                    }
+                    Err(e) => {
+                        self.core
+                            .block("unknown submission outcome; reconcile before retry");
+                        stop = true;
+                        (ChildOutcome::Uncertain, Some(e.to_string()))
+                    }
+                }
+            };
+            receipt.children.push(ChildReceipt {
+                key: p.key,
+                offset: p.intent.offset,
+                lots: p.intent.lots,
+                outcome,
+                error,
+            });
+        }
+        receipt.all_submitted_locally = !stop;
+        Ok(receipt)
     }
 }
 

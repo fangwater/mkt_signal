@@ -2,13 +2,13 @@
 //! cross-account routing, or strategy attribution is performed on startup/recovery.
 use crate::model::{Intent, OrderKey};
 use anyhow::{Context, Result};
-#[cfg(feature = "ctp-sdk")]
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
-#[cfg(feature = "ctp-sdk")]
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
 use std::io::BufRead;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -76,7 +76,7 @@ impl Journal {
         let failed = Arc::new(AtomicBool::new(false));
         let flag = failed.clone();
         let worker = std::thread::Builder::new()
-            .name("ctp-journal".into())
+            .name("cn-futures-journal".into())
             .spawn(move || {
                 let write = || -> Result<()> {
                     let mut writer = BufWriter::new(file);
@@ -145,11 +145,11 @@ impl Drop for Journal {
     }
 }
 
-#[cfg(feature = "ctp-sdk")]
-fn input_commands() -> Result<Receiver<Result<Command>>> {
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
+pub(crate) fn input_commands() -> Result<Receiver<Result<Command>>> {
     let (sender, receiver) = crossbeam_channel::bounded(64);
     std::thread::Builder::new()
-        .name("ctp-commands".into())
+        .name("cn-futures-commands".into())
         .spawn(move || {
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
@@ -169,7 +169,7 @@ fn input_commands() -> Result<Receiver<Result<Command>>> {
 }
 
 pub fn lock_flow(path: &Path) -> Result<File> {
-    std::fs::create_dir_all(path).context("create CTP flow directory")?;
+    std::fs::create_dir_all(path).context("create CN futures flow directory")?;
     let mut options = OpenOptions::new();
     options.create(true).read(true).write(true).truncate(false);
     #[cfg(unix)]
@@ -178,10 +178,10 @@ pub fn lock_flow(path: &Path) -> Result<File> {
         options.mode(0o600);
     }
     let file = options
-        .open(path.join(".native_futures.lock"))
-        .context("open CTP flow lock")?;
+        .open(path.join(".cn_futures.lock"))
+        .context("open CN futures flow lock")?;
     file.try_lock()
-        .context("CTP flow directory already in use")?;
+        .context("CN futures flow directory already in use")?;
     Ok(file)
 }
 
@@ -209,7 +209,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         .context("invalid InvestorID")?
         .to_owned();
     let mut session = Session::new(config.clone(), investor.clone(), Instant::now());
-    let core = TradingCore::new(config.risk.clone())?;
+    let core = TradingCore::new(config.risk.clone(), ctp::scope())?;
     let mut runtime = SingleLoop {
         core,
         trader,
@@ -248,6 +248,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             }
             if event.kind == ctp::INSTRUMENT_STATUS && ctp::text(&event.exchange)? == "CFFEX" {
                 runtime.core.set_trading_status(
+                    crate::model::Venue::Cffex,
                     &ctp::text(&event.symbol)?,
                     event.status == i32::from(b'2'),
                 );
@@ -331,8 +332,8 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                         }
                         Ok(Command::Submit { intent }) => {
                             runtime
-                                .submit_with(intent, Instant::now(), |prepared| journal.record(json!({"type":"prepared_submit","key":prepared.key,"intent":prepared.intent,"limit_price":prepared.limit_price}), false))
-                                .map(|key| json!({"type":"submitted_locally","key":key}))
+                                .submit_planned_with(intent, Instant::now(), |prepared| journal.record(json!({"type":"prepared_submit","key":prepared.key,"intent":prepared.intent,"limit_price":prepared.limit_price}), false))
+                                .map(|receipt| json!({"type":"submit_receipt","receipt":receipt}))
                         }
                         Ok(Command::Cancel { key }) => {
                             runtime
@@ -380,7 +381,7 @@ mod tests {
     #[test]
     fn flow_directory_cannot_be_shared_concurrently() {
         let path =
-            std::env::temp_dir().join(format!("native-futures-flow-lock-{}", std::process::id()));
+            std::env::temp_dir().join(format!("cn-futures-flow-lock-{}", std::process::id()));
         let lock = lock_flow(&path).unwrap();
         assert!(lock_flow(&path).is_err());
         drop(lock);

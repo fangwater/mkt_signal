@@ -195,8 +195,10 @@ def main():
             return wait("state")["state"]
 
         def submit(tif="day", side="buy", offset="open", lots=1, ticks=20000):
-            send({"op": "submit", "intent": {"symbol": "IF2612", "side": side, "offset": offset, "lots": lots, "price_ticks": ticks, "time_in_force": tif}})
-            return wait("submitted_locally")["key"]
+            send({"op": "submit", "intent": {"venue": "CFFEX", "symbol": "IF2612", "side": side, "offset": offset, "lots": lots, "price_ticks": ticks, "time_in_force": tif}})
+            receipt = wait("submit_receipt")["receipt"]
+            assert receipt["all_submitted_locally"]
+            return receipt["children"][0]["key"]
 
         try:
             assert wait("reconciled")["state"]["ready"]

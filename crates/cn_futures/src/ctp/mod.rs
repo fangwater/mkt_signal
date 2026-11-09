@@ -144,8 +144,7 @@ fn offset(raw: i32) -> Result<Offset> {
 impl RawEvent {
     pub fn key(&self) -> Result<OrderKey> {
         Ok(OrderKey {
-            front_id: self.front,
-            session_id: self.session,
+            session: session_key(self.front, self.session),
             order_ref: text(&self.order_ref)?,
         })
     }
@@ -168,7 +167,7 @@ impl RawEvent {
         Ok(OrderUpdate {
             key: self.key()?,
             symbol: text(&self.symbol)?,
-            exchange: text(&self.exchange)?,
+            venue: Venue::parse(&text(&self.exchange)?)?,
             system_id: text(&self.system_id)?,
             side: side(self.direction)?,
             offset: offset(self.offset)?,
@@ -187,7 +186,7 @@ impl RawEvent {
         );
         Ok(Fill {
             identity: TradeIdentity {
-                exchange: text(&self.exchange)?,
+                venue: Venue::parse(&text(&self.exchange)?)?,
                 symbol: text(&self.symbol)?,
                 trading_day: text(&self.trading_day)?,
                 trade_id: text(&self.trade_id)?,
@@ -216,6 +215,23 @@ impl RawEvent {
     }
 }
 
+pub fn scope() -> ExecutionScope {
+    ExecutionScope {
+        venues: [Venue::Cffex].into_iter().collect(),
+        reference_limit: 999_999_999_999,
+        require_market_status: true,
+        cancel_requires_system_id: false,
+    }
+}
+pub fn session_key(front: i32, session: i32) -> String {
+    format!("ctp:{front}:{session}")
+}
+pub fn parse_session(value: &str) -> Result<(i32, i32)> {
+    let parts: Vec<_> = value.split(':').collect();
+    ensure!(parts.len() == 3 && parts[0] == "ctp", "invalid CTP session");
+    Ok((parts[1].parse()?, parts[2].parse()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,13 +252,11 @@ mod tests {
     #[test]
     fn response_ids_keep_the_original_session_even_after_reconnect() {
         let old = OrderKey {
-            front_id: 1,
-            session_id: 2,
+            session: session_key(1, 2),
             order_ref: "17".into(),
         };
         let new = OrderKey {
-            front_id: 1,
-            session_id: 3,
+            session: session_key(1, 3),
             order_ref: "17".into(),
         };
         let mut correlation = ResponseCorrelation::default();

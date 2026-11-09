@@ -34,12 +34,12 @@
       kicker: "YIDA NATIVE API",
       ingress: "易达原生交易事件",
       boundary:
-        "此图只描述逻辑边界。易达 SDK 的回调 / 轮询方式、线程模型、调用约束与恢复顺序，须依据授权 SDK 核实；本页不假设与 CTP 相同。",
-      submit: "易达原生报单 · 函数名待 SDK 核实",
-      cancel: "易达原生撤单 · 函数名待 SDK 核实",
-      order: "易达原生委托事件 · 字段待核实",
-      trade: "易达原生成交事件 · 字段待核实",
-      query: "易达原生恢复 / 查询 · 能力待核实",
+        "易达 SDK 内部线程通过原生 listener 回调，复制事件交给同一业务 loop。notifyFinishInit 仅表示 API 可用，每次登录仍需等待 notifyCaughtUp 并完成对账。",
+      submit: "checkOrder / insertOrder",
+      cancel: "cancelOrder · OrderSysID",
+      order: "notifyOrder / notifyFailedOrder",
+      trade: "notifyTrade",
+      query: "notifyCaughtUp + findOrders / findTrades",
     },
   };
 
@@ -112,7 +112,7 @@
         "CTP 使用 Trader API；易达使用其授权原生 SDK。核心只有一套交易契约，各适配器保留真实指令语义、错误信息和恢复规则；不通过 CTP 兼容接口转接易达。",
       rules: [
         "资金计算兼容不等于 API / ABI 兼容",
-        "易达函数与回调字段待 SDK 核实",
+        "易达原生参考 1.188.78.0，待配套柜台联调",
         "后端错误不触发跨柜台自动重投",
       ],
     },
@@ -222,7 +222,7 @@
       ),
       step(
         "风控通过，登记待报委托",
-        "Native Core / Risk + OMS",
+        "CN Futures Core / Risk + OMS",
         "预占 3 手",
         "risk",
         "先登记订单并预占开仓额度，后续意图已经能看到这 3 手未成委托。",
@@ -271,7 +271,7 @@
         ),
         step(
           "开仓额度不足，拒绝意图",
-          "Native Core / Pre-trade",
+          "CN Futures Core / Pre-trade",
           "3 > 2 手",
           "risk",
           "检查失败时不登记可发送委托、不预占额度，也不调用任何柜台报单 API。",
@@ -295,7 +295,7 @@
         ),
         step(
           "拆分平今与平昨子单",
-          "Native Core / OffsetPlanner",
+          "CN Futures Core / OffsetPlanner",
           "CT 1 + CY 2",
           "orders",
           "上期所 / INE 的仓位日期分别管理。冻结今仓 1 手、昨仓 2 手，防止其他意图重复使用。",
@@ -311,7 +311,7 @@
           p.submit,
           "2 个子单",
           "submit",
-          "核心拆单计划映射为易达原生指令；实际字段与调用名须依据 SDK 联调。两个子单不能假设原子成交。",
+          "所有子单先完成风控和日期预占，再映射 CloseToday / CloseYesterday 并逐笔 insertOrder。两个子单不能假设原子成交，跨日期 FOK 拒绝拆分。",
           () => {
             state.submits = 2;
             state.order = "子单待确认";
@@ -438,7 +438,7 @@
         ),
         step(
           "恢复完成条件全部满足",
-          "Native Core / RecoveryBarrier",
+          "CN Futures Core / RecoveryBarrier",
           "Ready",
           "risk",
           "仅在会话、订单、持仓及风险规则核对完整后解除新开仓阻断。已有订单仍保留 2 手未成预占。",
@@ -464,7 +464,7 @@
         ),
         step(
           "锁存故障，启动核对流程",
-          "Native Core / Recovery",
+          "CN Futures Core / Recovery",
           "等待完整恢复",
           "risk",
           "不以清空队列或重新连接代替恢复。恢复渠道不足时保持阻断；连接允许时仍应能处理必要撤单。",
@@ -561,7 +561,7 @@
     renderState(
       "状态只由业务 loop 更新。演示步骤不表示真实时间或柜台性能。" +
         (backend === "yd"
-          ? "易达事件为语义设计，实际接口待 SDK 验证。"
+          ? "易达原生桥接已通过本地合成 SDK 联测，尚未连接柜台。"
           : "本页未连接真实 CTP 柜台。"),
     );
     selectNode("orders");
@@ -691,13 +691,13 @@
     const assumptions = modelApplied
       ? JSON.stringify(modelValues(), null, 2)
       : "尚未套用任何性能假设；没有实测数据。";
-    const content = `# 原生期货执行架构设计\n\n状态：页面为确定性演示；CTP 6.7.11 交易初版已实现并完成本地验证，未连接真实柜台；易达尚未实现。\n\n## 已确认范围\n\n- 中金所 CFFEX：CTP 原生交易。\n- 上期所 SHFE / 上海国际能源交易中心 INE：易达原生交易 SDK。\n- 行情来源独立，暂按 CTP；此次聚焦交易兼容，不设计易达行情。\n- 期货优先；期权不在首期范围。\n\n## 运行结构\n\n每个账户 / 风控域一个实例，显式绑定交易后端与交易所白名单。一个业务 loop 拥有全部交易状态。\n\n事件入口 → 策略意图 → 风控与预占 → 委托 / 持仓状态机 → 原生报单或撤单。\n\n模块间直接调用，不经过 IPC。SDK 内部线程仍依实际接口存在。日志、配置读取、持久化与展示移到后台；持久化可靠性与刷盘策略另行确定。\n\n## 交易兼容约束\n\n- 保留账户、交易所、合约、方向、开平、手数、价格 tick 与有效方式。\n- 上期所 / INE 显式处理平今、平昨与子单分配。\n- 报单前预占；API 本地返回不等于柜台确认或成交。\n- 撤单请求不立即释放冻结量；成交与最终拒单 / 撤单分别核销。\n- 原始订单、成交身份和错误码随事件保留；重复事实幂等处理。\n- 恢复屏障满足前暂停新开仓；入口溢出必须显式使状态进入待恢复。\n- CTP / 易达不跨柜台自动改投。\n\n## 当前页面选择\n\n交易后端：${profile().name}\n交易所：${venue()}\n演示场景：${$("scenario").selectedOptions[0].textContent}\n\n## 手动性能假设（单位 µs；非实测）\n\n${assumptions}\n\n参考分拆路径 = 本地业务处理 + 3 × (IPC + 排队/调度) + 原生 API 调用。\n单 loop = 本地业务处理 + 原生 API 调用。\n网络、SDK 内部排队、柜台穿透与撮合均不包含在此模型中。\n\n## 易达证据与待确认项\n\n官方产品页 https://www.hanlinit.com/products/ydserver/ 列明上期所、能源所支持普通限价 / FAK / FOK，不支持 TAS。\nAPI 文档 https://www.hanlinit.com/docs/ 与下载 https://www.hanlinit.com/downloads/ 要求登录。\n需要取得授权 SDK，核实 ABI、调用方式、线程模型、身份字段、重放 / 查询能力与恢复屏障，再实现适配器。\n官网柜台穿透数字不作为本系统端到端性能或目标。\n`;
+    const content = `# CN Futures 执行架构设计\n\n状态：页面为确定性演示；CTP 6.7.11 交易初版已实现并完成本地验证，未连接真实柜台；易达 1.188.78.0 原生交易初版已完成本地合成 SDK 联测，尚未连接真实柜台。\n\n## 已确认范围\n\n- 中金所 CFFEX：CTP 原生交易。\n- 上期所 SHFE / 上海国际能源交易中心 INE：易达原生交易 SDK。\n- 行情来源独立，暂按 CTP；此次聚焦交易兼容，不设计易达行情。\n- 期货优先；期权不在首期范围。\n\n## 运行结构\n\n每个账户 / 风控域一个实例，显式绑定交易后端与交易所白名单。一个业务 loop 拥有全部交易状态。\n\n事件入口 → 策略意图 → 风控与预占 → 委托 / 持仓状态机 → 原生报单或撤单。\n\n模块间直接调用，不经过 IPC。SDK 内部线程仍依实际接口存在。日志、配置读取、持久化与展示移到后台；持久化可靠性与刷盘策略另行确定。\n\n## 交易兼容约束\n\n- 保留账户、交易所、合约、方向、开平、手数、价格 tick 与有效方式。\n- 上期所 / INE 显式处理平今、平昨与子单分配。\n- 报单前预占；API 本地返回不等于柜台确认或成交。\n- 撤单请求不立即释放冻结量；成交与最终拒单 / 撤单分别核销。\n- 原始订单、成交身份和错误码随事件保留；重复事实幂等处理。\n- 恢复屏障满足前暂停新开仓；入口溢出必须显式使状态进入待恢复。\n- CTP / 易达不跨柜台自动改投。\n\n## 当前页面选择\n\n交易后端：${profile().name}\n交易所：${venue()}\n演示场景：${$("scenario").selectedOptions[0].textContent}\n\n## 手动性能假设（单位 µs；非实测）\n\n${assumptions}\n\n参考分拆路径 = 本地业务处理 + 3 × (IPC + 排队/调度) + 原生 API 调用。\n单 loop = 本地业务处理 + 原生 API 调用。\n网络、SDK 内部排队、柜台穿透与撮合均不包含在此模型中。\n\n## 易达证据与待确认项\n\n官方产品页 https://www.hanlinit.com/products/ydserver/ 列明上期所、能源所支持普通限价 / FAK / FOK，不支持 TAS。\nAPI 文档 https://www.hanlinit.com/docs/ 与下载 https://www.hanlinit.com/downloads/ 要求登录。\n原生实现采用公开参考包 arriettytrader/YDApi_Demo_1_188_78_0（提交 5b9bbf0618aae254eceaa0d131b70b38c48bc25d），非已确认最新官方版本。实际柜台需核对配套版本并完成仿真联调。\n官网柜台穿透数字不作为本系统端到端性能或目标。\n`;
     const url = URL.createObjectURL(
       new Blob([content], { type: "text/markdown;charset=utf-8" }),
     );
     const link = el("a");
     link.href = url;
-    link.download = "native-futures-execution-design.md";
+    link.download = "cn-futures-execution-design.md";
     document.body.append(link);
     link.click();
     link.remove();

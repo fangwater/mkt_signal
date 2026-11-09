@@ -213,6 +213,7 @@ impl Session {
                         "configured contract is not a CFFEX future"
                     );
                     let instrument = Instrument {
+                        venue: Venue::Cffex,
                         symbol: symbol.clone(),
                         price_tick: e.price_tick,
                         min_lots: e.minimum,
@@ -263,6 +264,7 @@ impl Session {
                 let symbol = text(&e.symbol)?;
                 // YdPosition is the opening historical inventory, not necessarily today's remaining yesterday position.
                 let row = PositionSnapshot {
+                    venue: Venue::Cffex,
                     symbol: symbol.clone(),
                     side,
                     today: e.today,
@@ -340,6 +342,7 @@ impl Session {
             let p = positions
                 .entry((row.symbol.clone(), row.side))
                 .or_insert_with(|| PositionSnapshot {
+                    venue: Venue::Cffex,
                     symbol: row.symbol.clone(),
                     side: row.side,
                     today: 0,
@@ -365,7 +368,7 @@ impl Session {
             )
         });
         self.orders
-            .sort_by_key(|o| (o.key.front_id, o.key.session_id, o.key.order_ref.clone()));
+            .sort_by_key(|o| (o.key.session.clone(), o.key.order_ref.clone()));
         self.trades.sort_by_key(|f| {
             (
                 f.identity.symbol.clone(),
@@ -390,8 +393,7 @@ impl Session {
                     self.last_rule_poll = now;
                     return Ok(Some(Snapshot {
                         trading_day: day,
-                        front_id: front,
-                        session_id: session,
+                        session: session_key(front, session),
                         max_order_ref: max_ref,
                         available_cash: available.min(*previous_cash),
                         instruments: self.instruments.values().cloned().collect(),

@@ -6,7 +6,7 @@ members = [
     "crates/cme_roll_metadata",
     "crates/cn_futures_trim",
     "crates/cn_futures_l2",
-    "crates/native_futures",
+    "crates/cn_futures",
     "crates/usstock_lseg_mbp_replay",
     "crates/usstock_lseg_raw_replay",
     "crates/usstock_lseg_rawll2_replay",

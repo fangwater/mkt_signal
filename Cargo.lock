@@ -910,6 +910,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cn_futures"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "crossbeam-channel",
+ "encoding_rs",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "cn_futures_l2"
 version = "0.1.0"
 dependencies = [
@@ -3308,19 +3321,6 @@ dependencies = [
  "security-framework 2.11.1",
  "security-framework-sys",
  "tempfile",
-]
-
-[[package]]
-name = "native_futures"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cc",
- "crossbeam-channel",
- "encoding_rs",
- "serde",
- "serde_json",
- "toml 0.8.23",
 ]
 
 [[package]]

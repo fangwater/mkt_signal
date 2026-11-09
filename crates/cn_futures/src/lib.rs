@@ -5,3 +5,4 @@ pub mod core;
 pub mod ctp;
 pub mod model;
 pub mod runtime;
+pub mod yida;

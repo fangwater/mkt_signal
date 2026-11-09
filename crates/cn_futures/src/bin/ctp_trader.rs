@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use native_futures::config::Config;
+use cn_futures::config::Config;
 use std::path::PathBuf;
 
 fn main() {
@@ -49,7 +49,7 @@ fn run() -> Result<()> {
         );
         #[cfg(feature = "ctp-sdk")]
         {
-            println!("{}", native_futures::ctp::sdk::version(&path)?);
+            println!("{}", cn_futures::ctp::sdk::version(&path)?);
             return Ok(());
         }
         #[cfg(not(feature = "ctp-sdk"))]
@@ -69,7 +69,7 @@ fn run() -> Result<()> {
     }
     #[cfg(feature = "ctp-sdk")]
     {
-        native_futures::runtime::run(config, execute)
+        cn_futures::runtime::run(config, execute)
     }
     #[cfg(not(feature = "ctp-sdk"))]
     {

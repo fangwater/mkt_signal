@@ -1,8 +1,8 @@
 # CTP 中金所交易实现
 
-`crates/native_futures` 提供一个独立的国内期货交易核心和 `ctp-trader` 入口。CTP 接入直接调用上期技术官方 **6.7.11 Trader API**；“交易网关”在这里就是 SDK 适配模块，不是额外进程。行情暂不接入，调用方在同一个业务线程中通过 `SingleLoop::submit` / `cancel` 提交交易意图。现有加密交易策略的兼容不在本次范围内，不增加策略兼容层。
+`crates/cn_futures` 提供一个独立的国内期货交易核心和 `ctp-trader` 入口。CTP 接入直接调用上期技术官方 **6.7.11 Trader API**；“交易网关”在这里就是 SDK 适配模块，不是额外进程。行情暂不接入，调用方在同一个业务线程中通过 `SingleLoop::submit` / `cancel` 提交交易意图。现有加密交易策略的兼容不在本次范围内，不增加策略兼容层。
 
-当前完成的是可编译、可本地测试的第一版交易接入，**没有连接真实期货公司，没有经过中金所仿真账户或实盘联调**。易达仍处于设计阶段。
+当前完成的是可编译、可本地测试的第一版交易接入，**没有连接真实期货公司，没有经过中金所仿真账户或实盘联调**。易达 SHFE / INE 原生交易初版见 [易达接入说明](yida_trade.md)，共用 `cn_futures` 核心，已通过本地合成 SDK 桥接联测，待配套柜台仿真。
 
 ## 已实现范围
 
@@ -32,12 +32,12 @@
 
 | 文件                                       | 职责                                             |
 | ------------------------------------------ | ------------------------------------------------ |
-| `crates/native_futures/src/model.rs`       | 一套交易意图、回报、持仓、快照与风控契约         |
-| `crates/native_futures/src/core.rs`        | 单线程状态所有者、预占、成交核销、直接 SDK 调用  |
-| `crates/native_futures/src/ctp/session.rs` | 请求关联、认证登录、查询限速、快照收敛与周期刷新 |
-| `crates/native_futures/src/ctp/sdk.rs`     | Rust SDK 生命周期、回调入口、原始请求上下文      |
-| `crates/native_futures/cpp/ctp_bridge.cpp` | 按官方头文件编译的 C++ / Rust 桥接与原生字段映射 |
-| `crates/native_futures/src/runtime.rs`     | 同一业务 loop、后台输入 / 审计、明确的交易开关   |
+| `crates/cn_futures/src/model.rs`       | 一套交易意图、回报、持仓、快照与风控契约         |
+| `crates/cn_futures/src/core.rs`        | 单线程状态所有者、预占、成交核销、直接 SDK 调用  |
+| `crates/cn_futures/src/ctp/session.rs` | 请求关联、认证登录、查询限速、快照收敛与周期刷新 |
+| `crates/cn_futures/src/ctp/sdk.rs`     | Rust SDK 生命周期、回调入口、原始请求上下文      |
+| `crates/cn_futures/cpp/ctp_bridge.cpp` | 按官方头文件编译的 C++ / Rust 桥接与原生字段映射 |
+| `crates/cn_futures/src/runtime.rs`     | 同一业务 loop、后台输入 / 审计、明确的交易开关   |
 | `config/ctp_trade.example.toml`            | 不包含凭据的配置示例                             |
 
 默认 Cargo feature 不依赖 SDK；`ctp-sdk` feature 编译真实 C++ 桥接。没有官方 SDK 时仍可运行核心与生命周期测试，但网络接入会明确报错，不会换用其他柜台或模拟实现。
@@ -57,17 +57,17 @@ libthosttraderapi_se.so
 
 ```bash
 CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-  cargo build -p native_futures --features ctp-sdk --bin ctp-trader
+  cargo build -p cn_futures --features ctp-sdk --bin ctp-trader
 ```
 
 不连接网络的检查：
 
 ```bash
-cargo run -p native_futures --bin ctp-trader -- \
+cargo run -p cn_futures --bin ctp-trader -- \
   --config config/ctp_trade.example.toml --check-config
 
 CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-  cargo run -p native_futures --features ctp-sdk --bin ctp-trader -- \
+  cargo run -p cn_futures --features ctp-sdk --bin ctp-trader -- \
   --sdk-version /absolute/path/to/ctp/6.7.11/libthosttraderapi_se.so
 ```
 
@@ -110,15 +110,15 @@ stdin 是人工仿真联调入口，输入在线程外读取；调用方直接�
 
 ```json
 {"op":"state"}
-{"op":"submit","intent":{"symbol":"IF2612","side":"buy","offset":"open","lots":1,"price_ticks":20000,"time_in_force":"day"}}
-{"op":"cancel","key":{"front_id":7,"session_id":11,"order_ref":"101"}}
+{"op":"submit","intent":{"venue":"CFFEX","symbol":"IF2612","side":"buy","offset":"open","lots":1,"price_ticks":20000,"time_in_force":"day"}}
+{"op":"cancel","key":{"session":"ctp:7:11","order_ref":"101"}}
 {"op":"reconcile"}
 {"op":"shutdown"}
 ```
 
 合约、价格和订单身份均为示例；撤单应使用实际回传的完整 `key`。`price_ticks` 是整数价格档位，实际限价等于 `price_ticks × PriceTick`。核心目前接受 CFFEX `open` / `close`，不把上期所的平今 / 平昨指令映射直接套到中金所。CFFEX 通用平仓的今昨仓核销顺序通过 `close_priority` 显式配置，需在实际柜台验证。
 
-命令返回 `submitted_locally` 仅说明 SDK 同步返回成功。它不等于柜台确认，更不等于成交。持仓只随事实成交改变；撤单请求不释放冻结量；撤单终结中已报告但尚未收到事实成交的数量继续占用，直至成交事实到达或完成对账。
+命令统一返回 `submit_receipt`；`children` 中逐项保留实际订单 key、开平、手数、结果和错误。CTP 不拆日期，只有一个子项；子项 `submitted_locally` 仅说明 SDK 同步返回成功。它不等于柜台确认，更不等于成交。持仓只随事实成交改变；撤单请求不释放冻结量；撤单终结中已报告但尚未收到事实成交的数量继续占用，直至成交事实到达或完成对账。
 
 `reconcile` 在没有控制查询占用时启动；成功启动后暂停新交易，重新查询并收敛。stdin EOF 或 `shutdown` 会退出进程，**不自动撤销交易所挂单**。flow 目录不能被两个实例共用，同一账户的风险额度也不能由其他独立进程重复使用。
 
@@ -136,16 +136,16 @@ stdin 是人工仿真联调入口，输入在线程外读取；调用方直接�
 ## 验证
 
 ```bash
-cargo test -p native_futures
+cargo test -p cn_futures
 CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-  cargo test -p native_futures --features ctp-sdk
+  cargo test -p cn_futures --features ctp-sdk
 
 CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
 CTP_TEST_SDK_LIBRARY=/absolute/path/to/ctp/6.7.11/libthosttraderapi_se.so \
-  cargo test -p native_futures --features ctp-sdk \
+  cargo test -p cn_futures --features ctp-sdk \
     official_sdk_constructs_and_releases_without_connecting -- --ignored
 
-python3 crates/native_futures/tests/ctp_bridge_smoke.py \
+python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
   --sdk-dir /absolute/path/to/ctp/6.7.11 --binary target/debug/ctp-trader
 ```
 

@@ -270,6 +270,7 @@ impl Trader for CtpTrader {
                 match order.intent.offset {
                     Offset::Open => 48,
                     Offset::Close => 49,
+                    _ => anyhow::bail!("unsupported CFFEX offset"),
                 },
                 match order.intent.time_in_force {
                     TimeInForce::Day => 0,
@@ -298,8 +299,8 @@ impl Trader for CtpTrader {
                 symbol.as_ptr(),
                 order_ref.as_ptr(),
                 system.as_ptr(),
-                order.key.front_id,
-                order.key.session_id,
+                super::parse_session(&order.key.session)?.0,
+                super::parse_session(&order.key.session)?.1,
             )
         })
     }
