@@ -260,6 +260,39 @@ def main():
                 assert saved.value.status==200 and json.loads(groups_file.read_text())['custom']==['BTCUSDT']
                 assert 'custom' not in json.loads((root/'config/cta_prep_binance_futures/symbol_groups.json').read_text())
                 page.locator('#symbol-group').select_option('top-5')
+                # Hourly tabs can create independent all-symbol scopes for both workers.
+                for worker, group, folder, name in [
+                    ('cta-prep-binance-futures','prep01','cta_prep_binance_futures','prep01_bn_1h'),
+                    ('cta-factor-spread','spread01','cta_factor_spread','spread01_okx_bn_1h'),
+                ]:
+                    page.locator('#strategy-type').select_option(worker)
+                    page.wait_for_function("worker => document.querySelector('main').getAttribute('aria-busy')==='false' && document.querySelector('#strategy-type').value===worker", arg=worker)
+                    page.locator('#strategy-group').select_option(group)
+                    page.locator('#symbol-group').select_option('')
+                    page.locator('[data-interval="1h"]').click()
+                    assert page.locator('#current-frequency').inner_text()=='1h'
+                    assert page.locator('#enabled').input_value()=='false'
+                    assert json.loads(page.locator('#factor-json').input_value())==[]
+                    assert page.locator('#entry-long').input_value()=='0.9'
+                    assert page.locator('#exit-long').input_value()=='0.3'
+                    hourly=root/'config'/folder/(name+'.json')
+                    # Empty hourly scopes can be saved without inventing factor rules.
+                    with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
+                        page.locator('#save').click()
+                    assert saved.value.status==200
+                    assert json.loads(hourly.read_text())['factor_rules']==[]
+                    original={path:path.read_bytes() for path in (root/'config'/folder).glob('*.json') if path!=hourly}
+                    page.locator('#factor-json').fill('[{"标的":"BTC","nq":"0.50","符号":1,"因子":"avg_price"}]')
+                    with page.expect_response(lambda response: '/api/preview' in response.url) as preview:
+                        page.locator('#validate').click()
+                    assert preview.value.status==200
+                    with page.expect_response(lambda response: '/api/combinations' in response.url) as saved:
+                        page.locator('#save').click()
+                    assert saved.value.status==200
+                    recipe=json.loads(hourly.read_text())
+                    assert recipe['interval']=='1h' and recipe['signal']['enabled'] is False
+                    assert recipe['factor_rules'][0]['标的']=='BTCUSDT'
+                    assert all(path.read_bytes()==content for path,content in original.items())
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'desktop.png'), full_page=True)
@@ -269,7 +302,7 @@ def main():
                     page.screenshot(path=str(args.screenshot_dir/'mobile.png'), full_page=True)
                 assert not errors, errors
                 browser.close()
-                print('CTA symbol groups passed: Delist navigation, pool isolation, membership checks, new Spread scope, JSON definitions, save conflicts and mobile layout')
+                print('CTA configuration passed: symbol groups, Prep/Spread 1h creation and saves, frequency isolation, conflicts and mobile layout')
         finally:
             if gateway:
                 gateway.shutdown();gateway.server_close()

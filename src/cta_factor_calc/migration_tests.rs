@@ -55,6 +55,7 @@ fn fixture() -> Fixture {
                 ("KNCUSDT", "baseline_141", "0.2/0.8", -1.0),
             ],
             Interval::FiveMinutes => vec![("SOLUSDT", "factor_049", "关闭", 5.0)],
+            Interval::Hour => unreachable!("migration fixture contains only minute strategies"),
             Interval::FifteenMinutes => vec![
                 ("SOLUSDT", "baseline_104", "关闭", 2.0),
                 ("BTCUSDT", "baseline_022", "0.2/0.8", -1.0),

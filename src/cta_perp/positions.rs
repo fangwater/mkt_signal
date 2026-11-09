@@ -79,7 +79,11 @@ pub fn next_position_flag(current: i8, bar: &WeightedBar, config: &CtaPerpConfig
         || (current < 0
             && bar.decision_value - exit.factor_exit_quantile_short > 4.0 * f64::EPSILON)
     {
-        return 0;
+        return if config.bar_interval == super::interval::BarInterval::OneHour {
+            next_position_flag(0, bar, config)
+        } else {
+            0
+        };
     }
     if current != 0 {
         return current;

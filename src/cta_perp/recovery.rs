@@ -36,6 +36,13 @@ pub fn advance_position(
     if flag == 0 {
         *position = StrategyPosition::default();
     } else {
+        if config.bar_interval == super::interval::BarInterval::OneHour
+            && position.flag != 0
+            && position.flag != flag
+        {
+            // A failed reverse entry must still complete the factor's exit.
+            *position = StrategyPosition::default();
+        }
         ensure!(
             bid.is_finite() && ask.is_finite() && bid > 0.0 && ask >= bid,
             "invalid replay sizing BBO"

@@ -344,15 +344,25 @@ impl Table {
                 }
                 if spread {
                     effective = config.for_strategy(&symbol, &binding.strategy);
+                    let interval = self.combination.interval;
                     let spread_id = format!(
-                        "okex-futures-binance-futures-{}-1min-spread",
-                        symbol.to_ascii_lowercase()
+                        "okex-futures-binance-futures-{}-{}-spread",
+                        symbol.to_ascii_lowercase(),
+                        interval.name()
                     );
                     let lag = points
                         .get(&spread_id)
-                        .filter(|p| p.ts_ms == ts - 60_000)
-                        .or_else(|| previous.get(&spread_id).filter(|p| p.ts_ms == ts - 60_000));
-                    let nq_id = format!("binance-futures-{}-1min-nq", symbol.to_ascii_lowercase());
+                        .filter(|p| p.ts_ms == ts - interval.millis())
+                        .or_else(|| {
+                            previous
+                                .get(&spread_id)
+                                .filter(|p| p.ts_ms == ts - interval.millis())
+                        });
+                    let nq_id = format!(
+                        "binance-futures-{}-{}-nq",
+                        symbol.to_ascii_lowercase(),
+                        interval.name()
+                    );
                     let nq_present = points.get(&nq_id).is_some_and(|p| p.ts_ms == ts);
                     // Allow independently calculated dependencies to arrive for
                     // this bar before committing its one decision opportunity.

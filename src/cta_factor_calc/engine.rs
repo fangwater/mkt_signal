@@ -33,6 +33,10 @@ pub struct Field {
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "hourly_tests.rs"]
+mod hourly_tests;
+
 /// One unversioned factor output. Vector factors (NQ) and scalar factors use
 /// exactly the same field representation; no account or entry-rule context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,9 +74,10 @@ struct Transform {
     normalize: NormalizeState,
     ranks: ExactRollingWindow,
     min_periods: usize,
+    inclusive_ranks: bool,
 }
 impl Transform {
-    fn new(params: &Parameters) -> Self {
+    fn new(params: &Parameters, interval: Interval) -> Self {
         Self {
             normalize: NormalizeState::new(
                 params.normalize_window,
@@ -81,6 +86,7 @@ impl Transform {
             ),
             ranks: ExactRollingWindow::new(params.rank_window),
             min_periods: params.rank_min_periods,
+            inclusive_ranks: interval == Interval::Hour,
         }
     }
     fn observe(&mut self, raw: Option<f64>, standardize: bool) -> Field {
@@ -93,7 +99,13 @@ impl Transform {
         // z-score, even though causal normalization retains its previous value.
         let value = raw.and(normalized).and_then(finite);
         self.ranks.observe_slot(value.unwrap_or(f64::NAN));
-        let quantile = self.ranks.percentile_rank_last();
+        let quantile = if self.inclusive_ranks {
+            (self.ranks.len() >= self.min_periods)
+                .then(|| self.ranks.percentile_rank_last_inclusive())
+                .flatten()
+        } else {
+            self.ranks.percentile_rank_last()
+        };
         Field {
             raw,
             value,
@@ -184,11 +196,11 @@ struct Spread {
     transform: Transform,
 }
 impl Spread {
-    fn new(parameters: &Parameters) -> Self {
+    fn new(parameters: &Parameters, interval: Interval) -> Self {
         Self {
             watermarks: [0; 2],
             pending: BTreeMap::new(),
-            transform: Transform::new(parameters),
+            transform: Transform::new(parameters, interval),
         }
     }
     fn observe(&mut self, side: usize, ts: i64, mid: Option<f64>) -> Vec<(i64, Field)> {
@@ -263,8 +275,95 @@ impl QuoteClock {
     }
 }
 
+/// Native hourly input follows completed Kafka periods and their right-closed
+/// event boundaries. It never synthesizes an absent hour from an old book.
+#[derive(Default)]
+struct HourlySeries {
+    baseline: Option<LocalBaselineAggregator>,
+    completed: Vec<BaselineBar>,
+    quotes: BTreeMap<i64, Option<f64>>,
+    period_end_us: i64,
+    accepting: bool,
+}
+impl HourlySeries {
+    fn begin_period(&mut self, period: &PeriodMessage) {
+        let end_us = period.ts.saturating_mul(1000);
+        self.accepting = period.ts > 0 && end_us > self.period_end_us;
+        if !self.accepting {
+            return;
+        }
+        self.period_end_us = end_us;
+    }
+    fn event_time(&self, timestamp: i64) -> Option<i64> {
+        let us = if timestamp >= 10_000_000_000_000 {
+            timestamp
+        } else {
+            timestamp.saturating_mul(1000)
+        };
+        // Shift only the internal bucket coordinate by a microsecond so an
+        // exact end timestamp is aggregated into the period it closes.
+        (self.accepting && us > 0 && us <= self.period_end_us).then(|| us - 1)
+    }
+    fn on_book(&mut self, book: &IncrementOrderBookInfo, mid: Option<f64>) {
+        let Some(us) = self.event_time(book.timestamp) else {
+            return;
+        };
+        let start = us.div_euclid(Interval::Hour.millis() * 1000) * Interval::Hour.millis();
+        self.quotes.insert(start, mid);
+        if let Some(agg) = &mut self.baseline {
+            let bids = book
+                .bids
+                .iter()
+                .map(|p| Level::from_values(p.price, p.amount))
+                .collect::<Vec<_>>();
+            let asks = book
+                .asks
+                .iter()
+                .map(|p| Level::from_values(p.price, p.amount))
+                .collect::<Vec<_>>();
+            self.completed
+                .extend(agg.on_retained_book(us, book.is_snapshot, &bids, &asks));
+        }
+    }
+    fn on_trade(&mut self, trade: &TradeInfo, buy: bool, threshold: Option<AmountThreshold>) {
+        let Some(us) = self.event_time(trade.timestamp) else {
+            return;
+        };
+        let Some(agg) = &mut self.baseline else {
+            return;
+        };
+        self.completed.extend(if let Some(threshold) = threshold {
+            agg.on_trade_with_threshold(us, buy, trade.price, trade.amount, threshold)
+        } else {
+            agg.on_trade(us, buy, trade.price, trade.amount)
+        });
+    }
+    fn finish_period(&mut self) -> (Vec<BaselineBar>, Vec<(Interval, i64, Option<f64>)>) {
+        if !self.accepting {
+            return (Vec::new(), Vec::new());
+        }
+        let hour = Interval::Hour.millis();
+        let end_ms = self.period_end_us / 1000;
+        if let Some(agg) = &mut self.baseline {
+            self.completed.extend(agg.close_completed_period(end_ms));
+        }
+        let bars = std::mem::take(&mut self.completed);
+        let mut quotes = Vec::new();
+        while self
+            .quotes
+            .first_key_value()
+            .is_some_and(|(start, _)| *start + hour <= end_ms)
+        {
+            let (start, close) = self.quotes.pop_first().unwrap();
+            quotes.push((Interval::Hour, start + hour, close));
+        }
+        (bars, quotes)
+    }
+}
+
 struct Series {
     baseline: Option<LocalBaselineAggregator>,
+    hourly: Option<HourlySeries>,
     book: OrderBook,
     update_id: i64,
     last_book_ts: i64,
@@ -305,6 +404,9 @@ impl Series {
             .zip(self.book.best_ask_price())
             .filter(|(b, a)| b.is_finite() && a.is_finite() && *b > 0.0 && a >= b)
             .map(|(b, a)| (b + a) * 0.5);
+        if let Some(hourly) = &mut self.hourly {
+            hourly.on_book(book, mid);
+        }
         // Close the previous bucket before using this book's price.
         let output = self
             .clocks
@@ -331,9 +433,6 @@ impl Series {
         output
     }
     fn on_trade(&mut self, trade: &TradeInfo) {
-        let Some(agg) = &mut self.baseline else {
-            return;
-        };
         let buy = match trade.side.to_ascii_lowercase().as_str() {
             "b" | "buy" => true,
             "s" | "sell" => false,
@@ -343,6 +442,12 @@ impl Series {
         if ts <= 0 {
             return;
         }
+        if let Some(hourly) = &mut self.hourly {
+            hourly.on_trade(trade, buy, self.threshold);
+        }
+        let Some(agg) = &mut self.baseline else {
+            return;
+        };
         if let Some(threshold) = self.threshold {
             agg.on_trade_with_threshold(ts, buy, trade.price, trade.amount, threshold);
         } else {
@@ -405,14 +510,14 @@ impl FormulaGroup {
         )?;
         Ok(Self {
             interval,
-            resampler: (interval != Interval::Minute)
+            resampler: (!matches!(interval, Interval::Minute | Interval::Hour))
                 .then(|| MultiMinuteBaseline::new(interval.millis())),
             evaluator: BaselineReplayState::default(),
             plan,
             names,
             transforms: calculations
                 .iter()
-                .map(|c| Transform::new(&c.parameters))
+                .map(|c| Transform::new(&c.parameters, interval))
                 .collect(),
             needs_threshold: calculations
                 .iter()
@@ -517,6 +622,7 @@ impl Engine {
                         });
                     Series {
                         baseline: None,
+                        hourly: None,
                         book: OrderBook::new(),
                         update_id: 0,
                         last_book_ts: 0,
@@ -524,7 +630,14 @@ impl Engine {
                         threshold,
                     }
                 });
-                if id.is_formula() {
+                if id.interval == Interval::Hour {
+                    let hourly = series.hourly.get_or_insert_with(HourlySeries::default);
+                    if id.is_formula() {
+                        hourly.baseline.get_or_insert_with(|| {
+                            LocalBaselineAggregator::for_completed_periods(Interval::Hour.millis())
+                        });
+                    }
+                } else if id.is_formula() {
                     let agg = series
                         .baseline
                         .get_or_insert_with(LocalBaselineAggregator::new);
@@ -536,6 +649,8 @@ impl Engine {
                         .clocks
                         .entry(id.interval)
                         .or_insert_with(|| QuoteClock::new(id.interval));
+                }
+                if !id.is_formula() {
                     engine
                         .quote_jobs
                         .entry((market, id.symbol.clone(), id.interval))
@@ -555,7 +670,7 @@ impl Engine {
             } else {
                 engine.special.insert(
                     name.clone(),
-                    Special::Spread(Spread::new(&calculation.parameters)),
+                    Special::Spread(Spread::new(&calculation.parameters, id.interval)),
                 );
             }
         }
@@ -572,6 +687,13 @@ impl Engine {
         period: &PeriodMessage,
     ) -> Result<Vec<FactorPoint>> {
         let mut points = Vec::new();
+        for ((m, _), series) in &mut self.series {
+            if *m == market {
+                if let Some(hourly) = &mut series.hourly {
+                    hourly.begin_period(period);
+                }
+            }
+        }
         for info in &period.symbol_infos {
             let symbol = normalize_symbol_for_internal(&info.symbol);
             let Some(series) = self.series.get_mut(&(market, symbol.clone())) else {
@@ -607,39 +729,12 @@ impl Engine {
             } else {
                 Vec::new()
             };
-            for (interval, ts, mid) in quotes {
-                for name in self
-                    .quote_jobs
-                    .get(&(market, symbol.clone(), interval))
-                    .into_iter()
-                    .flatten()
-                {
-                    let id = &self.plan.calculations[name].id;
-                    match self.special.get_mut(name).context("missing factor state")? {
-                        Special::Nq(state) => points.push(FactorPoint {
-                            factor_id: name.clone(),
-                            ts_ms: ts,
-                            fields: state.observe(mid),
-                        }),
-                        Special::Spread(state) => {
-                            for (ts, field) in
-                                state.observe(usize::from(market != id.market), ts, mid)
-                            {
-                                points.push(FactorPoint {
-                                    factor_id: name.clone(),
-                                    ts_ms: ts,
-                                    fields: BTreeMap::from([("value".into(), field)]),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+            self.observe_quotes(market, &symbol, quotes, &mut points)?;
             for minute in minutes {
-                for ((group_market, group_symbol, _), group) in self
-                    .formula
-                    .iter_mut()
-                    .filter(|((m, s, _), _)| *m == market && s == &symbol)
+                for ((group_market, group_symbol, _), group) in
+                    self.formula.iter_mut().filter(|((m, s, interval), _)| {
+                        *m == market && s == &symbol && *interval != Interval::Hour
+                    })
                 {
                     points.extend(group.observe(
                         group_symbol,
@@ -647,6 +742,26 @@ impl Engine {
                         &minute,
                         threshold_ready,
                     )?);
+                }
+            }
+        }
+        let hourly = self
+            .series
+            .iter_mut()
+            .filter(|((m, _), _)| *m == market)
+            .filter_map(|((_, symbol), series)| {
+                let (bars, quotes) = series.hourly.as_mut()?.finish_period();
+                Some((symbol.clone(), series.threshold.is_some(), bars, quotes))
+            })
+            .collect::<Vec<_>>();
+        for (symbol, threshold_ready, bars, quotes) in hourly {
+            self.observe_quotes(market, &symbol, quotes, &mut points)?;
+            if let Some(group) = self
+                .formula
+                .get_mut(&(market, symbol.clone(), Interval::Hour))
+            {
+                for bar in bars {
+                    points.extend(group.observe(&symbol, market, &bar, threshold_ready)?);
                 }
             }
         }
@@ -672,6 +787,42 @@ impl Engine {
             self.latest.insert(point.factor_id.clone(), point.clone());
         }
         Ok(points)
+    }
+    fn observe_quotes(
+        &mut self,
+        market: Market,
+        symbol: &str,
+        quotes: Vec<(Interval, i64, Option<f64>)>,
+        points: &mut Vec<FactorPoint>,
+    ) -> Result<()> {
+        for (interval, ts, mid) in quotes {
+            for name in self
+                .quote_jobs
+                .get(&(market, symbol.to_string(), interval))
+                .into_iter()
+                .flatten()
+            {
+                let id = &self.plan.calculations[name].id;
+                match self.special.get_mut(name).context("missing factor state")? {
+                    Special::Nq(state) => points.push(FactorPoint {
+                        factor_id: name.clone(),
+                        ts_ms: ts,
+                        fields: state.observe(mid),
+                    }),
+                    Special::Spread(state) => {
+                        for (ts, field) in state.observe(usize::from(market != id.market), ts, mid)
+                        {
+                            points.push(FactorPoint {
+                                factor_id: name.clone(),
+                                ts_ms: ts,
+                                fields: BTreeMap::from([("value".into(), field)]),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     pub fn retain_plan(&mut self, plan: Plan) -> Result<()> {
         self.special
@@ -709,9 +860,23 @@ impl Engine {
             if !self
                 .formula
                 .keys()
-                .any(|(m, s, _)| m == market && s == symbol)
+                .any(|(m, s, interval)| m == market && s == symbol && *interval != Interval::Hour)
             {
                 series.baseline = None;
+            }
+            let hourly_formula =
+                self.formula
+                    .contains_key(&(*market, symbol.clone(), Interval::Hour));
+            if !hourly_formula
+                && !self
+                    .quote_jobs
+                    .contains_key(&(*market, symbol.clone(), Interval::Hour))
+            {
+                series.hourly = None;
+            } else if !hourly_formula {
+                if let Some(hourly) = &mut series.hourly {
+                    hourly.baseline = None;
+                }
             }
         }
         self.plan = plan;

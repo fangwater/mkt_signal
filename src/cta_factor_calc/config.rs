@@ -60,6 +60,8 @@ pub enum Interval {
     FiveMinutes,
     #[serde(rename = "15min")]
     FifteenMinutes,
+    #[serde(rename = "1h")]
+    Hour,
 }
 impl Interval {
     pub fn name(self) -> &'static str {
@@ -67,6 +69,7 @@ impl Interval {
             Self::Minute => "1min",
             Self::FiveMinutes => "5min",
             Self::FifteenMinutes => "15min",
+            Self::Hour => "1h",
         }
     }
     pub fn millis(self) -> i64 {
@@ -74,6 +77,7 @@ impl Interval {
             Self::Minute => 60_000,
             Self::FiveMinutes => 300_000,
             Self::FifteenMinutes => 900_000,
+            Self::Hour => 3_600_000,
         }
     }
 }
@@ -101,6 +105,7 @@ impl FactorId {
             Some("1min") => Interval::Minute,
             Some("5min") => Interval::FiveMinutes,
             Some("15min") => Interval::FifteenMinutes,
+            Some("1h") => Interval::Hour,
             _ => bail!("unsupported factor interval in {raw}"),
         };
         let name = parts.next().context("missing factor name")?;
@@ -195,6 +200,7 @@ impl Parameters {
                 Interval::Minute => 1000,
                 Interval::FiveMinutes => 200,
                 Interval::FifteenMinutes => 67,
+                Interval::Hour => 16,
             },
             clip_zscore: 3.0,
             rank_window: if id.factor == "nq" { 120 } else { slots },
@@ -473,11 +479,12 @@ impl Combination {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
             "invalid combination name"
         );
-        let empty_strategy =
-            self.factor_rules.is_empty() && self.symbol_group.is_some() && self.signal.is_some();
+        let empty_strategy = self.factor_rules.is_empty()
+            && (self.symbol_group.is_some() || self.interval == Interval::Hour)
+            && self.signal.is_some();
         ensure!(
             (empty_strategy || !self.factor_rules.is_empty()) && self.factor_rules.len() <= 8192,
-            "combination requires factor rows; only a named symbol-group strategy may be empty"
+            "combination requires factor rows; only a symbol-group or hourly position strategy may be empty"
         );
         let mut seen = BTreeSet::new();
         for rule in &self.factor_rules {
@@ -540,9 +547,9 @@ impl Combination {
             ensure!(
                 self.venue == Market::OkexFutures
                     && self.reference_venue == Some(Market::BinanceFutures)
-                    && self.interval == Interval::Minute
+                    && matches!(self.interval, Interval::Minute | Interval::Hour)
                     && p.position_algorithm == PositionAlgorithm::V0,
-                "Spread positions require OKX/Binance futures, 1min and independent factor rules"
+                "Spread positions require OKX/Binance futures, 1min or 1h and independent factor rules"
             );
         } else {
             ensure!(
@@ -571,7 +578,9 @@ impl Combination {
             });
         }
         ensure!(
-            !rules.is_empty() || (self.factor_rules.is_empty() && self.symbol_group.is_some()),
+            !rules.is_empty()
+                || (self.factor_rules.is_empty()
+                    && (self.symbol_group.is_some() || self.interval == Interval::Hour)),
             "signal requires nonzero factor rows"
         );
         if p.position_algorithm == PositionAlgorithm::V1 {
@@ -593,6 +602,7 @@ impl Combination {
                 Interval::Minute => BarInterval::OneMinute,
                 Interval::FiveMinutes => BarInterval::FiveMinutes,
                 Interval::FifteenMinutes => BarInterval::FifteenMinutes,
+                Interval::Hour => BarInterval::OneHour,
             },
             enabled: p.enabled,
             max_pos_u: p.max_pos_u,

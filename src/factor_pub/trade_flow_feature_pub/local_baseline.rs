@@ -523,6 +523,8 @@ pub struct LocalBaselineAggregator {
     book_initialized: bool,
     next_book_update_id: i64,
     depth_flow: Option<DepthBookFlow>,
+    /// Present for native bars finalized by a completed Kafka period watermark.
+    period_watermark_ms: Option<i64>,
 }
 
 impl Default for LocalBaselineAggregator {
@@ -543,7 +545,40 @@ impl LocalBaselineAggregator {
             book_initialized: false,
             next_book_update_id: 1,
             depth_flow: None,
+            period_watermark_ms: None,
         }
+    }
+
+    /// Aggregate one native bar directly from period events. Empty intervals
+    /// are skipped, and the caller closes bars only after the period completes.
+    pub fn for_completed_periods(bar_ms: i64) -> Self {
+        assert!(bar_ms >= 60_000 && bar_ms % 60_000 == 0);
+        let mut aggregator = Self::new();
+        aggregator.base = BarState::new(bar_ms);
+        aggregator.period_watermark_ms = Some(0);
+        aggregator.enable_full_depth();
+        aggregator
+    }
+
+    pub fn close_completed_period(&mut self, end_ms: i64) -> Vec<BaselineBar> {
+        let Some(previous) = self.period_watermark_ms else {
+            return Vec::new();
+        };
+        let watermark = align(end_ms, self.base.bar_ms);
+        if watermark <= previous {
+            return Vec::new();
+        }
+        let mut completed = Vec::new();
+        if self
+            .base
+            .current
+            .as_ref()
+            .is_some_and(|bar| bar.start_ms.saturating_add(self.base.bar_ms) <= watermark)
+        {
+            self.finish_base_current(&mut completed);
+        }
+        self.period_watermark_ms = Some(watermark);
+        completed
     }
 
     pub fn enable_full_depth(&mut self) {
@@ -656,7 +691,7 @@ impl LocalBaselineAggregator {
         if self.depth_flow.is_some() && self.base.current.is_none() {
             self.base.current = Some(BaselineBar::new(align(
                 timestamp_us.div_euclid(1_000),
-                BASELINE_BAR_MS,
+                self.base.bar_ms,
             )));
         }
     }
@@ -699,7 +734,7 @@ impl LocalBaselineAggregator {
             return completed;
         }
         let timestamp_ms = timestamp_us.div_euclid(1_000);
-        let target_start = align(timestamp_ms, BASELINE_BAR_MS);
+        let target_start = align(timestamp_ms, self.base.bar_ms);
         if self.base.current.is_none() {
             let mut bar = BaselineBar::new(target_start);
             bar.update_trade(is_buy, price, amount, threshold);
@@ -759,12 +794,25 @@ impl LocalBaselineAggregator {
 
     fn advance_to(&mut self, timestamp_us: i64, completed: &mut Vec<BaselineBar>) -> bool {
         let timestamp_ms = timestamp_us.div_euclid(1_000);
-        let target_start = align(timestamp_ms, BASELINE_BAR_MS);
+        if self
+            .period_watermark_ms
+            .is_some_and(|end| timestamp_ms < end)
+        {
+            return false;
+        }
+        let target_start = align(timestamp_ms, self.base.bar_ms);
         let Some(mut current_start) = self.base.current.as_ref().map(|bar| bar.start_ms) else {
             return true;
         };
         if target_start < current_start {
             return false;
+        }
+
+        if self.period_watermark_ms.is_some() {
+            if current_start < target_start {
+                self.finish_base_current(completed);
+            }
+            return true;
         }
 
         while current_start < target_start {
@@ -826,6 +874,9 @@ impl LocalBaselineAggregator {
     }
 
     fn consume_base_bar(&mut self, bar: &BaselineBar) {
+        if self.period_watermark_ms.is_some() {
+            return;
+        }
         for completed in consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS)
             .into_iter()
             .flatten()

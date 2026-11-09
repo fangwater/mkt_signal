@@ -10,6 +10,8 @@ pub enum BarInterval {
     FiveMinutes,
     #[serde(rename = "15m")]
     FifteenMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
 }
 
 #[cfg(test)]
@@ -34,6 +36,7 @@ mod tests {
             (BarInterval::OneMinute, 2880, 1440),
             (BarInterval::FiveMinutes, 576, 288),
             (BarInterval::FifteenMinutes, 192, 96),
+            (BarInterval::OneHour, 48, 24),
         ] {
             assert_eq!(interval.nq_window_samples(), 120);
             assert_eq!(interval.factor_quantile_window(), rank_window);
@@ -49,6 +52,7 @@ impl BarInterval {
             Self::OneMinute => "1m",
             Self::FiveMinutes => "5m",
             Self::FifteenMinutes => "15m",
+            Self::OneHour => "1h",
         }
     }
 
@@ -57,6 +61,7 @@ impl BarInterval {
             Self::OneMinute => 60_000,
             Self::FiveMinutes => 300_000,
             Self::FifteenMinutes => 900_000,
+            Self::OneHour => 3_600_000,
         }
     }
 

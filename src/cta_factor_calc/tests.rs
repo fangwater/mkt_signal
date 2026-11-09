@@ -646,7 +646,7 @@ fn spread_window_is_2880_minutes_and_requires_1440_valid_pairs() {
     let parameters = Parameters::for_id(&id);
     assert_eq!(parameters.rank_window, 2880);
     assert_eq!(parameters.rank_min_periods, 1440);
-    let mut state = Spread::new(&parameters);
+    let mut state = Spread::new(&parameters, Interval::Minute);
     let observe = |state: &mut Spread, minute: i64, okx: Option<f64>| {
         let ts = minute * 60_000;
         assert!(state.observe(0, ts, okx).is_empty());

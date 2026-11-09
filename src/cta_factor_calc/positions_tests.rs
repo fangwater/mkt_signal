@@ -68,6 +68,89 @@ fn worker_owns_four_named_tables_and_spread_dependencies_are_implicit() {
 }
 
 #[test]
+fn hourly_prep_reverses_on_the_same_bar_and_keeps_its_frequency_ledger() {
+    let mut table = Table::new(prep("1h"), (TS - 60000) * 1000);
+    let id = "binance-futures-ethusdt-1h-factor_036";
+    let mut now = TS + 6000;
+    for (ts, q, expected) in [(TS, 0.99, 2.0), (TS + 3_600_000, 0.01, -2.0)] {
+        now = ts + 6000;
+        table
+            .observe(
+                &BTreeMap::from([(id.into(), point(id, ts, q))]),
+                &BTreeMap::new(),
+                now * 1000,
+                &|_, _| {
+                    Some(Quote {
+                        bid: 100.0,
+                        ask: 100.0,
+                        ts: now * 1000,
+                        ..Default::default()
+                    })
+                },
+            )
+            .unwrap();
+        assert_eq!(table.targets().unwrap()["ETHUSDT"]["qty"], expected);
+    }
+    assert_eq!(table.strategy_name, "cta-prep01-bn-1h-pos");
+    // An unavailable reverse-entry quote still exits the old short.
+    table
+        .observe(
+            &BTreeMap::from([(id.into(), point(id, TS + 7_200_000, 0.99))]),
+            &BTreeMap::new(),
+            (now + 3_600_000) * 1000,
+            &|_, _| None,
+        )
+        .unwrap();
+    assert_eq!(table.targets().unwrap()["ETHUSDT"]["qty"], "clear");
+}
+
+#[test]
+fn hourly_spread_uses_the_preceding_hour_and_can_reverse_independently() {
+    let mut combination = spread();
+    combination.interval = super::super::config::Interval::Hour;
+    combination.validate().unwrap();
+    let id = "binance-futures-ethusdt-1h-factor_036";
+    let spread_id = "okex-futures-binance-futures-ethusdt-1h-spread";
+    let points = BTreeMap::from([(id.into(), point(id, TS, 0.99))]);
+    let wrong_lag = BTreeMap::from([(spread_id.into(), point(spread_id, TS - 60_000, 0.2))]);
+    let mut wrong = Table::new(combination.clone(), (TS - 60000) * 1000);
+    wrong
+        .observe(&points, &wrong_lag, (TS + 6000) * 1000, &book)
+        .unwrap();
+    assert_eq!(wrong.targets().unwrap()["okex-futures:ETHUSDT"]["qty"], 0.0);
+    let previous = BTreeMap::from([(spread_id.into(), point(spread_id, TS - 3_600_000, 0.2))]);
+    let mut table = Table::new(combination, (TS - 60000) * 1000);
+    table
+        .observe(&points, &previous, (TS + 6000) * 1000, &book)
+        .unwrap();
+    assert_eq!(table.targets().unwrap()["okex-futures:ETHUSDT"]["qty"], 2.0);
+    let ts = TS + 3_600_000;
+    table
+        .observe(
+            &BTreeMap::from([(id.into(), point(id, ts, 0.01))]),
+            &BTreeMap::from([(spread_id.into(), point(spread_id, TS, 0.8))]),
+            (ts + 6000) * 1000,
+            &|_, _| {
+                Some(Quote {
+                    bid: 100.0,
+                    ask: 100.0,
+                    ts: (ts + 6000) * 1000,
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        table.targets().unwrap()["okex-futures:ETHUSDT"]["qty"],
+        -2.0
+    );
+    assert_eq!(table.strategy_name, "cta-spread01-okx-bn-1h-pos");
+    let restored: Table = serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored.targets().unwrap(), table.targets().unwrap());
+}
+
+#[test]
 fn groups_size_persist_disable_and_retire_positions_independently() {
     for (mut base, symbol_group) in [prep("1min"), spread()]
         .into_iter()
@@ -221,7 +304,7 @@ fn warmup_disabled_and_generation_handover_never_replay_positions() {
 
 #[test]
 fn prep_nq_uses_the_same_inclusive_q50_gate_at_all_frequencies() {
-    for frequency in ["1min", "5min", "15min"] {
+    for frequency in ["1min", "5min", "15min", "1h"] {
         let mut combination = prep(frequency);
         combination.factor_rules[0].nq = "0.50".into();
         for (factor_q, long_value, short_value, ready, expected_qty) in [

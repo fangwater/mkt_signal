@@ -260,7 +260,9 @@ impl SymbolFactorState {
             min_samples: interval.factor_min_samples(),
             tp_vpi_006_min_periods: match interval {
                 BarInterval::OneMinute => 360,
-                BarInterval::FiveMinutes | BarInterval::FifteenMinutes => 280,
+                BarInterval::FiveMinutes | BarInterval::FifteenMinutes | BarInterval::OneHour => {
+                    280
+                }
             },
             evaluator: BaselineReplayState::default(),
             windows: (0..factor_count)

@@ -71,7 +71,7 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id),clone=value=>JSON.parse(JSON.stringify(value));
-const prepIntervals=['1min','5min','15min'];
+const prepIntervals=['1min','5min','15min','1h'];
 let catalog=null,draft=null,dirty=false,groupsDirty=false,busy=true,selectedWorker=new URL(location.href).searchParams.get('worker')||'cta-prep-binance-futures';
 function message(text,error=false){$('message').textContent=text;$('message').className='status '+(error?'err':'ok');}
 function changed(){dirty=true;$('dirty').textContent='有未保存修改';}
@@ -87,7 +87,7 @@ function factorRows(doc){
 }
 function parseRules(){
   let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
-  if(!Array.isArray(rows)||(!rows.length&&!(draft?.symbol_group&&draft?.signal)))throw Error('因子配置必须是 JSON 数组；未限定券池的配置至少需要一条规则');
+  if(!Array.isArray(rows)||(!rows.length&&!((draft?.symbol_group||draft?.interval==='1h')&&draft?.signal)))throw Error('因子配置必须是 JSON 数组；未限定券池的配置至少需要一条规则');
   const fields=['标的','nq','符号','因子'],result=[],seen=new Set();
   for(const [index,row] of rows.entries()){
     const label='第 '+(index+1)+' 项：';
@@ -137,16 +137,17 @@ function scopeDoc(interval){
   const docs=Object.values(catalog.plan.combinations),existing=docs.find(c=>c.strategy_group===group&&(c.symbol_group||'')===symbolGroup&&c.interval===interval);
   if(existing)return existing;
   // New scopes begin disabled with an empty rule list; only explicit rules trade.
-  const source=docs.find(c=>c.strategy_group===group&&c.interval===interval);
-  if(!source||!symbolGroup)return null;
+  const source=docs.find(c=>c.strategy_group===group&&c.interval===interval)||(interval==='1h'?docs.find(c=>c.strategy_group===group):null);
+  if(!source||(!symbolGroup&&interval!=='1h'))return null;
   const shortMarket={'binance-futures':'bn','okex-futures':'okx','binance-margin':'bn-spot'};
-  const next=clone(source);next.name=[symbolGroup,group,shortMarket[next.venue],shortMarket[next.reference_venue],interval].filter(Boolean).join('_');next.symbol_group=symbolGroup;next.factor_rules=[];delete next.parameters;
+  const next=clone(source);next.name=[symbolGroup,group,shortMarket[next.venue],shortMarket[next.reference_venue],interval].filter(Boolean).join('_');next.interval=interval;if(symbolGroup)next.symbol_group=symbolGroup;else delete next.symbol_group;next.factor_rules=[];delete next.parameters;
   if(next.signal){next.signal.enabled=false;next.signal.symbol_overrides={};}
+  if(interval==='1h'&&next.signal){next.signal.position_algorithm='v0';next.signal.entry.factor_long_quantile=.9;next.signal.entry.factor_short_quantile=.1;next.signal.execution.factor_exit_quantile_long=.3;next.signal.execution.factor_exit_quantile_short=.7;}
   return next;
 }
 function renderTabs(){
   $('frequency-tabs').replaceChildren();
-  const intervals=selectedWorker==='cta-factor-spread'?['1min']:prepIntervals;
+  const intervals=selectedWorker==='cta-factor-spread'?['1min','1h']:prepIntervals;
   for(const interval of intervals){
     const doc=scopeDoc(interval),button=document.createElement('button');
     button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(draft?.name===doc?.name));button.dataset.interval=interval;button.dataset.name=doc?.name||'';button.disabled=busy||!doc;
