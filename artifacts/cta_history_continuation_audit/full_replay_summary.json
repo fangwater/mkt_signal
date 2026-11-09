@@ -1,0 +1,21 @@
+{
+  "records": 58118,
+  "first_period_ms": 1794045501000,
+  "last_period_ms": 1794219852000,
+  "hourly_points": 9010,
+  "not_ready": [
+    "binance-futures-dashusdt-1h-depth_imb_bps1"
+  ],
+  "missing": [],
+  "elapsed_secs": 1067.60555503,
+  "consumed": {
+    "binance-futures:0": 10218391
+  },
+  "first_period_utc": "2026-11-07T09:58:21+00:00",
+  "last_period_utc": "2026-11-09T10:24:12+00:00",
+  "latest_calculations": 265,
+  "latest_ready": 264,
+  "latest_timestamps": {
+    "1794218400000": 265
+  }
+}

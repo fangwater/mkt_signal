@@ -514,6 +514,19 @@ Manager 会话，要求完整账户范围的 configure 权限；同时部署 Man
 
 ## 1h 原生输入历史包
 
+2026-11-09，RX01/RX03 的34个标的已完成31天合成：每币744根，合计25,296根。
+JP 共享路径为 `/home/ubuntu/cta-hourly-history/current/data`；原压缩包为
+`/home/ubuntu/cta-hourly-history/rx01_rx03_1h_20261108.tar.gz`（29,689,568字节）。
+逐文件校验及 JP 原生引擎导入通过：233个普通因子中232个就绪，32个所需NQ均预热744根。
+DASH `depth_imb_bps1` 的最近48根在中间价±1bp内没有挂单，原值为空；保留未知和原门槛。
+规则内的符号与NQ参数原样保留。匹配的worker和校验二进制在 `current/bin/`，
+本次仅发布独立历史包，线上Prep/Spread二进制及进程没有切换。
+全清单实际接续验证读取58,118条Kafka记录，从2026-11-07 09:58:21 UTC到
+2026-11-09 10:24:12 UTC，生成9,010个种子截止后的小时因子点；无重复、无时间回退、无缺失计算。
+最新265项计算中264项就绪，唯一未知仍为上述DASH因子。JP公共入口另做单标的完整接续，
+58,142条记录通过。上传与接续回执见 `artifacts/cta_history_continuation_audit/verification.json`，
+JP副本在 `~/cta-hourly-history/receipts/`。
+
 `cta-hourly-history build` 从已有 Tardis `trades` / `incremental_book_L2` 合成
 Binance 永续小时输入。它复用线上成交与盘口聚合器和因子引擎，不导入预先计算的
 z-score、交易分位或仓位。每币文件保存 OHLC、成交与大小单字段、20 档盘口、

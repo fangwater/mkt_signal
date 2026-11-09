@@ -1,0 +1,76 @@
+{
+  "uploaded": {
+    "host": "ip-172-31-35-228.ap-northeast-1.compute.internal",
+    "installed_at_ms": 1794220474909,
+    "history": "/home/ubuntu/cta-hourly-history/rx01_rx03_1h_20261108/data",
+    "current": "/home/ubuntu/cta-hourly-history/current/data",
+    "archive": "/home/ubuntu/cta-hourly-history/rx01_rx03_1h_20261108.tar.gz",
+    "archive_sha256": "bc01bcb710cfa4a0479a68f66f6cb9ffbc6a0adba5e37cd3ec46aa61ec7bd5a3",
+    "archive_bytes": 29689568,
+    "verified_files": 87,
+    "symbols": 34,
+    "rows": 25296,
+    "ready_formulas": 232,
+    "formula_count": 233,
+    "nq_count": 32,
+    "not_ready": [
+      "binance-futures-dashusdt-1h-depth_imb_bps1"
+    ],
+    "live_worker_binaries_replaced": false,
+    "live_processes_restarted": false
+  },
+  "seed_summary": {
+    "formula_count": 233,
+    "ready": 232,
+    "nq_count": 32,
+    "nq_rows": [
+      744
+    ],
+    "missing_symbols": []
+  },
+  "jp_public_kafka_probe": {
+    "records": 58142,
+    "hourly_points": 136,
+    "not_ready": [],
+    "missing": [],
+    "first_period_ms": 1794044349000,
+    "last_period_ms": 1794218772000,
+    "elapsed_secs": 777.672676507
+  },
+  "full_replay_pending": false,
+  "synthesis": {
+    "book_symbols": 25,
+    "trade_only_symbols": 9,
+    "size_classified_symbols": 8,
+    "book_events": 814247579,
+    "export_period_trades": 648517546
+  },
+  "full_replay": {
+    "records": 58118,
+    "first_period_ms": 1794045501000,
+    "last_period_ms": 1794219852000,
+    "hourly_points": 9010,
+    "not_ready": [
+      "binance-futures-dashusdt-1h-depth_imb_bps1"
+    ],
+    "missing": [],
+    "elapsed_secs": 1067.60555503,
+    "consumed": {
+      "binance-futures:0": 10218391
+    },
+    "first_period_utc": "2026-11-07T09:58:21+00:00",
+    "last_period_utc": "2026-11-09T10:24:12+00:00",
+    "latest_calculations": 265,
+    "latest_ready": 264,
+    "latest_timestamps": {
+      "1794218400000": 265
+    }
+  },
+  "checks": {
+    "cta_library": 68,
+    "shared_tardis_parser": 33,
+    "cta_config": 3,
+    "hourly_builder": 1,
+    "cargo_fmt": true
+  }
+}
