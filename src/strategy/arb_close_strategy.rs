@@ -83,6 +83,7 @@ impl ArbCloseStrategy {
         if self.force_taker_taker {
             return;
         }
+        MonitorChannel::instance().finish_paired_close_first(client_order_id);
         if silent {
             MonitorChannel::instance()
                 .release_close_inventory_unfilled_silent(client_order_id, reason);
@@ -282,12 +283,9 @@ impl ArbCloseStrategy {
 
         // Close must never round up: topping up a dust close can open the opposite side.
         // If the capped quantity is below venue step/min, release the reservation silently.
-        let (order_qty, order_price) = match MonitorChannel::instance().align_close_order_by_venue(
-            venue,
-            &symbol,
-            raw_order_qty,
-            ctx.price_value(),
-        ) {
+        let (mut order_qty, mut order_price) = match MonitorChannel::instance()
+            .align_close_order_by_venue(venue, &symbol, raw_order_qty, ctx.price_value())
+        {
             Ok(Some(aligned)) => aligned,
             Ok(None) => {
                 self.release_close_reservation(
@@ -337,6 +335,59 @@ impl ArbCloseStrategy {
             );
             self.open_state.alive = false;
             return;
+        }
+
+        if !self.force_taker_taker {
+            let grant = MonitorChannel::instance().reserve_paired_close_exposure(
+                &symbol,
+                venue,
+                side,
+                order_qty * qty_multiplier,
+                client_order_id,
+            );
+            let granted_base_qty = match grant {
+                Ok(qty) => qty,
+                Err(reason) => {
+                    self.release_close_reservation(
+                        client_order_id,
+                        "paired_close_exposure_rejected",
+                        false,
+                    );
+                    debug!(
+                        "ArbCloseStrategy: paired close denied symbol={} reason={}",
+                        symbol, reason
+                    );
+                    self.open_state.alive = false;
+                    return;
+                }
+            };
+            if granted_base_qty + ARB_CLOSE_QTY_EPS < order_qty * qty_multiplier {
+                let aligned = MonitorChannel::instance().align_close_order_by_venue(
+                    venue,
+                    &symbol,
+                    granted_base_qty / qty_multiplier,
+                    order_price,
+                );
+                match aligned {
+                    Ok(Some((qty, price)))
+                        if MonitorChannel::instance()
+                            .check_min_trading_requirements(venue, &symbol, qty, Some(price))
+                            .is_ok() =>
+                    {
+                        order_qty = qty;
+                        order_price = price;
+                    }
+                    _ => {
+                        self.release_close_reservation(
+                            client_order_id,
+                            "paired_close_grant_below_minimum",
+                            true,
+                        );
+                        self.open_state.alive = false;
+                        return;
+                    }
+                }
+            }
         }
 
         let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
@@ -465,6 +516,10 @@ impl OpenStrategyCommon for ArbCloseStrategy {
 
     fn force_taker_taker_hedge(&self) -> bool {
         self.force_taker_taker
+    }
+
+    fn hedge_on_incremental_open_fill(&self) -> bool {
+        !self.force_taker_taker
     }
 
     fn skip_open_total_exposure_risk_check(&self) -> bool {

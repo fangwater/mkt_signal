@@ -15,6 +15,7 @@ pub mod binance_std_um_margin_guard;
 pub mod bitget_position_tier_guard;
 mod channel;
 pub mod chase_exec_config;
+pub(crate) mod close_exposure;
 pub mod close_inventory;
 pub mod event;
 pub mod exec_algorithm_switch;

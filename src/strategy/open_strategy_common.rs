@@ -1102,7 +1102,14 @@ pub trait OpenStrategyCommon {
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
         let symbol_ref = symbol.as_ref();
         let current_open_base_qty = monitor.get_position_qty(symbol_ref, venue);
-        if !skip_position_risk_checks {
+        let paired_close = self.record_terminal_as_arb_close()
+            && !self.force_taker_taker_hedge()
+            && input
+                .client_order_id
+                .is_some_and(|id| monitor.is_paired_close(id));
+        // Paired exits have already reserved bounded unfinished work and both-leg inventory.
+        // The current-account opening gate would otherwise disable every exit once over limit.
+        if !skip_position_risk_checks && !paired_close {
             if let Err(err) = monitor.check_open_exposure(symbol_ref) {
                 match err {
                     OpenExposureRiskError::Symbol(e) => {
@@ -1380,6 +1387,26 @@ pub trait OpenStrategyCommon {
             }
         };
         let next_base_qty = current_open_base_qty + add_base_qty;
+        if paired_close
+            && !monitor.check_paired_close_first(
+                input.client_order_id.unwrap_or(0),
+                venue,
+                side,
+                add_base_qty.abs(),
+            )
+        {
+            self.mark_open_strategy_inactive("paired-close order exceeds its reservation".into());
+            return None;
+        }
+        if is_arb_open && !skip_position_risk_checks {
+            if let Err(reason) = monitor.check_arb_order_exposure_risk(&symbol, venue, add_base_qty)
+            {
+                self.mark_open_strategy_inactive(format!(
+                    "projected exposure risk failed: {reason}"
+                ));
+                return None;
+            }
+        }
         if !skip_position_risk_checks
             && next_base_qty.abs() > current_open_base_qty.abs() + 1e-12_f64
         {

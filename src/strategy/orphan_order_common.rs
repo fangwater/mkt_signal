@@ -905,17 +905,28 @@ impl OrphanOrderTracker {
                     )
                 } else {
                     match owner.source_kind {
-                        OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
-                            &normalized_symbol,
-                            side,
-                            order_base_qty,
-                            cumulative_base_qty,
-                            event_time,
-                            price,
-                            0,
-                            client_order_id,
-                            b"",
-                        ),
+                        OrphanSourceKind::Open => {
+                            let unrecorded = MonitorChannel::instance()
+                                .unrecorded_paired_close_first_fill(
+                                    client_order_id,
+                                    cumulative_base_qty,
+                                );
+                            if unrecorded.is_some_and(|qty| qty <= eps) {
+                                true
+                            } else {
+                                strategy_mgr.record_open_order_terminal(
+                                    &normalized_symbol,
+                                    side,
+                                    order_base_qty,
+                                    unrecorded.unwrap_or(cumulative_base_qty),
+                                    event_time,
+                                    price,
+                                    0,
+                                    client_order_id,
+                                    b"",
+                                )
+                            }
+                        }
                         OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
                             &normalized_symbol,
                             side,
@@ -946,6 +957,9 @@ impl OrphanOrderTracker {
             } else {
                 true
             };
+            if recorded && owner.source_kind == OrphanSourceKind::Open {
+                MonitorChannel::instance().finish_paired_close_first(client_order_id);
+            }
             info!(
                 "{}: strategy_id={} finalized order client_order_id={} source_strategy_id={} source_role={:?} source_kind={:?} symbol={} venue={:?} side={:?} order_qty={:.8} cumulative_qty={:.8} order_base_qty={:.8} cumulative_base_qty={:.8} reason={}",
                 strategy_role,

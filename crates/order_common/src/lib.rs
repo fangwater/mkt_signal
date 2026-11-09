@@ -1165,6 +1165,13 @@ impl OrderManager {
         self.orders.keys().cloned().collect()
     }
 
+    /// Orders whose remaining quantity may still execute, including unacknowledged submissions.
+    pub fn active_orders(&self) -> impl Iterator<Item = &Order> {
+        self.orders
+            .values()
+            .filter(|order| !order.status.is_terminal())
+    }
+
     /// 获取订单数量
     pub fn count(&self) -> usize {
         self.orders.len()

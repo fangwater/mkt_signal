@@ -4030,6 +4030,153 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.trade_update_seq)
     }
 
+    pub(crate) fn reserve_paired_close_exposure(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        base_qty: f64,
+        client_order_id: i64,
+    ) -> Result<f64, String> {
+        Self::with_inner(|inner| {
+            if venue != inner.open_venue {
+                return Err("paired-close first leg does not match the deployment".into());
+            }
+            let asset = extract_base_asset_key(symbol).ok_or("invalid paired-close symbol")?;
+            let params = PreTradeParamsLoader::instance();
+            Self::with_basic_state_cached(|state| {
+                // A lowered max_pos_u must not make even one normal close child impossible.
+                // Unfinished closes share this budget until their factual hedge fills arrive.
+                let child_u = params.arb_amount_u_for_symbol(symbol);
+                let symbol_ratio = params.max_symbol_exposure_ratio();
+                let total_ratio = params.max_total_exposure_ratio();
+                let symbol_limit = if symbol_ratio > 0.0 {
+                    (params.max_pos_u_for_symbol(inner.open_venue, symbol) * symbol_ratio)
+                        .max(child_u)
+                } else {
+                    f64::INFINITY
+                };
+                let total_limit = if total_ratio > 0.0 {
+                    if !state.total_equity_usdt.is_finite() || state.total_equity_usdt <= 0.0 {
+                        return Err("invalid equity for paired-close exposure budget".into());
+                    }
+                    (state.total_equity_usdt * total_ratio).max(child_u)
+                } else {
+                    f64::INFINITY
+                };
+                let (open_position, hedge_position) = state
+                    .exposures
+                    .get(asset.as_ref())
+                    .copied()
+                    .unwrap_or_default();
+                inner.close_inventory.borrow_mut().exposure.reserve(
+                    super::close_exposure::CloseExposureRequest {
+                        id: client_order_id,
+                        asset: asset.as_ref(),
+                        open_venue: venue,
+                        hedge_venue: inner.hedge_venue,
+                        side,
+                        qty: base_qty,
+                        open_position,
+                        hedge_position,
+                        symbol_limit_usdt: symbol_limit,
+                        total_limit_usdt: total_limit,
+                    },
+                    |asset| state.mark_usdt_by_asset.get(asset).copied(),
+                )
+            })
+        })
+    }
+
+    pub(crate) fn is_paired_close(&self, id: i64) -> bool {
+        Self::try_with_inner(|inner| inner.close_inventory.borrow().exposure.contains(id))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn check_paired_close_first(
+        &self,
+        id: i64,
+        venue: TradingVenue,
+        side: Side,
+        qty: f64,
+    ) -> bool {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .matches_first(id, venue, side, qty)
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn unrecorded_paired_close_first_fill(
+        &self,
+        id: i64,
+        cumulative: f64,
+    ) -> Option<f64> {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .unrecorded_first_fill(id, cumulative)
+        })
+        .flatten()
+    }
+
+    pub(crate) fn record_paired_close_first_fill(&self, id: i64, qty: f64) -> bool {
+        Self::try_with_inner(|inner| {
+            let mut ledger = inner.close_inventory.borrow_mut();
+            let paired = ledger.exposure.contains(id);
+            ledger.exposure.first_fill(id, qty);
+            paired
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn finish_paired_close_first(&self, id: i64) {
+        Self::try_with_inner(|inner| inner.close_inventory.borrow_mut().exposure.finish_first(id));
+    }
+
+    pub(crate) fn record_paired_close_hedge_fill(&self, id: i64, qty: f64) {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .exposure
+                .hedge_fill(id, qty)
+        });
+    }
+
+    pub(crate) fn check_paired_close_hedge(
+        &self,
+        id: i64,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        base_qty: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            let position = Self::get_position_qty_inner(inner, symbol, venue);
+            let asset =
+                extract_base_asset_key(symbol).ok_or("invalid paired-close hedge symbol")?;
+            if !inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .matches_asset(id, asset.as_ref())
+            {
+                return Err("paired-close hedge symbol does not match its factual fill".into());
+            }
+            inner
+                .close_inventory
+                .borrow()
+                .exposure
+                .check_hedge(id, venue, side, base_qty, position)
+        })
+    }
+
     pub fn reserve_close_inventory(
         &self,
         venue: TradingVenue,
@@ -6714,6 +6861,19 @@ impl MonitorChannel {
         Ok(())
     }
 
+    fn active_order_base_qty(inner: &MonitorChannelInner, order: &Order) -> Result<f64, String> {
+        let remaining = order.quantity - order.cumulative_filled_quantity;
+        let multiplier = if order.venue.is_inverse_futures() {
+            Self::qty_multiplier_for_venue_inner(inner, order.venue, &order.symbol)?
+        } else {
+            order.qty_multiplier
+        };
+        if !remaining.is_finite() || !multiplier.is_finite() || multiplier <= 0.0 {
+            return Err("invalid active Arb order quantity".into());
+        }
+        Ok(remaining.max(0.0) * multiplier)
+    }
+
     fn arb_hedge_exposure_projection_inner(
         inner: &MonitorChannelInner,
         state: &BasicState,
@@ -6757,16 +6917,46 @@ impl MonitorChannel {
             .copied()
             .unwrap_or((0.0, 0.0));
         let current_net_qty = open_qty + hedge_qty;
-        let next_net_qty = if hedge_venue == inner.open_venue || hedge_venue == inner.hedge_venue {
-            current_net_qty + hedge_signed_base_qty
-        } else {
+        if !hedge_signed_base_qty.is_finite() || hedge_signed_base_qty == 0.0 {
+            return Err("invalid Arb exposure projection quantity".into());
+        }
+        if hedge_venue != inner.open_venue && hedge_venue != inner.hedge_venue {
             return Err(format!(
                 "ArbHedge venue {:?} 不匹配 open={:?} hedge={:?}",
                 hedge_venue, inner.open_venue, inner.hedge_venue
             ));
-        };
-        let symbol_current_exposure_usdt = current_net_qty.abs() * mark;
-        let symbol_next_exposure_usdt = next_net_qty.abs() * mark;
+        }
+        // Opposite resting orders cannot offset each other's risk: either side can fill alone.
+        // Include Commit orders too, so an acknowledgement timeout does not free the budget.
+        let mut pending: HashMap<String, (f64, f64)> = HashMap::new();
+        for order in inner.order_manager.borrow().active_orders() {
+            if order.venue != inner.open_venue && order.venue != inner.hedge_venue {
+                continue;
+            }
+            let asset =
+                extract_base_asset_key(&order.symbol).ok_or("invalid active Arb order symbol")?;
+            if is_exposure_exempt_asset(asset.as_ref()) {
+                continue;
+            }
+            let quantity = Self::active_order_base_qty(inner, order)?;
+            let entry = pending.entry(asset.into_owned()).or_default();
+            if order.side == Side::Buy {
+                entry.0 += quantity;
+            } else {
+                entry.1 += quantity;
+            }
+        }
+        let (buys, sells) = pending
+            .get(base_asset.as_ref())
+            .copied()
+            .unwrap_or_default();
+        let worst = |net: f64, buy: f64, sell: f64| (net + buy).abs().max((net - sell).abs());
+        let symbol_current_exposure_usdt = worst(current_net_qty, buys, sells) * mark;
+        let symbol_next_exposure_usdt = worst(
+            current_net_qty,
+            buys + hedge_signed_base_qty.max(0.0),
+            sells + (-hedge_signed_base_qty).max(0.0),
+        ) * mark;
         let max_pos_u = loader.max_pos_u_for_symbol(inner.open_venue, symbol);
         if max_pos_u <= f64::EPSILON && symbol_limit_ratio > 0.0 {
             return Err("max_pos_u 配置无效，无法校验 ArbHedge 单币敞口".to_string());
@@ -6777,7 +6967,18 @@ impl MonitorChannel {
             f64::INFINITY
         };
 
-        let total_current_exposure_usdt = state.abs_total_exposure_usdt;
+        let mut total_current_exposure_usdt = state.abs_total_exposure_usdt;
+        for (asset, (buys, sells)) in pending {
+            let (open, hedge) = state.exposures.get(&asset).copied().unwrap_or_default();
+            let asset_mark = state
+                .mark_usdt_by_asset
+                .get(&asset)
+                .copied()
+                .filter(|p| p.is_finite() && *p > 0.0)
+                .ok_or_else(|| format!("missing active Arb order mark: {asset}"))?;
+            let net = open + hedge;
+            total_current_exposure_usdt += (worst(net, buys, sells) - net.abs()) * asset_mark;
+        }
         let total_next_exposure_usdt = (total_current_exposure_usdt - symbol_current_exposure_usdt
             + symbol_next_exposure_usdt)
             .max(0.0);
@@ -6803,8 +7004,9 @@ impl MonitorChannel {
         })
     }
 
-    /// ArbHedge 报单只做敞口风控：如果本单降低敞口则放行；否则当前敞口必须仍在阈值内。
-    pub fn check_arb_hedge_exposure_risk(
+    /// Arb opening/hedge exposure includes the worst fill of all active orders.
+    /// Risk may converge above a limit; additional expansion must fit after execution.
+    pub fn check_arb_order_exposure_risk(
         &self,
         symbol: &str,
         hedge_venue: TradingVenue,
@@ -6822,10 +7024,10 @@ impl MonitorChannel {
                 let eps = 1e-6_f64;
                 if projection.symbol_next_exposure_usdt
                     > projection.symbol_current_exposure_usdt + eps
-                    && projection.symbol_current_exposure_usdt > projection.symbol_limit_usdt + eps
+                    && projection.symbol_next_exposure_usdt > projection.symbol_limit_usdt + eps
                 {
                     return Err(format!(
-                        "symbol={} ArbHedge 单币敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                        "symbol={} Arb 单币敞口扩大后超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
                         symbol,
                         projection.symbol_current_exposure_usdt,
                         projection.symbol_next_exposure_usdt,
@@ -6834,10 +7036,10 @@ impl MonitorChannel {
                 }
                 if projection.total_next_exposure_usdt
                     > projection.total_current_exposure_usdt + eps
-                    && projection.total_current_exposure_usdt > projection.total_limit_usdt + eps
+                    && projection.total_next_exposure_usdt > projection.total_limit_usdt + eps
                 {
                     return Err(format!(
-                        "symbol={} ArbHedge 总敞口扩大且当前已超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
+                        "symbol={} Arb 总敞口扩大后超限: current={:.4}USDT next={:.4}USDT limit={:.4}USDT",
                         symbol,
                         projection.total_current_exposure_usdt,
                         projection.total_next_exposure_usdt,
@@ -8149,7 +8351,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::common::min_qty_table::MinQtyTable;
     use crate::pre_trade::price_table::PriceTable;
@@ -10276,7 +10478,7 @@ mod tests {
             .is_ok());
     }
 
-    fn install_binance_arb_hedge_exposure_fixture(
+    pub(crate) fn install_binance_arb_hedge_exposure_fixture(
         open_qty: f32,
         hedge_qty: f32,
         startup_gate_enabled: bool,
@@ -10912,7 +11114,7 @@ mod tests {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
         assert!(MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
             .is_ok());
     }
 
@@ -10921,9 +11123,9 @@ mod tests {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
         let err = MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .unwrap_err();
-        assert!(err.contains("单币敞口扩大且当前已超限"), "err={err}");
+        assert!(err.contains("单币敞口扩大后超限"), "err={err}");
     }
 
     #[test]
@@ -10931,8 +11133,85 @@ mod tests {
         install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
 
         assert!(MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .is_ok());
+    }
+
+    #[test]
+    fn arb_exposure_rejects_an_order_that_crosses_the_symbol_limit() {
+        install_binance_arb_hedge_exposure_fixture(7.0, 0.0, false);
+        assert!(MonitorChannel::instance()
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 2.0,)
+            .is_err());
+    }
+
+    #[test]
+    fn arb_exposure_reserves_commit_orders_and_does_not_net_opposite_live_orders() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        let manager = MonitorChannel::instance().order_manager();
+        for (id, side) in [(1, Side::Buy), (2, Side::Sell)] {
+            manager.borrow_mut().create_order(
+                TradingVenue::BinanceFutures,
+                id,
+                order_common::OrderType::Limit,
+                "FILUSDT".into(),
+                side,
+                3.0,
+                100.0,
+                false,
+                1.0,
+            );
+        }
+        assert!(MonitorChannel::instance()
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0,)
+            .is_err());
+        manager.borrow_mut().remove(1);
+        assert!(MonitorChannel::instance()
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0,)
+            .is_ok());
+    }
+
+    #[test]
+    fn paired_close_admission_survives_existing_account_imbalance_and_caps_unfinished_work() {
+        install_binance_arb_hedge_exposure_fixture(20.0, -40.0, false);
+        let monitor = MonitorChannel::instance();
+        assert!(monitor.check_open_exposure("FILUSDT").is_err());
+        monitor
+            .reserve_paired_close_exposure(
+                "FILUSDT",
+                TradingVenue::BinanceMargin,
+                Side::Sell,
+                6.0,
+                1,
+            )
+            .unwrap();
+        assert!(monitor.check_paired_close_first(1, TradingVenue::BinanceMargin, Side::Sell, 6.0));
+        assert!(!monitor.check_paired_close_first(1, TradingVenue::BinanceMargin, Side::Buy, 6.0));
+        assert_eq!(
+            monitor
+                .reserve_paired_close_exposure(
+                    "FILUSDT",
+                    TradingVenue::BinanceMargin,
+                    Side::Sell,
+                    3.0,
+                    2
+                )
+                .unwrap(),
+            2.0
+        );
+        assert!(monitor.record_paired_close_first_fill(1, 2.0));
+        monitor.finish_paired_close_first(1);
+        assert!(monitor
+            .check_paired_close_hedge(1, "FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 2.0)
+            .is_ok());
+        assert!(monitor
+            .check_paired_close_hedge(1, "FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 3.0)
+            .is_err());
+        assert!(monitor
+            .check_paired_close_hedge(1, "FILUSDT", TradingVenue::BinanceFutures, Side::Sell, 2.0)
+            .is_err());
+        monitor.record_paired_close_hedge_fill(1, 2.0);
+        assert!(!monitor.is_paired_close(1));
     }
 
     #[test]
@@ -11713,6 +11992,24 @@ mod tests {
         prices
             .borrow_mut()
             .update_mark_price("BTCUSD_PERP", 60000.0, 3);
+        let pending = Order::new(
+            venue,
+            99,
+            order_common::OrderType::Limit,
+            "BTCUSD".into(),
+            Side::Buy,
+            2.0,
+            50_000.0,
+            false,
+            100.0 / 50_000.0,
+            None,
+            false,
+        );
+        let reserved_base = MonitorChannel::with_inner(|inner| {
+            MonitorChannel::active_order_base_qty(inner, &pending)
+        })
+        .unwrap();
+        assert!((reserved_base - 200.0 / 60_000.0).abs() < 1e-12);
         let expected = 200.0 / 60000.0;
         assert!(
             (restored.get_for_venue(venue, "coin", "BTCUSD").unwrap() - expected).abs() < 1e-12

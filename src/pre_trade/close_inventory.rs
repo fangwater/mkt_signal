@@ -36,6 +36,7 @@ pub struct CloseReservationGrant {
 #[derive(Debug, Default)]
 pub struct CloseInventoryLedger {
     entries: HashMap<(TradingVenue, String), CloseInventoryEntry>,
+    pub(crate) exposure: super::close_exposure::CloseExposureLedger,
 }
 
 impl CloseInventoryLedger {
