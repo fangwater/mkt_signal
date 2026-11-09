@@ -1,7 +1,18 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 05:39 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 05:52 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 05:52 UTC，JP `gate_fr_arb01` 经环境本地脚本恢复trade_engine、修补版pre_trade
+和trade_signal；PID分别1101274、1101290、1102715，CPU mask均`0-5,48-95`。
+pre_trade仍为 `bf3f5698` 构建的`a4786154…7576c2a`，Gate四路交易WS登录通过，
+启动账户快照完成。原有账户监控、持久化及Viz保持运行，`gate_fr_arb04`交易栈继续停止。
+恢复前Viz缓存停在04:19、总敞口约13144 U；交易所真实绝对净差约69 U、单币最大4.85 U。
+恢复后Viz时间戳更新，正常开/平仓信号及交易执行已恢复；OPEN现货减仓1748枚约155 U，
+对应Gate合约已挂112张和62张reduce-only买回maker单，8枚余量低于合约步长待合并。
+该记录时第二腿尚未全部成交，不能将首腿成交计作双腿完成。总敞口阈值0.005、单币0.008
+和UniMMR 3.5/3.6均保持，当前UniMMR约3.9，未触发低UniMMR主动减仓。
+未改源IP/隔离核，核验：`data/ops/gate_close_patch_bf3f5698_20261109/restarted_arb01.json`。
 
 2026-11-09 05:39 UTC，JP `gate_fr_arb01` / `gate_fr_arb04` 发布配对平仓敞口修复。
 在本地维护工作区内从已推送 `arbmm bf3f5698` 导出并逐文件核对3048个源码文件，
