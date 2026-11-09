@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 05:52 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 06:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 06:04 UTC，`gate_fr_arb04` 已完成净差对齐并按原始风险参数恢复正常交易，
+通过环境本地脚本启动引擎、修补版pre_trade、信号；另补齐同版本Viz以恢复风险快照解码。
+`local_ips=["172.31.35.231","172.31.35.231"]`、配置文件及整份风险参数摘要保持；
+未改变共享源IP、ENI/EIP、路由、监听地址或隔离核分配。进程及回退记录见
+`docs/core_allocation.md`，本地核验：`data/ops/gate_close_patch_bf3f5698_20261109/restarted_arb04.json`。
 
 2026-11-09 05:52 UTC，`gate_fr_arb01` 通过环境本地脚本恢复引擎、修补版pre_trade和信号，
 交易WS四路登录通过；原 `local_ips=["172.31.35.231","172.31.35.231"]` 保持。
@@ -837,7 +843,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 / 只读 | `okex_exec_trade01 local_ips[0]`，新CTA账户监控及私有REST；下单关闭、旧MM停止 |
 | `172.31.35.230` | `54.238.72.43` | 已使用 / 只读 | `okex_exec_trade01 local_ips[1]`，新CTA备用WS；下单关闭、旧MM停止 |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 仅只读监控，05 停止）、`bitget_fr_arb01`/`02`/`03` |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 已恢复交易，05 停止）、`bitget_fr_arb01`/`02`/`03` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 已配置 | Exec `trade02`、`trade03`、`trade04` `local_ips[1]` |

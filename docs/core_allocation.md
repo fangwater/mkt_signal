@@ -1,7 +1,23 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 05:52 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 06:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 06:04 UTC，JP `gate_fr_arb04` 核对临时maker净差对齐已结束，再按原参数恢复正常交易。
+启动前原生现货/合约挂单均0，绝对净差合计39.52 U、单币最大4.69 U，42个配对仓位保留。
+整份Redis风险参数摘要与操作前一致：max_pos_u=150000、max_leverage=1.5、总敞口0.005、
+单币0.01、UniMMR触发/恢复3.4/3.5、应急3.0/3.1，无需重写参数。
+经环境本地脚本启动trade_engine1122891、修补版pre_trade1124318、trade_signal1125346，
+全部CPU mask仍`0-5,48-95`；Gate四路交易WS登录通过，账户快照就绪，正常开/平仓信号恢复。
+验收发现旧Viz可更新敞口明细但无法解码新版风险快照，总数仍缓存停机前数据；从同一
+`arbmm bf3f5698`源码快照本地构建`viz_server`，临时上传、SHA-256核验及原子替换后，
+通过环境本地脚本重启Viz为PID1136414，CPU mask仍`0-5,48-95`，配置加载通过。
+新Viz SHA-256：`bed95325407447614e93733ff711d0bbb6ee3ab13d1762b8057bdc0e42ebb7de`；
+风险快照恢复实时、重启后解码错误0。验收时真实净敞口146.15 U、页面144.61 U，含新交易在途。
+原有账户监控3841051、持久化3839213（CPU15）及FR dashboard3841289保持；28个已采样
+配置文件、风险参数摘要及`.231/.231`源IP保持。旧Viz备份与pre_trade回退同目录：
+`~/gate_fr_arb04/backups/paired_close_bf3f5698_20261109/`；本地核验：
+`data/ops/gate_close_patch_bf3f5698_20261109/restarted_arb04.json`。
 
 2026-11-09 05:52 UTC，JP `gate_fr_arb01` 经环境本地脚本恢复trade_engine、修补版pre_trade
 和trade_signal；PID分别1101274、1101290、1102715，CPU mask均`0-5,48-95`。
