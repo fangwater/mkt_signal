@@ -1,0 +1,23 @@
+[package]
+name = "native_futures"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+ctp-sdk = ["dep:cc"]
+
+[dependencies]
+anyhow.workspace = true
+crossbeam-channel = "0.5"
+encoding_rs = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json.workspace = true
+toml = "0.8"
+
+[build-dependencies]
+cc = { version = "1.2", optional = true }
+
+[[bin]]
+name = "ctp-trader"
+path = "src/bin/ctp_trader.rs"

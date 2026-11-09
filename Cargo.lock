@@ -3311,6 +3311,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "native_futures"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "crossbeam-channel",
+ "encoding_rs",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "ndarray"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
