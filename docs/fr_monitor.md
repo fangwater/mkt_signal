@@ -15,8 +15,9 @@
 | Gate | `gate_fr_arb01`–`03` | 20121–20123 |
 | Bitget | `bitget_fr_arb01`–`03` | 20151–20153 |
 
-`binance_fr_arb01` 保留为 `enabled=false`：核对时其 Viz 未响应，未找到该环境目录下的运行程序。
-重新上线该盘子时应复核端口、namespace 和进程再启用。
+`binance_fr_arb01` 已于 2026-11-09 退役，原先禁用的 monitor source 已从配置移除。
+旧 FR 运行目录保存在 `~/retired_data/binance_fr_arb01_20261109/runtime/`；
+其共享标准账户由 `binance_exec_trade02` 继续管理，账户资产和 Exec 进程保留。
 
 默认市场检查范围是 Binance、Gate、Bitget、OKX 的现货/合约 BBO 中的 `BTCUSDT`、`ETHUSDT`。
 它检测这两个代表币种的行情链路；**不会宣称覆盖所有在线币种**。需要逐币检查时，

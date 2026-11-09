@@ -1,7 +1,45 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 06:34 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 08:06 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 08:06 UTC，JP `binance_fr_arb02/03/04` 按要求统一重发完整二进制栈。
+本地从已同步的生产 `arbmm ecd0c24f` 导出并核验3049个源码文件，以 `--release --locked`
+构建；SCP显式暂存路径上传、SHA-256核对、逐套停止及原子安装后，通过环境本地脚本启动。
+每套7个组件均核验真实运行文件，3套21个进程的文件哈希与本次构建一致：账户监控、引擎、
+pre_trade、信号、持久化、Viz和FR dashboard。包含 `bf3f5698` 配对平仓敞口修复；
+FR02旧监控的68字节AccountRisk无法被新pre_trade读取，此次统一为当前76字节协议，
+3套账户风险解码、实时快照、交易所UniMMR对照及双腿启动快照全部通过，再恢复信号。
+pre_trade SHA-256 `43bebeaf4c4c34e1c2a292426ea9bffeae848d2a8715d0f774c8cd8c305d2a07`；
+Binance监控 `913f845bb42eb8abec4da776fc5cf45a8deb74db84ad627a0e82dbfece6f2eb3`。
+3套Redis风险/策略/覆盖键摘要、233个已采样配置/脚本指纹和源IP保持。
+持久化仍CPU15，其他组件CPU mask仍`0-5,48-95`，未调整隔离核。
+
+| 环境 | account_monitor | trade_engine | pre_trade | trade_signal | persist_manager | Viz | FR dashboard |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| binance_fr_arb02 | 1351058 | 1349609 | 1349709 | 1352104 | 1349305 | 1349163 | 1351118 |
+| binance_fr_arb03 | 1360327 | 1359115 | 1360207 | 1361840 | 1357905 | 1357543 | 1360385 |
+| binance_fr_arb04 | 1401002 | 1399632 | 1399918 | 1403306 | 1399093 | 1398715 | 1401064 |
+
+停信号后先撤现货首腿，核对真实挂单和在途。信号同时回复对冲报价，停止后不能假定旧
+对冲还能持续重报价；FR04遗留OPEN约99U净多因此在旧pre_trade退出后另用每单不超过50U
+的GTX限价卖单收尾，实际成交1163枚、3条成交均maker、0条taker，净差剩约0.057U，双边挂单0。
+3套常规配对仓位及原参数保留；FR01继续退役；Gate/Bitget本轮未发布。
+其余154个基线进程身份/CPU mask保持，含共享Exec02六个进程；
+另外2个原NAV `sync_history` 批处理已结束，未计入长期进程保持数。
+协议相关定向测试5项通过；Viz配置检查及全部运行文件校验通过。
+旧7个二进制及回执：`~/<env>/backups/fr_full_release_ecd0c24f_20261109/`；
+构建、前后审计、OPEN成交证据及最终核验：`data/ops/fr_full_release_ecd0c24f_20261109/`。
+
+2026-11-09 07:12 UTC，退役 JP `binance_fr_arb01` 的FR运行环境。原FR进程已全部停止，
+原生挂单0；与运行中 `binance_exec_trade02` 共用标准账户，保留其账户资产、配对持仓和
+Exec六个进程/配置，未向交易所发单或清仓。旧运行目录移至私有
+`~/retired_data/binance_fr_arb01_20261109/runtime/`，128个运行文件逐项核验；16个订单文件
+另打包回传本机，压缩包和逐文件SHA-256一致，凭据只保存在远端私有归档。
+清理旧NAV读取授权、source-IP环境归属、已禁用monitor source和Manager两条旧路径；
+旧FR网页各入口均410。Manager重载为PID1276059/CPU24，活动/目标发布验证正常；
+122个其他进程身份/CPU mask保持。未释放独占核，共享`.231`出口保留。
+核验及订单归档：`data/ops/binance_fr_arb01_retire_20261109/`。
 
 2026-11-09 06:34 UTC，完成 JP `gate_fr_arb02/03` 和 `bitget_fr_arb02/03` 配对平仓敞口修复滚动发布。
 复用已核验的本地 `arbmm bf3f5698` release产物，仅原子替换 `pre_trade`：
@@ -1530,7 +1568,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 21 | okex_exec_trade01 account_monitor | PID1397233；原MM停止 |
 | 22 | okex_exec_trade01 exec-pre-trade | PID4127465；规则刷新按venue隔离 |
 | 23 | okex_exec_trade01 trade_engine | PID3936778 |
-| 24 | crypto_cta_manager / cta_web | PID1475583；目标推送使用内存/RocksDB/Redis，PG最新副本异步更新；理论索引已就绪 |
+| 24 | crypto_cta_manager / cta_web | PID1276059；目标PG副本异步更新；退役Binance FR01后清理两条旧路径并重载 |
 | 25 | binance_exec_spread01 account_monitor | PID1361356；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID4133978 / PID3939283 |
 | 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID1367608、隧道 PID1367582 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
@@ -1555,7 +1593,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 2026-10-11 05:46 UTC trade05 待执行量/权益修复：本地 release 上传并校验 SHA-256 后原子安装，通过环境脚本重启 exec-pre-trade（PID 3371755）、Viz（PID 3371634），并重启 Manager 网页服务。trade_engine、账户监控、persist_manager 与 RX02 四个信号进程继续运行，RX03 无进程。CPU 分配仍为 housekeeping 0-5。Manager 已解析 RapidX 账户权益；待下单量按步长、minQty、minNotional 检查，真实余量保留在差额中。线上证据：`artifacts/trade05_pending_equity_live_validation.json`、`artifacts/trade05_pending_equity_live_browser.json`。
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
-binance_fr_arb01/02/03/04、gate_fr_arb01/02/03/04、bitget_fr_arb01/02、
+binance_fr_arb02/03/04、gate_fr_arb01/02/03/04、bitget_fr_arb01/02、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `binance_exec_trade08` 的engine、executor、监控、持久化、Viz/Config已于2026-11-02停止；

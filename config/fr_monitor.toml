@@ -30,21 +30,6 @@ venue = "okex-futures"
 symbols = ["BTCUSDT", "ETHUSDT"]
 
 [[sources]]
-id = "binance_fr_arb01"
-namespace = "binance_fr_arb01"
-enabled = false
-viz_url = "http://127.0.0.1:20131"
-rocksdb_path = "/home/ubuntu/binance_fr_arb01/data/persist_manager"
-max_asset_exposure_usdt = 1000.0
-max_total_exposure_usdt = 5000.0
-[[sources.markets]]
-venue = "binance-margin"
-symbols = ["BTCUSDT", "ETHUSDT"]
-[[sources.markets]]
-venue = "binance-futures"
-symbols = ["BTCUSDT", "ETHUSDT"]
-
-[[sources]]
 id = "binance_fr_arb02"
 namespace = "binance_fr_arb02"
 enabled = true

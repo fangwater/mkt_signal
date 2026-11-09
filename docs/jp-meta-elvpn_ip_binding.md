@@ -1,6 +1,21 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 06:34 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 08:06 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 08:06 UTC，JP `binance_fr_arb02/03/04` 已统一重发完整7组件并恢复信号。
+3套 `local_ips=["172.31.35.231","172.31.35.231"]`、env.sh、配置与Redis参数指纹保持；
+3套AccountRisk解码、实时UniMMR及运行文件校验通过。FR04原OPEN在途净多以maker收尾，
+成交1163枚、3条maker成交，净差约0.057U；未发送taker。Gate/Bitget本轮保持运行。
+未改ENI/EIP、路由、共享监听或源IP绑定；CPU/回退见 `docs/core_allocation.md`，
+前后审计和构建清单：`data/ops/fr_full_release_ecd0c24f_20261109/`。
+
+2026-11-09 07:12 UTC，JP `binance_fr_arb01` 退役，活动路径已移至私有
+`~/retired_data/binance_fr_arb01_20261109/runtime/`，128个运行文件核验；16个订单文件
+归档回传本机并完成SHA-256核验。旧FR网页入口均410，NAV读取授权和source-IP环境归属移除，
+禁用monitor source及Manager两条旧配置路径移除；Manager PID1276059、CPU24。
+该FR与 `binance_exec_trade02` 共用标准账户，账户资产及Exec六个进程/配置保持；未清仓或发单。
+原`.231`继续供FR02–04和其他账户共用，不解绑、不改ENI/EIP或策略路由。
+核验：`data/ops/binance_fr_arb01_retire_20261109/`。
 
 2026-11-09 06:34 UTC，JP `gate_fr_arb02/03`、`bitget_fr_arb02/03` 已滚动发布修补版pre_trade并
 恢复正常交易；各自风险参数、配置文件及原有网络进程保持。Gate02继续使用
@@ -850,7 +865,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 / 只读 | `okex_exec_trade01 local_ips[0]`，新CTA账户监控及私有REST；下单关闭、旧MM停止 |
 | `172.31.35.230` | `54.238.72.43` | 已使用 / 只读 | `okex_exec_trade01 local_ips[1]`，新CTA备用WS；下单关闭、旧MM停止 |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 已恢复交易，05 停止）、`bitget_fr_arb01`/`02`/`03` |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 已恢复交易，05 停止）、`bitget_fr_arb01`/`02`/`03` |
 | `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02` `local_ips[0]` |
 | `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 已配置 | Exec `trade02`、`trade03`、`trade04` `local_ips[1]` |
@@ -926,7 +941,6 @@ okex_mm_alpha                172.31.35.229, 172.31.35.230   全部停止；全�
 okex_exec_trade01            172.31.35.229, 172.31.35.230   复用MM凭据；监控及Exec运行，Spread绑定1份
 binance_exec_spread01        172.31.35.228, 172.31.35.228   81857独立source；监控及Exec运行，Spread绑定1份；保留IOTA微小尾仓
 okex-binance-cta-spread-rx01  两腿由独立Exec交易             旧signal/publisher/config停止，旧配置410；新Spread计算及发布开启
-binance_fr_arb01             172.31.35.231, 172.31.35.231
 binance_fr_arb02             172.31.35.231, 172.31.35.231
 binance_fr_arb03             172.31.35.231, 172.31.35.231
 binance_fr_arb04             172.31.35.231, 172.31.35.231
