@@ -1,6 +1,14 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 08:06 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 09:47 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 09:47 UTC，JP Delist内部监控改为直连私有Viz，进程PID1609111、配套SSH隧道PID1609083，
+均CPU28。JP九套FR继续使用原Viz端口；SG Bybit新增回环转发
+`127.0.0.1:24141 -> sg:127.0.0.1:20141`，同时保留16379 Redis和14191网页转发。
+SG Viz仍只监听自身127.0.0.1；未开放公网端口，未改Nginx登录/单账户授权、ENI/EIP、
+策略路由或任何交易环境的source IP。10套账户namespace及实际直连TCP连接均确认，
+快照完整、目录current，下架扫描源正常。CPU、构建/回退与参数核验见
+`docs/core_allocation.md`，明细：`data/ops/delist_direct_viz_20261109/verification.json`。
 
 2026-11-09 08:06 UTC，JP `binance_fr_arb02/03/04` 已统一重发完整7组件并恢复信号。
 3套 `local_ips=["172.31.35.231","172.31.35.231"]`、env.sh、配置与Redis参数指纹保持；

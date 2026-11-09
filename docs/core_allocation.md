@@ -1,7 +1,24 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 08:06 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 09:47 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 09:47 UTC，JP Delist发布生产 `arbmm bc28e9a7` 的内部Viz直连修复。
+本地核验3051个源码文件，隔离无关工作区改动，以 `--release --locked` 构建；上传显式暂存路径、
+核对SHA-256并原子安装后，仅通过环境本地脚本重启Delist和其SG监控SSH隧道。
+Delist PID1609111、隧道PID1609083，全部线程继续CPU28；Redis PID2769589及绑核保持。
+新二进制SHA-256：`4641987e12ace0ff05e9ba05d429168eba93a4b7e3a67ceb9c7f3f8fcb54f33d`。
+净敞口、下架仓位、人工flatten预检和移除名单前复核统一从显式账户映射直连Viz，
+校验返回namespace；不再经过4191及Delist自己的鉴权。JP九套直读原Viz端口，SG Bybit
+增加本机 `127.0.0.1:24141 -> sg:127.0.0.1:20141`，现有16379 Redis及14191网页转发保留。
+10套目标CLI校验和实际TCP连接确认通过，当前10套快照完整、NAV目录current、巡检无数据错误；
+下架dump/flatten源恢复正常，发布后清仓执行审计新增0条。未改网页登录及单账户授权规则，
+未登录/status仍401。原16个配置/页面文件、控制参数、采样Redis摘要保持；
+其余172个基线进程身份/CPU mask保持，基线中5个VSCode开发会话进程已退出。
+保留线上启动脚本原有CTA路径参数差异，仅合入本次快照配置和SG Viz转发；未重启交易栈。
+库测试1522通过/3忽略，Delist服务69项通过；回退为
+`~/delist_risk_server/backups/direct_viz_bc28e9a7_20261109/`，本机构建及前后核验在
+`data/ops/delist_direct_viz_20261109/verification.json`。
 
 2026-11-09 08:06 UTC，JP `binance_fr_arb02/03/04` 按要求统一重发完整二进制栈。
 本地从已同步的生产 `arbmm ecd0c24f` 导出并核验3049个源码文件，以 `--release --locked`
@@ -1571,7 +1588,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 24 | crypto_cta_manager / cta_web | PID1276059；目标PG副本异步更新；退役Binance FR01后清理两条旧路径并重载 |
 | 25 | binance_exec_spread01 account_monitor | PID1361356；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID4133978 / PID3939283 |
-| 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID1367608、隧道 PID1367582 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
+| 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID1609111、隧道 PID1609083 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
