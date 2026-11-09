@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 06:04 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 06:34 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 06:34 UTC，JP `gate_fr_arb02/03`、`bitget_fr_arb02/03` 已滚动发布修补版pre_trade并
+恢复正常交易；各自风险参数、配置文件及原有网络进程保持。Gate02继续使用
+`local_ips=["172.31.35.232","172.31.35.233"]`；Gate03及Bitget02/03继续使用
+`local_ips=["172.31.35.231","172.31.35.231"]`。未改ENI/EIP、策略路由、监听或隔离核。
+Bitget01保持退役；剩余两套运行目录及新进程已核对。CPU/回退登记见
+`docs/core_allocation.md`；核验：`data/ops/fr_remaining_patch_bf3f5698_20261109/summary.json`。
 
 2026-11-09 06:04 UTC，`gate_fr_arb04` 已完成净差对齐并按原始风险参数恢复正常交易，
 通过环境本地脚本启动引擎、修补版pre_trade、信号；另补齐同版本Viz以恢复风险快照解码。

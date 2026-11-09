@@ -1,7 +1,29 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 06:04 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 06:34 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 06:34 UTC，完成 JP `gate_fr_arb02/03` 和 `bitget_fr_arb02/03` 配对平仓敞口修复滚动发布。
+复用已核验的本地 `arbmm bf3f5698` release产物，仅原子替换 `pre_trade`：
+`a4786154427bcfee7a4a22486874b12731fefedbc92fa26d472f6a6777576c2a`。
+逐套通过环境本地脚本停信号，撤销未成交现货首腿挂单，保留原对冲进程处理在途；
+确认原生现货/合约挂单均0及无新增大额双腿净差后安装，再启动pre_trade并等待双腿账户
+快照、风险页面就绪，最后恢复信号。四套风险参数、已采样覆盖键摘要和114个运行文件保持。
+四套兼容Viz运行文件均已为`bed95325…ebb7de`，继续保留原PID；引擎、账户监控、持久化、
+Viz及FR dashboard共20个受保护进程身份/CPU mask保持，persist仍CPU15。
+新pre_trade及信号全部CPU mask仍`0-5,48-95`，全部运行文件校验与实时风险快照验收通过。
+Bitget 01运行目录已退役，本次只处理仍在线的02/03；Gate01/04继续运行。
+
+| 环境 | pre_trade PID | trade_signal PID | 原总敞口比例 | 原单币比例 |
+| --- | --- | --- | --- | --- |
+| gate_fr_arb02 | 1181605 | 1183891 | 0.005 | 0.005 |
+| gate_fr_arb03 | 1190196 | 1190519 | 0.1 | 0.2 |
+| bitget_fr_arb02 | 1194727 | 1195059 | 0.05 | 0.02 |
+| bitget_fr_arb03 | 1197491 | 1199763 | 0.05 | 0.02 |
+
+每套旧二进制/发布回执：`~/<env>/backups/fr_remaining_patch_bf3f5698_20261109/`；
+本地四套前后审计及最终运行状态：`data/ops/fr_remaining_patch_bf3f5698_20261109/summary.json`、
+`data/ops/fr_remaining_patch_bf3f5698_20261109/final_live_inventory.json`。
 
 2026-11-09 06:04 UTC，JP `gate_fr_arb04` 核对临时maker净差对齐已结束，再按原参数恢复正常交易。
 启动前原生现货/合约挂单均0，绝对净差合计39.52 U、单币最大4.69 U，42个配对仓位保留。
