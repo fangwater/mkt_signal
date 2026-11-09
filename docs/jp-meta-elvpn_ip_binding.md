@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 09:47 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-09 10:14 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-09 10:14 UTC，JP RX03 / `binance_exec_rx03` 的 Prep02 三券池1min已下架。
+58条规则、三份组合与三条跟随绑定移除，六条5min/15min绑定及其他组合保持。
+原策略完整clear目标执行完成，无活动委托、批次或非零目标；22条低于交易所最小下单量的
+分仓尾量约35.33U及原归属保留，未伪造平仓。进程未重启，CPU、source IP、`local_ips`、
+ENI/EIP、路由、监听及env.sh保持。备份和脱敏核验见
+`artifacts/cta_rx03_1min_retirement/README.md`。
 
 2026-11-09 09:47 UTC，JP Delist内部监控改为直连私有Viz，进程PID1609111、配套SSH隧道PID1609083，
 均CPU28。JP九套FR继续使用原Viz端口；SG Bybit新增回环转发
@@ -970,7 +977,7 @@ binance_exec_rx04_5m05       172.31.35.228                  RX04 5min已清仓�
 binance_exec_trade06         172.31.35.228                  RX01旧运行目录已归档，Manager入口及绑定移除；新账户binance_exec_rx01
 binance_exec_trade07         172.31.35.228                  RX03旧运行目录已归档，Manager入口及绑定移除；新账户binance_exec_rx03
 binance_exec_rx01            172.31.35.228                  RX01全新执行账户，Prep01三频段shares=0；监控/persist/Viz/Config运行，下单关闭
-binance_exec_rx03            172.31.35.228                  Prep02三券池×三频段九策略shares=1/grid；pre-trade/trade_signal及监控/persist/Viz/Config运行
+binance_exec_rx03            172.31.35.228                  Prep02三券池×5min/15min六策略shares=1/grid；1min已下架，pre-trade/trade_signal及监控/persist/Viz/Config运行
 binance_exec_trade08         172.31.35.228, 172.31.35.228   旧环境继续停止，lgq_ltp_81857 Manager入口已移除；历史保留，新组合另走binance_exec_spread01
 ```
 

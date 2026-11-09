@@ -121,7 +121,6 @@ struct Nq {
     closes: VecDeque<Option<f64>>,
     long: ExactRollingWindow,
     short: ExactRollingWindow,
-    previous: BTreeMap<String, Field>,
 }
 impl Nq {
     fn new(params: &Parameters) -> Self {
@@ -130,20 +129,11 @@ impl Nq {
             closes: VecDeque::new(),
             long: ExactRollingWindow::new(params.rank_window),
             short: ExactRollingWindow::new(params.rank_window),
-            previous: BTreeMap::from([
-                ("long".into(), Field::default()),
-                ("short".into(), Field::default()),
-            ]),
         }
     }
     fn observe(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
-        // The observation timestamp identifies the decision bar. Its NQ uses
-        // only the distribution and close from the preceding bar, including
-        // an explicit unknown value after a missing source bar.
-        let current = self.observe_current(mid);
-        std::mem::replace(&mut self.previous, current)
-    }
-    fn observe_current(&mut self, mid: Option<f64>) -> BTreeMap<String, Field> {
+        // Include the latest closed bar's mid in both the extrema and change
+        // distributions. The output belongs to this same closed decision bar.
         let valid = mid.filter(|p| p.is_finite() && *p > 0.0);
         if valid.is_none() && self.params.missing_policy == MissingPolicy::ValidSamples {
             return BTreeMap::from([
@@ -283,6 +273,7 @@ struct HourlySeries {
     completed: Vec<BaselineBar>,
     quotes: BTreeMap<i64, Option<f64>>,
     period_end_us: i64,
+    closed_end_ms: i64,
     accepting: bool,
 }
 impl HourlySeries {
@@ -302,10 +293,28 @@ impl HourlySeries {
         };
         // Shift only the internal bucket coordinate by a microsecond so an
         // exact end timestamp is aggregated into the period it closes.
-        (self.accepting && us > 0 && us <= self.period_end_us).then(|| us - 1)
+        (self.accepting && us > self.closed_end_ms.saturating_mul(1000) && us <= self.period_end_us)
+            .then(|| us - 1)
     }
     fn on_book(&mut self, book: &IncrementOrderBookInfo, mid: Option<f64>) {
         let Some(us) = self.event_time(book.timestamp) else {
+            // Seeded hours still supply the live book needed by subsequent deltas.
+            let ts = normalize_timestamp_ms(book.timestamp).saturating_mul(1000);
+            if !self.accepting && ts > 0 && ts <= self.period_end_us {
+                if let Some(agg) = &mut self.baseline {
+                    let bids = book
+                        .bids
+                        .iter()
+                        .map(|p| Level::from_values(p.price, p.amount))
+                        .collect::<Vec<_>>();
+                    let asks = book
+                        .asks
+                        .iter()
+                        .map(|p| Level::from_values(p.price, p.amount))
+                        .collect::<Vec<_>>();
+                    agg.restore_retained_book(ts, &bids, &asks);
+                }
+            }
             return;
         };
         let start = us.div_euclid(Interval::Hour.millis() * 1000) * Interval::Hour.millis();
@@ -357,6 +366,7 @@ impl HourlySeries {
             let (start, close) = self.quotes.pop_first().unwrap();
             quotes.push((Interval::Hour, start + hour, close));
         }
+        self.closed_end_ms = end_ms.div_euclid(hour) * hour;
         (bars, quotes)
     }
 }
@@ -597,6 +607,147 @@ pub struct Engine {
     pub previous_spreads: BTreeMap<String, FactorPoint>,
 }
 impl Engine {
+    /// Replay native historical inputs into formula/normalization/rank state.
+    /// This never publishes observations or reconstructs position ledgers.
+    pub fn seed_hourly_history(
+        &mut self,
+        history: &super::hourly_history::HourlyHistory,
+        cutoff_ms: i64,
+    ) -> Result<super::hourly_history::SeedSummary> {
+        use super::hourly_history::{SeedSummary, HOUR_MS};
+        anyhow::ensure!(
+            cutoff_ms % HOUR_MS == 0 && cutoff_ms <= history.manifest.end_ms,
+            "hourly history ends before Kafka's first source hour; refresh the history package"
+        );
+        let mut summary = SeedSummary {
+            cutoff_ms,
+            ..Default::default()
+        };
+        for ((market, symbol, interval), group) in &mut self.formula {
+            if *market != Market::BinanceFutures || *interval != Interval::Hour {
+                continue;
+            }
+            let Some(inputs) = history.rows.get(symbol) else {
+                summary.missing_symbols.push(symbol.clone());
+                continue;
+            };
+            anyhow::ensure!(
+                group.last_ts == 0,
+                "cannot seed an already-running hourly formula group"
+            );
+            let mut count = 0;
+            for input in inputs
+                .iter()
+                .take_while(|row| row.bar.start_ms + HOUR_MS <= cutoff_ms)
+            {
+                for point in group.observe(symbol, *market, &input.bar, input.classified)? {
+                    summary
+                        .ready_formulas
+                        .insert(point.factor_id.clone(), point.ready());
+                }
+                count += 1;
+            }
+            summary.formula_rows.insert(symbol.clone(), count);
+        }
+        let nq = self
+            .plan
+            .calculations
+            .iter()
+            .filter(|(_, c)| {
+                c.id.market == Market::BinanceFutures
+                    && c.id.interval == Interval::Hour
+                    && c.id.factor == "nq"
+            })
+            .map(|(id, c)| (id.clone(), c.id.symbol.clone()))
+            .collect::<Vec<_>>();
+        for (id, symbol) in nq {
+            let Some(inputs) = history.rows.get(&symbol) else {
+                continue;
+            };
+            let prices = inputs
+                .iter()
+                .take_while(|row| row.bar.start_ms + HOUR_MS <= cutoff_ms)
+                .filter_map(|row| {
+                    let close = row.nq_price?;
+                    (close.is_finite() && close > 0.0).then_some(
+                        super::hourly_nq_seed::HourlyClose {
+                            end_ms: row.bar.start_ms + HOUR_MS,
+                            close,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !prices.is_empty() {
+                self.seed_hourly_nq(&id, &prices, cutoff_ms)?;
+                summary.nq_rows.insert(id, prices.len());
+            }
+        }
+        // Retained Kafka can overlap a prepared archive. Rebuild its book from
+        // those records, but do not aggregate seeded hours or advance NQ twice.
+        for ((market, symbol), series) in &mut self.series {
+            if *market != Market::BinanceFutures || !history.rows.contains_key(symbol) {
+                continue;
+            }
+            if let Some(hourly) = &mut series.hourly {
+                hourly.period_end_us = cutoff_ms.saturating_mul(1000);
+                hourly.closed_end_ms = cutoff_ms;
+                if let Some(baseline) = &mut hourly.baseline {
+                    baseline.close_completed_period(cutoff_ms);
+                }
+            }
+        }
+        summary.missing_symbols.sort();
+        summary.missing_symbols.dedup();
+        Ok(summary)
+    }
+
+    /// Seed only NQ state before this generation consumes its first Binance
+    /// hourly source bar. Seed rows never become published factor observations.
+    pub(crate) fn seed_hourly_nq(
+        &mut self,
+        factor_id: &str,
+        rows: &[super::hourly_nq_seed::HourlyClose],
+        cutoff_ms: i64,
+    ) -> Result<()> {
+        let calculation = self
+            .plan
+            .calculations
+            .get(factor_id)
+            .context("unknown hourly NQ seed factor")?;
+        anyhow::ensure!(
+            calculation.id.factor == "nq"
+                && calculation.id.interval == Interval::Hour
+                && calculation.id.market == Market::BinanceFutures,
+            "candle seeds are only for Binance hourly NQ"
+        );
+        anyhow::ensure!(
+            !self.latest.contains_key(factor_id),
+            "cannot seed NQ after Kafka observations"
+        );
+        let mut previous = 0;
+        for row in rows {
+            anyhow::ensure!(
+                row.end_ms > previous
+                    && row.end_ms <= cutoff_ms
+                    && row.end_ms % Interval::Hour.millis() == 0
+                    && row.close.is_finite()
+                    && row.close > 0.0,
+                "invalid, overlapping or unfinished hourly NQ seed row"
+            );
+            previous = row.end_ms;
+        }
+        let Some(Special::Nq(state)) = self.special.get_mut(factor_id) else {
+            anyhow::bail!("missing hourly NQ seed state");
+        };
+        anyhow::ensure!(
+            state.closes.is_empty() && state.long.is_empty() && state.short.is_empty(),
+            "hourly NQ is already seeded"
+        );
+        for row in rows {
+            state.observe(Some(row.close));
+        }
+        Ok(())
+    }
     pub fn new(plan: Plan, config: &Config) -> Result<Self> {
         let mut engine = Self {
             plan,

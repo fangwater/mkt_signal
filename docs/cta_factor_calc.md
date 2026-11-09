@@ -1,6 +1,6 @@
 # CTA 因子计算与仓位表
 
-最后更新：2026-11-09（Prep/Spread 全窗口截断标准化与 1h 接入）
+最后更新：2026-11-09（1h Tardis 原生输入历史包及 Kafka 衔接）
 
 ## 券池维度
 
@@ -31,6 +31,12 @@ Spread 对应 `cta-top-5-spread01-okx-bn-1min-pos`。
 填写规则后保存。折叠的“券池定义 JSON”支持校验和保存。定义、规则都通过整份清单校验、
 共享文件锁和内容摘要处理并发冲突；Prep 与 Spread 分别保存定义，各自热加载。
 Delist 的只读清单和备份也包含券池定义。
+
+2026-11-09 按用户要求，RX03 / Prep02 的整个1min频段已下架：三个券池共58条规则移除，
+三条 Manager 绑定删除，原策略目标清零并执行完成。保留六条5min/15min绑定及41条规则；
+RX01 / Prep01 1min 保持。22条低于交易所最小下单量的真实分仓尾量约35.33U仍保留历史归属，
+无活动委托或批次。仓库内三份 Prep02 1min 模板同步移除；1h 参数按用户标准清单独立维护。
+详见 [RX03 1min 下架回执](../artifacts/cta_rx03_1min_retirement/README.md)。
 
 2026-11-04 用户清单已写入 Prep02 模板并部署到 JP。20 项输入中两个空标的项不展开，
 跨券池重复规则分别保留；12:11 UTC按用户要求删除ICX的3条规则后，
@@ -117,7 +123,7 @@ IPC 订阅自己的因子流；原因子 IPC 仍可供其他只读消费者使�
 包含相同定义时暂停该表决策与发布。暂停发布保留子仓位，不生成模拟仓位。
 移除 `signal` 或删除组合时以原表名发布清零目标，持久化后持续重试，直到
 所有 Manager 确认后才完成退役；重启恢复尚未完成的清零任务。
-Spread 因子与 NQ 的输出时间对齐；NQ 已整体滞后一根 bar，入场价差也使用上一根 bar
+Spread 因子与 NQ 使用同一根最新封闭 bar；NQ 不额外滞后，入场价差仍使用上一根 bar
 （1min 取前一分钟，1h 取前一小时）。上一根价差来自同一个
 计算代次保存的前值。依赖缺失最多等待 5 秒，之后仍允许因子退出。
 
@@ -210,6 +216,16 @@ PRC 的真实账户绑定、权限、令牌和 virtual01 保留。没有发送�
 再用 1min/5min/15min/1h 标签切换当前频段；Spread 展示 1min / 1h。每个频段独立维护
 开关、USDT 金额、开平仓阈值和因子 JSON；页面没有仓位表、计算窗口参数、逐行编辑器
 或其他因子输入格式。配置服务器只写组合 JSON，不直接发布持仓或订单。
+
+配置预览、保存及 worker 的 `--put-combination` / `--import-symbol-factors`
+会先查询 Binance USD-M 完整合约目录，仅保留 `status=TRADING` 的 Binance
+因子来源及交易腿标的；`SETTLING`、暂停、未上市和目录已移除的标的自动剔除。
+页面及命令行的 `excluded_symbols` 列出标的、原状态和删除的规则数，连同失去引用的
+NQ、参数和该标的阈值覆盖一起清理。其他市场来源的独立计算规则不受影响。
+目录成功结果在配置服务进程内复用最多 60 秒；请求或目录解析失败时编辑报错，
+不把失败当作空目录保存。此过滤只发生在显式配置编辑期间，不在因子运行层检查
+小时数据完整性，也不在读取配置或运行时自动删除现有规则。
+
 旧策略的可编辑 Config 路由在新网关模板中直接返回 410；历史信号面板保持
 原身份。新配置不再依赖各策略的 `cta_perp.json`、磁盘 symbol-factor 表或
 `<env>:cta_symbol_factors` Redis 键。
@@ -325,25 +341,54 @@ Prep 和 Spread 的所有频段普通因子共用当前窗口全量截断算法�
 |---|---:|---:|---|
 | 原始因子标准化 | 24 根 | 16 根 | 当前窗口统一 ±3σ 截断后重算 z |
 | 标准化因子交易分位 | 48 根 | 24 根 | `count(z ≤ 当前 z) / count(有效 z)`，含当前根 |
-| NQ 极值 / 变化值分位 | 120 根 / 120 根 | 60 个有效变化值 | 沿用现有公式和一根 bar 滞后 |
+| NQ 极值 / 变化值分位 | 120 根 / 120 根 | 60 个有效变化值 | 历史 close 补充，Kafka 部分使用封闭 bar 的 mid，无额外滞后 |
+
+1h NQ 是历史价格来源的特例。Kafka 只保留约两天时，启动及新计算代次先从 Binance
+USDT 永续公共 `GET /fapi/v1/klines?interval=1h` 读取更早的已闭合小时 close。
+默认读取 `120 + 120 - 1 = 239` 根，使最终保留的 120 个变化值各自都有完整的
+120 根极值回看；60 个有效变化值的就绪门槛不变。自定义窗口按
+`lookback + rank_window - 1` 计算请求根数。
+
+补充截止点由第一条 Binance Kafka `PeriodMessage.ts` 确定：只使用其所属小时开始
+以前、含开始边界的闭合 K 线。边界上的 Kafka 事件属于正在结束的小时，因此如果首个
+period 恰在整点结束，种子截止到前一个整点。先灌入更早的 close，再回放 Kafka mid，
+重叠小时不重复计数，不读取未收盘或相对于回放起点的未来 K 线。
+不强制 K 线数量或连续覆盖；新上市标的按实际返回的有效历史预热。
+
+下载在后台异步执行，候选代次等待种子期间，已有代次与仓位表仍可继续运行。
+只预热 1h Binance NQ 的价格状态，普通因子的原始输入、标准化与价差窗口继续从 Kafka
+计算；种子不生成历史持仓或发布历史因子点。其余频段仍使用 Kafka mid。
+逐币补充根数、截止点和错误写入 `state.json.hourly_nq_warmup`，完整种子保存为
+`generations/<代次>/hourly_nq_seed.json`，明确标记来源为小时 K 线 close。
+网络或响应错误保留可用 Kafka 回放并显示补充错误，不伪造价格，也不降低 NQ 就绪门槛。
+每个代次每币只做一轮补充；429/418 后停止本轮后续请求，不立即重试。
+公共请求基址及限速策略见 [公共 API 清单](public_api_cache.md)。
 
 交易分位不足 24 个有效 z 或当前原始因子无效时输出未知并保持仓位。1h 的开多 / 平多
 默认阈值为严格高于 0.90 / 严格低于 0.30；开空 / 平空为严格低于 0.10 / 严格高于 0.70。
 同一根可以先退出再反向开仓；NQ、Spread 价差或报价不允许新开仓时，仍完成因子的退出。
-负号因子仍沿用分位后 `1-q`；NQ 0.50 的线性中位数比较、0.20/0.80 的包含边界判断、
-原始空值的处理及 Spread 额外价差过滤仍沿用现有行为，待逐项讨论。未新增相关性筛查。
+因子方向由配置行的 `符号: +1/-1` 决定：正号使用 `q`，负号使用 `1-q`。
+NQ 0.50 的线性中位数比较、0.20/0.80 的包含边界判断及 Spread 额外价差过滤沿用现有行为，
+相关性筛查不在本次处理范围。原始因子为空时，标准化内部保留上一根 z，但该根交易分位
+仍为空并保持仓位；原始因子有效而标准化暂时算不出时，若有上一根 z 则前填后参与分位，
+若没有则继续未知。保留这一原有口径，不把原始因子为空的 bar 当成有效交易分位样本。
+
+Prep 的因子退出独立于同根 NQ 是否存在或就绪。缺失、旧时间戳或不足 60 个样本的 NQ
+均只阻止新开仓；不使用旧 NQ 替代当前根。空仓等待当前 NQ 时保留同根的入场机会，
+1h 已退出的反向入场也可在同根 NQ 到达后继续判断；相同等待状态不重复记账或写盘。
 
 配置页可从现有策略组新建 1h，默认为关闭、空规则、v0，独立维护金额及开平仓线。
 未限定券池的 1h 也允许保存空规则作为零目标策略。不会自动复制其他频段的规则。
 策略名使用 `cta-<组>-bn-1h-pos` 或 `cta-<组>-okx-bn-1h-pos`，券池前缀沿用既有规则。
 
 NQ 使用 120 根有效 bar 的极值窗口和 120 个有效变化值的分位窗口，60 个有效变化值就绪。
-全部频率使用有效样本窗口，并将整个 NQ 结果滞后各自的一根 bar：
-1min / 5min / 15min / 1h 分别滞后各自的一根 bar。当前输出时间为决策 bar，
-其数值、分位、Q50 和就绪状态全部来自上一根 bar，缺失源 bar 的结果也按同样方式后移。
+1min / 5min / 15min / 1h 全部使用有效样本窗口，包含最新封闭 bar 的 mid；
+数值、分位、Q50 和就绪状态直接对应同一根封闭 bar，不再额外后移。
+当前 mid 无效时立即输出未知且不消耗有效样本窗口，下一根有效 bar 可立即使用。
 默认 0.50 / 0.50；买入变化为 `(mid - 窗口最低 mid) / 窗口最低 mid`，
 卖出变化为 `(mid - 窗口最高 mid) / 窗口最高 mid`。Prep 和 OKX/Binance Spread
-的 NQ 均取该币种 Binance 永续 mid；普通因子的无效当前值保持未知。
+的 NQ 均取该币种 Binance 永续价格：Kafka 部分使用 mid，1h 回放起点之前以历史
+小时 K 线 close 补充；普通因子的无效当前值保持未知。
 Spread 同一闭合 bar 的原值为 `(第一个市场 - 第二个市场) / 第一个市场`，
 任一路输入缺失即未就绪；因子自身没有额外信号滞后。
 
@@ -466,3 +511,49 @@ Nginx 模板由 `scripts/render_cta_factor_config_nginx.py --source-ids <完整�
 生成；安装时替换旧 Config locations，不能与旧编辑路由同时保留。认证沿用
 Manager 会话，要求完整账户范围的 configure 权限；同时部署 Manager 的
 `X-CTA-Access: configure` 校验。旧单账户查看权限不能获得跨组合写权限。
+
+## 1h 原生输入历史包
+
+`cta-hourly-history build` 从已有 Tardis `trades` / `incremental_book_L2` 合成
+Binance 永续小时输入。它复用线上成交与盘口聚合器和因子引擎，不导入预先计算的
+z-score、交易分位或仓位。每币文件保存 OHLC、成交与大小单字段、20 档盘口、
+盘口流量统计及 NQ 的小时末 mid；仅成交输入的标的使用已授权的小时 close 补充 NQ。
+这些是本地合成数据，不能称为交易所或 Tardis 官方小时产品。
+
+大小单因子读取上个自然月的完整成交并按现有小时 KLL 合并方法生成历史月份阈值；
+当前月使用 JP 共享阈值的只读快照。逐币阈值与来源事件数写入元数据，
+每币 gzip/bincode 文件带 SHA-256，整个目录由一个 `manifest.json` 描述。
+合成跳过无输入小时，不检查 60 分钟完整性，不把旧盘口填成缺失小时。
+事件按 Kafka 使用的 `(t-1h,t]` 小时归属；原始因子参数 N 不变。
+
+```bash
+cta-hourly-history build --rules /path/to/rx01.json --rules /path/to/rx03_top-5.json \
+  --rules /path/to/rx03_top-20.json --rules /path/to/rx03_last-20.json \
+  --source-root /mnt/nfs/30.133_xt_crypto/TardisSource \
+  --from 2026-10-08 --until 2026-11-08 --output /path/to/history \
+  --control-snapshot /path/to/current_control_snapshot.json --workers 6
+cta-hourly-history check --history /path/to/history --rules /path/to/rx01.json
+```
+
+`--until` 是不含当天的 UTC 日界。相同参数的逐币完成文件可续跑，已完成的文件重新校验后复用。
+Prep 与 Spread 都通过 `--hourly-history /path/to/history`，或
+`CTA_HOURLY_HISTORY_DIR=/path/to/history` 读取历史；没有小时计算时不加载它。
+种子只重建公式原始窗口、24 根标准化、48 根分位及 NQ 状态，不发布历史点或重建历史仓位。
+原有 K 线 NQ 补充继续用于未包含在包内的标的。
+
+读取历史包时，专用 Kafka 消费者从实际保留分区的最早 offset 开始，不提交 offset。
+导入包的完整截止小时，重叠 Kafka 只重建盘口，不重复计算已导入小时；
+超过截止边界后再推进小时因子。缺少首个保留 Kafka 小时以前的衔接数据时明确报错，
+不跳过中间缺口。包是有明确截止时间的快照，Kafka 留存移过该截止点之前需要刷新。
+`state.json.hourly_history_warmup` 和 `generations/<代次>/hourly_history_seed.json`
+记录各币实际种子根数、因子就绪状态与衔接边界。
+
+```bash
+cta-hourly-history replay --history /path/to/history --rules /path/to/rx01.json \
+  --rules /path/to/rx03_top-5.json --rules /path/to/rx03_top-20.json \
+  --rules /path/to/rx03_last-20.json --control-snapshot /path/to/current_control_snapshot.json
+```
+
+`replay` 是只读检查：导入历史，再消费到启动时捕获的 Kafka 末尾；
+验证小时因子时间严格递增，拒绝重复导入的历史小时，并输出未就绪及缺失因子。
+它不连接 Manager/Exec，不写策略配置或 Kafka offset。

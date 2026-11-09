@@ -170,8 +170,9 @@ async function load(){
 async function action(save){
   if(busy||!draft)return;if(groupsDirty){message('请先保存券池定义，再保存或校验当前规则',true);return;}setBusy(true);
   try{const combination=collect(),result=await api(save?'combinations':'preview',{method:'POST',body:JSON.stringify({worker:selectedWorker,combination,expected_revision:catalog.revision})});
-    if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+(combination.symbol_group||'all')+' · '+combination.interval);}
-    else{updateCount(combination.factor_rules);message('JSON 校验通过：'+combination.factor_rules.length+' 条规则');}
+    const filtered=result.plan.combinations[combination.name],excluded=result.excluded_symbols||[],notice=excluded.length?'\n已过滤非交易标的：'+excluded.map(row=>row.symbol+'（'+row.status+'，'+row.removed_rules+' 条）').join('、'):'';
+    if(save){catalog=result;renderCatalog(combination.name);message('已保存 '+combination.strategy_group+' · '+(combination.symbol_group||'all')+' · '+combination.interval+notice);}
+    else{if(excluded.length){$('factor-json').value=JSON.stringify(factorRows(filtered),null,2);changed();}updateCount(filtered.factor_rules);message('JSON 校验通过：'+filtered.factor_rules.length+' 条规则'+notice);}
   }catch(error){message(error.message,true);}finally{setBusy(false);}
 }
 async function groupsAction(save){

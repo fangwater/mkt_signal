@@ -343,6 +343,51 @@ impl RawKafkaConsumer {
         })
     }
 
+    /// Assign retained partitions explicitly without joining a consumer group.
+    /// Used by isolated historical readers; does not commit any offsets.
+    pub fn assign_offsets(&self, offsets: &[(String, i32, i64)]) -> Result<()> {
+        anyhow::ensure!(!offsets.is_empty(), "empty Kafka assignment");
+        let list = unsafe { rdsys::rd_kafka_topic_partition_list_new(offsets.len() as c_int) };
+        anyhow::ensure!(!list.is_null(), "Kafka assignment allocation failed");
+        let result = (|| -> Result<()> {
+            for (topic, partition, offset) in offsets {
+                anyhow::ensure!(
+                    *partition >= 0 && *offset >= 0,
+                    "invalid historical Kafka offset"
+                );
+                let topic =
+                    CString::new(topic.as_str()).context("invalid Kafka assignment topic")?;
+                let element = unsafe {
+                    rdsys::rd_kafka_topic_partition_list_add(list, topic.as_ptr(), *partition)
+                };
+                anyhow::ensure!(
+                    !element.is_null(),
+                    "Kafka assignment element allocation failed"
+                );
+                unsafe {
+                    (*element).offset = *offset;
+                }
+            }
+            let error = unsafe { rdsys::rd_kafka_unsubscribe(self.rk) };
+            anyhow::ensure!(
+                error == rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR,
+                "Kafka historical unsubscribe failed: {}",
+                kafka_error_string(error)
+            );
+            let error = unsafe { rdsys::rd_kafka_assign(self.rk, list) };
+            anyhow::ensure!(
+                error == rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR,
+                "Kafka historical assignment failed: {}",
+                kafka_error_string(error)
+            );
+            Ok(())
+        })();
+        unsafe {
+            rdsys::rd_kafka_topic_partition_list_destroy(list);
+        }
+        result
+    }
+
     pub fn poll(&self, timeout_ms: u64) -> Option<Result<RawKafkaMessage>> {
         let timeout_ms = timeout_ms.min(c_int::MAX as u64) as c_int;
         let msg = unsafe { rdsys::rd_kafka_consumer_poll(self.rk, timeout_ms) };

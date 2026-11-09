@@ -356,6 +356,132 @@ fn prep_nq_uses_the_same_inclusive_q50_gate_at_all_frequencies() {
     }
 }
 
+fn nq_point(id: &str, ts: i64, ready: bool) -> FactorPoint {
+    let field = |value| Field {
+        raw: Some(value),
+        value: Some(value),
+        quantile: Some(0.5),
+        median: Some(0.0),
+        ready,
+    };
+    FactorPoint {
+        factor_id: id.into(),
+        ts_ms: ts,
+        fields: BTreeMap::from([("long".into(), field(0.1)), ("short".into(), field(-0.1))]),
+    }
+}
+
+#[test]
+fn prep_missing_stale_or_unready_nq_never_blocks_factor_exits() {
+    for frequency in ["1min", "5min", "15min", "1h"] {
+        for algorithm in [PositionAlgorithm::V0, PositionAlgorithm::V1] {
+            for long in [true, false] {
+                for missing in ["missing", "stale", "unready"] {
+                    let mut combination = prep(frequency);
+                    combination.factor_rules[0].nq = "0.50".into();
+                    let signal = combination.signal.as_mut().unwrap();
+                    signal.entry.nq_change_enabled = true;
+                    signal.position_algorithm = algorithm;
+                    let interval = combination.signal_config().unwrap().bar_interval.millis();
+                    let id = format!("binance-futures-ethusdt-{frequency}-factor_036");
+                    let nq_id = format!("binance-futures-ethusdt-{frequency}-nq");
+                    let factor = |ts, long| {
+                        let mut p = point(&id, ts, if long { 0.99 } else { 0.01 });
+                        p.fields.get_mut("value").unwrap().value =
+                            Some(if long { 1.0 } else { -1.0 });
+                        p
+                    };
+                    let mut table = Table::new(combination, (TS - 60_000) * 1000);
+                    let first = BTreeMap::from([
+                        (id.clone(), factor(TS, long)),
+                        (nq_id.clone(), nq_point(&nq_id, TS, true)),
+                    ]);
+                    table
+                        .observe(&first, &BTreeMap::new(), (TS + 6000) * 1000, &book)
+                        .unwrap();
+                    assert_eq!(
+                        table.targets().unwrap()["ETHUSDT"]["qty"],
+                        if long { 2.0 } else { -2.0 }
+                    );
+                    let ts = TS + interval;
+                    let mut next = BTreeMap::from([(id.clone(), factor(ts, !long))]);
+                    match missing {
+                        "stale" => {
+                            next.insert(nq_id.clone(), nq_point(&nq_id, TS, true));
+                        }
+                        "unready" => {
+                            next.insert(nq_id.clone(), nq_point(&nq_id, ts, false));
+                        }
+                        _ => {}
+                    }
+                    table
+                        .observe(&next, &BTreeMap::new(), (ts + 6000) * 1000, &|_, _| None)
+                        .unwrap();
+                    assert_eq!(
+                        table.targets().unwrap()["ETHUSDT"]["qty"],
+                        "clear",
+                        "{frequency} {algorithm:?} {missing}"
+                    );
+                    if frequency == "1h" {
+                        next.insert(nq_id.clone(), nq_point(&nq_id, ts, true));
+                        table
+                            .observe(&next, &BTreeMap::new(), (ts + 7000) * 1000, &|_, _| {
+                                Some(Quote {
+                                    bid: 100.0,
+                                    ask: 100.0,
+                                    ts: (ts + 7000) * 1000,
+                                    ..Default::default()
+                                })
+                            })
+                            .unwrap();
+                        assert_eq!(
+                            table.targets().unwrap()["ETHUSDT"]["qty"],
+                            if long { -2.0 } else { 2.0 }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn prep_waits_for_late_nq_entries_without_repeating_pending_decisions() {
+    for frequency in ["1min", "5min", "15min", "1h"] {
+        for algorithm in [PositionAlgorithm::V0, PositionAlgorithm::V1] {
+            let mut combination = prep(frequency);
+            combination.factor_rules[0].nq = "0.50".into();
+            combination.signal.as_mut().unwrap().entry.nq_change_enabled = true;
+            combination.signal.as_mut().unwrap().position_algorithm = algorithm;
+            let mut table = Table::new(combination, (TS - 60_000) * 1000);
+            let id = format!("binance-futures-ethusdt-{frequency}-factor_036");
+            let nq_id = format!("binance-futures-ethusdt-{frequency}-nq");
+            let mut points = BTreeMap::from([(id.clone(), point(&id, TS, 0.99))]);
+            table
+                .observe(&points, &BTreeMap::new(), (TS + 6000) * 1000, &book)
+                .unwrap();
+            assert_eq!(table.targets().unwrap()["ETHUSDT"]["qty"], "clear");
+            table.dirty = false;
+            let previous = serde_json::to_value(&table).unwrap();
+            table
+                .observe(&points, &BTreeMap::new(), (TS + 6100) * 1000, &book)
+                .unwrap();
+            assert!(!table.dirty);
+            assert_eq!(serde_json::to_value(&table).unwrap(), previous);
+            points.insert(nq_id.clone(), nq_point(&nq_id, TS, true));
+            table
+                .observe(&points, &BTreeMap::new(), (TS + 6200) * 1000, &book)
+                .unwrap();
+            assert_eq!(table.targets().unwrap()["ETHUSDT"]["qty"], 2.0);
+            table.dirty = false;
+            table
+                .observe(&points, &BTreeMap::new(), (TS + 6300) * 1000, &book)
+                .unwrap();
+            assert!(!table.dirty);
+        }
+    }
+}
+
 #[test]
 fn spread_configuration_requires_strict_previous_minute_30_70_tails() {
     let mut combination = Combination::load(std::path::Path::new(

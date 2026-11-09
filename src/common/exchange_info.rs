@@ -417,6 +417,27 @@ async fn fetch_binance_futures(
     Ok(())
 }
 
+/// One complete Binance USD-M status catalog for configuration-time filtering.
+/// Keep raw statuses: a future delisting date does not make TRADING inactive.
+pub async fn fetch_binance_futures_listing(
+    client: &Client,
+    exchange_info_url: &str,
+) -> Result<Vec<ListingSnapshotRow>> {
+    let body = get_json(client, exchange_info_url, "Binance futures exchangeInfo").await?;
+    let mut index = ListingIndex::default();
+    ingest_binance_symbols(
+        &body,
+        "binance-futures",
+        &mut index,
+        chrono::Utc::now().timestamp_millis(),
+    )?;
+    let rows = index.snapshot_rows();
+    if rows.iter().any(|row| row.status.is_empty()) {
+        bail!("Binance futures exchangeInfo contains a missing symbol status");
+    }
+    Ok(rows)
+}
+
 async fn fetch_binance_coin_futures(
     client: &Client,
     index: &mut ListingIndex,

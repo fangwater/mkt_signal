@@ -1,6 +1,25 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-05 03:46 UTC（Gate现货估值发布；OKX Delist官方公共来源）
+最后更新：2026-11-09（CTA 配置合约状态过滤、1h NQ 历史 close 预热审计）
+
+2026-11-09，CTA 配置预览/保存、Prep/Spread 命令行配置导入复用官方公共只读
+`GET /fapi/v1/exchangeInfo` 完整目录，只保留 Binance `TRADING` 标的；不使用
+账户凭据，不影响 Exec 由 Manager 独占的订单规则刷新。复用专用
+`BINANCE_FUTURES_PUBLIC_API_BASE`（默认 `https://fapi.binance.com`），配置服务
+进程内成功目录最长复用 60 秒，HTTP 超时 15 秒，无自动重试、代理回退或重定向；
+目录不可用时拒绝本次编辑，不据此清空配置。不新增 Nginx 监听、缓存或白名单，
+不向因子运行层增加行情完整性校验；未部署。本公共端点契约见
+[Exchange Information](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information)。
+
+2026-11-09，CTA Prep/Spread 的 1h NQ 启动和新代次回放增加一次性历史价格预热，
+复用 Binance 官方公共 `GET /fapi/v1/klines`，固定 `interval=1h`，仅取第一条 Kafka
+源小时之前的已闭合 K 线 close。默认每币 239 根，每页最多 499 根；单进程串行且请求
+起始间隔至少 1 秒，HTTP 超时 15 秒。429/418 停止该代次本轮后续请求，不立即重试；
+网络、HTTP 或数据错误记录到预热状态，不降低样本门槛、不伪造价格。
+复用专用 `BINANCE_FUTURES_PUBLIC_API_BASE`，默认 `https://fapi.binance.com`；
+不读取私有接口基址或账户凭据，不附加签名或 API key，不跟随重定向，也不在配置代理
+失败时自动直连。没有新增 Nginx 缓存、端口、白名单或部署；历史种子仅保存在各计算
+代次目录供审计，不作为主机共享行情缓存。官方契约沿用下文 Binance K 线消费者条目。
 
 2026-11-05 Delist 风险服务接入 OKX 官方公共只读来源，均直接访问官方 HTTPS，
 不新增 Nginx 路由、监听或缓存：`GET /api/v5/public/instruments?instType=SPOT|SWAP`

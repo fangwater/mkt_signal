@@ -58,7 +58,7 @@ fn push(
             input.on_book(book, Some(mid));
         }
         for trade in &info.trades {
-            input.on_trade(trade, true, None);
+            input.on_trade(trade, trade.side.eq_ignore_ascii_case("buy"), None);
         }
     }
     input.finish_period()
@@ -132,6 +132,34 @@ fn hourly_ranks_include_all_ties_and_stay_unknown_until_24_valid_z_scores() {
     let missing = transform.observe(None, true);
     assert!(missing.value.is_none() && missing.quantile.is_none() && !missing.ready);
     assert_eq!(transform.ranks.len(), 47);
+}
+
+#[test]
+fn raw_missing_stays_unknown_while_a_valid_raw_can_use_the_carried_z() {
+    let id = FactorId::parse("binance-futures-btcusdt-1h-avg_price").unwrap();
+    let mut parameters = Parameters::for_id(&id);
+    parameters.normalize_window = 3;
+    parameters.normalize_min_periods = 3;
+    parameters.rank_window = 3;
+    parameters.rank_min_periods = 1;
+    let mut state = Transform::new(&parameters, Interval::Hour);
+    for value in [1.0, 2.0] {
+        assert!(state.observe(Some(value), true).value.is_none());
+    }
+    assert_eq!(state.observe(Some(3.0), true).value, Some(1.0));
+    let missing = state.observe(None, true);
+    assert!(
+        missing.raw.is_none()
+            && missing.value.is_none()
+            && missing.quantile.is_none()
+            && !missing.ready
+    );
+    // Only two raw samples now remain in the three-slot normalization window.
+    // The valid current raw may carry the previous z into its rank window.
+    let carried = state.observe(Some(4.0), true);
+    assert_eq!(carried.value, Some(1.0));
+    assert_eq!(carried.quantile, Some(1.0));
+    assert!(carried.ready);
 }
 
 #[test]
@@ -241,7 +269,171 @@ fn hourly_engine_warms_native_formula_nq_and_cross_market_spread_from_periods() 
         panic!()
     };
     assert_eq!(nq.closes.len(), 120);
+    // The last completed hour's Binance mid is 100, whereas the previous
+    // hour's is 106. NQ must include the latest close without another shift.
+    let latest_nq = &engine.latest["binance-futures-btcusdt-1h-nq"];
+    assert_eq!(latest_nq.fields["long"].raw, Some(0.0));
+    assert_eq!(latest_nq.fields["short"].raw, Some((100.0 - 106.0) / 106.0));
     // Removing hourly calculations must also stop native hourly aggregation.
     engine.retain_plan(Plan::default()).unwrap();
     assert!(engine.series.is_empty());
+}
+
+#[test]
+fn native_history_continues_long_formulas_and_nq_without_replaying_overlap() {
+    use crate::cta_factor_calc::hourly_history::{HourlyHistory, HourlyInput, Manifest};
+    let combination: Combination = serde_json::from_value(serde_json::json!({
+        "name":"seed_test","strategy_group":"test","venue":"binance-futures","interval":"1h",
+        "factor_rules":[
+            {"标的":"BTC","因子":"factor_052","符号":1,"nq":"0.50"},
+            {"标的":"BTC","因子":"factor_114","符号":1,"nq":"关闭"},
+            {"标的":"BTC","因子":"TD_TI_008","符号":1,"nq":"关闭"}
+        ]
+    }))
+    .unwrap();
+    let plan = Plan::merge([combination]).unwrap();
+    let settings =
+        Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
+    let mut continuous = Engine::new(plan.clone(), &settings).unwrap();
+    let mut native = input();
+    let mut history_rows = Vec::new();
+    let mut records = Vec::new();
+    let mut quote = OrderBook::new();
+    for i in 0..720 {
+        let end = START + (i + 1) * HOUR;
+        let mid = 100.0 + (i as f64 * 0.13).sin() * 2.0 + i as f64 * 0.002;
+        let mut period = record(end, Some((end - 1000) * 1000), mid);
+        let info = &mut period.symbol_infos[0];
+        info.incs[0].bids = (0..20)
+            .map(|n| PriceLevel {
+                price: mid - 0.5 - n as f64 * 0.01,
+                amount: 2.0,
+            })
+            .collect();
+        info.incs[0].asks = (0..20)
+            .map(|n| PriceLevel {
+                price: mid + 0.5 + n as f64 * 0.01,
+                amount: 1.0,
+            })
+            .collect();
+        info.trades.push(TradeInfo {
+            timestamp: (end - 1000) * 1000,
+            side: "sell".into(),
+            price: mid - 0.01,
+            amount: 2.0,
+        });
+        if i >= 700 {
+            info.incs[0].is_snapshot = false;
+            info.incs[0].bids.truncate(1);
+            info.incs[0].asks.truncate(1);
+        }
+        // Match the live quote book, including its price-key rounding.
+        let b = &info.incs[0];
+        if b.is_snapshot {
+            quote = OrderBook::new();
+        }
+        quote.apply_update(
+            &b.bids
+                .iter()
+                .map(|p| (p.price, p.amount))
+                .collect::<Vec<_>>(),
+            &b.asks
+                .iter()
+                .map(|p| (p.price, p.amount))
+                .collect::<Vec<_>>(),
+            i + 1,
+            end * 1000,
+        );
+        if !quote.is_valid() {
+            quote.prune_crossed_by_best_update_id();
+        }
+        let nq_price = quote
+            .best_bid_price()
+            .zip(quote.best_ask_price())
+            .map(|(bid, ask)| (bid + ask) * 0.5);
+        let (bars, _) = push(&mut native, &period);
+        assert_eq!(bars.len(), 1);
+        history_rows.push(HourlyInput {
+            bar: bars[0].clone(),
+            nq_price,
+            classified: false,
+        });
+        if i < 700 {
+            continuous
+                .on_period(Market::BinanceFutures, &period)
+                .unwrap();
+        }
+        records.push(period);
+    }
+    let mut archive = HourlyHistory {
+        manifest: Manifest {
+            market: Market::BinanceFutures,
+            interval: Interval::Hour,
+            start_ms: START,
+            end_ms: START + 720 * HOUR,
+            source: "fixture".into(),
+            symbols: Default::default(),
+        },
+        rows: BTreeMap::from([("BTCUSDT".into(), history_rows)]),
+    };
+    let root =
+        std::env::temp_dir().join(format!("cta-hourly-history-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let meta = crate::cta_factor_calc::hourly_history::write_symbol(
+        &root,
+        "BTCUSDT",
+        &archive.rows["BTCUSDT"],
+    )
+    .unwrap();
+    archive.manifest.symbols.insert("BTCUSDT".into(), meta);
+    std::fs::write(
+        root.join("manifest.json"),
+        serde_json::to_vec(&archive.manifest).unwrap(),
+    )
+    .unwrap();
+    let archive = HourlyHistory::load(&root).unwrap();
+    assert_eq!(archive.rows["BTCUSDT"].len(), 720);
+    // A corrupted transport package is rejected before it can seed engine state.
+    std::fs::write(root.join("BTCUSDT.bin.gz"), b"corrupt").unwrap();
+    assert!(HourlyHistory::load(&root).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+    let mut resumed = Engine::new(plan, &settings).unwrap();
+    let summary = resumed
+        .seed_hourly_history(&archive, START + 700 * HOUR)
+        .unwrap();
+    assert_eq!(summary.formula_rows["BTCUSDT"], 700);
+    assert!(summary.ready_formulas.values().all(|ready| *ready));
+    assert_eq!(
+        summary.nq_rows.values().copied().collect::<Vec<_>>(),
+        vec![700]
+    );
+    assert!(resumed.latest.is_empty());
+    for period in &records[650..700] {
+        assert!(resumed
+            .on_period(Market::BinanceFutures, period)
+            .unwrap()
+            .is_empty());
+    }
+    // A newer Kafka period may carry a late book from an already-seeded hour.
+    // It must not create an older NQ point or advance either window again.
+    let mut late = records[699].clone();
+    late.ts = START + 700 * HOUR + 3000;
+    assert!(resumed
+        .on_period(Market::BinanceFutures, &late)
+        .unwrap()
+        .is_empty());
+    assert!(resumed.latest.is_empty());
+    for period in &records[700..] {
+        let expected = continuous
+            .on_period(Market::BinanceFutures, period)
+            .unwrap();
+        let actual = resumed.on_period(Market::BinanceFutures, period).unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+    assert!(resumed
+        .seed_hourly_history(&archive, START + 721 * HOUR)
+        .is_err());
 }

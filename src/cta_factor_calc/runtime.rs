@@ -3,12 +3,14 @@ use super::{
         Combination, Config, Interval, Market, Plan, SymbolGroups, Worker, SYMBOL_GROUPS_FILE,
     },
     engine::{Engine, FactorEvent, FactorPoint},
+    hourly_nq_seed::HourlyNqSeed,
 };
 use crate::factor_pub::model_output_publisher::ModelPublisher;
 use anyhow::{ensure, Context, Result};
 use clap::{ArgGroup, Parser};
 use log::{info, warn};
 use period_pbs::kafka::{decode_period_payload, RawKafkaConsumer};
+use period_pbs::pb::PeriodMessage;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -55,6 +57,9 @@ struct Args {
     /// Replay a fixed head into history and exit without creating IPC.
     #[arg(long)]
     replay_only: bool,
+    /// Native hourly input archive; also accepts CTA_HOURLY_HISTORY_DIR.
+    #[arg(long)]
+    hourly_history: Option<PathBuf>,
     #[arg(long)]
     core: Option<usize>,
 }
@@ -266,6 +271,14 @@ impl Journal {
     }
 }
 
+struct PendingPeriod {
+    market: Market,
+    topic: String,
+    partition: i32,
+    offset: i64,
+    period: PeriodMessage,
+}
+
 struct Generation {
     id: String,
     engine: Engine,
@@ -276,9 +289,18 @@ struct Generation {
     journal: Journal,
     publish_from: i64,
     records: u64,
+    hourly_nq_seed: HourlyNqSeed,
+    pending_period: Option<PendingPeriod>,
+    hourly_history: Option<super::hourly_history::HourlyHistory>,
+    hourly_history_status: Option<super::hourly_history::SeedSummary>,
 }
 impl Generation {
-    fn new(plan: Plan, config: &Config, worker: Worker) -> Result<Self> {
+    fn new(
+        plan: Plan,
+        config: &Config,
+        worker: Worker,
+        history_path: Option<&Path>,
+    ) -> Result<Self> {
         worker.validate_plan(&plan)?;
         let id = uuid::Uuid::new_v4().to_string();
         let topics = plan.topics();
@@ -292,6 +314,7 @@ impl Generation {
             .then(|| RawKafkaConsumer::new(&kafka))
             .transpose()?;
         let mut targets = BTreeMap::new();
+        let mut retained_offsets = Vec::new();
         if let Some(consumer) = &consumer {
             for mark in consumer.query_topic_watermarks(
                 &topics,
@@ -304,10 +327,25 @@ impl Generation {
                     mark.topic,
                     mark.partition
                 );
+                retained_offsets.push((mark.topic.clone(), mark.partition, mark.low));
                 targets.insert((mark.topic, mark.partition), mark.high - 1);
             }
         }
+        if history_path.is_some() {
+            if let Some(consumer) = &consumer {
+                consumer.assign_offsets(&retained_offsets)?;
+            }
+        }
         let journal = Journal::new(config.history_dir.join("generations").join(&id), &plan)?;
+        let hourly_nq_seed = HourlyNqSeed::new(&plan);
+        let hourly_history = history_path
+            .filter(|_| {
+                plan.calculations.values().any(|c| {
+                    c.id.interval == Interval::Hour && c.id.market == Market::BinanceFutures
+                })
+            })
+            .map(super::hourly_history::HourlyHistory::load)
+            .transpose()?;
         Ok(Self {
             id,
             engine: Engine::new(plan, config)?,
@@ -320,6 +358,10 @@ impl Generation {
                 (config.lookback_secs.saturating_mul(1000)).min(i64::MAX as u64) as i64,
             ),
             records: 0,
+            hourly_nq_seed,
+            pending_period: None,
+            hourly_history,
+            hourly_history_status: None,
         })
     }
     fn caught_up(&self) -> bool {
@@ -345,6 +387,42 @@ impl Generation {
         Ok(())
     }
     fn poll(&mut self, config: &Config, timeout: u64) -> Result<Vec<FactorPoint>> {
+        if let Some(batch) = self.hourly_nq_seed.poll() {
+            let cutoff = self
+                .hourly_nq_seed
+                .status
+                .cutoff_ms
+                .context("missing hourly NQ seed cutoff")?;
+            let mut errors = batch.errors;
+            let mut rows = BTreeMap::new();
+            for (id, history) in &batch.histories {
+                match self.engine.seed_hourly_nq(id, history, cutoff) {
+                    Ok(()) => {
+                        rows.insert(id.clone(), history.len());
+                    }
+                    Err(error) => {
+                        errors.insert(id.clone(), format!("{error:#}"));
+                    }
+                }
+            }
+            for (id, error) in &errors {
+                warn!("hourly NQ close bootstrap {id}: {error}");
+            }
+            self.hourly_nq_seed.finish(rows, errors);
+            atomic_json(
+                &self.journal.root.join("hourly_nq_seed.json"),
+                &json!({
+                    "source":"binance-futures-hourly-kline-close", "cutoff_ms":cutoff,
+                    "histories":batch.histories, "status":self.hourly_nq_seed.status,
+                }),
+            )?;
+        }
+        if self.hourly_nq_seed.loading() {
+            return Ok(Vec::new());
+        }
+        if let Some(pending) = self.pending_period.take() {
+            return self.process_period(pending);
+        }
         let Some(consumer) = &self.consumer else {
             return Ok(Vec::new());
         };
@@ -359,9 +437,41 @@ impl Generation {
         let (_, _, period) =
             decode_period_payload(&record.payload, config.kafka.payload_compression)
                 .context("decode factor PeriodMessage")?;
-        let points = self.engine.on_period(market, &period)?;
+        let pending = PendingPeriod {
+            market,
+            period,
+            topic: record.topic,
+            partition: record.partition,
+            offset: record.offset,
+        };
+        if market == Market::BinanceFutures {
+            if let Some(history) = self.hourly_history.take() {
+                let first_hour = super::hourly_history::cutoff_ms(pending.period.ts)?;
+                ensure!(
+                    first_hour <= history.manifest.end_ms,
+                    "hourly history ends before retained Kafka; refresh the history package"
+                );
+                let cutoff = history.manifest.end_ms;
+                let summary = self.engine.seed_hourly_history(&history, cutoff)?;
+                self.hourly_nq_seed.exclude_seeded(&summary.nq_rows);
+                atomic_json(
+                    &self.journal.root.join("hourly_history_seed.json"),
+                    &summary,
+                )?;
+                self.hourly_history_status = Some(summary);
+            }
+        }
+        if self.hourly_nq_seed.needs_start(market) {
+            self.hourly_nq_seed.start(pending.period.ts)?;
+            self.pending_period = Some(pending);
+            return Ok(Vec::new());
+        }
+        self.process_period(pending)
+    }
+    fn process_period(&mut self, pending: PendingPeriod) -> Result<Vec<FactorPoint>> {
+        let points = self.engine.on_period(pending.market, &pending.period)?;
         self.consumed
-            .insert((record.topic, record.partition), record.offset);
+            .insert((pending.topic, pending.partition), pending.offset);
         self.records += 1;
         let points = points
             .into_iter()
@@ -417,6 +527,11 @@ async fn run(worker: Worker) -> Result<()> {
         .config
         .unwrap_or_else(|| PathBuf::from(worker.default_config()));
     let mut config = Config::load(&config_path)?;
+    let hourly_history_path = args
+        .hourly_history
+        .clone()
+        .or_else(|| std::env::var_os("CTA_HOURLY_HISTORY_DIR").map(PathBuf::from));
+    let mut excluded_symbols = Vec::new();
     let editing = args.put_combination.is_some()
         || args.put_symbol_groups.is_some()
         || args.delete_combination.is_some()
@@ -445,6 +560,14 @@ async fn run(worker: Worker) -> Result<()> {
                 args.include_nq,
             )?);
         }
+        if let Some(combination) = put {
+            let (combination, excluded) =
+                super::symbol_filter::ConfigurationSymbolFilter::from_env()?
+                    .filter(combination)
+                    .await?;
+            put = Some(combination);
+            excluded_symbols = excluded;
+        }
         edit_combination(
             &config,
             put,
@@ -462,7 +585,7 @@ async fn run(worker: Worker) -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &json!({"worker":worker,"topics":plan.topics(),"position_tables":position_tables,"plan":plan})
+                &json!({"worker":worker,"topics":plan.topics(),"position_tables":position_tables,"plan":plan,"excluded_symbols":excluded_symbols})
             )?
         );
         return Ok(());
@@ -492,7 +615,12 @@ async fn run(worker: Worker) -> Result<()> {
     }
     let mut last_threshold_reload = Instant::now();
     let mut active: Option<Generation> = None;
-    let mut candidate = Some(Generation::new(plan, &config, worker)?);
+    let mut candidate = Some(Generation::new(
+        plan,
+        &config,
+        worker,
+        hourly_history_path.as_deref(),
+    )?);
     let publisher = if args.replay_only {
         None
     } else {
@@ -644,7 +772,12 @@ async fn run(worker: Worker) -> Result<()> {
                         if let Some(values) = next_thresholds {
                             replay_config.amount_thresholds = values;
                         }
-                        match Generation::new(next.clone(), &replay_config, worker) {
+                        match Generation::new(
+                            next.clone(),
+                            &replay_config,
+                            worker,
+                            hourly_history_path.as_deref(),
+                        ) {
                             Ok(g) => {
                                 config = replay_config;
                                 candidate = Some(g);
@@ -738,8 +871,12 @@ fn write_status(
     position_tables: Option<&serde_json::Value>,
     positions_error: Option<&str>,
 ) -> Result<()> {
+    let seed_error = active
+        .and_then(|g| g.hourly_nq_seed.status.errors.values().next())
+        .or_else(|| candidate.and_then(|g| g.hourly_nq_seed.status.errors.values().next()));
+    let error = error.or(seed_error.map(String::as_str));
     atomic_json(
         &config.history_dir.join("state.json"),
-        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len()}),
+        &json!({"worker":worker,"service":service_path(worker),"updated_ms":now_ms(),"generation":active.map(|g| &g.id),"warming":candidate.is_some(),"warm_records":candidate.map(|g| g.records),"plan":active.map(|g| &g.engine.plan),"pending_plan":candidate.map(|g| &g.engine.plan),"latest":active.map(|g| &g.engine.latest),"error":error,"position_tables":position_tables,"positions_error":positions_error,"amount_threshold_symbols":config.amount_thresholds.len(),"hourly_nq_warmup":{"active":active.map(|g| &g.hourly_nq_seed.status),"candidate":candidate.map(|g| &g.hourly_nq_seed.status)},"hourly_history_warmup":{"active":active.and_then(|g| g.hourly_history_status.as_ref()),"candidate":candidate.and_then(|g| g.hourly_history_status.as_ref())}}),
     )
 }

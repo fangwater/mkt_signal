@@ -280,6 +280,10 @@ name = "cta-factor-config"
 path = "src/bin/cta_factor_config.rs"
 
 [[bin]]
+name = "cta-hourly-history"
+path = "src/bin/cta_hourly_history.rs"
+
+[[bin]]
 name = "cta-factor-spread"
 path = "src/bin/cta_factor_spread.rs"
 

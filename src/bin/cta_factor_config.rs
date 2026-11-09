@@ -14,6 +14,7 @@ use mkt_signal::cta_factor_calc::{
     runtime::{
         catalog_revision, edit_combination_checked, edit_symbol_groups_checked, CatalogConflict,
     },
+    symbol_filter::ConfigurationSymbolFilter,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -41,12 +42,12 @@ struct Args {
     #[arg(long)]
     parameter_audit_dir: Option<PathBuf>,
 }
-#[derive(Clone)]
 struct App {
     config: Config,
     worker: Worker,
     spread_config: Option<Config>,
     audit_dir: Option<PathBuf>,
+    symbol_filter: ConfigurationSymbolFilter,
 }
 impl App {
     fn profile(&self, requested: Option<Worker>) -> Result<(&Config, Worker)> {
@@ -218,11 +219,16 @@ async fn edit(app: Arc<App>, headers: HeaderMap, request: Save, execute: bool) -
     ensure_revision(&request.expected_revision)?;
     request.combination.validate().map_err(error)?;
     let (config, worker) = app.profile(request.worker).map_err(error)?;
-    let name = format!("{}.json", request.combination.name);
+    let (combination, excluded_symbols) = app
+        .symbol_filter
+        .filter(request.combination)
+        .await
+        .map_err(error)?;
+    let name = format!("{}.json", combination.name);
     let write = || {
         edit_combination_checked(
             config,
-            Some(request.combination),
+            Some(combination),
             None,
             execute,
             worker,
@@ -235,7 +241,9 @@ async fn edit(app: Arc<App>, headers: HeaderMap, request: Save, execute: bool) -
         write()
     }
     .map_err(error)?;
-    Ok(Json(app.response(plan, worker).map_err(error)?))
+    let mut response = app.response(plan, worker).map_err(error)?;
+    response["excluded_symbols"] = json!(excluded_symbols);
+    Ok(Json(response))
 }
 fn ensure_revision(revision: &str) -> std::result::Result<(), (StatusCode, Json<Value>)> {
     if revision.is_empty() {
@@ -405,6 +413,7 @@ async fn main() -> Result<()> {
         config,
         worker,
         spread_config,
+        symbol_filter: ConfigurationSymbolFilter::from_env()?,
         audit_dir: Some(
             args.parameter_audit_dir
                 .unwrap_or(parameter_audit::default_root()?),

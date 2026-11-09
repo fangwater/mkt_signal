@@ -1,0 +1,1 @@
+{"source": "binance_exec_rx03", "minute_strategies": ["cta-last-20-prep02-bn-1min-pos", "cta-top-20-prep02-bn-1min-pos", "cta-top-5-prep02-bn-1min-pos"], "active_batches": 0, "pending_orders": 0, "nonzero_targets": 0, "residual_abs_usdt": 35.32371897690994, "residual_rows": 22, "execute": false}

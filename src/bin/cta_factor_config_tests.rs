@@ -1,5 +1,100 @@
 use super::*;
 
+async fn test_symbol_filter(inactive: &[&str]) -> ConfigurationSymbolFilter {
+    let fixture = Combination::load(std::path::Path::new(
+        "config/cta_prep_binance_futures/binance-futures_15min.json",
+    ))
+    .unwrap();
+    let mut symbols = std::collections::BTreeSet::from([
+        "ETHUSDT".to_string(),
+        "SOLUSDT".to_string(),
+        "BTCUSDT".to_string(),
+        "ICXUSDT".to_string(),
+    ]);
+    for rule in &fixture.factor_rules {
+        symbols.insert(fixture.rule_id(rule).unwrap().symbol);
+    }
+    let body = json!({"symbols":symbols.into_iter().map(|symbol|{
+        let status = if inactive.contains(&symbol.as_str()) {"SETTLING"} else {"TRADING"};
+        json!({"symbol":symbol,"status":status})
+    }).collect::<Vec<_>>()});
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/fapi/v1/exchangeInfo",
+                get(move || {
+                    let body = body.clone();
+                    async { Json(body) }
+                }),
+            ),
+        )
+        .await
+        .unwrap()
+    });
+    ConfigurationSymbolFilter::new(&base).unwrap()
+}
+
+#[tokio::test]
+async fn preview_and_save_filter_settling_contracts_before_persisting() {
+    let root = std::env::temp_dir().join(format!("cta-filter-http-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let mut config =
+        Config::load(std::path::Path::new("config/cta_prep_binance_futures.toml")).unwrap();
+    config.combinations_dir = root.clone();
+    let app = Arc::new(App {
+        config,
+        worker: Worker::Perp,
+        spread_config: None,
+        audit_dir: None,
+        symbol_filter: test_symbol_filter(&["ICXUSDT"]).await,
+    });
+    let combination: Combination = serde_json::from_value(json!({
+        "name":"hourly","strategy_group":"prep01","venue":"binance-futures","interval":"1h",
+        "factor_rules":[
+            {"标的":"ETH","因子":"baseline_148","符号":1,"nq":"关闭"},
+            {"标的":"ICX","因子":"factor_113","符号":-1,"nq":"0.50"}
+        ]
+    }))
+    .unwrap();
+    let revision = catalog_revision(&Plan::load(&root).unwrap()).unwrap();
+    let request = || Save {
+        worker: None,
+        combination: combination.clone(),
+        expected_revision: revision.clone(),
+    };
+    let preview = edit(app.clone(), HeaderMap::new(), request(), false)
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(preview["excluded_symbols"][0]["status"], "SETTLING");
+    assert_eq!(
+        preview["plan"]["combinations"]["hourly"]["factor_rules"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!root.join("hourly.json").exists());
+    let saved = edit(app, HeaderMap::new(), request(), true)
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(saved["excluded_symbols"][0]["symbol"], "ICXUSDT");
+    let persisted = Combination::load(&root.join("hourly.json")).unwrap();
+    assert_eq!(persisted.factor_rules.len(), 1);
+    assert_eq!(
+        persisted
+            .rule_id(&persisted.factor_rules[0])
+            .unwrap()
+            .symbol,
+        "ETHUSDT"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions() {
     use mkt_signal::cta_factor_calc::runtime::atomic_json;
@@ -31,6 +126,7 @@ async fn symbol_groups_api_preserves_membership_ownership_and_catalog_revisions(
                 worker: Worker::Perp,
                 audit_dir: Some(root_for_server.join("audit")),
                 spread_config: Some(spread_config),
+                symbol_filter: test_symbol_filter(&[]).await,
             }),
         )
         .await
@@ -176,6 +272,7 @@ async fn shared_catalog_round_trips_rows_and_signal_with_conflict_protection() {
                 worker: Worker::Perp,
                 spread_config: None,
                 audit_dir: Some(root_for_server.join("audit")),
+                symbol_filter: test_symbol_filter(&[]).await,
             }),
         )
         .await

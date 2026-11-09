@@ -24,13 +24,13 @@ pub struct BaselineStats {
     pub late_trades: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BaselineDepth20 {
     pub bids: [(f64, f64); BASELINE_DEPTH_LEVELS],
     pub asks: [(f64, f64); BASELINE_DEPTH_LEVELS],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BaselineBar {
     pub start_ms: i64,
     pub has_trade: bool,
@@ -647,6 +647,21 @@ impl LocalBaselineAggregator {
         asks: &[Level],
     ) -> Vec<BaselineBar> {
         self.on_retained_book(timestamp_us, false, bids, asks)
+    }
+
+    /// Reconstruct retained book state without opening a bar or counting event flow.
+    /// Used for Kafka records overlapping already-seeded hourly inputs.
+    pub fn restore_retained_book(&mut self, timestamp_us: i64, bids: &[Level], asks: &[Level]) {
+        let bids = bids.iter().map(|p| (p.price, p.amount)).collect::<Vec<_>>();
+        let asks = asks.iter().map(|p| (p.price, p.amount)).collect::<Vec<_>>();
+        let update_id = self.next_book_update_id;
+        self.next_book_update_id = self.next_book_update_id.saturating_add(1);
+        self.orderbook
+            .apply_update(&bids, &asks, update_id, timestamp_us);
+        if !self.orderbook.is_valid() {
+            self.orderbook.prune_crossed_by_best_update_id();
+        }
+        self.book_initialized = true;
     }
 
     /// Kafka snapshots use depth_pub's merge semantics and do not count as event flow.

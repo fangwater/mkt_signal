@@ -1,7 +1,14 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 09:47 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-09 10:14 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-09 10:14 UTC，JP RX03 / `binance_exec_rx03` 的 Prep02 三券池1min已下架。
+58条规则、三份组合与三条跟随绑定移除，六条5min/15min绑定及其他组合保持。
+原策略完整clear目标执行完成，无活动委托、批次或非零目标；22条低于交易所最小下单量的
+分仓尾量约35.33U及原归属保留，未伪造平仓。进程未重启，CPU、source IP、`local_ips`、
+ENI/EIP、路由、监听及env.sh保持。备份和脱敏核验见
+`artifacts/cta_rx03_1min_retirement/README.md`。
 
 2026-11-09 09:47 UTC，JP Delist发布生产 `arbmm bc28e9a7` 的内部Viz直连修复。
 本地核验3051个源码文件，隔离无关工作区改动，以 `--release --locked` 构建；上传显式暂存路径、

@@ -300,10 +300,12 @@ impl Table {
         for (symbol, row) in self.combination.signal_table()? {
             if config.position_algorithm == PositionAlgorithm::V1 {
                 let effective = config.for_symbol(&symbol);
+                let mut factor_input = effective.clone();
+                factor_input.entry.nq_change_enabled = false;
                 let inputs = row
                     .factors
                     .iter()
-                    .map(|f| shared_input(points, &symbol, f, &effective, now_us / 1000))
+                    .map(|f| shared_input(points, &symbol, f, &factor_input, now_us / 1000))
                     .collect::<Option<Vec<_>>>();
                 if let Some(inputs) = inputs {
                     if let Some(first) = inputs.first() {
@@ -325,12 +327,17 @@ impl Table {
             for binding in config.position_factors(&symbol, &row) {
                 let mut effective = config.for_strategy(&symbol, &binding.strategy);
                 let spread = self.combination.reference_venue.is_some();
-                if spread {
-                    effective.entry.nq_change_enabled = false;
-                }
-                let Some(input) =
-                    shared_input(points, &symbol, &binding.factor, &effective, now_us / 1000)
-                else {
+                // Read the factor independently so an absent NQ cannot gate
+                // its exit. The original effective config still gates entries.
+                let mut factor_input = effective.clone();
+                factor_input.entry.nq_change_enabled = false;
+                let Some(input) = shared_input(
+                    points,
+                    &symbol,
+                    &binding.factor,
+                    &factor_input,
+                    now_us / 1000,
+                ) else {
                     continue;
                 };
                 let ts = input.score_ts_ms;
@@ -463,6 +470,19 @@ impl Table {
         {
             return Ok(());
         }
+        let nq_pending =
+            config.entry.nq_change_enabled && bar.as_ref().is_some_and(|b| !b.nq.filter_ready);
+        if nq_pending
+            && self
+                .observations
+                .get(rule)
+                .and_then(|rows| rows.get(symbol))
+                .is_some_and(|old| {
+                    old["model_ts_ms"].as_i64() == Some(ts) && old["reason"] == "nq_pending"
+                })
+        {
+            return Ok(());
+        }
         let Ledger::Prep(rows) = &mut self.ledger else {
             anyhow::bail!("wrong Prep ledger")
         };
@@ -472,6 +492,7 @@ impl Table {
             .entry(symbol.to_string())
             .or_default();
         let mut reason = "factor_unready";
+        let mut retry_nq = false;
         if let Some(bar) = &bar {
             let before = p.flag;
             let q = quote(symbol, TradingVenue::BinanceFutures)
@@ -492,9 +513,18 @@ impl Table {
             } else {
                 "full_position_entry"
             };
+            retry_nq = nq_pending
+                && p.flag == 0
+                && (before == 0
+                    || config.bar_interval == crate::cta_perp::interval::BarInterval::OneHour);
+            if retry_nq && p.flag == before {
+                reason = "nq_pending";
+            }
         }
         self.observations.entry(rule.to_string()).or_default().insert(symbol.to_string(),json!({"position":p,"model_ts_ms":ts,"reason":reason,"factor_quantile":bar.as_ref().map(|b|b.decision_value)}));
-        self.clock.insert(key, ts);
+        if !retry_nq {
+            self.clock.insert(key, ts);
+        }
         self.dirty = true;
         Ok(())
     }

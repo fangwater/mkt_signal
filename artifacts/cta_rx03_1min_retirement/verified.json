@@ -1,0 +1,23 @@
+{
+  "source": "binance_exec_rx03",
+  "minute_strategies": [
+    "cta-last-20-prep02-bn-1min-pos",
+    "cta-top-20-prep02-bn-1min-pos",
+    "cta-top-5-prep02-bn-1min-pos"
+  ],
+  "active_batches": 0,
+  "pending_orders": 0,
+  "nonzero_targets": 0,
+  "residual_abs_usdt": 35.327977061398606,
+  "residual_rows": 22,
+  "execute": true,
+  "verified_at_ms": 1794219277873,
+  "remaining_bindings": 6,
+  "minute_configurations": 0,
+  "minute_bindings": 0,
+  "retired_zero_exec_targets_retained": true,
+  "inactive_position_definitions_retained": true,
+  "other_combinations_unchanged": true,
+  "other_bindings_unchanged": true,
+  "audit": "/home/ubuntu/crypto_cta_manager/maintenance-backups/cta_rx03_1min_retire_20261109T100830Z"
+}

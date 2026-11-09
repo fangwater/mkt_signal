@@ -349,7 +349,7 @@ fn empty_symbol_group_strategy_is_a_valid_zero_target_scope() {
 }
 
 #[test]
-fn prep02_symbol_group_templates_match_requested_rules_after_icx_removal() {
+fn prep02_templates_keep_5min_15min_after_icx_and_1min_retirement() {
     let plan = Plan::load(std::path::Path::new("config/cta_prep_binance_futures")).unwrap();
     let fixture: Vec<serde_json::Value> = serde_json::from_str(include_str!(
         "../../tests/fixtures/cta_prep02_symbol_groups.json"
@@ -357,6 +357,9 @@ fn prep02_symbol_group_templates_match_requested_rules_after_icx_removal() {
     .unwrap();
     let mut expected = BTreeSet::new();
     for row in fixture {
+        if row["interval"].as_str() == Some("1min") {
+            continue;
+        }
         for symbol in row["symbols"].as_array().unwrap() {
             // The original import is retained as evidence; ICX was explicitly removed later.
             if symbol.as_str() == Some("ICX") {
@@ -392,8 +395,12 @@ fn prep02_symbol_group_templates_match_requested_rules_after_icx_removal() {
             ));
         }
     }
-    assert_eq!(tables, 9);
-    assert_eq!(expected.len(), 99);
+    assert_eq!(tables, 6);
+    assert_eq!(expected.len(), 41);
+    assert!(plan
+        .combinations
+        .values()
+        .any(|c| c.strategy_group == "prep01" && c.interval == Interval::Minute));
     assert_eq!(actual, expected);
     assert_eq!(plan.symbol_groups.0["top-5"].len(), 5);
     assert_eq!(plan.symbol_groups.0["top-20"].len(), 20);
@@ -588,11 +595,11 @@ fn nq_uses_each_markets_own_bars_at_all_requested_frequencies() {
             0
         );
     }
-    // NQ at the last closed 15m bucket uses the preceding bucket (minute 974).
+    // NQ includes the latest closed 15m bucket's own mid.
     // Its 120-bar extrema contain only that market's prices.
     let point = &engine.latest[names[2]];
     let count = (point.ts_ms - start) / 900_000;
-    let mids = (0..count - 1)
+    let mids = (0..count)
         .map(|bar| 200.0 + ((bar * 15 + 14) % 31) as f64)
         .collect::<Vec<_>>();
     let last = *mids.last().unwrap();
@@ -603,8 +610,8 @@ fn nq_uses_each_markets_own_bars_at_all_requested_frequencies() {
 }
 
 #[test]
-fn nq_uses_120_valid_bars_and_lags_one_bar_at_every_frequency() {
-    for frequency in ["1min", "5min", "15min"] {
+fn nq_uses_120_valid_bars_and_includes_the_latest_closed_bar_at_every_frequency() {
+    for frequency in ["1min", "5min", "15min", "1h"] {
         let id = FactorId::parse(&format!("binance-futures-btcusdt-{frequency}-nq")).unwrap();
         let parameters = Parameters::for_id(&id);
         assert_eq!(parameters.lookback, 120);
@@ -614,27 +621,22 @@ fn nq_uses_120_valid_bars_and_lags_one_bar_at_every_frequency() {
         let mut nq = Nq::new(&parameters);
         for source in 1..=120 {
             let fields = nq.observe(Some(if source == 1 { 50.0 } else { 100.0 }));
-            assert_eq!(fields["long"].ready, source > 60);
-            assert_eq!(fields["short"].ready, source > 60);
+            assert_eq!(fields["long"].ready, source >= 60);
+            assert_eq!(fields["short"].ready, source >= 60);
             if source == 1 {
-                assert!(fields["long"].raw.is_none());
-            } else if source == 2 {
-                // Source bar 1 had only its own price, not the new higher mid.
                 assert_eq!(fields["long"].raw, Some(0.0));
             } else {
                 assert_eq!(fields["long"].raw, Some(1.0));
             }
         }
-        // The missing bar emits the preceding valid observation, without
-        // consuming a valid-sample window slot. Its unknown value appears one
-        // bar later and must not be replaced by the last valid NQ.
-        assert_eq!(nq.observe(None)["long"].raw, Some(1.0));
+        // A missing current mid is immediately unknown and does not consume
+        // a valid-sample slot. The next valid bar can immediately be used.
+        let missing = nq.observe(None);
+        assert!(missing["long"].raw.is_none() && !missing["long"].ready);
         assert_eq!(nq.closes.len(), 120);
         let after_gap = nq.observe(Some(100.0));
-        assert!(!after_gap["long"].ready && after_gap["long"].raw.is_none());
-        let expired = nq.observe(Some(100.0));
-        assert_eq!(expired["long"].raw, Some(0.0));
-        assert!(expired["long"].ready);
+        assert_eq!(after_gap["long"].raw, Some(0.0));
+        assert!(after_gap["long"].ready);
         assert_eq!(nq.long.len(), 120);
         assert_eq!(nq.short.len(), 120);
     }

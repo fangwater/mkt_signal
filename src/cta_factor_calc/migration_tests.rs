@@ -18,7 +18,15 @@ impl Drop for Fixture {
 fn fixture() -> Fixture {
     let root = std::env::temp_dir().join(format!("cta-symbol-migration-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
-    let plan = Plan::load(Path::new("config/cta_prep_binance_futures")).unwrap();
+    // Freeze the historical migration case independently of the current live templates.
+    let snapshot: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/cta_prep02_migration_plan.json"
+    ))
+    .unwrap();
+    let combinations: Vec<Combination> =
+        serde_json::from_value(snapshot["combinations"].clone()).unwrap();
+    let symbol_groups = serde_json::from_value(snapshot["symbol_groups"].clone()).unwrap();
+    let plan = Plan::merge_with_symbol_groups(combinations, symbol_groups).unwrap();
     let mut originals = BTreeMap::<Interval, Combination>::new();
     let mut seen = BTreeSet::new();
     for combination in plan
