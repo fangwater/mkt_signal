@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-09 14:28 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-10 02:29 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-10 02:29 UTC，FR账户目录查询与远端环境凭据读取解耦，仅发布NAV和Delist。
+NAV PID3764734 仍CPU24；Delist PID3773328与既有SG隧道PID3773302仍CPU28。
+沿用4191网关、8787回环、既有SG监控转发及全部Viz目标；未修改ENI/EIP、
+`local_ips`、策略源IP、路由或公开监听。10套FR快照完整；核验、回退见
+`docs/core_allocation.md` 与 `data/ops/fr_catalog_20261110/`。
 
 2026-11-09 14:28 UTC，1h已并入现有 `cta-prep-binance-futures` 并启用。
 主进程PID2168358继续使用CPU17，13份组合包含原9份分钟配置与4份小时配置，共596项计算；

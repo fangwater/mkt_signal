@@ -1,7 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-09 14:28 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-10 02:29 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-10 02:29 UTC，修复 FR 账户目录偶发超时。NAV `c8cb8fa` 的现有
+`/api/strategies` 新增 `include_credentials=false`：保持原有登录/账户授权筛选，
+仅跳过环境文件及远端 SSH 凭据检查；Delist 生产 `arbmm cc25b455` 使用该模式。
+均由本机构建、SCP 暂存、SHA-256 校验后原子安装；NAV PID3764734 保持 CPU24，
+Delist PID3773328、SG 隧道 PID3773302 全线程保持 CPU28，仅经环境本地脚本重载。
+95个受保护交易/行情进程身份及CPU mask、20份Delist配置/脚本指纹保持。
+12项目录中的10套FR快照完整，通知队列为空；30次元数据查询中位1.298ms、最大3.586ms。
+现有凭据查询字段保留，匿名元数据查询仍401；未修改交易参数、source IP、路由或监听。
+构建、测试限制和核验见 `data/ops/fr_catalog_20261110/`；回退包为
+`~/delist_risk_server/backups/fr_catalog_cc25b455_20261110/` 与
+`~/crypto_nav_manager/maintenance-backups/fr_catalog_20261110/`。
 
 2026-11-09 14:28 UTC，1h已并入现有 `cta-prep-binance-futures` 并启用。
 主进程PID2168358继续使用CPU17，13份组合包含原9份分钟配置与4份小时配置，共596项计算；

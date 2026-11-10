@@ -1,6 +1,31 @@
 # Delist Risk Server
 
-最后更新：2026-11-06 14:40 UTC（Delist 与 Redis 共用 CPU28；全部参数页变更审计与钉钉通知）
+最后更新：2026-11-10 02:29 UTC（FR目录读取脱离远端凭据SSH；Delist保持CPU28）
+
+2026-11-10 02:29 UTC，修复账户目录读取依赖远端凭据SSH的问题。
+01:08:25 NAV目录请求15秒超时触发01:08:28告警；01:09:18已自动恢复。
+原NAV目录请求会检查每个环境的凭据文件，包括SG的SSH读取。NAV `c8cb8fa`
+在同一 `/api/strategies` 上提供 `include_credentials=false`；Delist生产
+`arbmm cc25b455` 在账户发现请求中显式使用该参数，URL及登录地址配置不变。
+该模式沿用认证、授权和enabled筛选；不执行环境文件/SSH检查，也不返回未经
+检查的凭据就绪字段。默认交互查询及单账户详情保持凭据检查，目录失败和过期
+仍使覆盖不可确认，未延后或关闭告警。
+
+NAV的7个嵌入迁移二进制统一本机构建发布；数据库迁移文件未改。Delist仅原子替换
+二进制并通过环境本地脚本重载，私有配置、现有CTA参数差异及20份脚本/配置指纹保持。
+NAV PID3764734/CPU24；Delist PID3773328和隧道PID3773302全部线程CPU28。
+Delist SHA-256：`f1103843107dd0224046c562486d13addbb2a18afb349b445962a3a3b1ccb84d`。
+线上授权目录12项、FR10套全部fresh/complete、队列为空；30次元数据查询中位
+1.298ms、最大3.586ms，原交互查询约945ms。两种查询授权slug集合一致，匿名仍401。
+95个受保护交易/行情进程身份与CPU mask保持。
+
+校验：两仓库格式检查、本机release、NAV库测试215项、账户目录测试12项通过。
+额外Delist服务回归66项通过、3项未通过：本机缺少redis-server影响1项MM备份测试；
+两项既有CTA断言仍期望404因子/12组合，而当前配置为596因子/13组合。测试源码
+相对修复前未改，不调整操作员配置来满足旧断言。构建/测试/核验在
+`data/ops/fr_catalog_20261110/`。回退分别为
+`~/delist_risk_server/backups/fr_catalog_cc25b455_20261110/` 和
+`~/crypto_nav_manager/maintenance-backups/fr_catalog_20261110/`。
 
 2026-11-06 14:39–14:40 UTC，按操作员要求将 Delist 和其 SG 隧道迁至 CPU28，
 与已隔离的轻载 Redis 共用。Delist PID1367608、隧道 PID1367582 的全部线程
