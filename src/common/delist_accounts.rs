@@ -293,7 +293,9 @@ pub async fn fetch_nav_accounts(
     url: &str,
     session: Option<&str>,
 ) -> Result<Vec<AccountSpec>> {
-    let mut request = client.get(url);
+    // NAV's interactive list also checks env files over SSH. Discovery uses
+    // the same authorized catalog without depending on credential probes.
+    let mut request = client.get(url).query(&[("include_credentials", false)]);
     if let Some(token) = session {
         request = request.header(reqwest::header::COOKIE, format!("nav_session={token}"));
     }
@@ -1190,26 +1192,35 @@ mod tests {
     async fn loads_accounts_from_nav_and_normalizes_local_metadata() {
         let app = Router::new().route(
             "/strategies",
-            get(|| async {
-                Json(serde_json::json!([
-                    {
-                        "slug": "bitget_fr_arb01",
-                        "alias": "bitget arb01",
-                        "displayName": "Bitget FR 01",
-                        "host": "local",
-                        "strategyKind": "funding_rate",
-                        "exchange": "bitget"
-                    },
-                    {
-                        "slug": "okex_mm_alpha",
-                        "alias": "",
-                        "displayName": "OKX MM",
-                        "host": "sg",
-                        "strategyKind": "market_making",
-                        "exchange": "okx"
-                    }
-                ]))
-            }),
+            get(
+                |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>,
+                 headers: axum::http::HeaderMap| async move {
+                    assert_eq!(
+                        query.get("include_credentials").map(String::as_str),
+                        Some("false")
+                    );
+                    assert_eq!(query.get("scope").map(String::as_str), Some("delist"));
+                    assert_eq!(headers.get("cookie").unwrap(), "nav_session=test-session");
+                    Json(serde_json::json!([
+                        {
+                            "slug": "bitget_fr_arb01",
+                            "alias": "bitget arb01",
+                            "displayName": "Bitget FR 01",
+                            "host": "local",
+                            "strategyKind": "funding_rate",
+                            "exchange": "bitget"
+                        },
+                        {
+                            "slug": "okex_mm_alpha",
+                            "alias": "",
+                            "displayName": "OKX MM",
+                            "host": "sg",
+                            "strategyKind": "market_making",
+                            "exchange": "okx"
+                        }
+                    ]))
+                },
+            ),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1217,8 +1228,8 @@ mod tests {
 
         let accounts = fetch_nav_accounts(
             &Client::new(),
-            &format!("http://{address}/strategies"),
-            None,
+            &format!("http://{address}/strategies?scope=delist"),
+            Some("test-session"),
         )
         .await
         .unwrap();
