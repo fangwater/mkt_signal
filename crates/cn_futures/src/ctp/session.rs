@@ -213,6 +213,7 @@ impl Session {
                         "configured contract is not a CFFEX future"
                     );
                     let instrument = Instrument {
+                        option: None,
                         venue: Venue::Cffex,
                         symbol: symbol.clone(),
                         price_tick: e.price_tick,

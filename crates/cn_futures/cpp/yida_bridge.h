@@ -10,15 +10,17 @@ struct CnYidaEvent {
     int32_t order_type, order_attribute, market_minimum, market_maximum;
     int32_t selection_type, connection_id, real_connection_id, connection_status;
     int32_t connection_count, public_connection, dedicated_connection;
+    int32_t options_type, contract_multiple;
     int64_t system_id, trade_id;
-    double price, tick, available, commission;
+    double price, tick, available, commission, strike_price, upper_limit_price;
     char symbol[32], exchange[12], original_order_id[64], original_trade_id[64];
     char connection_info[28], insert_flow[32], cancel_flow[32];
+    char underlying[32], underlying_exchange[12];
 };
 struct CnYidaOrderRequest {
     char exchange[12], symbol[32];
     int32_t reference, direction, offset, tif, market, lots, selection, connection;
-    double price;
+    double price, option_market_buy_ceiling;
 };
 struct CnYidaCancelRequest {
     char exchange[12];
@@ -32,6 +34,7 @@ int cn_yida_version(const char*, char*, size_t);
 void* cn_yida_create(const char*, const char*, int, int, CnYidaCallback, void*, char*, size_t);
 int cn_yida_destroy(void*);
 int cn_yida_start(void*);
+int cn_yida_allow_instrument(void*, const char*, const char*);
 int cn_yida_login(void*, const char*, const char*, const char*, const char*);
 int cn_yida_reference(void*);
 int cn_yida_insert(void*, const CnYidaOrderRequest*);

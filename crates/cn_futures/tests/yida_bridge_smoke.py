@@ -50,7 +50,7 @@ class Fixture final:public YDExtendedApi {
     int next_reference=101; bool initialized=false, xtcp_initialized=false;
     std::string protocol;
     std::map<std::string,std::string> config_values;
-    YDInstrument option{}; YDAccountInstrumentInfo option_ai{}; YDExtendedPosition option_position{};
+    YDInstrument option_underlying{},underlyings[2]{}; YDInstrument option{}; YDAccountInstrumentInfo option_ai{}; YDExtendedPosition option_position{};
     YDSystemParam port{};
     static void copy_input(YDOrder& o,const YDInputOrder& p){
         o.Direction=p.Direction;o.OffsetFlag=p.OffsetFlag;o.HedgeFlag=p.HedgeFlag;
@@ -83,7 +83,7 @@ public:
         std::strcpy(account.AccountID,"fixture");account.LoginCount=1;account.TradingRight=YD_TR_Allow;
         if(std::getenv("YIDA_FIXTURE_MULTI_LOGIN"))account.LoginCount=2;
         if(std::getenv("YIDA_FIXTURE_CLOSE_ONLY"))account.TradingRight=YD_TR_CloseOnly;
-        cash.m_pAccount=&account;cash.Available=1000000;for(int& ref:group_max)ref=100;
+        cash.m_pAccount=&account;cash.Available=std::getenv("YIDA_FIXTURE_OPTION_TRADING")?100000000:1000000;for(int& ref:group_max)ref=100;
         for(int k=0;k<2;++k){
             std::strcpy(exchanges[k].ExchangeID,k?"INE":"SHFE");exchanges[k].UseTodayPosition=true;exchanges[k].ExchangeRef=k+1;
             std::strcpy(products[k].ProductID,k?"sc":"cu");products[k].m_pExchange=&exchanges[k];
@@ -91,6 +91,14 @@ public:
             instruments[k].ProductClass=YD_PC_Futures;instruments[k].Tick=.2;instruments[k].Multiple=5;instruments[k].ExpireDate=20261220;
             instruments[k].MinLimitOrderVolume=1;instruments[k].MaxLimitOrderVolume=100;
             instruments[k].MinMarketOrderVolume=1;instruments[k].MaxMarketOrderVolume=10;
+            if(std::getenv("YIDA_FIXTURE_OPTION_TRADING")){
+                underlyings[k]=instruments[k];
+                const bool swap=std::getenv("YIDA_FIXTURE_OPTION_RIGHT_SWAP");
+                const bool call=bool(k)==swap;
+                instruments[k].ProductClass=YD_PC_Options;instruments[k].OptionsType=call?YD_OT_CallOption:YD_OT_PutOption;
+                instruments[k].StrikePrice=k?650:100000;instruments[k].Multiple=k?1000:5;instruments[k].m_pUnderlyingInstrument=&underlyings[k];
+                std::strcpy(instruments[k].InstrumentID,k?(call?"sc2612C650":"sc2612P650"):(call?"cu2612C100000":"cu2612P100000"));
+            }
             instruments[k].m_pMarketData=&market_data[k];market_data[k].UpperLimitPrice=6000;market_data[k].LowerLimitPrice=3000;
             if(std::getenv("YIDA_FIXTURE_NO_MARKET_LIMITS"))instruments[k].m_pMarketData=nullptr;
             exchanges[k].ConnectionCount=3;exchanges[k].ConnectionInfos=seats[k];exchanges[k].IsPublicConnectionID[0]=true;exchanges[k].IsPublicConnectionID[1]=true;
@@ -110,7 +118,8 @@ public:
         if(std::getenv("YIDA_FIXTURE_ONE_EXISTING_LOT")){
             for(auto& p:positions)p.Position=0;positions[0].Position=1;
         }
-        std::strcpy(option.InstrumentID,"sc2701C790");option.ProductClass=YD_PC_Options;option.m_pExchange=&exchanges[1];
+        std::strcpy(option_underlying.InstrumentID,"sc2701");option_underlying.ProductClass=YD_PC_Futures;option_underlying.m_pExchange=&exchanges[1];
+        std::strcpy(option.InstrumentID,"sc2701C790");option.ProductClass=YD_PC_Options;option.m_pExchange=&exchanges[1];option.m_pUnderlyingInstrument=&option_underlying;option.OptionsType=YD_OT_CallOption;option.StrikePrice=790;option.Multiple=1000;option.ExpireDate=20261220;
         option_ai.m_pAccount=&account;option_ai.m_pInstrument=&option;option_position.m_pAccountInstrumentInfo=&option_ai;
         option_position.Position=19;option_position.PositionDate=YD_PSD_History;option_position.PositionDirection=YD_PD_Long;option_position.HedgeFlag=YD_HF_Speculation;
     }
@@ -139,15 +148,15 @@ public:
     }
     void disconnect()override{listener->notifyEvent(YD_AE_TCPTradeDisconnected);listener->notifyEvent(YD_AE_TCPTradeConnected);listener->notifyReadyForLogin(false);}
     int getTradingDay()override{return 20261109;}
-    int getNextOrderRef(unsigned group=0,bool update=true)override{check(group>0 && group<=255 && update);allocated_group=group;return next_reference++;}
+    int getNextOrderRef(unsigned group=0,bool update=true)override{check(group>0 && group<=255 && update);allocated_group=group;if(std::getenv("YIDA_FIXTURE_RAISE_OPTION_LIMIT"))for(auto& m:market_data)m.UpperLimitPrice=6500;return next_reference++;}
     const char* getConfig(const char* name)override{auto it=config_values.find(name);return it==config_values.end()?nullptr:it->second.c_str();}
     const YDSystemParam* getSystemParamByName(const char* name,const char* target)override{
         check(!std::strcmp(target,"System") && (!std::strcmp(name,"UDPTradingPort") || !std::strcmp(name,"XTCPTradingPort")));return &port;
     }
     const YDAccount* getMyAccount()override{return &account;}
     const YDExtendedAccount* getExtendedAccount(const YDAccount* =nullptr)override{return &cash;}
-    int getInstrumentCount()override{return 2;}
-    const YDInstrument* getInstrument(int n)override{return &instruments[n];}
+    int getInstrumentCount()override{return std::getenv("YIDA_FIXTURE_LARGE_CATALOG")?100000:2;}
+    const YDInstrument* getInstrument(int n)override{check(n>=0 && n<2);return &instruments[n];}
     const YDInstrument* getInstrumentByID(const char* s)override{for(auto& i:instruments)if(!std::strcmp(i.InstrumentID,s))return &i;return nullptr;}
     int getExchangeCount()override{return 2;}
     const YDExchange* getExchange(int k)override{return &exchanges[k];}
@@ -186,7 +195,7 @@ public:
         if(p->Price==5009){fill(stored,1,YD_OS_Canceled);listener->notifyOrder(&stored,i,&account);return true;}
         if(p->Price==5010){fill(stored,1);auto conflict=trades.back();conflict.Price+=.2;listener->notifyTrade(&conflict,i,&account);return true;}
         if(p->Price==5011){stored.OrderStatus=99;listener->notifyOrder(&stored,i,&account);return true;}
-        if(p->OrderType!=YD_ODT_Limit || p->ExchangeOrderAttribute){fill(stored,p->OrderVolume);stored.OrderStatus=YD_OS_AllTraded;}
+        if(p->OrderType!=YD_ODT_Limit || p->ExchangeOrderAttribute || std::getenv("YIDA_FIXTURE_OPTION_TRADING")){fill(stored,p->OrderVolume);stored.OrderStatus=YD_OS_AllTraded;}
         if(!std::getenv("YIDA_FIXTURE_DELAY_ACK"))listener->notifyOrder(&stored,i,&account);
         if(p->Price==5005 && protocol=="XTCP"){xtcp_initialized=false;listener->notifyEvent(YD_AE_XTCPTradeDisconnected);}
         return true;
@@ -201,7 +210,7 @@ public:
         if(o.Price==5003){YDFailedCancelOrder e{};e.OrderSysID=o.OrderSysID;e.LongOrderSysID=o.LongOrderSysID;e.ErrorNo=31;listener->notifyFailedCancelOrder(&e,x,&account);
             e.LongOrderSysID=0;e.OrderGroupID=3;listener->notifyFailedCancelOrder(&e,x,&account);return true;}
         if(o.Price==5007)return true;
-        if(!std::getenv("YIDA_FIXTURE_DELAY_ACK") && !std::getenv("YIDA_FIXTURE_BATCH") && o.OrderVolume-o.TradeVolume>0)fill(o,1);
+        if(!std::getenv("YIDA_FIXTURE_DELAY_ACK") && !std::getenv("YIDA_FIXTURE_BATCH") && !std::getenv("YIDA_FIXTURE_OPTION_TRADING") && o.OrderVolume-o.TradeVolume>0)fill(o,1);
         if(o.OffsetFlag!=YD_OF_Open)positions[index(o.m_pInstrument)*4+(1-o.Direction)*2+(o.OffsetFlag==YD_OF_CloseYesterday?1:0)].CloseFrozen-=o.OrderVolume-o.TradeVolume;
         o.OrderStatus=YD_OS_Canceled;listener->notifyOrder(&o,o.m_pInstrument,&account);return true;
     }
@@ -256,6 +265,10 @@ def run_fixture(args,protocol,scenario='normal'):
         native_text=f'TradingServerIP=127.0.0.1\nTradingServerPort=1\nTradingProtocol={protocol.upper()}\nUDPTradingType=socket\nXTCPTradingType=socket\nConnectTCPMarketData=no\nReceiveUDPMarketData=no\nRecalcMode=off\n'
         config=(root/'config/yida_trade.example.toml').read_text()
         for old,new in [('/opt/yida/1.502.53.182/linux64/yd.so',str(library)),('/opt/yida/trade-server.cfg',str(native_config)),('trading_protocol = "xtcp"',f'trading_protocol = "{protocol}"'),('/tmp/mkt_yida_sim/flow',str(temp/'flow')),('/tmp/mkt_yida_sim/events.jsonl',str(temp/'events.jsonl')),('cash_budget_per_open_lot = 250000.0','cash_budget_per_open_lot = 10000.0'),('max_order_lots = 1','max_order_lots = 10'),('max_position_lots_per_side = 2','max_position_lots_per_side = 20'),('max_working_lots = 2','max_working_lots = 20'),('max_actions_per_second = 2','max_actions_per_second = 100'),('enable_fak_fok = false','enable_fak_fok = true'),('response_timeout_ms = 30000','response_timeout_ms = 5000')]:config=config.replace(old,new)
+        if scenario.startswith('options'):
+            swap=scenario=='options_other_rights'
+            config=config.replace('cu2612','cu2612P100000' if swap else 'cu2612C100000').replace('sc2612','sc2612C650' if swap else 'sc2612P650')
+            config=config.replace('cash_budget_per_open_lot = 10000.0','cash_budget_per_open_lot = 10000.0\ncash_buffer_per_buy_lot = 25.0')
         if scenario=='affinity':
             allowed_cpus=sorted(os.sched_getaffinity(0));business_core,sdk_core=allowed_cpus[:2]
             config=config.replace('# business_core = <isolated CPU>;',f'business_core = {business_core} #')
@@ -267,10 +280,15 @@ def run_fixture(args,protocol,scenario='normal'):
         config_path=temp/'config.toml';config_path.write_text(config)
         environment={k:v for k,v in os.environ.items() if not k.startswith('YIDA_FIXTURE_')}
         environment.update(YIDA_USER_ID='fixture',YIDA_PASSWORD='fixture-only',YIDA_APP_ID='fixture-app',YIDA_AUTH_CODE='fixture-auth',YIDA_FIXTURE_CALL_LOG=str(temp/'nativecalls'))
+        if scenario.startswith('options'):
+            environment['YIDA_FIXTURE_OPTION_TRADING']='1'
+            if scenario=='options_other_rights':environment['YIDA_FIXTURE_OPTION_RIGHT_SWAP']='1'
         if scenario=='pre_ack_cancel':environment['YIDA_FIXTURE_DELAY_ACK']='1'
         if scenario in ('batch','partial_batch','partial_cancel'):environment['YIDA_FIXTURE_BATCH']='1'
         if scenario=='partial_batch':environment['YIDA_FIXTURE_PARTIAL_BATCH']='1'
         if scenario=='partial_cancel':environment['YIDA_FIXTURE_PARTIAL_CANCEL']='1'
+        if scenario=='large_catalog':environment['YIDA_FIXTURE_LARGE_CATALOG']='1'
+        if scenario=='options_ceiling_changed':environment['YIDA_FIXTURE_RAISE_OPTION_LIMIT']='1'
         if scenario=='market_no_limits':environment['YIDA_FIXTURE_NO_MARKET_LIMITS']='1'
         if scenario=='no_port':environment['YIDA_FIXTURE_PORT']='0'
         if scenario=='no_xtcp':environment['YIDA_FIXTURE_NO_XTCP']='1'
@@ -314,9 +332,9 @@ def run_fixture(args,protocol,scenario='normal'):
                 assert len([o for o in initial['orders'] if o['key']['order_ref']=='0'])==2
                 assert all(int(o['system_id'])>(1<<32) for o in initial['orders'])
                 if scenario=='public_simulation':
-                    before=full_state();assert before['can_trade'] and len(before['read_only_positions'])==1
+                    before=full_state();assert before['can_trade'] and any(p['symbol']=='sc2701C790' and p['position']['yesterday']==19 for p in before['state']['positions'])
                     key=submit()['children'][0]['key'];send({'op':'cancel','key':key});wait('cancel_submitted_locally')
-                    after=full_state();assert len(after['read_only_positions'])==1 and after['read_only_positions'][0]['lots']==19
+                    after=full_state();assert any(p['symbol']=='sc2701C790' and p['position']['yesterday']==19 for p in after['state']['positions'])
                     send({'op':'reconcile'});wait('reconciling');wait('reconciled');assert full_state()['can_trade']
                     send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
                     print(json.dumps({'protocol':protocol,'scenario':scenario,'futures_submit_cancel':True,'option_inventory_retained':True}));return
@@ -384,6 +402,35 @@ def run_fixture(args,protocol,scenario='normal'):
                     send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
                     print(json.dumps({'protocol':protocol,'scenario':scenario,'callback_ordering_and_validation':True}));return
                 assert full_state()['can_trade']
+                if scenario.startswith('options'):
+                    for item in state()['orders']:
+                        if item['status']=='working':
+                            send({'op':'cancel','key':item['key']});wait('cancel_submitted_locally')
+                    if scenario=='options_ceiling_changed':
+                        send({'op':'submit','intent':{'venue':'SHFE','symbol':'cu2612C100000','side':'buy','offset':'open','lots':1,'price_type':'market','price_ticks':0,'time_in_force':'day'}})
+                        receipt=wait('submit_receipt')['receipt']
+                        assert receipt['children'][0]['outcome']=='rejected_locally' and '9904' in receipt['children'][0]['error']
+                        assert not any(l.startswith('insert ') for l in (temp/'nativecalls').read_text().splitlines())
+                        send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
+                        print(json.dumps({'protocol':protocol,'scenario':scenario,'raised_option_premium_bound_rejected_before_send':True}));return
+                    cases=[('SHFE','cu2612P100000' if scenario=='options_other_rights' else 'cu2612C100000'),('INE','sc2612C650' if scenario=='options_other_rights' else 'sc2612P650')]
+                    initial=state();keys=[]
+                    for venue,symbol in cases:
+                        for price_type in ('limit','market'):
+                            for tif in ('day','fak','fok'):
+                                for side in ('buy','sell'):
+                                    pair=[]
+                                    for direction,offset in [(side,'open'),('sell' if side=='buy' else 'buy','close_today')]:
+                                        item={'venue':venue,'symbol':symbol,'side':direction,'offset':offset,'lots':1,'price_type':price_type,'price_ticks':0 if price_type=='market' else 20000,'time_in_force':tif,'execution_route':{'mode':'fixed','connection_id':0}}
+                                        send({'op':'submit','intent':item});receipt=wait('submit_receipt')['receipt'];assert receipt['all_submitted_locally'],receipt
+                                        key=receipt['children'][0]['key'];keys.append(key);pair.append(key)
+                                        order=next(o for o in state()['orders'] if o['key']==key);assert order['status']=='filled' and order['filled']==1
+                    send({'op':'reconcile'});wait('reconciling');restored=wait('reconciled')['state'];assert restored['ready']
+                    def inventory(s):return sorted((p['venue'],p['symbol'],p['side'],p['position']['today'],p['position']['yesterday']) for p in s['positions'] if p['position']['today'] or p['position']['yesterday'])
+                    assert inventory(restored)==inventory(initial)
+                    assert all(r['option'] is not None for r in restored['instruments'])
+                    send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
+                    print(json.dumps({'protocol':protocol,'scenario':scenario,'option_orders':len(keys),'ordinary_option_fills':True,'both_directions':True,'native_metadata':True,'reconcile':True}));return
                 if scenario=='pre_ack_cancel':
                     receipt=submit();key=receipt['children'][0]['key']
                     item=next(o for o in state()['orders'] if o['key']==key)
@@ -504,6 +551,11 @@ def main():
     run_fixture(args,'udp','partial_batch')
     run_fixture(args,'xtcp','partial_cancel')
     run_fixture(args,'xtcp','market_no_limits')
+    run_fixture(args,'tcp','large_catalog')
+    run_fixture(args,'xtcp','options_ceiling_changed')
+    for protocol in ('tcp','udp','xtcp'):
+        run_fixture(args,protocol,'options')
+        run_fixture(args,protocol,'options_other_rights')
     for protocol in ('udp','xtcp'):run_fixture(args,protocol,'no_port')
     run_fixture(args,'xtcp','no_xtcp')
     run_fixture(args,'udp','ack_timeout')

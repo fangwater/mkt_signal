@@ -1,4 +1,4 @@
-use crate::model::{is_future_symbol, ExecutionRoute, RiskLimits, Venue};
+use crate::model::{is_future_symbol, option_symbol_parts, ExecutionRoute, RiskLimits, Venue};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,8 +18,7 @@ pub struct Config {
     pub order_group: u8,
     #[serde(default)]
     pub execution_route: ExecutionRoute,
-    /// The official public simulator preloads options alongside futures. Retain
-    /// those positions as read-only evidence while testing one-lot futures orders.
+    /// Endpoint-pinned one-lot test mode for the official SHFE/INE simulator.
     #[serde(default)]
     pub public_simulation: bool,
     pub business_core: Option<usize>,
@@ -68,6 +67,7 @@ pub struct SymbolConfig {
     pub venue: Venue,
     pub symbol: String,
     pub cash_budget_per_open_lot: f64,
+    pub cash_buffer_per_buy_lot: Option<f64>,
 }
 /// Deliberately not Debug/Serialize.
 pub struct Credentials {
@@ -130,10 +130,23 @@ impl Config {
         for s in &self.symbols {
             ensure!(
                 matches!(s.venue, Venue::Shfe | Venue::Ine)
-                    && is_future_symbol(s.venue, &s.symbol)
+                    && (is_future_symbol(s.venue, &s.symbol)
+                        || option_symbol_parts(s.venue, &s.symbol).is_some())
                     && seen.insert((s.venue, &s.symbol)),
-                "invalid/duplicate SHFE/INE future"
+                "invalid/duplicate SHFE/INE future or option"
             );
+            if option_symbol_parts(s.venue, &s.symbol).is_some() {
+                ensure!(
+                    s.cash_buffer_per_buy_lot
+                        .is_some_and(|v| v.is_finite() && v > 0.0),
+                    "option requires a positive cash_buffer_per_buy_lot"
+                );
+            } else {
+                ensure!(
+                    s.cash_buffer_per_buy_lot.is_none(),
+                    "cash_buffer_per_buy_lot is option-specific"
+                );
+            }
             ensure!(
                 s.cash_budget_per_open_lot.is_finite() && s.cash_budget_per_open_lot > 0.0,
                 "positive conservative cash budget required"

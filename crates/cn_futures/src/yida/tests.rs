@@ -34,63 +34,84 @@ fn public_simulation_is_endpoint_pinned_and_has_one_lot_limits() {
     assert!(c.validate().is_err());
 }
 
-#[test]
-fn public_simulation_retains_option_inventory_without_making_it_tradable() {
-    let mut c = config();
-    let mut option = row(POSITION, "INE", "sc2701C790");
-    option.product_class = 2;
-    option.position_direction = 2;
-    option.date = 2;
-    option.lots = 19;
-    let mut strict = Session::default();
-    begin(&mut strict, &c);
-    assert!(strict.on_event(&option, &c, None).is_err());
-    c.public_simulation = true;
-    let mut s = Session::default();
-    begin(&mut s, &c);
-    s.on_event(&option, &c, None).unwrap();
-    assert!(s.read_only_positions.is_empty());
-    let snapshot = s
-        .on_event(
-            &RawEvent {
-                kind: END,
-                day: 20261109,
-                ..RawEvent::default()
-            },
-            &c,
-            None,
-        )
-        .unwrap()
-        .unwrap();
-    assert!(snapshot.positions.is_empty());
-    assert_eq!(s.read_only_positions.len(), 1);
-    assert_eq!(
-        text(&s.read_only_positions[0].symbol).unwrap(),
-        "sc2701C790"
+fn option_row(
+    kind: i32,
+    venue: &str,
+    underlying: &str,
+    right: OptionRight,
+    strike: i32,
+) -> RawEvent {
+    let symbol = format!(
+        "{underlying}{}{strike}",
+        if right == OptionRight::Call { "C" } else { "P" }
     );
-    assert_eq!(s.read_only_positions[0].lots, 19);
-    let mut core = crate::core::TradingCore::new(c.risk.clone(), scope()).unwrap();
-    core.restore(snapshot).unwrap();
-    assert!(core
-        .prepare(
-            Intent {
-                venue: Venue::Ine,
-                symbol: "sc2701C790".into(),
-                side: Side::Sell,
-                offset: Offset::CloseYesterday,
-                lots: 1,
-                price_ticks: 2000,
-                price_type: PriceType::Limit,
-                time_in_force: TimeInForce::Day,
-                execution_route: None,
-            },
-            std::time::Instant::now()
-        )
-        .is_err());
-    begin(&mut s, &c);
-    option.lots = -1;
-    assert!(s.on_event(&option, &c, None).is_err());
-    assert_eq!(s.read_only_positions[0].lots, 19);
+    let mut e = row(kind, venue, &symbol);
+    e.product_class = 2;
+    e.options_type = if right == OptionRight::Call { 1 } else { 2 };
+    e.contract_multiple = if venue == "INE" { 1000 } else { 5 };
+    e.expiry = 20261220;
+    e.strike_price = f64::from(strike);
+    e.upper_limit_price = 1000.0;
+    put(&mut e.underlying, underlying);
+    put(&mut e.underlying_exchange, venue);
+    e
+}
+
+#[test]
+fn options_inventory_uses_the_same_ledger_and_still_requires_a_trading_allowlist() {
+    for public_simulation in [false, true] {
+        let mut c = config();
+        c.public_simulation = public_simulation;
+        let mut e = option_row(POSITION, "INE", "sc2701", OptionRight::Call, 790);
+        e.position_direction = 2;
+        e.date = 2;
+        e.lots = 19;
+        let mut session = Session::default();
+        begin(&mut session, &c);
+        session.on_event(&e, &c, None).unwrap();
+        let snapshot = session
+            .on_event(
+                &RawEvent {
+                    kind: END,
+                    day: 20261109,
+                    ..RawEvent::default()
+                },
+                &c,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.positions.len(), 1);
+        let mut core = crate::core::TradingCore::new(c.risk.clone(), scope()).unwrap();
+        core.restore(snapshot).unwrap();
+        assert_eq!(
+            core.position(Venue::Ine, "sc2701C790", Side::Buy).yesterday,
+            19
+        );
+        assert!(core
+            .prepare(
+                Intent {
+                    venue: Venue::Ine,
+                    symbol: "sc2701C790".into(),
+                    side: Side::Sell,
+                    offset: Offset::CloseYesterday,
+                    lots: 1,
+                    price_type: PriceType::Limit,
+                    price_ticks: 2000,
+                    time_in_force: TimeInForce::Day,
+                    execution_route: None
+                },
+                std::time::Instant::now()
+            )
+            .is_err());
+        begin(&mut session, &c);
+        e.lots = -1;
+        assert!(session.on_event(&e, &c, None).is_err());
+        assert_eq!(
+            core.position(Venue::Ine, "sc2701C790", Side::Buy).yesterday,
+            19
+        );
+    }
 }
 
 #[test]
@@ -939,5 +960,111 @@ fn execution_routes_require_a_specific_seat_only_for_fixed_and_preferred() {
         }
         .validate()
         .unwrap();
+    }
+}
+
+#[test]
+fn option_parser_handles_calls_puts_sides_close_dates_and_all_ordinary_order_types() {
+    for (venue, underlying, strike) in [("SHFE", "cu2612", 106000), ("INE", "sc2612", 640)] {
+        for right in [OptionRight::Call, OptionRight::Put] {
+            for direction in [0, 1] {
+                for offset in [0, 3, 4] {
+                    for order_type in [0, 1, 3] {
+                        for market in [0, 1] {
+                            for status in 0..=4 {
+                                let mut e = option_row(ORDER, venue, underlying, right, strike);
+                                e.reference = 101;
+                                e.system_id = 17;
+                                e.direction = direction;
+                                e.offset = offset;
+                                e.order_type = order_type;
+                                e.order_attribute = market;
+                                e.status = status;
+                                e.lots = 3;
+                                e.traded = if status == 3 { 3 } else { 0 };
+                                e.price = if market == 1 { 0.0 } else { 25.0 };
+                                let order = e.to_order(e.recovered_key().unwrap()).unwrap();
+                                assert_eq!(
+                                    order.price_type,
+                                    if market == 1 {
+                                        PriceType::Market
+                                    } else {
+                                        PriceType::Limit
+                                    }
+                                );
+                                e.kind = TRADE;
+                                e.trade_id = 19;
+                                e.price = 25.0;
+                                assert_eq!(e.to_fill().unwrap().lots, 3);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn option_metadata_mismatch_is_rejected_before_order_or_fill_conversion() {
+    let mut base = option_row(ORDER, "INE", "sc2612", OptionRight::Put, 640);
+    base.lots = 1;
+    base.price = 20.0;
+    base.system_id = 17;
+    base.reference = 101;
+    base.status = 1;
+    for mut e in [
+        RawEvent {
+            options_type: 1,
+            ..base
+        },
+        RawEvent {
+            strike_price: 641.0,
+            ..base
+        },
+        RawEvent {
+            contract_multiple: 0,
+            ..base
+        },
+        RawEvent { expiry: 0, ..base },
+        RawEvent {
+            upper_limit_price: f64::NAN,
+            ..base
+        },
+        RawEvent {
+            product_class: 1,
+            ..base
+        },
+        RawEvent {
+            underlying: [0; 32],
+            ..base
+        },
+        RawEvent {
+            underlying_exchange: [0; 12],
+            ..base
+        },
+    ] {
+        assert!(e.to_order(base.recovered_key().unwrap()).is_err());
+        e.kind = TRADE;
+        e.trade_id = 19;
+        assert!(e.to_fill().is_err());
+    }
+    let mut c = config();
+    c.symbols[0].symbol = "cu2612C106000".into();
+    assert!(c.validate().is_err());
+    c.symbols[0].cash_buffer_per_buy_lot = Some(10.0);
+    c.validate().unwrap();
+    c.symbols[0].cash_buffer_per_buy_lot = Some(f64::NAN);
+    assert!(c.validate().is_err());
+    assert!(option_symbol_parts(Venue::Cffex, "IO2612C4000").is_none());
+    for symbol in [
+        "cu2612c100000",
+        "cu2612C0",
+        "cu2612CNaN",
+        "cu2612C1e3",
+        "cu2613C1000",
+        "SP cu2612&cu2701",
+    ] {
+        assert!(option_symbol_parts(Venue::Shfe, symbol).is_none());
     }
 }

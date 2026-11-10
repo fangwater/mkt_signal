@@ -2,12 +2,15 @@
 """Exercise the release runtime against the official public SHFE/INE simulator.
 
 Credentials come from YIDA_* environment variables. Default: login and inspect.
---execute permits five one-lot futures orders and one cancellation; --market adds
-six native market orders (Day/FAK/FOK open/close), followed by
-reconciliation. Only this run's orders and new position are eligible for cleanup.
+--execute tests one-lot ordinary orders and cancellation, then reconciles.
+--option covers both option directions; --market adds native market types.
+--native-controls covers reference cancellation, routing and native batches.
+Legitimate unfilled option IOC/FOK outcomes use separately recorded market
+seed/cleanup orders so each requested close type can be tested. Only this run's orders and new position are eligible for cleanup.
 """
 import argparse
 import hashlib
+import math
 import json
 import os
 from pathlib import Path
@@ -108,12 +111,6 @@ def positions(state):
             if p['position']['today'] or p['position']['yesterday']}
 
 
-def read_only_positions(state):
-    return sorted((bytes(p['exchange']).split(b'\0')[0].decode(),
-                   bytes(p['symbol']).split(b'\0')[0].decode(), p['position_direction'],
-                   p['date'], p['hedge'], p['lots'], p['frozen'])
-                  for p in state['read_only_positions'])
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -128,6 +125,9 @@ def main():
     parser.add_argument('--sell-price-ticks', type=int)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--native-controls', action='store_true', help='test group-reference cancellation, routing and native batches')
+    parser.add_argument('--quotes-file', type=Path, help='optional independent live quote snapshot for marketable limit tests')
+    parser.add_argument('--option', action='store_true', help='test native option metadata and both long/short ordinary orders')
+    parser.add_argument('--cash-buffer-per-buy-lot', type=float, default=100.0)
     parser.add_argument('--market', action='store_true', help='also exercise native market Day/FAK/FOK')
     args = parser.parse_args()
     for name in ('YIDA_USER_ID', 'YIDA_PASSWORD', 'YIDA_APP_ID', 'YIDA_AUTH_CODE'):
@@ -158,7 +158,9 @@ def main():
                      ('idle_sleep_us = 0', 'idle_sleep_us = 100')]:
         config = config.replace(old, new)
     config += (f'[[symbols]]\nvenue = {json.dumps(args.venue)}\nsymbol = {json.dumps(args.symbol)}\n'
-               'cash_budget_per_open_lot = 250000.0\n\n[risk]\n' + template.split('[risk]', 1)[1])
+               'cash_budget_per_open_lot = 250000.0\n' +
+               (f'cash_buffer_per_buy_lot = {args.cash_buffer_per_buy_lot}\n' if args.option else '') +
+               '\n[risk]\n' + template.split('[risk]', 1)[1])
     config = config.replace('enable_fak_fok = false', 'enable_fak_fok = true')
     path = work / 'config.toml'
     path.write_text(config)
@@ -173,7 +175,14 @@ def main():
     def order(state, key):
         return next(o for o in state['state']['orders'] if o['key'] == key)
 
-    def submit(side, offset, tif, price, price_type='limit', execution_route=None):
+    def submit(side, offset, tif, price, price_type='limit', execution_route=None, crossing=False):
+        if crossing and args.quotes_file and price_type == 'limit':
+            quote = json.loads(args.quotes_file.read_text())[args.symbol]
+            assert time.time() - quote['updated_at'] < 10, 'independent quote snapshot is stale'
+            tick = rule['price_tick']
+            raw = quote['ask'] if side == 'buy' else quote['bid']
+            assert raw > 0 and math.isfinite(raw)
+            price = math.ceil(raw/tick-1e-8)+10 if side == 'buy' else max(1, math.floor(raw/tick+1e-8)-10)
         runtime.send({'op': 'submit', 'intent': {'venue': args.venue, 'symbol': args.symbol,
                      'side': side, 'offset': offset, 'lots': 1,
                      'price_type': price_type, 'execution_route': execution_route,
@@ -215,6 +224,8 @@ def main():
         runtime.wait('reconciled')
         baseline = runtime.ready_state()
         assert baseline['state']['ready'] and baseline['transport_ready']
+        rule = next(r for r in baseline['state']['instruments'] if r['venue'] == args.venue and r['symbol'] == args.symbol)
+        assert (rule['option'] is not None) == args.option, 'native contract class differs from requested test scope'
         assert all(not (v == args.venue and s == args.symbol)
                    for v, s, _ in positions(baseline)), 'test contract must initially be flat'
         baseline_verified_flat = True
@@ -225,17 +236,42 @@ def main():
             cancelled = cancel(key)
             assert cancelled['status'] == 'cancelled' and cancelled['filled'] == 0
             results.append({'case': 'limit_cancel', 'key': key, 'system_id': cancelled['system_id']})
-            for tif in ('fak', 'fok'):
-                opened = filled(submit('buy', 'open', tif, args.buy_price_ticks))
-                closed = filled(submit('sell', 'close_today', tif, args.sell_price_ticks))
-                results.append({'case': tif, 'open_system_id': opened['system_id'],
-                                'close_system_id': closed['system_id'], 'factual_fills': 2})
+            def exercise_pair(tif, side, price_type):
+                close_side = 'sell' if side == 'buy' else 'buy'
+                open_price = args.buy_price_ticks if side == 'buy' else args.sell_price_ticks
+                close_price = args.sell_price_ticks if side == 'buy' else args.buy_price_ticks
+                if price_type == 'market':
+                    open_price = close_price = 0
+                opened = terminal(submit(side, 'open', tif, open_price, price_type, crossing=True))
+                assert opened['status'] in ('filled', 'cancelled'), opened
+                assert opened['filled'] in (0, 1), opened
+                auxiliary = []
+                if opened['filled'] == 0:
+                    assert args.option and opened['status'] == 'cancelled', opened
+                    # Seed one factual lot so the requested close type is tested even when
+                    # its matching open IOC/FOK legitimately found no liquidity.
+                    seed = filled(submit(side, 'open', 'day', 0, 'market'))
+                    auxiliary.append({'operation': 'seed_open', 'key': seed['key']})
+                closed = terminal(submit(close_side, 'close_today', tif, close_price, price_type, crossing=True))
+                assert closed['status'] in ('filled', 'cancelled'), closed
+                assert closed['filled'] in (0, 1), closed
+                if closed['filled'] == 0:
+                    assert args.option and closed['status'] == 'cancelled', closed
+                    cleanup = filled(submit(close_side, 'close_today', 'day', 0, 'market'))
+                    auxiliary.append({'operation': 'cleanup_close', 'key': cleanup['key']})
+                results.append({'case': f'market_{tif}' if price_type == 'market' else tif,
+                                'side': side, 'open_system_id': opened['system_id'],
+                                'close_system_id': closed['system_id'],
+                                'open_status': opened['status'], 'close_status': closed['status'],
+                                'factual_fills': 2, 'target_factual_fills': opened['filled'] + closed['filled'],
+                                'auxiliary_orders': auxiliary})
+            for tif in (('day', 'fak', 'fok') if args.option else ('fak', 'fok')):
+                for side in (('buy', 'sell') if args.option else ('buy',)):
+                    exercise_pair(tif, side, 'limit')
             if args.market:
                 for tif in ('day', 'fak', 'fok'):
-                    opened = filled(submit('buy', 'open', tif, 0, 'market'))
-                    closed = filled(submit('sell', 'close_today', tif, 0, 'market'))
-                    results.append({'case': f'market_{tif}', 'open_system_id': opened['system_id'],
-                                    'close_system_id': closed['system_id'], 'factual_fills': 2})
+                    for side in (('buy', 'sell') if args.option else ('buy',)):
+                        exercise_pair(tif, side, 'market')
             if args.native_controls:
                 # Ask to cancel immediately after local submission, without waiting for an order report.
                 time.sleep(1.1)
@@ -280,7 +316,6 @@ def main():
                 results.append({'case': 'native_batch_submit_cancel', 'keys': batch_keys, 'orders': 2})
             final = runtime.reconcile()
             assert positions(final) == positions(baseline), 'account futures inventory changed'
-            assert read_only_positions(final) == read_only_positions(baseline), 'read-only inventory changed'
             assert all(order(final, key)['status'] in ('filled', 'cancelled', 'rejected') for key in owned_keys)
             assert final['can_trade']
     except (Exception, KeyboardInterrupt) as exc:
@@ -299,10 +334,9 @@ def main():
                         assert amount == (1, 0), 'cleanup only covers this run\'s one new lot'
                         close_side = 'sell' if side == 'buy' else 'buy'
                         price = args.sell_price_ticks if side == 'buy' else args.buy_price_ticks
-                        filled(submit(close_side, 'close_today', 'fak', price))
+                        filled(submit(close_side, 'close_today', 'day', 0, 'market'))
                 final = runtime.reconcile()
                 assert positions(final) == positions(baseline)
-                assert read_only_positions(final) == read_only_positions(baseline)
             except Exception as exc_cleanup:
                 cleanup_error = f'{type(exc_cleanup).__name__}: {exc_cleanup}'
     finally:
@@ -316,8 +350,9 @@ def main():
         summary = {'protocol': args.protocol, 'venue': args.venue, 'symbol': args.symbol,
                    'execute': args.execute, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                    'market': args.market, 'native_controls': args.native_controls,
-                   'read_only_position_rows': len(baseline['read_only_positions']) if baseline else None,
-                   'results': results, 'error': error, 'cleanup_error': cleanup_error,
+                   'option': args.option,
+                   'initial_position_rows': len(positions(baseline)) if baseline else None,
+                   'submitted_order_count': len(owned_keys), 'results': results, 'error': error, 'cleanup_error': cleanup_error,
                    'runtime_exit_code': runtime.process.returncode}
         (work / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2))
         print(json.dumps(summary, ensure_ascii=False))

@@ -29,6 +29,11 @@ extern "C" {
     ) -> *mut c_void;
     fn cn_yida_destroy(handle: *mut c_void) -> i32;
     fn cn_yida_start(handle: *mut c_void) -> i32;
+    fn cn_yida_allow_instrument(
+        handle: *mut c_void,
+        exchange: *const c_char,
+        symbol: *const c_char,
+    ) -> i32;
     fn cn_yida_login(
         handle: *mut c_void,
         user: *const c_char,
@@ -68,6 +73,7 @@ struct NativeOrder {
     selection: i32,
     connection: i32,
     price: f64,
+    option_market_buy_ceiling: f64,
 }
 #[repr(C)]
 struct NativeCancel {
@@ -202,6 +208,20 @@ impl YidaTrader {
             ack_timeout_reported: false,
             _single_owner: PhantomData,
         };
+        for contract in &config.symbols {
+            let venue = CString::new(contract.venue.as_str())?;
+            let symbol = CString::new(contract.symbol.as_str())?;
+            ensure!(
+                unsafe {
+                    cn_yida_allow_instrument(
+                        trader.handle.as_ptr(),
+                        venue.as_ptr(),
+                        symbol.as_ptr(),
+                    )
+                } == 0,
+                "native instrument allowlist registration failed"
+            );
+        }
         if config.public_simulation {
             ensure!(
                 unsafe { cn_yida_public_simulation_target(trader.handle.as_ptr()) } == 1,
@@ -406,6 +426,7 @@ impl YidaTrader {
         let (selection, connection) =
             native_route(o.intent.execution_route.unwrap_or(self.execution_route))?;
         Ok(NativeOrder {
+            option_market_buy_ceiling: o.option_market_buy_ceiling,
             exchange: native_text(o.intent.venue.as_str())?,
             symbol: native_text(&o.intent.symbol)?,
             reference,

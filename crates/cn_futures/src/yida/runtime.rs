@@ -111,7 +111,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     runtime.core.restore(s)?;
                     runtime.trader.recovered();
                     journal.record(
-                        json!({"type":"reconciled","state":runtime.core.view(),"read_only_positions":session.read_only_positions}),
+                        json!({"type":"reconciled","state":runtime.core.view()}),
                         true,
                     )?;
                     return Ok(());
@@ -165,7 +165,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                             Command::State {} => {
                                 let transport_ready = runtime.trader.transport_ready();
                                 Ok(
-                                    json!({"type":"state","state":runtime.core.view(),"read_only_positions":session.read_only_positions,"order_group":config.order_group,"connections":session.connections.values().collect::<Vec<_>>(),"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
+                                    json!({"type":"state","state":runtime.core.view(),"order_group":config.order_group,"connections":session.connections.values().collect::<Vec<_>>(),"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
                                 )
                             }
                             Command::Shutdown {} => {

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace {
 constexpr int invalid = -9901;
@@ -61,6 +62,12 @@ public:
     bool destroyed = false;
     int max_ref = -1;
     const int order_group;
+    std::vector<std::pair<std::string,std::string>> instrument_allowlist;
+    bool allowed(const YDInstrument* i) const {
+        if(!i || !i->m_pExchange) return false;
+        for(const auto& entry:instrument_allowlist) if(entry.first==i->m_pExchange->ExchangeID && entry.second==i->InstrumentID) return true;
+        return false;
+    }
     Bridge(const char* lib, const char* config, int transport, int group, CnYidaCallback cb, void* ctx): library(lib), callback(cb), context(ctx), protocol(transport), order_group(group) {
         if (group<1 || group>255) throw std::runtime_error("nonzero order group required");
         if (protocol<0 || protocol>2) throw std::runtime_error("invalid native trading protocol");
@@ -93,6 +100,13 @@ public:
         if (!i || !i->m_pExchange) throw std::runtime_error("missing Yida instrument metadata");
         field(e.symbol, i->InstrumentID); field(e.exchange, i->m_pExchange->ExchangeID);
         e.product_class=i->ProductClass; e.day=api->getTradingDay();
+        e.expiry=i->ExpireDate; e.contract_multiple=i->Multiple; e.options_type=i->OptionsType;
+        e.strike_price=i->StrikePrice;
+        if(i->m_pMarketData) e.upper_limit_price=i->m_pMarketData->UpperLimitPrice;
+        if(i->ProductClass==YD_PC_Options && i->m_pUnderlyingInstrument) {
+            field(e.underlying,i->m_pUnderlyingInstrument->InstrumentID);
+            if(i->m_pUnderlyingInstrument->m_pExchange) field(e.underlying_exchange,i->m_pUnderlyingInstrument->m_pExchange->ExchangeID);
+        }
     }
     bool mine(const YDAccount* a) { return a && a == api->getMyAccount(); }
     void original(CnYidaEvent& e, const YDExchange* x, int order_id, int trade_id=0) {
@@ -155,11 +169,10 @@ public:
             const auto* x=api->getExchange(k);
             if(x && (!std::strcmp(x->ExchangeID,"SHFE") || !std::strcmp(x->ExchangeID,"INE"))) connections(x);
         }
-        for (int k=0; k<api->getInstrumentCount(); ++k) {
-            const auto* i=api->getInstrument(k);
-            if (!i || !i->m_pExchange) throw std::runtime_error("invalid catalog row");
-            if (std::strcmp(i->m_pExchange->ExchangeID,"SHFE") && std::strcmp(i->m_pExchange->ExchangeID,"INE")) continue;
-            if (i->ProductClass!=YD_PC_Futures) continue;
+        for (const auto& entry:instrument_allowlist) {
+            const auto* i=api->getInstrumentByID(entry.second.c_str());
+            if (!i || !i->m_pExchange) continue; // Rust rejects an incomplete configured catalog.
+            if (entry.first!=i->m_pExchange->ExchangeID) throw std::runtime_error("configured catalog venue mismatch");
             CnYidaEvent e{}; e.kind=Instrument; base(e,i); e.tick=i->Tick;
             e.minimum=i->MinLimitOrderVolume; e.maximum=i->MaxLimitOrderVolume; e.expiry=i->ExpireDate;
             e.market_minimum=i->MinMarketOrderVolume; e.market_maximum=i->MaxMarketOrderVolume;
@@ -263,7 +276,8 @@ public:
     int make_order(const CnYidaOrderRequest& r,YDInputOrder& o,const YDInstrument*& i) {
         if(!can_send()) return transport_unavailable;
         i=api->getInstrumentByID(r.symbol);
-        if(!i || !i->m_pExchange || std::strcmp(i->m_pExchange->ExchangeID,r.exchange) || i->ProductClass!=YD_PC_Futures || !i->m_pExchange->UseTodayPosition || r.reference<=0) return local_invalid;
+        if(!allowed(i)) return local_invalid;
+        if(!i || !i->m_pExchange || std::strcmp(i->m_pExchange->ExchangeID,r.exchange) || (i->ProductClass!=YD_PC_Futures && i->ProductClass!=YD_PC_Options) || !i->m_pExchange->UseTodayPosition || r.reference<=0) return local_invalid;
         if(std::strcmp(r.exchange,"SHFE") && std::strcmp(r.exchange,"INE")) return local_invalid;
         if(r.offset!=YD_OF_Open && r.offset!=YD_OF_CloseToday && r.offset!=YD_OF_CloseYesterday) return local_invalid;
         if(r.tif!=YD_ODT_Limit && r.tif!=YD_ODT_FAK && r.tif!=YD_ODT_FOK) return local_invalid;
@@ -282,6 +296,10 @@ public:
             const auto* m=i->m_pMarketData; if(!m) return market_price_unavailable;
             o.Price=r.direction==YD_D_Buy?m->UpperLimitPrice:m->LowerLimitPrice;
             if(!std::isfinite(o.Price) || o.Price<=0) return market_price_unavailable;
+            // The core reserved option-buyer premium using its copied daily upper limit.
+            // Reject a raised native ceiling until a fresh full snapshot funds the new bound.
+            if(i->ProductClass==YD_PC_Options && r.direction==YD_D_Buy &&
+                (!std::isfinite(r.option_market_buy_ceiling) || r.option_market_buy_ceiling<=0 || o.Price>r.option_market_buy_ceiling)) return local_invalid;
         }
         if(!api->checkOrder(&o,i)) return o.ErrorNo>0?o.ErrorNo:local_invalid;
         return o.OrderRef==r.reference && o.OrderGroupID==order_group?0:local_invalid;
@@ -337,8 +355,15 @@ int cn_yida_destroy(void* p) {
 int cn_yida_start(void* p) { try {
     auto* b=get(p); const char* configured=b->api->getConfig("TradingProtocol");
     const char* expected=b->protocol==0?"TCP":b->protocol==1?"UDP":"XTCP";
-    if (!configured || std::strcmp(configured,expected)) return invalid;
+    if (!configured || std::strcmp(configured,expected) || b->instrument_allowlist.empty()) return invalid;
     return b->api->startExtended(b,b) ? 0 : invalid;
+} catch(...) { return invalid; } }
+int cn_yida_allow_instrument(void* p,const char* exchange,const char* symbol) { try {
+    auto* b=get(p);
+    if(!exchange || !symbol || b->tcp_connected || b->initialized) return local_invalid;
+    if(std::strcmp(exchange,"SHFE") && std::strcmp(exchange,"INE")) return local_invalid;
+    if(std::strlen(symbol)>=32 || !*symbol) return local_invalid;
+    b->instrument_allowlist.emplace_back(exchange,symbol); return 0;
 } catch(...) { return invalid; } }
 int cn_yida_login(void* p,const char* u,const char* pass,const char* app,const char* auth) { try { return get(p)->api->login(u,pass,app,auth) ? 0 : invalid; } catch(...) { return invalid; } }
 int cn_yida_reference(void* p) { try { return get(p)->api->getNextOrderRef(get(p)->order_group,true); } catch(...) { return invalid; } }

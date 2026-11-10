@@ -40,8 +40,14 @@ pub struct ExecutionScope {
     pub require_market_status: bool,
     pub cancel_requires_system_id: bool,
     pub allow_implicit_fill_reference: bool,
+    pub allow_options: bool,
 }
 impl ExecutionScope {
+    pub fn supports_symbol(&self, venue: Venue, symbol: &str) -> bool {
+        self.venues.contains(&venue)
+            && (is_future_symbol(venue, symbol)
+                || (self.allow_options && option_symbol_parts(venue, symbol).is_some()))
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             !self.venues.is_empty() && self.reference_limit > 0,
@@ -165,6 +171,74 @@ pub struct Instrument {
     pub active: bool,
     /// Local cash-budget requirement, explicitly configured; not an exchange margin quote.
     pub cash_budget_per_open_lot: f64,
+    pub option: Option<OptionContract>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionRight {
+    Call,
+    Put,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OptionContract {
+    pub right: OptionRight,
+    pub underlying: String,
+    pub strike_price: f64,
+    pub contract_multiple: i32,
+    pub expiry_date: i32,
+    pub upper_limit_price: f64,
+    pub cash_buffer_per_buy_lot: f64,
+}
+impl OptionContract {
+    pub fn validate(&self, venue: Venue, symbol: &str) -> Result<()> {
+        let (underlying, right, strike) = option_symbol_parts(venue, symbol)
+            .ok_or_else(|| anyhow::anyhow!("invalid SHFE/INE option symbol {symbol}"))?;
+        ensure!(
+            underlying == self.underlying
+                && right == self.right
+                && self.strike_price.is_finite()
+                && self.strike_price > 0.0
+                && (strike - self.strike_price).abs() <= self.strike_price * 1e-12
+                && self.contract_multiple > 0
+                && self.expiry_date.to_string().len() == 8
+                && self.upper_limit_price.is_finite()
+                && self.upper_limit_price >= 0.0
+                && self.cash_buffer_per_buy_lot.is_finite()
+                && self.cash_buffer_per_buy_lot >= 0.0,
+            "inconsistent native option contract metadata for {symbol}"
+        );
+        Ok(())
+    }
+}
+
+pub fn option_symbol_parts(venue: Venue, symbol: &str) -> Option<(&str, OptionRight, f64)> {
+    if !matches!(venue, Venue::Shfe | Venue::Ine) || !symbol.is_ascii() || symbol.len() >= 32 {
+        return None;
+    }
+    let separator = symbol.find(['C', 'P'])?;
+    let (underlying, suffix) = symbol.split_at(separator);
+    if !is_future_symbol(venue, underlying) {
+        return None;
+    }
+    let strike = &suffix[1..];
+    if strike.is_empty() || strike.bytes().any(|b| !b.is_ascii_digit() && b != b'.') {
+        return None;
+    }
+    let price = strike.parse::<f64>().ok()?;
+    if !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+    Some((
+        underlying,
+        if suffix.starts_with('C') {
+            OptionRight::Call
+        } else {
+            OptionRight::Put
+        },
+        price,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,11 +248,19 @@ pub struct LotLimits {
 }
 impl Instrument {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            is_future_symbol(self.venue, &self.symbol),
-            "invalid domestic futures symbol {}",
-            self.symbol
-        );
+        if let Some(option) = &self.option {
+            option.validate(self.venue, &self.symbol)?;
+            ensure!(
+                option.cash_buffer_per_buy_lot > 0.0,
+                "positive option buyer cash buffer required"
+            );
+        } else {
+            ensure!(
+                is_future_symbol(self.venue, &self.symbol),
+                "invalid domestic futures symbol {}",
+                self.symbol
+            );
+        }
         ensure!(
             self.price_tick.is_finite() && self.price_tick > 0.0,
             "invalid price tick for {}",
@@ -381,6 +463,7 @@ pub struct Order {
     pub reserved_today: i32,
     pub reserved_yesterday: i32,
     pub local_cash_held: f64,
+    pub cash_reserved_per_lot: f64,
     pub cancel_pending: bool,
     /// Locally submitted in this process; recovered/external orders have no strategy attribution.
     pub owned: bool,
@@ -396,6 +479,7 @@ pub struct PreparedOrder {
     pub key: OrderKey,
     pub intent: Intent,
     pub limit_price: f64,
+    pub option_market_buy_ceiling: f64,
 }
 #[derive(Debug, Clone)]
 pub struct PreparedCancel {
@@ -441,7 +525,7 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
     for rule in &s.instruments {
         rule.validate()?;
         ensure!(
-            scope.venues.contains(&rule.venue),
+            scope.supports_symbol(rule.venue, &rule.symbol),
             "instrument outside deployment scope"
         );
         ensure!(
@@ -454,10 +538,7 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
     let mut positions = HashSet::new();
     for p in &s.positions {
         ensure!(
-            scope.venues.contains(&p.venue)
-                && is_future_symbol(p.venue, &p.symbol)
-                && p.today >= 0
-                && p.yesterday >= 0,
+            scope.supports_symbol(p.venue, &p.symbol) && p.today >= 0 && p.yesterday >= 0,
             "invalid position {}",
             p.symbol
         );
@@ -476,8 +557,8 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
     }
     for o in &s.orders {
         ensure!(
-            scope.venues.contains(&o.venue) && is_future_symbol(o.venue, &o.symbol),
-            "order outside deployment futures scope"
+            scope.supports_symbol(o.venue, &o.symbol),
+            "order outside deployment contract scope"
         );
         ensure!(
             o.trading_day == s.trading_day,
@@ -518,9 +599,7 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
 }
 
 pub(crate) fn validate_fill(f: &Fill, trading_day: &str, scope: &ExecutionScope) -> Result<()> {
-    if !scope.venues.contains(&f.identity.venue)
-        || !is_future_symbol(f.identity.venue, &f.identity.symbol)
-    {
+    if !scope.supports_symbol(f.identity.venue, &f.identity.symbol) {
         bail!("fill outside configured futures scope");
     }
     ensure!(

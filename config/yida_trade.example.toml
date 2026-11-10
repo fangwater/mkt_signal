@@ -34,3 +34,10 @@ max_actions_per_second = 2
 minimum_cash_remaining = 10000.0
 enable_fak_fok = false
 close_priority = "today_first"
+
+# For an option, add a [[symbols]] table before [risk], for example:
+# [[symbols]]
+# venue = "SHFE"
+# symbol = "cu2612C106000"
+# cash_budget_per_open_lot = 100000.0
+# cash_buffer_per_buy_lot = 100.0 # positive fee/risk buffer for every option buy, including closes

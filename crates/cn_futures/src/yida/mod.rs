@@ -37,6 +37,7 @@ pub fn scope() -> ExecutionScope {
         require_market_status: false,
         cancel_requires_system_id: false,
         allow_implicit_fill_reference: false,
+        allow_options: true,
     }
 }
 pub fn session_key(day: i32) -> String {
@@ -106,12 +107,16 @@ pub struct RawEvent {
     pub connection_count: i32,
     pub public_connection: i32,
     pub dedicated_connection: i32,
+    pub options_type: i32,
+    pub contract_multiple: i32,
     pub system_id: i64,
     pub trade_id: i64,
     pub price: f64,
     pub tick: f64,
     pub available: f64,
     pub commission: f64,
+    pub strike_price: f64,
+    pub upper_limit_price: f64,
     pub symbol: [u8; 32],
     pub exchange: [u8; 12],
     #[serde(serialize_with = "serialize_bytes")]
@@ -121,6 +126,8 @@ pub struct RawEvent {
     pub connection_info: [u8; 28],
     pub insert_flow: [u8; 32],
     pub cancel_flow: [u8; 32],
+    pub underlying: [u8; 32],
+    pub underlying_exchange: [u8; 12],
 }
 fn serialize_bytes<S: serde::Serializer>(
     bytes: &[u8; 64],
@@ -137,6 +144,41 @@ pub fn text(bytes: &[u8]) -> Result<String> {
     crate::ctp::text(bytes)
 }
 impl RawEvent {
+    pub fn option_contract(&self, cash_buffer: f64) -> Result<Option<OptionContract>> {
+        let venue = self.venue()?;
+        let symbol = text(&self.symbol)?;
+        ensure!(
+            matches!(venue, Venue::Shfe | Venue::Ine),
+            "native contract outside SHFE/INE scope"
+        );
+        if self.product_class == 1 {
+            ensure!(
+                is_future_symbol(venue, &symbol) && self.options_type == 0,
+                "native future class/symbol mismatch"
+            );
+            return Ok(None);
+        }
+        ensure!(self.product_class == 2, "unsupported native product class");
+        ensure!(
+            text(&self.underlying_exchange)? == venue.as_str(),
+            "option underlying venue mismatch"
+        );
+        let option = OptionContract {
+            right: match self.options_type {
+                1 => OptionRight::Call,
+                2 => OptionRight::Put,
+                _ => bail!("unsupported native option right"),
+            },
+            underlying: text(&self.underlying)?,
+            strike_price: self.strike_price,
+            contract_multiple: self.contract_multiple,
+            expiry_date: self.expiry,
+            upper_limit_price: self.upper_limit_price,
+            cash_buffer_per_buy_lot: cash_buffer,
+        };
+        option.validate(venue, &symbol)?;
+        Ok(Some(option))
+    }
     pub fn venue(&self) -> Result<Venue> {
         Venue::parse(&text(&self.exchange)?)
     }
@@ -185,11 +227,11 @@ impl RawEvent {
         })
     }
     pub fn to_order(&self, key: OrderKey) -> Result<OrderUpdate> {
+        self.option_contract(0.0)?;
         ensure!(
             self.kind == ORDER
                 && self.hedge == 1
                 && self.flag == 0
-                && self.product_class == 1
                 && (0..=255).contains(&self.order_group),
             "unsupported Yida hedge/order flag/product class"
         );
@@ -228,7 +270,7 @@ impl RawEvent {
         let symbol = text(&self.symbol)?;
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine)
-                && is_future_symbol(venue, &symbol)
+                && scope().supports_symbol(venue, &symbol)
                 && self.day.to_string().len() == 8,
             "native order outside supported futures/day scope"
         );
@@ -260,10 +302,10 @@ impl RawEvent {
         })
     }
     pub fn to_fill(&self) -> Result<Fill> {
+        self.option_contract(0.0)?;
         ensure!(
             self.kind == TRADE
                 && self.hedge == 1
-                && self.product_class == 1
                 && self.trade_id > 0
                 && self.system_id > 0
                 && (0..=255).contains(&self.order_group)
@@ -279,7 +321,7 @@ impl RawEvent {
         let symbol = text(&self.symbol)?;
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine)
-                && is_future_symbol(venue, &symbol)
+                && scope().supports_symbol(venue, &symbol)
                 && self.day.to_string().len() == 8,
             "native fill outside supported futures/day scope"
         );

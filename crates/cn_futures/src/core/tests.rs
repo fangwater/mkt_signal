@@ -83,6 +83,7 @@ fn snapshot() -> Snapshot {
         max_order_ref: 100,
         available_cash: 1_000_000.0,
         instruments: vec![Instrument {
+            option: None,
             venue: Venue::Cffex,
             symbol: "IF2612".into(),
             price_tick: 0.2,
@@ -482,6 +483,7 @@ fn unknown_fill_is_an_error_not_silently_dropped_or_attributed() {
             order_ref: "forced-close".into(),
         },
         intent: intent(Side::Sell, Offset::Close, 1),
+        option_market_buy_ceiling: 0.0,
         limit_price: 4000.0,
     };
     assert!(core
@@ -1184,4 +1186,163 @@ fn fill_reference_from_another_native_group_cannot_match_a_local_order() {
     });
     assert!(runtime.on_fill(fill).is_err());
     assert_eq!(runtime.order(&order.key).unwrap().filled, 0);
+}
+
+fn option_snapshot() -> Snapshot {
+    let mut s = cn_snapshot();
+    let rule = &mut s.instruments[0];
+    rule.symbol = "cu2612C106000".into();
+    rule.price_tick = 2.0;
+    rule.cash_budget_per_open_lot = 100.0;
+    rule.market_lots = Some(LotLimits {
+        minimum: 1,
+        maximum: 30,
+    });
+    rule.option = Some(OptionContract {
+        right: OptionRight::Call,
+        underlying: "cu2612".into(),
+        strike_price: 106000.0,
+        contract_multiple: 5,
+        expiry_date: 20261124,
+        upper_limit_price: 12000.0,
+        cash_buffer_per_buy_lot: 10.0,
+    });
+    s.positions.clear();
+    for side in [Side::Buy, Side::Sell] {
+        s.positions.push(PositionSnapshot {
+            venue: Venue::Shfe,
+            symbol: rule.symbol.clone(),
+            side,
+            today: 2,
+            yesterday: 3,
+        });
+    }
+    s
+}
+fn option_core() -> TradingCore {
+    let mut c = TradingCore::new(limits(), crate::yida::scope()).unwrap();
+    c.restore(option_snapshot()).unwrap();
+    c
+}
+fn option_intent(side: Side, offset: Offset, lots: i32) -> Intent {
+    Intent {
+        symbol: "cu2612C106000".into(),
+        side,
+        price_ticks: 100,
+        ..cn_intent(offset, lots)
+    }
+}
+
+#[test]
+fn option_buy_open_and_buy_close_reserve_premium_and_sells_do_not_credit_cash() {
+    for offset in [Offset::Open, Offset::CloseToday, Offset::CloseYesterday] {
+        let mut c = option_core();
+        let buy = c
+            .prepare(option_intent(Side::Buy, offset, 1), Instant::now())
+            .unwrap();
+        assert_eq!(c.order(&buy.key).unwrap().cash_reserved_per_lot, 1010.0);
+        assert_eq!(c.view().available_local_budget, 1_000_000.0 - 1010.0);
+        let mut c = option_core();
+        let sell = c
+            .prepare(option_intent(Side::Sell, offset, 1), Instant::now())
+            .unwrap();
+        let held = if offset == Offset::Open { 100.0 } else { 0.0 };
+        assert_eq!(c.order(&sell.key).unwrap().local_cash_held, held);
+        c.on_order(cn_update(&sell, 1, OrderStatus::Filled))
+            .unwrap();
+        c.on_fill(cn_fill(&sell, "option-sell", 1)).unwrap();
+        assert_eq!(c.view().available_local_budget, 1_000_000.0 - held);
+    }
+}
+
+#[test]
+fn option_market_buy_reserves_the_native_daily_upper_bound_and_rejects_missing_or_unfunded_bounds()
+{
+    for offset in [Offset::Open, Offset::CloseToday] {
+        let mut c = option_core();
+        let mut i = option_intent(Side::Buy, offset, 1);
+        i.price_type = PriceType::Market;
+        i.price_ticks = 0;
+        let order = c.prepare(i.clone(), Instant::now()).unwrap();
+        assert_eq!(order.option_market_buy_ceiling, 12000.0);
+        assert_eq!(c.order(&order.key).unwrap().local_cash_held, 60010.0);
+        let mut snapshot = option_snapshot();
+        snapshot.available_cash = 2000.0;
+        let mut c = option_core();
+        c.restore(snapshot).unwrap();
+        assert!(c.prepare(i.clone(), Instant::now()).is_err());
+        let mut snapshot = option_snapshot();
+        snapshot.instruments[0]
+            .option
+            .as_mut()
+            .unwrap()
+            .upper_limit_price = 0.0;
+        let mut c = option_core();
+        c.restore(snapshot).unwrap();
+        assert!(c.prepare(i, Instant::now()).is_err());
+    }
+}
+
+#[test]
+fn option_close_partial_cancel_refunds_original_cash_unit_and_retains_unseen_fill_freeze() {
+    let mut c = option_core();
+    let p = c
+        .prepare(
+            option_intent(Side::Buy, Offset::CloseToday, 2),
+            Instant::now(),
+        )
+        .unwrap();
+    let mut rules = option_snapshot().instruments;
+    rules[0].option.as_mut().unwrap().cash_buffer_per_buy_lot = 500.0;
+    c.replace_instruments(rules).unwrap();
+    c.on_order(cn_update(&p, 1, OrderStatus::Cancelled))
+        .unwrap();
+    assert_eq!(c.order(&p.key).unwrap().local_cash_held, 1010.0);
+    assert_eq!(
+        c.position(Venue::Shfe, "cu2612C106000", Side::Sell)
+            .frozen_today,
+        1
+    );
+    assert_eq!(c.view().available_local_budget, 1_000_000.0 - 1010.0);
+    let fill = cn_fill(&p, "option-close-partial", 1);
+    c.on_fill(fill.clone()).unwrap();
+    assert!(!c.on_fill(fill).unwrap());
+    assert_eq!(
+        c.position(Venue::Shfe, "cu2612C106000", Side::Sell).today,
+        1
+    );
+    assert_eq!(
+        c.position(Venue::Shfe, "cu2612C106000", Side::Sell)
+            .frozen_today,
+        0
+    );
+    assert_eq!(c.view().available_local_budget, 1_000_000.0 - 1010.0);
+}
+
+#[test]
+fn options_cannot_bypass_scope_metadata_or_the_premium_check_when_closing() {
+    let mut scope = crate::yida::scope();
+    scope.allow_options = false;
+    assert!(TradingCore::new(limits(), scope)
+        .unwrap()
+        .restore(option_snapshot())
+        .is_err());
+    let mut c = option_core();
+    c.constrain_cash(1000.0).unwrap();
+    assert!(c
+        .prepare(
+            option_intent(Side::Buy, Offset::CloseToday, 1),
+            Instant::now()
+        )
+        .is_err());
+    c.constrain_cash(-1.0).unwrap();
+    // Selling an owned option remains possible without crediting its expected proceeds.
+    c.prepare(
+        option_intent(Side::Sell, Offset::CloseToday, 1),
+        Instant::now(),
+    )
+    .unwrap();
+    let mut s = option_snapshot();
+    s.instruments[0].option = None;
+    assert!(option_core().restore(s).is_err());
 }

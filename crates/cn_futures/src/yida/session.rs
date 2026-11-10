@@ -14,9 +14,7 @@ pub struct Session {
     logged_in: bool,
     initialized: bool,
     pub ready: bool,
-    pub read_only_positions: Vec<RawEvent>,
     pub connections: HashMap<(Venue, i32), ExecutionConnection>,
-    pending_read_only_positions: Vec<RawEvent>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecutionConnection {
@@ -113,7 +111,6 @@ impl Session {
                 self.ready = false;
                 self.frozen.clear();
                 self.seen_positions.clear();
-                self.pending_read_only_positions.clear();
                 self.snapshot = Some(Snapshot {
                     trading_day: e.day.to_string(),
                     session: group_session_key(e.day, i32::from(config.order_group)),
@@ -157,7 +154,6 @@ impl Session {
                     "native frozen inventory absent from reconstructed positions"
                 );
                 self.ready = true;
-                self.read_only_positions = std::mem::take(&mut self.pending_read_only_positions);
                 return Ok(Some(s));
             }
             ACCOUNT => {
@@ -192,7 +188,9 @@ impl Session {
                         .find(|c| c.venue == venue && c.symbol == symbol)
                     {
                         ensure!(
-                            e.product_class == 1 && e.expiry > 0 && (0..=2).contains(&e.right),
+                            matches!(e.product_class, 1 | 2)
+                                && e.expiry > 0
+                                && (0..=2).contains(&e.right),
                             "invalid native contract class/expiry/permissions"
                         );
                         ensure!(
@@ -201,7 +199,13 @@ impl Session {
                                 .any(|r| r.venue == venue && r.symbol == symbol),
                             "duplicate native catalog contract"
                         );
+                        let option = e.option_contract(c.cash_buffer_per_buy_lot.unwrap_or(0.0))?;
+                        ensure!(
+                            option.is_some() == c.cash_buffer_per_buy_lot.is_some(),
+                            "native contract class differs from option cash configuration"
+                        );
                         s.instruments.push(Instrument {
+                            option,
                             venue,
                             symbol,
                             price_tick: e.tick,
@@ -232,35 +236,9 @@ impl Session {
                     scope().venues.contains(&venue),
                     "account holds positions outside SHFE/INE scope"
                 );
-                if config.public_simulation && e.product_class == 2 {
-                    ensure!(
-                        e.hedge == 1
-                            && e.lots >= 0
-                            && e.frozen >= 0
-                            && e.frozen <= e.lots
-                            && matches!(e.date, 1 | 2)
-                            && matches!(e.position_direction, 2 | 3),
-                        "invalid public-simulation read-only option position"
-                    );
-                    ensure!(
-                        self.seen_positions.insert((
-                            venue,
-                            symbol,
-                            if e.position_direction == 2 {
-                                Side::Buy
-                            } else {
-                                Side::Sell
-                            },
-                            e.date
-                        )),
-                        "duplicate public-simulation read-only position"
-                    );
-                    self.pending_read_only_positions.push(*e);
-                    return Ok(None);
-                }
+                e.option_contract(0.0)?;
                 ensure!(
                     e.hedge == 1
-                        && e.product_class == 1
                         && e.lots >= 0
                         && e.frozen >= 0
                         && e.frozen <= e.lots,

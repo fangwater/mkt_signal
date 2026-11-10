@@ -36,6 +36,7 @@ pub struct CoreView<'a> {
     pub available_local_budget: f64,
     pub orders: Vec<&'a Order>,
     pub positions: Vec<PositionView<'a>>,
+    pub instruments: Vec<&'a Instrument>,
 }
 #[derive(Debug, Serialize)]
 pub struct PositionView<'a> {
@@ -96,6 +97,7 @@ impl TradingCore {
     }
     pub fn view(&self) -> CoreView<'_> {
         CoreView {
+            instruments: self.instruments.values().collect(),
             ready: self.is_ready(),
             connected: self.connected,
             reason: &self.reason,
@@ -124,7 +126,7 @@ impl TradingCore {
         for rule in instruments {
             rule.validate()?;
             ensure!(
-                self.scope.venues.contains(&rule.venue)
+                self.scope.supports_symbol(rule.venue, &rule.symbol)
                     && !next.contains_key(&(rule.venue, rule.symbol.clone())),
                 "duplicate instrument in rule refresh"
             );
@@ -262,6 +264,7 @@ impl TradingCore {
                 reserved_today: 0,
                 reserved_yesterday: 0,
                 local_cash_held: 0.0,
+                cash_reserved_per_lot: 0.0,
                 cancel_pending: false,
                 owned: false,
             };
@@ -446,7 +449,7 @@ impl TradingCore {
         );
         let mut today = 0;
         let mut yesterday = 0;
-        let mut cash = 0.0;
+        let mut cash_unit = 0.0;
         if intent.offset == Offset::Open {
             let pending: i64 = self
                 .orders
@@ -467,11 +470,7 @@ impl TradingCore {
                     <= i64::from(self.limits.max_position_lots_per_side),
                 "position limit"
             );
-            cash = rule.cash_budget_per_open_lot * f64::from(intent.lots);
-            ensure!(
-                cash.is_finite() && self.cash - cash >= self.limits.minimum_cash_remaining,
-                "local cash budget insufficient"
-            );
+            cash_unit = rule.cash_budget_per_open_lot;
         } else {
             (today, yesterday) = self.allocate_close(
                 intent.venue,
@@ -481,6 +480,32 @@ impl TradingCore {
                 intent.lots,
             )?;
         }
+        if let Some(option) = &rule.option {
+            if intent.side == Side::Buy {
+                let premium_price = if intent.price_type == PriceType::Market {
+                    ensure!(
+                        option.upper_limit_price > 0.0,
+                        "option market buy requires a native upper price limit"
+                    );
+                    option.upper_limit_price
+                } else {
+                    price
+                };
+                let premium_budget = premium_price * f64::from(option.contract_multiple)
+                    + option.cash_buffer_per_buy_lot;
+                ensure!(
+                    premium_budget.is_finite(),
+                    "option premium cash budget overflow"
+                );
+                cash_unit = cash_unit.max(premium_budget);
+            }
+        }
+        let cash = cash_unit * f64::from(intent.lots);
+        ensure!(
+            cash.is_finite()
+                && (cash == 0.0 || self.cash - cash >= self.limits.minimum_cash_remaining),
+            "local cash budget insufficient"
+        );
         ensure!(
             self.next_ref <= self.scope.reference_limit,
             "native order reference exhausted"
@@ -503,6 +528,7 @@ impl TradingCore {
             reserved_today: today,
             reserved_yesterday: yesterday,
             local_cash_held: cash,
+            cash_reserved_per_lot: cash_unit,
             cancel_pending: false,
             owned: true,
         };
@@ -513,6 +539,14 @@ impl TradingCore {
         self.orders.insert(key.clone(), order);
         Ok(PreparedOrder {
             key,
+            option_market_buy_ceiling: if rule.option.is_some()
+                && intent.side == Side::Buy
+                && intent.price_type == PriceType::Market
+            {
+                rule.option.as_ref().map_or(0.0, |o| o.upper_limit_price)
+            } else {
+                0.0
+            },
             intent,
             limit_price: price,
         })
@@ -545,16 +579,10 @@ impl TradingCore {
             "inconsistent cancelled quantity"
         );
         let release = total_cancelled - order.cancelled;
-        if order.request.offset == Offset::Open {
-            let unit = self
-                .instruments
-                .get(&(order.request.venue, order.request.symbol.clone()))
-                .map(|r| r.cash_budget_per_open_lot)
-                .unwrap_or(0.0);
-            let refund = (f64::from(release) * unit).min(order.local_cash_held);
-            order.local_cash_held -= refund;
-            self.cash += refund;
-        } else {
+        let refund = (f64::from(release) * order.cash_reserved_per_lot).min(order.local_cash_held);
+        order.local_cash_held -= refund;
+        self.cash += refund;
+        if order.request.offset != Offset::Open {
             let (today, yesterday) = match self.limits.close_priority {
                 ClosePriority::TodayFirst => {
                     let y = release.min(order.reserved_yesterday);
