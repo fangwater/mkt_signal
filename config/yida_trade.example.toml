@@ -2,6 +2,7 @@
 sdk_library = "/opt/yida/1.502.53.182/linux64/yd.so"
 sdk_config = "/opt/yida/trade-server.cfg"
 trading_protocol = "xtcp" # tcp / udp / xtcp; must match native TradingProtocol
+public_simulation = false # explicit official-simulator-only, one-lot test mode
 # business_core = <isolated CPU>; set SDK thread CPUIDs to other CPUs in sdk_config.
 flow_directory = "/tmp/mkt_yida_sim/flow"
 journal = "/tmp/mkt_yida_sim/events.jsonl"

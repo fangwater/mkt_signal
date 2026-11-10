@@ -49,6 +49,7 @@ extern "C" {
     ) -> i32;
     fn cn_yida_cancel(handle: *mut c_void, exchange: *const c_char, system_id: i64) -> i32;
     fn cn_yida_transport_ready(handle: *mut c_void) -> i32;
+    fn cn_yida_public_simulation_target(handle: *mut c_void) -> i32;
     fn cn_yida_disconnect(handle: *mut c_void);
 }
 fn path_string(p: &Path) -> Result<CString> {
@@ -137,7 +138,7 @@ impl YidaTrader {
                 unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy()
             )
         })?;
-        Ok(Self {
+        let trader = Self {
             handle,
             context: Some(context),
             events,
@@ -148,7 +149,14 @@ impl YidaTrader {
             pending_cancels: HashMap::new(),
             ack_timeout_reported: false,
             _single_owner: PhantomData,
-        })
+        };
+        if config.public_simulation {
+            ensure!(
+                unsafe { cn_yida_public_simulation_target(trader.handle.as_ptr()) } == 1,
+                "SDK did not load the official public-simulation endpoint"
+            );
+        }
+        Ok(trader)
     }
     pub fn start(&mut self) -> Result<()> {
         ensure!(

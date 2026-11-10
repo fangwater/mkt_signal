@@ -14,6 +14,10 @@ pub struct Config {
     /// Broker-supplied native Yida server config; no account secrets in this file.
     pub sdk_config: PathBuf,
     pub trading_protocol: TradingProtocol,
+    /// The official public simulator preloads options alongside futures. Retain
+    /// those positions as read-only evidence while testing one-lot futures orders.
+    #[serde(default)]
+    pub public_simulation: bool,
     pub business_core: Option<usize>,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
@@ -74,6 +78,12 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        if self.public_simulation {
+            ensure!(
+                self.risk.max_order_lots == 1 && self.risk.max_working_lots <= 2,
+                "public_simulation requires max_order_lots=1 and max_working_lots<=2"
+            );
+        }
         #[cfg(target_os = "linux")]
         if let Some(core) = self.business_core {
             ensure!(
@@ -175,6 +185,33 @@ impl Config {
         }
         let port = values["TradingServerPort"].parse::<u16>();
         ensure!(port.is_ok_and(|p| p > 0), "invalid TCP TradingServerPort");
+        if self.public_simulation {
+            ensure!(
+                values["TradingServerIP"] == "118.190.175.212"
+                    && values["TradingServerPort"] == "41600",
+                "public_simulation is restricted to the official SHFE/INE simulator endpoint"
+            );
+            for key in values.keys() {
+                ensure!(
+                    matches!(
+                        *key,
+                        "TradingServerIP"
+                            | "TradingServerPort"
+                            | "TradingProtocol"
+                            | "UDPTradingType"
+                            | "XTCPTradingType"
+                            | "ConnectTCPMarketData"
+                            | "ReceiveUDPMarketData"
+                            | "RecalcMode"
+                            | "TradingServerTimeout"
+                            | "TCPTradingCPUID"
+                            | "XTCPTradingCPUID"
+                            | "TimerCPUID"
+                    ),
+                    "native config key {key} is not supported in public_simulation"
+                );
+            }
+        }
         match self.trading_protocol {
             TradingProtocol::Udp => ensure!(
                 matches!(values.get("UDPTradingType"), Some(&"socket" | &"sf" | &"exa" | &"yusnic")),

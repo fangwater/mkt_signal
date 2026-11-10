@@ -2,7 +2,7 @@
 
 `crates/cn_futures` 现有 `ctp-trader`（中金所）和 `yida-trader`（上期所 / 上海国际能源交易中心）两个入口，共用一个交易核心。易达直接调用 Hanlin **YDExtendedApi**，没有通过易达的 CTP 兼容接口。行情独立，暂按 CTP 考虑，本次没有接入易达行情。
 
-实现已完成本地单元测试和按真实原生头文件编译的合成 SDK 桥接联测，并使用真实 SDK 登录官网公共仿真柜台、接收初始化目录和持仓。公共账户的并发连接或期权初始持仓触发了运行时保护，**尚未在真实 SDK 上报撤单或取得实际订单 / 成交回报，没有生产部署或端到端性能测量**。
+实现已完成本地单元测试、按真实原生头文件编译的合成 SDK 桥接联测，以及官网公共仿真的真实 SDK 联调。TCP / UDP / XTCP 在 SHFE `cu2612`、INE `sc2612` 上均已验证限价报撤单、FAK / FOK 开平仓、事实成交和重连对账。**没有生产部署或端到端性能测量**。
 
 ## SDK 依据
 
@@ -24,7 +24,7 @@ SDK 文件留在仓库外；代码使用配套的 `ydApi.h` / `ydDataStruct.h` /
 
 ```bash
 YIDA_SDK_DIR=/absolute/path/to/ydClient/ydAPI_c++/include \
-  cargo build -p cn_futures --features yida-sdk --bin yida-trader
+  cargo build --release -p cn_futures --features yida-sdk --bin yida-trader
 
 # 只检查项目配置结构；不加载 SDK、不读凭据、不连接。
 cargo run -p cn_futures --bin yida-trader -- \
@@ -52,11 +52,11 @@ UDP / XTCP 发单仍由 SDK `insertOrder` / `cancelOrder` 在调用线程完成�
 
 厂商 SDK 在 XTCP 断线时自身可以退回 TCP，未提供原子“只允许 XTCP”发送接口。桥接在每笔 SDK 调用前检查连接状态，但无法消除检查与 SDK 内部断线处理之间的竞态，不能承诺从未发生 TCP 回退。必须在配套柜台上验证连接事件、重连及实际网络发单路径。
 
-所有易达行情连接关闭。`RecalcMode=off` 避免在缺少行情时假装持续重算保证金 / 浮盈亏；因此 SDK 本地 `Available` / `usable()` 不能当作独立、实时的柜台风险模型。需要按实际保证金、手续费和价格风险配置保守 `cash_budget_per_open_lot`，并在仿真中核对。资金事件只收紧本地预算，完整恢复才建立新基准。
+交易运行时关闭所有易达行情连接，联调的盘口与涨跌停价通过独立的只读行情探针取得。`RecalcMode=off` 避免在缺少行情时假装持续重算保证金 / 浮盈亏；因此 SDK 本地 `Available` / `usable()` 不能当作独立、实时的柜台风险模型。需要按实际保证金、手续费和价格风险配置保守 `cash_budget_per_open_lot`，并在仿真中核对。资金事件只收紧本地预算，完整恢复才建立新基准。
 
 `idle_sleep_us=0` 使用忙轮询。可在项目配置里指定 `business_core` 绑定单个业务核；后台输入、审计和 SDK 先启动，再绑定当前业务线程，避免后台工作继承该单核亲和性。使用此选项时，原生配置必须明确给出 `TCPTradingCPUID`、`TimerCPUID`，XTCP 还需给出 `XTCPTradingCPUID`，且都与业务核不同。实际 CPU 编号由部署机器决定，示例没有硬编码。`TradingServerTimeout=-1` 可使 SDK 回报线程忙轮询；这会额外占用一个核，需按机器配置。尚无绑核后的真实柜台延迟指标。
 
-**账户必须专用，且原生 `LoginCount == 1`。** 不能另起 CTP、YDClient 或其他策略独立使用同一账户的资金 / 持仓。flow 锁只防止相同目录被并发使用，不是跨机器的账户锁。恢复时若有 SHFE / INE 之外的持仓、非投机套保账本、期权、组合或不支持的事实类型，会保留原始事件并阻断交易，不做猜测映射。
+**账户必须专用，且追平后的原生 `LoginCount == 1`。** 不能另起 CTP、YDClient 或其他策略独立使用同一账户的资金 / 持仓。flow 锁只防止相同目录被并发使用，不是跨机器的账户锁。默认恢复时若有 SHFE / INE 之外的持仓、非投机套保账本、期权、组合或不支持的事实类型，会保留原始事件并阻断交易，不做猜测映射。下述公共仿真模式只允许把该仿真柜台的既有期权仓位作为只读账户记录保留。
 
 ### 公共仿真柜台
 
@@ -75,16 +75,38 @@ SDK 版本与柜台版本有不同用途：本地桥接严格匹配 SDK **1.502.
 
 截图说明期货使用前一交易日日初数据。先从柜台目录确认合约、交易日、tick、有效期与现有持仓，再填写合约白名单和价格；示例 `cu2612` / `sc2612` 并未在公共柜台上确认。测试环境中的交易日也可能与自然日或回放数据日期不同，不能直接用本机日期替代。截图里的 `RecalcMode=auto`、`ConnectTCPMarketData=yes` 是全功能 SDK 配置，当前独立交易运行时仍要求 `off` / `no`，并使用显式保守资金预算。
 
-2026-11-10 09:41 UTC 从本地观察，`41600` 与 `41603` 的 TCP 握手均成功。同日后续使用真实 1.502.53.182 SDK 对两个公共测试账户执行 TCP、UDP、XTCP 登录，均收到成功登录与 `notifyCaughtUp`，读取到 301 条期货目录和 30 条非零持仓，UDP / XTCP 传输就绪事件分别报告端口 41602 / 41603。一个账户 `LoginCount=2`，另一个账户 `LoginCount=1` 但有 20 条期权初始持仓，均按设计阻断交易；没有放宽范围、忽略持仓或发送报撤单。目录 / 持仓复制和保护逻辑已接触真实 SDK，完整可交易恢复、UDP 实际报文和真实委托 / 成交回报仍未验证。
+公共仿真需显式设置 `public_simulation=true`，默认值为 `false`。此模式只接受 `118.190.175.212:41600`，原生配置限定为已知连接参数，禁止高可用或其他目标地址参数；SDK 创建后还会用 `getConfig` 核对实际加载的目标。必须设置 `max_order_lots=1`、`max_working_lots<=2`，追平后仍要求单连接。公共柜台实际报告 `Test=no`，所以此模式依据已确认的官网公开端点进行限定，不把该参数当作公共仿真标识。
 
-真实 SDK 联调入口如下；本次只执行了 `--connect` 登录观察，未执行 `--execute`：
+公共仿真的已有投机期权持仓在完整快照校验成功后保存为 `read_only_positions`，同时保留原始审计，`state` 和 `reconciled` 返回这些记录；它们不进入期货下单持仓账本。合约白名单、C++ 提交检查和订单解析仍只接受 SHFE / INE 期货；期权委托 / 成交、未知冻结或其他不支持的账户事实仍会阻断交易。完整恢复失败时保留上一次已确认的只读持仓，不用部分快照覆盖。
+
+2026-11-10 使用配套 SDK、release 二进制完成下表六组真实公共仿真测试，每组单笔 1 手，包含 5 笔报单、1 笔撤单和 4 笔事实成交。最终六组合计 **30 笔报单、6 笔撤单、24 笔成交回报**。测试前两个目标合约都没有持仓；每组结束后主动重连、用原生完整快照核对：测试持仓恢复、其他 10 条期货持仓及 20 条只读期权持仓不变，本次订单全部终结。最终账户快照没有期货挂单。
+
+| 协议 | SHFE `cu2612` | INE `sc2612` |
+| --- | --- | --- |
+| TCP | 限价报撤、FAK/FOK 开平、对账通过 | 限价报撤、FAK/FOK 开平、对账通过 |
+| UDP | 限价报撤、FAK/FOK 开平、对账通过 | 限价报撤、FAK/FOK 开平、对账通过 |
+| XTCP | 限价报撤、FAK/FOK 开平、对账通过 | 限价报撤、FAK/FOK 开平、对账通过 |
+
+对 SHFE 的 UDP / XTCP 两组使用不展开载荷的系统调用跟踪，分别确认 5 次 72 字节报单、1 次 40 字节撤单发往 `41602` / `41603`；这些测试实际使用了对应协议端口。测试使用普通内核网络 `socket` 发送器，未测硬件加速和端到端延迟。
+
+真实 SDK 联调入口如下：
 
 ```bash
 # 目标为本地配置指定的仿真账户、SHFE / INE 合约，仅登录与恢复。
-target/debug/yida-trader --config /absolute/path/yida-sim.toml --connect
+target/release/yida-trader --config /absolute/path/yida-sim.toml --connect
 
 # 同一目标，额外允许显式 JSON 下单 / 撤单。
-target/debug/yida-trader --config /absolute/path/yida-sim.toml --connect --execute
+target/release/yida-trader --config /absolute/path/yida-sim.toml --connect --execute
+```
+
+可复用的实际联调脚本为 `crates/cn_futures/tests/yida_public_sim_smoke.py`。它从环境变量读取凭据，默认只登录观察；`--execute` 要求 release 二进制和调用方明确提供三个限价的整数 ticks。执行前验证目标合约为空仓，结束时仅处理本次订单和新增的一手仓位，再完整对账。审计、stdout、stderr 与 `summary.json` 放在显式指定的新输出目录中。每次执行必须重新确认实际合约与价格，不能照搬历史测试价格。
+
+```bash
+python3 crates/cn_futures/tests/yida_public_sim_smoke.py \
+  --sdk-root /absolute/path/to/ydClient/ydAPI_c++ \
+  --binary target/release/yida-trader --output-dir /absolute/path/to/new-audit-dir \
+  --protocol xtcp --venue SHFE --symbol cu2612
+# 额外提供 --passive-price-ticks N --buy-price-ticks N --sell-price-ticks N --execute
 ```
 
 默认只检查配置。`--connect` 启动 SDK 并登录；没有 `--execute` 不允许下单和撤单。启动、EOF、`shutdown` 或错误退出均不会自动撤销交易所挂单。
@@ -132,6 +154,8 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 - 系统订单号按 `(venue, LongOrderSysID)` 关联，成交按交易所、合约、交易日、`LongTradeID` 和方向去重，Rust / C++ 边界保留完整 64 位编号。32 位 `OrderSysID` / `TradeID` 仅保留在原始审计中；不拿它们作去重或撤单身份。允许恢复 `OrderRef=0` 的外部手工订单，SHFE / INE 的同号订单不会覆盖。仅支持报单组 0、普通成交和有对应委托的成交，其他事实保留证据后阻断。恢复订单没有策略归属；未知成交保留原始证据后要求对账。
 - 原始审计保留原生时间、错误码、整数订单 / 成交身份、厂商可提供的交易所原始 ID，以及 `YDTrade.Commission`。共享持仓只随事实成交改变，不把累计委托成交量编造成成交。
 - `notifyFinishInit` 只说明 API 可调用，**不说明订单 / 成交已经追平**。每次登录必须等待 `notifyCaughtUp`；在该回调中复制原生账户、目录、分日期持仓、`findOrders` 和 `findTrades`，业务线程校验委托成交量与事实成交量、原生平仓冻结与恢复委托的预占一致后整体恢复。读取指针不跨 FFI 保留；`find*` 不进入逐单热路径。
+- 追平前的 `notifyExtendedAccount` 会回放历史资金及连接数，实际观察到 `LoginCount=0` 的旧值。这些回报先入审计，只有追平快照建立可用资金和单连接基准；已恢复后的实时账户更新仍完整校验并只收紧预算。
+- TCP 回报通道重连时，SDK 可能保留独立 XTCP 连接，不再次回调 `XTCPTradeConnected`。仅在确实收到 XTCP 断开或柜台切换时清除 XTCP 连接事实；TCP 断开期间仍通过登录 / 追平门控禁止发送。XTCP 新连接也可能晚于 `notifyCaughtUp`，`reconciled` 只表示账户快照就绪，实际可交易性以 `state.can_trade` 为准。
 - 快照中若插入独立实时回调、出现不支持的事实、遗漏尚未确定结果的本地订单或对账失败，就不解除阻断。`notifyCaughtUp` 不是每笔不确定出站请求最终处置的证明；`findOrders` 只包含交易所已接受的委托，不能用查不到来推断拒绝。重启前应保留和审查审计，不能用新进程抹掉发送不确定性。
 - `reconcile` 主动断开以触发新登录 / 追平，断线保留原有预占。跨交易日、柜台切换、持续成交中的重放顺序和 SDK 查询的线程保证仍需柜台仿真验证。按交易日重启并完成恢复；不按自然午夜重置仓位。
 - `notifyTradingSegment` 的参数没有被解释成“连续交易中”。首期不提供已验证的实时交易时段门控，使用原生权限、合约有效期和 `checkOrder` / 柜台验证；本地不能保证休市时提前拒绝。后续接入可靠交易状态源后再启用相应门控。
@@ -141,7 +165,7 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 
 ## 本地验证
 
-2026-11-10 验证结果：默认 feature 的 66 项单元测试通过，CTP + 易达双 SDK feature 的 68 项常规单元测试通过；默认忽略的 CTP 官方库离线构造 / 销毁测试单独指定配套动态库后也通过。release 二进制通过 17 个易达合成 SDK 场景及 CTP 桥接回归，`cargo fmt`、双 SDK `clippy -D warnings` 和本地 release 构建通过。订单解析覆盖两市场、双方向、三种开平、五种状态的 60 个组合，以及无效身份 / 数量 / 价格 / 错误状态等拒绝路径。
+2026-11-10 验证结果：CTP + 易达双 SDK feature 的 71 项常规单元测试通过；默认忽略的 CTP 官方库离线构造 / 销毁测试单独指定配套动态库后也通过。release 二进制通过 22 个易达合成 SDK 场景（含联调脚本拒绝触碰已有一手持仓的保护）、CTP 桥接回归及上述 6 组实际公共仿真测试，`cargo fmt`、双 SDK `clippy -D warnings` 和本地 release 构建通过。订单解析覆盖两市场、双方向、三种开平、五种状态的 60 个组合，以及无效身份 / 数量 / 价格 / 错误状态等拒绝路径。
 
 ```bash
 cargo fmt -p cn_futures --check

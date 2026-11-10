@@ -9,6 +9,149 @@ fn native_config(protocol: &str) -> String {
 }
 
 #[test]
+fn public_simulation_is_endpoint_pinned_and_has_one_lot_limits() {
+    let mut c = config();
+    c.public_simulation = true;
+    c.validate().unwrap();
+    assert!(c.validate_sdk_config_text(&native_config("XTCP")).is_err());
+    let native = native_config("XTCP")
+        .replace("127.0.0.1", "118.190.175.212")
+        .replace("TradingServerPort=1\n", "TradingServerPort=41600\n");
+    c.validate_sdk_config_text(&native).unwrap();
+    for extra in [
+        "TradingServerIP2=127.0.0.1\n",
+        "RecoverySiteCount=1\n",
+        "UDPTradingServerIP=127.0.0.1\n",
+    ] {
+        assert!(c
+            .validate_sdk_config_text(&(native.clone() + extra))
+            .is_err());
+    }
+    c.risk.max_order_lots = 2;
+    assert!(c.validate().is_err());
+    c.risk.max_order_lots = 1;
+    c.risk.max_working_lots = 3;
+    assert!(c.validate().is_err());
+}
+
+#[test]
+fn public_simulation_retains_option_inventory_without_making_it_tradable() {
+    let mut c = config();
+    let mut option = row(POSITION, "INE", "sc2701C790");
+    option.product_class = 2;
+    option.position_direction = 2;
+    option.date = 2;
+    option.lots = 19;
+    let mut strict = Session::default();
+    begin(&mut strict, &c);
+    assert!(strict.on_event(&option, &c, None).is_err());
+    c.public_simulation = true;
+    let mut s = Session::default();
+    begin(&mut s, &c);
+    s.on_event(&option, &c, None).unwrap();
+    assert!(s.read_only_positions.is_empty());
+    let snapshot = s
+        .on_event(
+            &RawEvent {
+                kind: END,
+                day: 20261109,
+                ..RawEvent::default()
+            },
+            &c,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(snapshot.positions.is_empty());
+    assert_eq!(s.read_only_positions.len(), 1);
+    assert_eq!(
+        text(&s.read_only_positions[0].symbol).unwrap(),
+        "sc2701C790"
+    );
+    assert_eq!(s.read_only_positions[0].lots, 19);
+    let mut core = crate::core::TradingCore::new(c.risk.clone(), scope()).unwrap();
+    core.restore(snapshot).unwrap();
+    assert!(core
+        .prepare(
+            Intent {
+                venue: Venue::Ine,
+                symbol: "sc2701C790".into(),
+                side: Side::Sell,
+                offset: Offset::CloseYesterday,
+                lots: 1,
+                price_ticks: 2000,
+                time_in_force: TimeInForce::Day
+            },
+            std::time::Instant::now()
+        )
+        .is_err());
+    begin(&mut s, &c);
+    option.lots = -1;
+    assert!(s.on_event(&option, &c, None).is_err());
+    assert_eq!(s.read_only_positions[0].lots, 19);
+}
+
+#[test]
+fn historical_account_notifications_do_not_establish_or_poison_the_recovery_baseline() {
+    let c = config();
+    let mut s = Session::default();
+    for kind in [CONNECTED, LOGIN, INIT] {
+        s.on_event(
+            &RawEvent {
+                kind,
+                day: 20261109,
+                ..RawEvent::default()
+            },
+            &c,
+            None,
+        )
+        .unwrap();
+    }
+    for login_count in [0, 2, 1] {
+        s.on_event(
+            &RawEvent {
+                kind: ACCOUNT,
+                login_count,
+                available: 123.0,
+                ..RawEvent::default()
+            },
+            &c,
+            None,
+        )
+        .unwrap();
+        assert!(!s.ready);
+    }
+    begin(&mut s, &c);
+    let snapshot = s
+        .on_event(
+            &RawEvent {
+                kind: END,
+                day: 20261109,
+                ..RawEvent::default()
+            },
+            &c,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.available_cash, 1_000_000.0);
+    assert!(s.ready);
+    assert!(s
+        .on_event(
+            &RawEvent {
+                kind: ACCOUNT,
+                login_count: 0,
+                available: 123.0,
+                ..RawEvent::default()
+            },
+            &c,
+            None
+        )
+        .is_err());
+    assert!(!s.ready);
+}
+
+#[test]
 fn native_protocol_must_match_and_udp_sender_cannot_silently_fall_back() {
     use config::TradingProtocol::*;
     let mut c = config();

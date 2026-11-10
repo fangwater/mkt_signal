@@ -30,7 +30,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     };
     let mut session = Session::default();
     let input = input_commands()?;
-    journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"business_core":config.business_core,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
+    journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"business_core":config.business_core,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
     runtime.trader.start()?;
     // Create input, journal and SDK workers before pinning this business thread.
     // SDK workers have their own explicit CPUIDs when business_core is configured.
@@ -54,10 +54,12 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 false,
             )?;
             if e.kind == CONNECTED {
+                transport_seen_ready = false;
                 runtime.core.connected();
                 recovery_since = Instant::now();
             }
             if e.kind == DISCONNECTED {
+                transport_seen_ready = false;
                 runtime.core.disconnect();
                 recovery_since = Instant::now();
             }
@@ -99,7 +101,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     runtime.core.restore(s)?;
                     runtime.trader.recovered();
                     journal.record(
-                        json!({"type":"reconciled","state":runtime.core.view()}),
+                        json!({"type":"reconciled","state":runtime.core.view(),"read_only_positions":session.read_only_positions}),
                         true,
                     )?;
                     return Ok(());
@@ -153,7 +155,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                             Command::State {} => {
                                 let transport_ready = runtime.trader.transport_ready();
                                 Ok(
-                                    json!({"type":"state","state":runtime.core.view(),"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
+                                    json!({"type":"state","state":runtime.core.view(),"read_only_positions":session.read_only_positions,"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
                                 )
                             }
                             Command::Shutdown {} => {

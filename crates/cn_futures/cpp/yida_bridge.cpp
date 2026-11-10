@@ -192,7 +192,11 @@ public:
         }
         if (event==YD_AE_TCPTradeConnected) { tcp_connected=true; e.kind=Connected; }
         else if (event==YD_AE_TCPTradeDisconnected || event==YD_AE_ServerSwitched) {
-            tcp_connected=false; logged_in=false; caught_up=false; xtcp_connected=false; e.kind=Disconnected;
+            // The SDK can retain its independent XTCP socket while reconnecting
+            // the TCP report channel, without another XTCP-connected callback.
+            tcp_connected=false; logged_in=false; caught_up=false;
+            if (event==YD_AE_ServerSwitched) xtcp_connected=false;
+            e.kind=Disconnected;
         }
         else return;
         e.status=event; send(e); transport_event();
@@ -260,6 +264,12 @@ int cn_yida_start(void* p) { try {
 int cn_yida_login(void* p,const char* u,const char* pass,const char* app,const char* auth) { try { return get(p)->api->login(u,pass,app,auth) ? 0 : invalid; } catch(...) { return invalid; } }
 int cn_yida_reference(void* p) { try { return get(p)->api->getNextOrderRef(0,true); } catch(...) { return invalid; } }
 int cn_yida_transport_ready(void* p) { try { return get(p)->can_send()?1:0; } catch(...) { return 0; } }
+int cn_yida_public_simulation_target(void* p) { try {
+    auto* api=get(p)->api;
+    const char* host=api->getConfig("TradingServerIP");
+    const char* port=api->getConfig("TradingServerPort");
+    return host && port && !std::strcmp(host,"118.190.175.212") && !std::strcmp(port,"41600") ? 1 : 0;
+} catch(...) { return 0; } }
 int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int direction,int offset,int tif,int lots,double price) {
     try {
         auto* b=get(p); const auto* i=b->api->getInstrumentByID(symbol);

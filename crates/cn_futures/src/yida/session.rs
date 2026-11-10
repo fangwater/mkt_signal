@@ -14,6 +14,8 @@ pub struct Session {
     logged_in: bool,
     initialized: bool,
     pub ready: bool,
+    pub read_only_positions: Vec<RawEvent>,
+    pending_read_only_positions: Vec<RawEvent>,
 }
 impl Session {
     pub fn on_event(
@@ -69,6 +71,7 @@ impl Session {
                 self.ready = false;
                 self.frozen.clear();
                 self.seen_positions.clear();
+                self.pending_read_only_positions.clear();
                 self.snapshot = Some(Snapshot {
                     trading_day: e.day.to_string(),
                     session: session_key(e.day),
@@ -112,9 +115,16 @@ impl Session {
                     "native frozen inventory absent from reconstructed positions"
                 );
                 self.ready = true;
+                self.read_only_positions = std::mem::take(&mut self.pending_read_only_positions);
                 return Ok(Some(s));
             }
             ACCOUNT => {
+                // Extended-account notifications during replay can contain old
+                // LoginCount/cash values. Only the caught-up snapshot establishes
+                // the new baseline; the runtime already audited these raw events.
+                if !self.ready && self.snapshot.is_none() && e.replay == 0 {
+                    return Ok(None);
+                }
                 ensure!(
                     e.login_count == 1 && (0..=2).contains(&e.right),
                     "dedicated trader account requires exactly one login and known permissions"
@@ -126,6 +136,8 @@ impl Session {
                         "duplicate native snapshot account"
                     );
                     s.available_cash = e.available;
+                } else {
+                    ensure!(e.replay == 0, "snapshot account outside caught-up snapshot");
                 }
             }
             INSTRUMENT => {
@@ -170,6 +182,32 @@ impl Session {
                     scope().venues.contains(&venue),
                     "account holds positions outside SHFE/INE scope"
                 );
+                if config.public_simulation && e.product_class == 2 {
+                    ensure!(
+                        e.hedge == 1
+                            && e.lots >= 0
+                            && e.frozen >= 0
+                            && e.frozen <= e.lots
+                            && matches!(e.date, 1 | 2)
+                            && matches!(e.position_direction, 2 | 3),
+                        "invalid public-simulation read-only option position"
+                    );
+                    ensure!(
+                        self.seen_positions.insert((
+                            venue,
+                            symbol,
+                            if e.position_direction == 2 {
+                                Side::Buy
+                            } else {
+                                Side::Sell
+                            },
+                            e.date
+                        )),
+                        "duplicate public-simulation read-only position"
+                    );
+                    self.pending_read_only_positions.push(*e);
+                    return Ok(None);
+                }
                 ensure!(
                     e.hedge == 1
                         && e.product_class == 1

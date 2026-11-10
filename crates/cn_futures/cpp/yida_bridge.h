@@ -23,5 +23,6 @@ int cn_yida_reference(void*);
 int cn_yida_insert(void*, const char*, const char*, int, int, int, int, int, double);
 int cn_yida_cancel(void*, const char*, int64_t);
 int cn_yida_transport_ready(void*);
+int cn_yida_public_simulation_target(void*);
 void cn_yida_disconnect(void*);
 }

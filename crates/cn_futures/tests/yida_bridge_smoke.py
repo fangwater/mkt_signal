@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -43,8 +44,10 @@ class Fixture final:public YDExtendedApi {
     YDExtendedPosition positions[8]{};
     std::map<std::pair<int,long long>,YDExtendedOrder> orders;
     std::vector<YDExtendedTrade> trades;
-    int next_reference=101; bool initialized=false;
+    int next_reference=101; bool initialized=false, xtcp_initialized=false;
     std::string protocol;
+    std::map<std::string,std::string> config_values;
+    YDInstrument option{}; YDAccountInstrumentInfo option_ai{}; YDExtendedPosition option_position{};
     YDSystemParam port{};
     static void copy_input(YDOrder& o,const YDInputOrder& p){
         o.Direction=p.Direction;o.OffsetFlag=p.OffsetFlag;o.HedgeFlag=p.HedgeFlag;
@@ -69,7 +72,8 @@ class Fixture final:public YDExtendedApi {
 public:
     explicit Fixture(const char* config){
         std::ifstream input(config);std::string line;
-        while(std::getline(input,line))if(line.rfind("TradingProtocol=",0)==0)protocol=line.substr(16);
+        while(std::getline(input,line)){auto eq=line.find('=');if(eq!=std::string::npos)config_values[line.substr(0,eq)]=line.substr(eq+1);}
+        protocol=config_values.at("TradingProtocol");
         const char* test_port=std::getenv("YIDA_FIXTURE_PORT");std::strcpy(port.Value,test_port?test_port:"41601");
         std::strcpy(account.AccountID,"fixture");account.LoginCount=1;account.TradingRight=YD_TR_Allow;
         if(std::getenv("YIDA_FIXTURE_MULTI_LOGIN"))account.LoginCount=2;
@@ -90,8 +94,15 @@ public:
             // Same system ID and manual reference zero on different exchanges.
             YDExtendedOrder o{};o.m_pAccount=&account;o.m_pInstrument=&instruments[k];o.OrderSysID=55;o.LongOrderSysID=(1LL<<40)+55;o.OrderRef=0;
             o.HedgeFlag=YD_HF_Speculation;o.OrderVolume=1;o.Price=.2;o.OrderStatus=YD_OS_Queuing;
+            if(std::getenv("YIDA_FIXTURE_OPTION_POSITION"))o.OrderStatus=YD_OS_Canceled;
             orders[{k,o.LongOrderSysID}]=o;
         }
+        if(std::getenv("YIDA_FIXTURE_ONE_EXISTING_LOT")){
+            for(auto& p:positions)p.Position=0;positions[0].Position=1;
+        }
+        std::strcpy(option.InstrumentID,"sc2701C790");option.ProductClass=YD_PC_Options;option.m_pExchange=&exchanges[1];
+        option_ai.m_pAccount=&account;option_ai.m_pInstrument=&option;option_position.m_pAccountInstrumentInfo=&option_ai;
+        option_position.Position=19;option_position.PositionDate=YD_PSD_History;option_position.PositionDirection=YD_PD_Long;option_position.HedgeFlag=YD_HF_Speculation;
     }
     bool start(YDListener* l)override{listener=l;listener->notifyEvent(YD_AE_TCPTradeConnected);listener->notifyReadyForLogin(false);return true;}
     bool startExtended(YDListener* l,YDExtendedListener* e)override{extended=e;return start(l);}
@@ -99,14 +110,22 @@ public:
     bool login(const char* u,const char* p,const char* a,const char* auth)override{
         check(std::strcmp(u,"fixture")==0 && std::strcmp(p,"fixture-only")==0 && std::strcmp(a,"fixture-app")==0 && std::strcmp(auth,"fixture-auth")==0);
         listener->notifyLogin(0,next_reference-1,false);
-        if(protocol=="XTCP" && !std::getenv("YIDA_FIXTURE_NO_XTCP"))listener->notifyEvent(YD_AE_XTCPTradeConnected);
+        if(protocol=="XTCP" && !std::getenv("YIDA_FIXTURE_NO_XTCP") && !std::getenv("YIDA_FIXTURE_LATE_XTCP")
+            && (!std::getenv("YIDA_FIXTURE_RETAIN_XTCP") || !xtcp_initialized)){
+            xtcp_initialized=true;listener->notifyEvent(YD_AE_XTCPTradeConnected);
+        }
         if(!initialized){initialized=true;listener->notifyFinishInit();}
-        listener->notifyCaughtUp();return true;
+        if(std::getenv("YIDA_FIXTURE_ACCOUNT_HISTORY")){
+            int current=account.LoginCount;account.LoginCount=0;extended->notifyExtendedAccount(&cash);account.LoginCount=current;
+        }
+        listener->notifyCaughtUp();
+        if(protocol=="XTCP" && std::getenv("YIDA_FIXTURE_LATE_XTCP"))listener->notifyEvent(YD_AE_XTCPTradeConnected);
+        return true;
     }
     void disconnect()override{listener->notifyEvent(YD_AE_TCPTradeDisconnected);listener->notifyEvent(YD_AE_TCPTradeConnected);listener->notifyReadyForLogin(false);}
     int getTradingDay()override{return 20261109;}
     int getNextOrderRef(unsigned group=0,bool update=true)override{check(group==0 && update);return next_reference++;}
-    const char* getConfig(const char* name)override{check(!std::strcmp(name,"TradingProtocol"));return protocol.c_str();}
+    const char* getConfig(const char* name)override{auto it=config_values.find(name);return it==config_values.end()?nullptr:it->second.c_str();}
     const YDSystemParam* getSystemParamByName(const char* name,const char* target)override{
         check(!std::strcmp(target,"System") && (!std::strcmp(name,"UDPTradingPort") || !std::strcmp(name,"XTCPTradingPort")));return &port;
     }
@@ -120,7 +139,7 @@ public:
     const YDAccountProductInfo* getAccountProductInfo(const YDProduct* p,const YDAccount* a=nullptr)override{check(!a);return &ap[p==&products[0]?0:1];}
     const YDAccountInstrumentInfo* getAccountInstrumentInfo(const YDInstrument* i,const YDAccount* a=nullptr)override{check(!a);return &ai[index(i)];}
     const char* getIDFromExchange(const YDExchange*,int type,int)override{return type==YD_IDT_TradeID?"exchange-trade-id":"exchange-order-id";}
-    YDQueryResult<YDExtendedPosition>* findExtendedPositions(const YDExtendedPositionFilter* f)override{check(f->HedgeFlag==-1 && f->PositionDate==-1 && !f->pAccount);std::vector<const YDExtendedPosition*> r;for(auto& p:positions)r.push_back(&p);return new Rows<YDExtendedPosition>(r);}
+    YDQueryResult<YDExtendedPosition>* findExtendedPositions(const YDExtendedPositionFilter* f)override{check(f->HedgeFlag==-1 && f->PositionDate==-1 && !f->pAccount);std::vector<const YDExtendedPosition*> r;for(auto& p:positions)r.push_back(&p);if(std::getenv("YIDA_FIXTURE_OPTION_POSITION"))r.push_back(&option_position);return new Rows<YDExtendedPosition>(r);}
     unsigned findExtendedPositions(const YDExtendedPositionFilter*,unsigned,const YDExtendedPosition*[])override{return 0;}
     YDQueryResult<YDExtendedOrder>* findOrders(const YDOrderFilter* f)override{check(f->StartTime==-1 && f->EndTime==-1 && f->YDOrderFlags==-1 && !f->pAccount);std::vector<const YDExtendedOrder*> r;for(auto& pair:orders)r.push_back(&pair.second);return new Rows<YDExtendedOrder>(r);}
     unsigned findOrders(const YDOrderFilter*,unsigned,const YDExtendedOrder*[])override{return 0;}
@@ -150,7 +169,7 @@ public:
         if(p->Price==5011){stored.OrderStatus=99;listener->notifyOrder(&stored,i,&account);return true;}
         if(p->OrderType!=YD_ODT_Limit){fill(stored,p->OrderVolume);stored.OrderStatus=YD_OS_AllTraded;}
         listener->notifyOrder(&stored,i,&account);
-        if(p->Price==5005 && protocol=="XTCP")listener->notifyEvent(YD_AE_XTCPTradeDisconnected);
+        if(p->Price==5005 && protocol=="XTCP"){xtcp_initialized=false;listener->notifyEvent(YD_AE_XTCPTradeDisconnected);}
         return true;
     }
     bool cancelOrder(YDCancelOrder* p,const YDExchange* x,const YDAccount* a=nullptr)override{
@@ -187,6 +206,22 @@ def run_fixture(args,protocol,scenario='normal'):
         temp=Path(directory);source=temp/'fixture.cpp';library=temp/'fixture.so'
         source.write_text(fixture_source(args.sdk_dir))
         subprocess.run(['c++','-std=c++17','-shared','-fPIC','-pthread','-isystem',str(args.sdk_dir),str(source),'-o',str(library)],check=True)
+        if scenario=='public_initial_position':
+            fake_sdk=temp/'sdk';(fake_sdk/'linux64').mkdir(parents=True)
+            os.link(library,fake_sdk/'linux64/yd.so')
+            # Test-only alias: the SDK remains synthetic and cannot contact a venue.
+            test_binary=temp/'release/yida-trader';test_binary.parent.mkdir()
+            shutil.copy2(args.binary.resolve(),test_binary)
+            environment={k:v for k,v in os.environ.items() if not k.startswith('YIDA_FIXTURE_')}
+            environment.update(YIDA_USER_ID='fixture',YIDA_PASSWORD='fixture-only',YIDA_APP_ID='fixture-app',YIDA_AUTH_CODE='fixture-auth',YIDA_FIXTURE_OPTION_POSITION='1',YIDA_FIXTURE_ONE_EXISTING_LOT='1')
+            audit=temp/'audit'
+            result=subprocess.run(['python3',str(root/'crates/cn_futures/tests/yida_public_sim_smoke.py'),'--sdk-root',str(fake_sdk),'--binary',str(test_binary),'--output-dir',str(audit),'--protocol','xtcp','--venue','SHFE','--symbol','cu2612','--passive-price-ticks','20000','--buy-price-ticks','20001','--sell-price-ticks','19999','--execute'],env=environment,capture_output=True,text=True,timeout=25)
+            assert result.returncode==1,(result.stdout,result.stderr)
+            summary=json.loads((audit/'summary.json').read_text())
+            assert 'initially be flat' in summary['error'] and summary['cleanup_error'] is None
+            events=[json.loads(line) for line in (audit/'events.jsonl').read_text().splitlines()]
+            assert not any(e.get('type') in ('prepared_submit','prepared_cancel') for e in events)
+            print(json.dumps({'protocol':protocol,'scenario':scenario,'preexisting_position_untouched':True,'no_send':True}));return
         native_config=temp/'server.cfg'
         native_text=f'TradingServerIP=127.0.0.1\nTradingServerPort=1\nTradingProtocol={protocol.upper()}\nUDPTradingType=socket\nXTCPTradingType=socket\nConnectTCPMarketData=no\nReceiveUDPMarketData=no\nRecalcMode=off\n'
         config=(root/'config/yida_trade.example.toml').read_text()
@@ -195,14 +230,21 @@ def run_fixture(args,protocol,scenario='normal'):
             allowed_cpus=sorted(os.sched_getaffinity(0));business_core,sdk_core=allowed_cpus[:2]
             config=config.replace('# business_core = <isolated CPU>;',f'business_core = {business_core} #')
             native_text+=f'TCPTradingCPUID={sdk_core}\nTimerCPUID={sdk_core}\nXTCPTradingCPUID={sdk_core}\n'
+        if scenario=='public_simulation':
+            native_text=native_text.replace('127.0.0.1','118.190.175.212').replace('TradingServerPort=1\n','TradingServerPort=41600\n')
+            config=config.replace('public_simulation = false','public_simulation = true').replace('max_order_lots = 10','max_order_lots = 1').replace('max_working_lots = 20','max_working_lots = 2')
         native_config.write_text(native_text)
         config_path=temp/'config.toml';config_path.write_text(config)
         environment=dict(os.environ,YIDA_USER_ID='fixture',YIDA_PASSWORD='fixture-only',YIDA_APP_ID='fixture-app',YIDA_AUTH_CODE='fixture-auth')
-        for key in ('YIDA_FIXTURE_PORT','YIDA_FIXTURE_NO_XTCP','YIDA_FIXTURE_MULTI_LOGIN','YIDA_FIXTURE_CLOSE_ONLY'):environment.pop(key,None)
+        for key in ('YIDA_FIXTURE_PORT','YIDA_FIXTURE_NO_XTCP','YIDA_FIXTURE_MULTI_LOGIN','YIDA_FIXTURE_CLOSE_ONLY','YIDA_FIXTURE_OPTION_POSITION','YIDA_FIXTURE_LATE_XTCP','YIDA_FIXTURE_ACCOUNT_HISTORY','YIDA_FIXTURE_RETAIN_XTCP','YIDA_FIXTURE_ONE_EXISTING_LOT'):environment.pop(key,None)
         if scenario=='no_port':environment['YIDA_FIXTURE_PORT']='0'
         if scenario=='no_xtcp':environment['YIDA_FIXTURE_NO_XTCP']='1'
         if scenario=='multi_login':environment['YIDA_FIXTURE_MULTI_LOGIN']='1'
         if scenario=='close_only':environment['YIDA_FIXTURE_CLOSE_ONLY']='1'
+        if scenario=='public_simulation':environment['YIDA_FIXTURE_OPTION_POSITION']='1'
+        if scenario=='late_xtcp':environment['YIDA_FIXTURE_LATE_XTCP']='1'
+        if scenario=='account_history':environment['YIDA_FIXTURE_ACCOUNT_HISTORY']='1'
+        if scenario=='retained_xtcp':environment['YIDA_FIXTURE_RETAIN_XTCP']='1'
         with open(temp/'stderr.log','w+') as stderr:
             argv=[str(args.binary.resolve()),'--config',str(config_path),'--connect']
             if scenario!='read_only':argv.append('--execute')
@@ -235,6 +277,13 @@ def run_fixture(args,protocol,scenario='normal'):
                 initial=wait('reconciled')['state'];assert initial['ready']
                 assert len([o for o in initial['orders'] if o['key']['order_ref']=='0'])==2
                 assert all(int(o['system_id'])>(1<<32) for o in initial['orders'])
+                if scenario=='public_simulation':
+                    before=full_state();assert before['can_trade'] and len(before['read_only_positions'])==1
+                    key=submit()['children'][0]['key'];send({'op':'cancel','key':key});wait('cancel_submitted_locally')
+                    after=full_state();assert len(after['read_only_positions'])==1 and after['read_only_positions'][0]['lots']==19
+                    send({'op':'reconcile'});wait('reconciling');wait('reconciled');assert full_state()['can_trade']
+                    send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
+                    print(json.dumps({'protocol':protocol,'scenario':scenario,'futures_submit_cancel':True,'option_inventory_retained':True}));return
                 if scenario=='read_only':
                     assert not full_state()['can_trade']
                     send({'op':'submit','intent':{'venue':'SHFE','symbol':'cu2612','side':'sell','offset':'open','lots':1,'price_ticks':20000,'time_in_force':'day'}})
@@ -329,7 +378,7 @@ def run_fixture(args,protocol,scenario='normal'):
                 assert any(e.get('event',{}).get('commission')==1.25 for e in events)
                 assert 'fixture-only' not in (temp/'events.jsonl').read_text()
                 assert any(e.get('event',{}).get('trade_id',0)>(1<<32) for e in events)
-                print(json.dumps({'bridge':'native 1.502.53.182 header ABI + synthetic SDK','protocol':protocol,'network_connections':0,'caught_up':True,'manual_ref_zero':True,'shfe_ine_identity_isolation':True,'long_order_and_trade_ids':True,'split_close':True,'native_cancel':True,'fak_fok':True,'reconcile':True,'local_and_async_reject':True,'cancel_reject':True,'uncertain_send':True,'journal_events':len(events)}))
+                print(json.dumps({'bridge':'native 1.502.53.182 header ABI + synthetic SDK','protocol':protocol,'scenario':scenario,'network_connections':0,'caught_up':True,'manual_ref_zero':True,'shfe_ine_identity_isolation':True,'long_order_and_trade_ids':True,'split_close':True,'native_cancel':True,'fak_fok':True,'reconcile':True,'local_and_async_reject':True,'cancel_error_audit':True,'uncertain_send':True,'journal_events':len(events)}))
             finally:
                 if process.poll() is None:process.kill();process.wait()
 
@@ -342,6 +391,11 @@ def main():
     for protocol in ('udp','xtcp'):run_fixture(args,protocol,'no_port')
     run_fixture(args,'xtcp','no_xtcp')
     run_fixture(args,'udp','ack_timeout')
+    run_fixture(args,'xtcp','public_simulation')
+    run_fixture(args,'xtcp','late_xtcp')
+    run_fixture(args,'udp','account_history')
+    run_fixture(args,'xtcp','retained_xtcp')
+    run_fixture(args,'xtcp','public_initial_position')
     for scenario in ('read_only','close_only','multi_login','terminal_first','partial_cancel_first','conflicting_fill','malformed_report','cancel_timeout','cancel_error_timeout'):
         run_fixture(args,'udp',scenario)
     if hasattr(os,'sched_getaffinity') and len(os.sched_getaffinity(0))>=2:
