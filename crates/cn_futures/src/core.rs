@@ -164,6 +164,7 @@ impl TradingCore {
                     && recovered.symbol == old.request.symbol
                     && recovered.side == old.request.side
                     && recovered.offset == old.request.offset
+                    && recovered.price_type == old.request.price_type
                     && recovered.lots == old.request.lots
                     && recovered.traded >= old.filled,
                 "snapshot conflicts with known unresolved order identity/quantity"
@@ -242,6 +243,7 @@ impl TradingCore {
                     side: update.side,
                     offset: update.offset,
                     lots: update.lots,
+                    price_type: update.price_type,
                     price_ticks: 0,
                     time_in_force: TimeInForce::Day,
                 },
@@ -384,20 +386,40 @@ impl TradingCore {
                     || self.trading_status(intent.venue, &intent.symbol)),
             "symbol inactive or outside continuous trading"
         );
+        let (minimum, maximum) = match intent.price_type {
+            PriceType::Limit => (rule.min_lots, rule.max_lots),
+            PriceType::Market => {
+                let limits = rule
+                    .market_lots
+                    .context("native market orders unavailable for this contract/adapter")?;
+                (limits.minimum, limits.maximum)
+            }
+        };
         ensure!(
-            intent.lots >= rule.min_lots
-                && intent.lots <= rule.max_lots
+            intent.lots >= minimum
+                && intent.lots <= maximum
+                && (intent.price_type == PriceType::Limit || intent.lots % minimum == 0)
                 && intent.lots <= self.limits.max_order_lots,
             "invalid order quantity"
         );
-        ensure!(intent.price_ticks > 0, "limit price must be positive ticks");
+        match intent.price_type {
+            PriceType::Limit => {
+                ensure!(intent.price_ticks > 0, "limit price must be positive ticks")
+            }
+            PriceType::Market => ensure!(
+                intent.price_ticks == 0,
+                "native market order must use zero price_ticks"
+            ),
+        }
         ensure!(
             intent.time_in_force == TimeInForce::Day || self.limits.enable_fak_fok,
             "FAK/FOK not enabled for this tested venue/account"
         );
         let price = intent.price_ticks as f64 * rule.price_tick;
         ensure!(
-            price.is_finite() && price > 0.0 && intent.price_ticks <= 9_007_199_254_740_991,
+            price.is_finite()
+                && (intent.price_type == PriceType::Market || price > 0.0)
+                && intent.price_ticks <= 9_007_199_254_740_991,
             "limit price overflow"
         );
         let working: i64 = self.orders.values().map(|o| i64::from(o.remaining())).sum();
@@ -410,10 +432,12 @@ impl TradingCore {
                 && o.request.symbol == intent.symbol
                 && o.request.side != intent.side
                 && o.remaining() > 0
-                && match intent.side {
-                    Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
-                    Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
-                }),
+                && (intent.price_type == PriceType::Market
+                    || o.request.price_type == PriceType::Market
+                    || match intent.side {
+                        Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
+                        Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
+                    })),
             "self-trade prevention"
         );
         let mut today = 0;
@@ -564,6 +588,7 @@ impl TradingCore {
                 && order.request.symbol == update.symbol
                 && order.request.side == update.side
                 && order.request.offset == update.offset
+                && order.request.price_type == update.price_type
                 && order.request.lots == update.lots,
             "order identity fields changed"
         );

@@ -82,13 +82,23 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 );
                 runtime.trader.login()?;
             }
-            let key = if e.kind == ORDER {
-                Some(runtime.trader.key(&e)?)
-            } else {
-                None
-            };
             let was_ready = session.ready;
             let outcome = (|| -> Result<()> {
+                if session.is_pre_snapshot_rejection(&e) {
+                    // Validate and retain the raw login replay without assigning ownership.
+                    // No core reservations are released; unresolved local orders must still
+                    // reconcile against the complete caught-up snapshot.
+                    e.to_order(OrderKey {
+                        session: session_key(e.day),
+                        order_ref: e.reference.to_string(),
+                    })?;
+                    return Ok(());
+                }
+                let key = if e.kind == ORDER {
+                    Some(runtime.trader.key(&e)?)
+                } else {
+                    None
+                };
                 if e.kind == ORDER {
                     e.to_order(
                         key.clone()

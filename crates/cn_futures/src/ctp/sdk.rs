@@ -249,6 +249,10 @@ impl CtpTrader {
 }
 impl Trader for CtpTrader {
     fn insert(&mut self, order: &PreparedOrder) -> Result<i32> {
+        ensure!(
+            order.intent.price_type == PriceType::Limit,
+            "CTP native market orders are not enabled"
+        );
         let id = self.next_id()?;
         let symbol = CString::new(order.intent.symbol.as_str())?;
         let order_ref = CString::new(order.key.order_ref.as_str())?;

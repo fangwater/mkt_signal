@@ -71,6 +71,10 @@ pub struct RawEvent {
     pub no_order: i32,
     pub legacy_system_id: i32,
     pub legacy_trade_id: i32,
+    pub order_type: i32,
+    pub order_attribute: i32,
+    pub market_minimum: i32,
+    pub market_maximum: i32,
     pub system_id: i64,
     pub trade_id: i64,
     pub price: f64,
@@ -150,11 +154,23 @@ impl RawEvent {
             v => bail!("unsupported Yida status {v}"),
         };
         ensure!(
+            matches!(self.order_type, 0 | 1 | 3),
+            "unsupported native SHFE/INE order type"
+        );
+        let price_type = match self.order_attribute {
+            0 => PriceType::Limit,
+            1 => PriceType::Market,
+            _ => bail!("unsupported native SHFE/INE order attributes"),
+        };
+        ensure!(
             self.lots > 0
                 && self.traded >= 0
                 && self.traded <= self.lots
                 && self.price.is_finite()
-                && (status == OrderStatus::Rejected || self.price > 0.0)
+                && self.price >= 0.0
+                && (price_type == PriceType::Market
+                    || status == OrderStatus::Rejected
+                    || self.price > 0.0)
                 && (self.error == 0 || status == OrderStatus::Rejected)
                 && (status != OrderStatus::Filled || self.traded == self.lots)
                 && (status != OrderStatus::Rejected || self.traded == 0),
@@ -188,6 +204,7 @@ impl RawEvent {
             offset: self.offset()?,
             lots: self.lots,
             traded: self.traded,
+            price_type,
             limit_price: self.price,
             status,
             cancel_rejected: false,

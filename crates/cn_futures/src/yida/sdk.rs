@@ -44,6 +44,7 @@ extern "C" {
         direction: i32,
         offset: i32,
         tif: i32,
+        market: i32,
         lots: i32,
         price: f64,
     ) -> i32;
@@ -308,6 +309,7 @@ impl Trader for YidaTrader {
                 },
                 offset,
                 tif,
+                i32::from(o.intent.price_type == PriceType::Market),
                 o.intent.lots,
                 o.limit_price,
             )

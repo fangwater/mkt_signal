@@ -18,6 +18,17 @@ pub struct Session {
     pending_read_only_positions: Vec<RawEvent>,
 }
 impl Session {
+    /// Login replays rejected requests that never acquired an exchange system ID.
+    /// They are audit evidence, not recoverable working orders or strategy identities.
+    pub fn is_pre_snapshot_rejection(&self, e: &RawEvent) -> bool {
+        !self.ready
+            && !self.poisoned
+            && self.snapshot.is_none()
+            && e.kind == ORDER
+            && e.replay == 0
+            && e.status == 4
+            && e.system_id <= 0
+    }
     pub fn on_event(
         &mut self,
         e: &RawEvent,
@@ -165,6 +176,14 @@ impl Session {
                             price_tick: e.tick,
                             min_lots: e.minimum,
                             max_lots: e.maximum,
+                            market_lots: if e.market_minimum == 0 && e.market_maximum == 0 {
+                                None
+                            } else {
+                                Some(LotLimits {
+                                    minimum: e.market_minimum,
+                                    maximum: e.market_maximum,
+                                })
+                            },
                             active: e.expiry >= e.day && e.right != 2,
                             cash_budget_per_open_lot: c.cash_budget_per_open_lot,
                         });

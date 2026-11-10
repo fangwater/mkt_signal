@@ -80,6 +80,7 @@ fn public_simulation_retains_option_inventory_without_making_it_tradable() {
                 offset: Offset::CloseYesterday,
                 lots: 1,
                 price_ticks: 2000,
+                price_type: PriceType::Limit,
                 time_in_force: TimeInForce::Day
             },
             std::time::Instant::now()
@@ -307,6 +308,18 @@ fn malformed_order_reports_never_become_valid_oms_updates() {
         },
         RawEvent { status: 5, ..base },
         RawEvent {
+            order_type: 2,
+            ..base
+        },
+        RawEvent {
+            order_type: 4,
+            ..base
+        },
+        RawEvent {
+            order_attribute: 2,
+            ..base
+        },
+        RawEvent {
             direction: 48,
             ..base
         },
@@ -373,6 +386,68 @@ fn malformed_order_reports_never_become_valid_oms_updates() {
         put(&mut e.symbol, symbol);
         assert!(e.to_order(key.clone()).is_err());
     }
+}
+
+#[test]
+fn native_market_reports_use_exchange_attribute_and_allow_zero_order_price_only() {
+    for (venue, symbol) in [("SHFE", "cu2612"), ("INE", "sc2612")] {
+        for order_type in [0, 1, 3] {
+            for status in 0..=4 {
+                let mut e = RawEvent {
+                    order_type,
+                    order_attribute: 1,
+                    price: 0.0,
+                    status,
+                    traded: if status == 3 { 3 } else { 0 },
+                    ..valid_order()
+                };
+                e.exchange.fill(0);
+                e.symbol.fill(0);
+                put(&mut e.exchange, venue);
+                put(&mut e.symbol, symbol);
+                let key = e.recovered_key().unwrap();
+                let order = e.to_order(key.clone()).unwrap();
+                assert_eq!(order.price_type, PriceType::Market);
+                e.price = -1.0;
+                assert!(e.to_order(key.clone()).is_err());
+                e.price = f64::NAN;
+                assert!(e.to_order(key).is_err());
+                // A factual fill still requires a positive execution price.
+                e.kind = TRADE;
+                e.price = 0.0;
+                e.trade_id = 88;
+                assert!(e.to_fill().is_err());
+            }
+        }
+    }
+}
+
+#[test]
+fn historical_rejections_are_audit_only_before_the_snapshot_barrier() {
+    let e = RawEvent {
+        status: 4,
+        error: 40,
+        system_id: -1,
+        price: 0.0,
+        order_attribute: 1,
+        replay: 0,
+        ..valid_order()
+    };
+    let mut s = Session::default();
+    assert!(s.is_pre_snapshot_rejection(&e));
+    let key = OrderKey {
+        session: session_key(e.day),
+        order_ref: e.reference.to_string(),
+    };
+    e.to_order(key).unwrap();
+    assert!(!s.is_pre_snapshot_rejection(&RawEvent { replay: 1, ..e }));
+    assert!(!s.is_pre_snapshot_rejection(&RawEvent { status: 0, ..e }));
+    let c = config();
+    begin(&mut s, &c);
+    assert!(!s.is_pre_snapshot_rejection(&e));
+    // A live update inside the snapshot must still invalidate recovery.
+    assert!(s.on_event(&e, &c, None).is_err());
+    assert!(!s.is_pre_snapshot_rejection(&e));
 }
 
 #[test]
@@ -475,6 +550,7 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
                     offset: Offset::Open,
                     lots: 3,
                     price_ticks: 20000,
+                    price_type: PriceType::Limit,
                     time_in_force: TimeInForce::Day,
                 },
                 std::time::Instant::now(),

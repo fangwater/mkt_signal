@@ -88,6 +88,7 @@ fn snapshot() -> Snapshot {
             price_tick: 0.2,
             min_lots: 1,
             max_lots: 100,
+            market_lots: None,
             active: true,
             cash_budget_per_open_lot: 10000.0,
         }],
@@ -109,6 +110,7 @@ fn intent(side: Side, offset: Offset, lots: i32) -> Intent {
         side,
         offset,
         lots,
+        price_type: PriceType::Limit,
         price_ticks: 20_000,
         time_in_force: TimeInForce::Day,
     }
@@ -123,6 +125,7 @@ fn update(request: &PreparedOrder, traded: i32, status: OrderStatus) -> OrderUpd
         offset: request.intent.offset,
         lots: request.intent.lots,
         traded,
+        price_type: request.intent.price_type,
         limit_price: request.limit_price,
         status,
         cancel_rejected: false,
@@ -803,6 +806,7 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
             offset: Offset::Open,
             lots: 1,
             traded: 0,
+            price_type: PriceType::Limit,
             limit_price: 4000.0,
             status: OrderStatus::Working,
             cancel_rejected: false,
@@ -847,4 +851,110 @@ fn recovery_cannot_forget_known_fills_or_change_pending_order_identity() {
     s.orders.push(u);
     assert!(c.restore(s).is_err());
     assert_eq!(c.order(&p.key).unwrap().request.side, Side::Buy);
+}
+
+fn market_core(minimum: i32, maximum: i32) -> TradingCore {
+    let mut s = cn_snapshot();
+    s.instruments[0].market_lots = Some(LotLimits { minimum, maximum });
+    let mut c = TradingCore::new(limits(), crate::yida::scope()).unwrap();
+    c.restore(s).unwrap();
+    c
+}
+fn market_intent(side: Side, lots: i32) -> Intent {
+    Intent {
+        side,
+        price_type: PriceType::Market,
+        price_ticks: 0,
+        ..cn_intent(Offset::Open, lots)
+    }
+}
+
+#[test]
+fn market_orders_use_native_quantity_rules_and_cannot_silently_become_limits() {
+    let mut c = market_core(2, 4);
+    for lots in [1, 3, 5, 6] {
+        assert!(c
+            .prepare(market_intent(Side::Sell, lots), Instant::now())
+            .is_err());
+    }
+    let mut priced = market_intent(Side::Sell, 2);
+    priced.price_ticks = 20000;
+    assert!(c.prepare(priced, Instant::now()).is_err());
+    let p = c
+        .prepare(market_intent(Side::Sell, 2), Instant::now())
+        .unwrap();
+    assert_eq!(p.limit_price, 0.0);
+    assert_eq!(
+        c.order(&p.key).unwrap().request.price_type,
+        PriceType::Market
+    );
+    // Unsupported contracts and the CTP adapter do not inherit limit-order limits.
+    assert!(cn_core()
+        .prepare(market_intent(Side::Sell, 1), Instant::now())
+        .is_err());
+    let mut ctp_market = intent(Side::Buy, Offset::Open, 1);
+    ctp_market.price_type = PriceType::Market;
+    ctp_market.price_ticks = 0;
+    assert!(core().prepare(ctp_market, Instant::now()).is_err());
+}
+
+#[test]
+fn market_self_trade_protection_covers_both_order_arrival_directions() {
+    for side in [Side::Buy, Side::Sell] {
+        for market_first in [false, true] {
+            let mut c = market_core(1, 10);
+            let mut first = cn_intent(Offset::Open, 1);
+            first.side = side;
+            // Choose a limit well away from a crossing price. A market order can still cross it.
+            first.price_ticks = if side == Side::Buy { 1 } else { 100000 };
+            let mut second = first.clone();
+            second.side = side.opposite();
+            if market_first {
+                first = market_intent(side, 1);
+            } else {
+                second = market_intent(side.opposite(), 1);
+            }
+            c.prepare(first, Instant::now()).unwrap();
+            assert!(c
+                .prepare(second, Instant::now())
+                .unwrap_err()
+                .to_string()
+                .contains("self-trade"));
+        }
+    }
+}
+
+#[test]
+fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
+    let mut c = market_core(1, 10);
+    let p = c
+        .prepare(market_intent(Side::Sell, 1), Instant::now())
+        .unwrap();
+    let u = cn_update(&p, 0, OrderStatus::Working);
+    c.on_order(u.clone()).unwrap();
+    let mut s = cn_snapshot();
+    s.instruments[0].market_lots = Some(LotLimits {
+        minimum: 1,
+        maximum: 10,
+    });
+    s.orders.push(u.clone());
+    c.restore(s.clone()).unwrap();
+    assert_eq!(
+        c.order(&p.key).unwrap().request.price_type,
+        PriceType::Market
+    );
+    let mut opposite = cn_intent(Offset::Open, 1);
+    opposite.side = Side::Buy;
+    opposite.price_ticks = 1;
+    assert!(c.prepare(opposite, Instant::now()).is_err());
+    let mut changed = u;
+    changed.price_type = PriceType::Limit;
+    changed.limit_price = 4000.0;
+    assert!(c.on_order(changed.clone()).is_err());
+    s.orders[0] = changed;
+    assert!(c.restore(s).is_err());
+    assert_eq!(
+        c.order(&p.key).unwrap().request.price_type,
+        PriceType::Market
+    );
 }

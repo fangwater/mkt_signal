@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstdio>
@@ -17,6 +18,7 @@
 namespace {
 constexpr int invalid = -9901;
 constexpr int transport_unavailable = 9902; // Certain local rejection: no SDK send attempted.
+constexpr int market_price_unavailable = 9903; // Missing native daily price-limit data; nothing sent.
 // Event IDs are bridge-owned, vendor integer constants remain unchanged in the fields.
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
        Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport };
@@ -103,6 +105,7 @@ public:
         e.offset=o->OffsetFlag; e.hedge=o->HedgeFlag; e.status=o->OrderStatus;
         e.lots=o->OrderVolume; e.traded=o->TradeVolume; e.price=o->Price;
         e.error=o->ErrorNo; e.flag=o->YDOrderFlag; e.native_time=o->InsertTime;
+        e.order_type=o->OrderType; e.order_attribute=o->ExchangeOrderAttribute;
         original(e, i->m_pExchange, o->OrderSysID); send(e);
     }
     void unsupported(const YDOrder* o) {
@@ -151,6 +154,7 @@ public:
             if (i->ProductClass!=YD_PC_Futures) continue;
             CnYidaEvent e{}; e.kind=Instrument; base(e,i); e.tick=i->Tick;
             e.minimum=i->MinLimitOrderVolume; e.maximum=i->MaxLimitOrderVolume; e.expiry=i->ExpireDate;
+            e.market_minimum=i->MinMarketOrderVolume; e.market_maximum=i->MaxMarketOrderVolume;
             e.right=right(i); send(e);
         }
         YDExtendedPositionFilter pf{}; pf.PositionDate=pf.PositionDirection=pf.HedgeFlag=-1;
@@ -270,13 +274,15 @@ int cn_yida_public_simulation_target(void* p) { try {
     const char* port=api->getConfig("TradingServerPort");
     return host && port && !std::strcmp(host,"118.190.175.212") && !std::strcmp(port,"41600") ? 1 : 0;
 } catch(...) { return 0; } }
-int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int direction,int offset,int tif,int lots,double price) {
+int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int direction,int offset,int tif,int market,int lots,double price) {
     try {
         auto* b=get(p); const auto* i=b->api->getInstrumentByID(symbol);
         if (!b->can_send()) return transport_unavailable;
         if (!i || !i->m_pExchange || std::strcmp(i->m_pExchange->ExchangeID,exchange) || i->ProductClass!=YD_PC_Futures || !i->m_pExchange->UseTodayPosition || !ref || ref<0) return invalid;
         if (offset!=YD_OF_Open && offset!=YD_OF_CloseToday && offset!=YD_OF_CloseYesterday) return invalid;
         if (tif!=YD_ODT_Limit && tif!=YD_ODT_FAK && tif!=YD_ODT_FOK) return invalid;
+        if (market!=0 && market!=1) return invalid;
+        if (std::strcmp(exchange,"SHFE") && std::strcmp(exchange,"INE")) return invalid;
         const auto* a=b->api->getMyAccount(); if (!a || a->LoginCount!=1 || !b->logged_in || !b->initialized) return invalid;
         const int right=b->right(i);
         if (right<YD_TR_Allow || right>YD_TR_Forbidden) return invalid;
@@ -285,6 +291,16 @@ int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int d
         YDInputOrder o{}; o.Direction=direction; o.OffsetFlag=offset; o.HedgeFlag=YD_HF_Speculation;
         o.ConnectionSelectionType=YD_CS_Any; o.Price=price; o.OrderVolume=lots; o.OrderRef=ref;
         o.OrderType=tif; o.YDOrderFlag=YD_YOF_Normal;
+        // SHFE/INE AnyPrice is an exchange attribute, NOT YD_ODT_Market (guide 7.1.1.1).
+        if (market) {
+            o.ExchangeOrderAttribute=!std::strcmp(exchange,"SHFE")?YD_EOA_SHFE_MarketPrice:YD_EOA_INE_MarketPrice;
+            // AnyPrice still needs an in-range Price for the counter's pre-trade checks.
+            // These native daily limits arrive during initialization, without live quotes.
+            const auto* m=i->m_pMarketData;
+            if (!m) return market_price_unavailable;
+            o.Price=direction==YD_D_Buy?m->UpperLimitPrice:m->LowerLimitPrice;
+            if (!std::isfinite(o.Price) || o.Price<=0) return market_price_unavailable;
+        }
         // checkOrder cannot send. A false return here is a certain local rejection.
         if (!b->api->checkOrder(&o,i)) return o.ErrorNo>0 ? o.ErrorNo : invalid;
         if (o.OrderRef!=ref) return invalid;

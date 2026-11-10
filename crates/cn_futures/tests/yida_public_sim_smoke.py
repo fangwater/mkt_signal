@@ -2,7 +2,8 @@
 """Exercise the release runtime against the official public SHFE/INE simulator.
 
 Credentials come from YIDA_* environment variables. Default: login and inspect.
---execute permits five one-lot futures orders and one cancellation, followed by
+--execute permits five one-lot futures orders and one cancellation; --market adds
+six native market orders (Day/FAK/FOK open/close), followed by
 reconciliation. Only this run's orders and new position are eligible for cleanup.
 """
 import argparse
@@ -126,6 +127,7 @@ def main():
     parser.add_argument('--buy-price-ticks', type=int)
     parser.add_argument('--sell-price-ticks', type=int)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--market', action='store_true', help='also exercise native market Day/FAK/FOK')
     args = parser.parse_args()
     for name in ('YIDA_USER_ID', 'YIDA_PASSWORD', 'YIDA_APP_ID', 'YIDA_AUTH_CODE'):
         if not os.environ.get(name):
@@ -170,9 +172,10 @@ def main():
     def order(state, key):
         return next(o for o in state['state']['orders'] if o['key'] == key)
 
-    def submit(side, offset, tif, price):
+    def submit(side, offset, tif, price, price_type='limit'):
         runtime.send({'op': 'submit', 'intent': {'venue': args.venue, 'symbol': args.symbol,
                      'side': side, 'offset': offset, 'lots': 1,
+                     'price_type': price_type,
                      'price_ticks': price, 'time_in_force': tif}}, mutate=True)
         receipt = runtime.wait('submit_receipt')['receipt']
         owned_keys.extend(c['key'] for c in receipt['children'])
@@ -226,6 +229,12 @@ def main():
                 closed = filled(submit('sell', 'close_today', tif, args.sell_price_ticks))
                 results.append({'case': tif, 'open_system_id': opened['system_id'],
                                 'close_system_id': closed['system_id'], 'factual_fills': 2})
+            if args.market:
+                for tif in ('day', 'fak', 'fok'):
+                    opened = filled(submit('buy', 'open', tif, 0, 'market'))
+                    closed = filled(submit('sell', 'close_today', tif, 0, 'market'))
+                    results.append({'case': f'market_{tif}', 'open_system_id': opened['system_id'],
+                                    'close_system_id': closed['system_id'], 'factual_fills': 2})
             final = runtime.reconcile()
             assert positions(final) == positions(baseline), 'account futures inventory changed'
             assert read_only_positions(final) == read_only_positions(baseline), 'read-only inventory changed'
@@ -263,6 +272,7 @@ def main():
                 runtime.process.wait(timeout=10)
         summary = {'protocol': args.protocol, 'venue': args.venue, 'symbol': args.symbol,
                    'execute': args.execute, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                   'market': args.market,
                    'read_only_position_rows': len(baseline['read_only_positions']) if baseline else None,
                    'results': results, 'error': error, 'cleanup_error': cleanup_error,
                    'runtime_exit_code': runtime.process.returncode}

@@ -1,12 +1,14 @@
 # 易达原生交易：SHFE / INE
 
+最后更新：2026-11-10 UTC。
+
 `crates/cn_futures` 现有 `ctp-trader`（中金所）和 `yida-trader`（上期所 / 上海国际能源交易中心）两个入口，共用一个交易核心。易达直接调用 Hanlin **YDExtendedApi**，没有通过易达的 CTP 兼容接口。行情独立，暂按 CTP 考虑，本次没有接入易达行情。
 
-实现已完成本地单元测试、按真实原生头文件编译的合成 SDK 桥接联测，以及官网公共仿真的真实 SDK 联调。TCP / UDP / XTCP 在 SHFE `cu2612`、INE `sc2612` 上均已验证限价报撤单、FAK / FOK 开平仓、事实成交和重连对账。**没有生产部署或端到端性能测量**。
+实现已完成本地单元测试、按真实原生头文件编译的合成 SDK 桥接联测，以及官网公共仿真的真实 SDK 联调。TCP / UDP / XTCP 在 SHFE `cu2612`、INE `sc2612` 上均已验证限价报撤单、限价 FAK / FOK 开平仓、原生市价 Day / FAK / FOK 开平仓、事实成交和重连对账。**没有生产部署或端到端性能测量**。
 
 ## SDK 依据
 
-以用户提供的 **`ydClient_1_502_53_182.tgz`** 为当前配套 SDK，使用其中 `ydAPI_c++/include/`、`ydAPI_c++/linux64/yd.so` 和 233 页的 **1.502** 编程指南。官网[下载页](https://www.hanlinit.com/downloads/)及[文档页](https://www.hanlinit.com/docs/)匿名访问需要登录；没有据此确认官网最新版本，也没有确认某家期货公司柜台允许的 API 版本范围。此前单独提供的 132 页指南适用于 1.386，不作为本次 ABI 依据。没有使用包内的示例账户配置。
+以用户提供的 **`ydClient_1_502_53_182.tgz`** 为当前配套 SDK，使用其中 `ydAPI_c++/include/`、`ydAPI_c++/linux64/yd.so` 和 233 页的 **1.502** 编程指南。官网[下载页](https://www.hanlinit.com/downloads/)及[文档页](https://www.hanlinit.com/docs/)匿名访问需要登录；没有据此确认官网最新版本，也没有确认某家期货公司柜台允许的 API 版本范围。此前单独提供的 132 页指南适用于 1.386，不作为本次 ABI 依据。公共仿真的服务器配置独立生成；官网仿真授权参数只从环境变量注入，不复制到仓库。
 
 SDK 文件留在仓库外；代码使用配套的 `ydApi.h` / `ydDataStruct.h` / `ydDataType.h` 编译 C++ shim，通过 `makeYDExtendedApi` 和 `getYDVersion` 加载 `yd.so`。运行时严格核对 **1.502.53.182**，其他版本必须先核对头文件 / ABI 并重新验证。只维护当前这一套桥接和内部事件结构。
 
@@ -73,21 +75,21 @@ SDK 版本与柜台版本有不同用途：本地桥接严格匹配 SDK **1.502.
 
 截图给出公共仿真账户及原生 API 的登录授权参数，原生授权码与 ydCTP 的授权码不同。只从环境变量注入所选仿真账户及原生 API 凭据，不复制到仓库或命令参数。公共账户可能有其他使用者；不能跳过 `LoginCount == 1` 检查。截图说明每个账户预置 50 亿元权益，并已有各交易所多空双向持仓，因此必须完整恢复账户事实后再选择测试合约；不能假定空仓，或为了通过小额测试风控而清零 / 忽略初始持仓。超出 `max_position_lots_per_side` 的初始仓位可能阻止继续开仓。
 
-截图说明期货使用前一交易日日初数据。先从柜台目录确认合约、交易日、tick、有效期与现有持仓，再填写合约白名单和价格；示例 `cu2612` / `sc2612` 并未在公共柜台上确认。测试环境中的交易日也可能与自然日或回放数据日期不同，不能直接用本机日期替代。截图里的 `RecalcMode=auto`、`ConnectTCPMarketData=yes` 是全功能 SDK 配置，当前独立交易运行时仍要求 `off` / `no`，并使用显式保守资金预算。
+截图说明期货使用前一交易日日初数据。先从柜台目录确认合约、交易日、tick、有效期与现有持仓，再填写合约白名单和价格；`cu2612` / `sc2612` 已在本次公共仿真中确认并联调，后续运行仍须重新核对。测试环境中的交易日也可能与自然日或回放数据日期不同，不能直接用本机日期替代。截图里的 `RecalcMode=auto`、`ConnectTCPMarketData=yes` 是全功能 SDK 配置，当前独立交易运行时仍要求 `off` / `no`，并使用显式保守资金预算。
 
 公共仿真需显式设置 `public_simulation=true`，默认值为 `false`。此模式只接受 `118.190.175.212:41600`，原生配置限定为已知连接参数，禁止高可用或其他目标地址参数；SDK 创建后还会用 `getConfig` 核对实际加载的目标。必须设置 `max_order_lots=1`、`max_working_lots<=2`，追平后仍要求单连接。公共柜台实际报告 `Test=no`，所以此模式依据已确认的官网公开端点进行限定，不把该参数当作公共仿真标识。
 
 公共仿真的已有投机期权持仓在完整快照校验成功后保存为 `read_only_positions`，同时保留原始审计，`state` 和 `reconciled` 返回这些记录；它们不进入期货下单持仓账本。合约白名单、C++ 提交检查和订单解析仍只接受 SHFE / INE 期货；期权委托 / 成交、未知冻结或其他不支持的账户事实仍会阻断交易。完整恢复失败时保留上一次已确认的只读持仓，不用部分快照覆盖。
 
-2026-11-10 使用配套 SDK、release 二进制完成下表六组真实公共仿真测试，每组单笔 1 手，包含 5 笔报单、1 笔撤单和 4 笔事实成交。最终六组合计 **30 笔报单、6 笔撤单、24 笔成交回报**。测试前两个目标合约都没有持仓；每组结束后主动重连、用原生完整快照核对：测试持仓恢复、其他 10 条期货持仓及 20 条只读期权持仓不变，本次订单全部终结。最终账户快照没有期货挂单。
+2026-11-10 使用配套 SDK、release 二进制完成下表六组真实公共仿真测试，每组单笔 1 手，包含 11 笔报单、1 笔撤单和 10 笔事实成交。最终六组合计 **66 笔报单、6 笔撤单、60 笔成交回报**，其中 36 笔为原生市价 Day / FAK / FOK 的开平仓成交。测试前两个目标合约都没有持仓；每组结束后主动重连、用原生完整快照核对：测试持仓恢复、其他 10 条期货持仓及 20 条只读期权持仓不变，本次订单全部终结。最终账户快照没有期货挂单。
 
 | 协议 | SHFE `cu2612` | INE `sc2612` |
 | --- | --- | --- |
-| TCP | 限价报撤、FAK/FOK 开平、对账通过 | 限价报撤、FAK/FOK 开平、对账通过 |
-| UDP | 限价报撤、FAK/FOK 开平、对账通过 | 限价报撤、FAK/FOK 开平、对账通过 |
-| XTCP | 限价报撤、FAK/FOK 开平、对账通过 | 限价报撤、FAK/FOK 开平、对账通过 |
+| TCP | 限价报撤、限价 FAK/FOK、市价 Day/FAK/FOK 开平、对账通过 | 限价报撤、限价 FAK/FOK、市价 Day/FAK/FOK 开平、对账通过 |
+| UDP | 限价报撤、限价 FAK/FOK、市价 Day/FAK/FOK 开平、对账通过 | 限价报撤、限价 FAK/FOK、市价 Day/FAK/FOK 开平、对账通过 |
+| XTCP | 限价报撤、限价 FAK/FOK、市价 Day/FAK/FOK 开平、对账通过 | 限价报撤、限价 FAK/FOK、市价 Day/FAK/FOK 开平、对账通过 |
 
-对 SHFE 的 UDP / XTCP 两组使用不展开载荷的系统调用跟踪，分别确认 5 次 72 字节报单、1 次 40 字节撤单发往 `41602` / `41603`；这些测试实际使用了对应协议端口。测试使用普通内核网络 `socket` 发送器，未测硬件加速和端到端延迟。
+对 SHFE 的 UDP / XTCP 两组使用不展开载荷的系统调用跟踪，分别确认 11 次 72 字节报单、1 次 40 字节撤单发往 `41602` / `41603`；这些测试实际使用了对应协议端口。测试使用普通内核网络 `socket` 发送器，未测硬件加速和端到端延迟。
 
 真实 SDK 联调入口如下：
 
@@ -99,7 +101,7 @@ target/release/yida-trader --config /absolute/path/yida-sim.toml --connect
 target/release/yida-trader --config /absolute/path/yida-sim.toml --connect --execute
 ```
 
-可复用的实际联调脚本为 `crates/cn_futures/tests/yida_public_sim_smoke.py`。它从环境变量读取凭据，默认只登录观察；`--execute` 要求 release 二进制和调用方明确提供三个限价的整数 ticks。执行前验证目标合约为空仓，结束时仅处理本次订单和新增的一手仓位，再完整对账。审计、stdout、stderr 与 `summary.json` 放在显式指定的新输出目录中。每次执行必须重新确认实际合约与价格，不能照搬历史测试价格。
+可复用的实际联调脚本为 `crates/cn_futures/tests/yida_public_sim_smoke.py`。它从环境变量读取凭据，默认只登录观察；`--execute` 要求 release 二进制和调用方明确提供三个限价的整数 ticks。执行前验证目标合约为空仓，结束时仅处理本次订单和新增的一手仓位，再完整对账。额外提供 `--market` 时，再测试原生市价 Day / FAK / FOK 各一笔开仓和平今。审计、stdout、stderr 与 `summary.json` 放在显式指定的新输出目录中。每次执行必须重新确认实际合约与价格，不能照搬历史测试价格。
 
 ```bash
 python3 crates/cn_futures/tests/yida_public_sim_smoke.py \
@@ -107,6 +109,7 @@ python3 crates/cn_futures/tests/yida_public_sim_smoke.py \
   --binary target/release/yida-trader --output-dir /absolute/path/to/new-audit-dir \
   --protocol xtcp --venue SHFE --symbol cu2612
 # 额外提供 --passive-price-ticks N --buy-price-ticks N --sell-price-ticks N --execute
+# 同时验证原生市价时再加 --market
 ```
 
 默认只检查配置。`--connect` 启动 SDK 并登录；没有 `--execute` 不允许下单和撤单。启动、EOF、`shutdown` 或错误退出均不会自动撤销交易所挂单。
@@ -119,6 +122,7 @@ python3 crates/cn_futures/tests/yida_public_sim_smoke.py \
 | --- | --- |
 | 普通限价 | `OrderType=YD_ODT_Limit`，提供具体 tick 价格；没有 post-only 保证 |
 | FAK / FOK | 原生 `YD_ODT_FAK=1` / `YD_ODT_FOK=3`；默认关闭，需按实际账户 / 合约验证 |
+| 原生市价 | `price_type="market"`，保留 Day / FAK / FOK；分别映射 `YD_ODT_Limit=0` / `YD_ODT_FAK=1` / `YD_ODT_FOK=3`，并设置对应交易所的 `YD_EOA_SHFE_MarketPrice` / `YD_EOA_INE_MarketPrice=1` |
 | 开仓 | `YD_OF_Open` |
 | 平今 / 平昨 | `YD_OF_CloseToday=3` / `YD_OF_CloseYesterday=4`；SHFE / INE 不直接发送通用 `Close` |
 | 通用平仓意图 | 按配置优先级规划今昨子单，所有子单先通过本地风控与预占，再逐笔提交 |
@@ -127,6 +131,10 @@ python3 crates/cn_futures/tests/yida_public_sim_smoke.py \
 | 撤单 | `cancelOrder` 使用交易所作用域内的 64 位 `LongOrderSysID`；尚无系统号时拒绝发出撤单，等待确认 |
 | 权限 | 每次提交重查账户 / 交易所 / 品种 / 合约权限，取最严格值；`CloseOnly` 拒绝开仓 |
 
+SHFE / INE 的市价按配套指南 7.1.1.1 使用 `ExchangeOrderAttribute`，不发送其他交易所采用的 `YD_ODT_Market=2`。输入的 `price_ticks` 必须为 0，表示没有投资者限价；C++ 提交时从原生合约初始化数据中取买单涨停价 / 卖单跌停价填入 `Price`，满足柜台的价格风控，同时始终保留市价属性。此字段不构成市价成交价格承诺，也不把市价降级成限价 FAK。公共仿真实测将该字段留 0 会收到 `YD_ERROR_PriceOutOfLimit=40`；缺少有效原生涨跌停数据时在本地拒绝（9903），不发送。该数据来自初始化，无需开启实时行情连接。
+
+市价使用独立的 `MinMarketOrderVolume` / `MaxMarketOrderVolume`，数量必须是最小量的整数倍；规则缺失时不借用限价规则。任一方向存在未结订单时，反向市价会被自成交检查拒绝；存在未结市价时也拒绝反向限价。普通限价仍按价格判断。CTP 入口本次没有启用市价。原生指令和传输协议是两件事：此前 FAK / FOK 就已直接使用原生 SDK；本次没有比较不同订单类型的端到端延迟，不能据此宣称市价更快。
+
 未调用会重新分配 OrderRef 的 `checkAndInsertOrder`，避免已经登记的预占和实际订单失去关联。普通 `insertOrder` 在回报前不会更新 SDK 本地冻结；这个间隙由共享交易核心的预占覆盖，SDK `checkOrder` 是附加检查。
 
 stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结构，key 的 session 内容只由各自适配器解释：
@@ -134,12 +142,13 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 ```json
 {"op":"state"}
 {"op":"submit","intent":{"venue":"SHFE","symbol":"cu2612","side":"sell","offset":"close","lots":1,"price_ticks":350000,"time_in_force":"day"}}
+{"op":"submit","intent":{"venue":"SHFE","symbol":"cu2612","side":"buy","offset":"open","lots":1,"price_type":"market","price_ticks":0,"time_in_force":"fak"}}
 {"op":"cancel","key":{"session":"yida:20261109","order_ref":"101"}}
 {"op":"reconcile"}
 {"op":"shutdown"}
 ```
 
-这些只是合约 / 价格 / 身份示例；撤单必须使用实际回传 key。原生无月份的品种代号、期权和 TAS 不在首期范围。
+`price_type` 省略时为 `limit`。这些只是合约 / 价格 / 身份示例；撤单必须使用实际回传 key。原生无月份的品种代号、期权和 TAS 不在首期范围。
 
 `submit_receipt` 包含每个子单的 `key`、开平、手数和结果：`submitted_locally`、`rejected_locally`、`uncertain`、`not_sent`。中途失败也保留已发出子单的身份；后续未发子单释放预占。没有自动重试或自动撤回已经发出的兄弟单。
 
@@ -147,13 +156,14 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 
 本地发送成功后，如果 `response_timeout_ms` 内没有收到该订单的首次柜台 / 交易所回报，或撤单请求发出后未收到订单终态，就保留预占并阻断新订单，记录含 `request.operation=submit/cancel` 的 `trading_blocked`，不自动重发。这也覆盖 UDP 成功发出但丢包的情况。超时后即使收到迟到回报也不自动解除阻断，需要完整对账。成功对账后以柜台的当前订单状态恢复撤单等待，不自动重发撤单。此 SDK 没有旧 `notifyFailedOrder` 回调；柜台和交易所拒单都通过 `notifyOrder` 的拒绝状态处理。
 
-按配套指南 7.1.2.4，`notifyFailedCancelOrder` 与发出的撤单在数量和内容上不保证严格对应，因此仅作为审计证据；即使编号看起来匹配，也不据此清除 `cancel_pending` 或释放预占。订单终态或完整恢复负责更新订单状态。解析器拒绝不一致的状态 / 错误码 / 数量、非有限价格、无效标识与不支持的市场事实；原始回报先入审计队列再解析，失败时阻断新交易。恢复快照中发生权限变更也会使该快照失效。
+按配套指南 7.1.2.4，`notifyFailedCancelOrder` 与发出的撤单在数量和内容上不保证严格对应，因此仅作为审计证据；即使编号看起来匹配，也不据此清除 `cancel_pending` 或释放预占。订单终态或完整恢复负责更新订单状态。原始审计保留 `OrderType` 与 `ExchangeOrderAttribute`，订单解析与恢复保留市价 / 限价类型；仅对市价委托允许零价格，事实成交仍须为有限正价。解析器拒绝不一致的状态 / 错误码 / 数量、非有限价格、无效标识与不支持的市场事实；原始回报先入审计队列再解析，失败时阻断新交易。恢复快照中发生权限变更也会使该快照失效。
 
 ## 身份、恢复与限制
 
 - 系统订单号按 `(venue, LongOrderSysID)` 关联，成交按交易所、合约、交易日、`LongTradeID` 和方向去重，Rust / C++ 边界保留完整 64 位编号。32 位 `OrderSysID` / `TradeID` 仅保留在原始审计中；不拿它们作去重或撤单身份。允许恢复 `OrderRef=0` 的外部手工订单，SHFE / INE 的同号订单不会覆盖。仅支持报单组 0、普通成交和有对应委托的成交，其他事实保留证据后阻断。恢复订单没有策略归属；未知成交保留原始证据后要求对账。
 - 原始审计保留原生时间、错误码、整数订单 / 成交身份、厂商可提供的交易所原始 ID，以及 `YDTrade.Commission`。共享持仓只随事实成交改变，不把累计委托成交量编造成成交。
 - `notifyFinishInit` 只说明 API 可调用，**不说明订单 / 成交已经追平**。每次登录必须等待 `notifyCaughtUp`；在该回调中复制原生账户、目录、分日期持仓、`findOrders` 和 `findTrades`，业务线程校验委托成交量与事实成交量、原生平仓冻结与恢复委托的预占一致后整体恢复。读取指针不跨 FFI 保留；`find*` 不进入逐单热路径。
+- 追平前 SDK 还会重放没有交易所系统号的历史拒单。仅在完整快照开始前校验并保留这类原始证据，不给它们分配策略归属，不修改持仓或释放当前预占；快照中插入实时拒单仍会使恢复失败。运行期间未知拒单仍需对账。
 - 追平前的 `notifyExtendedAccount` 会回放历史资金及连接数，实际观察到 `LoginCount=0` 的旧值。这些回报先入审计，只有追平快照建立可用资金和单连接基准；已恢复后的实时账户更新仍完整校验并只收紧预算。
 - TCP 回报通道重连时，SDK 可能保留独立 XTCP 连接，不再次回调 `XTCPTradeConnected`。仅在确实收到 XTCP 断开或柜台切换时清除 XTCP 连接事实；TCP 断开期间仍通过登录 / 追平门控禁止发送。XTCP 新连接也可能晚于 `notifyCaughtUp`，`reconciled` 只表示账户快照就绪，实际可交易性以 `state.can_trade` 为准。
 - 快照中若插入独立实时回调、出现不支持的事实、遗漏尚未确定结果的本地订单或对账失败，就不解除阻断。`notifyCaughtUp` 不是每笔不确定出站请求最终处置的证明；`findOrders` 只包含交易所已接受的委托，不能用查不到来推断拒绝。重启前应保留和审查审计，不能用新进程抹掉发送不确定性。
@@ -165,7 +175,7 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 
 ## 本地验证
 
-2026-11-10 验证结果：CTP + 易达双 SDK feature 的 71 项常规单元测试通过；默认忽略的 CTP 官方库离线构造 / 销毁测试单独指定配套动态库后也通过。release 二进制通过 22 个易达合成 SDK 场景（含联调脚本拒绝触碰已有一手持仓的保护）、CTP 桥接回归及上述 6 组实际公共仿真测试，`cargo fmt`、双 SDK `clippy -D warnings` 和本地 release 构建通过。订单解析覆盖两市场、双方向、三种开平、五种状态的 60 个组合，以及无效身份 / 数量 / 价格 / 错误状态等拒绝路径。
+2026-11-10 验证结果：CTP + 易达双 SDK feature 的 76 项常规单元测试通过；默认忽略的 CTP 官方库离线构造 / 销毁测试单独指定配套动态库后也通过。release 二进制通过 27 个易达合成 SDK 场景（含联调脚本拒绝触碰已有一手持仓的保护）、CTP 桥接回归及上述 6 组实际公共仿真测试，`cargo fmt`、双 SDK `clippy -D warnings` 和本地 release 构建通过。订单解析覆盖两市场、双方向、三种开平、五种状态的 60 个组合，以及无效身份 / 数量 / 价格 / 错误状态等拒绝路径。
 
 ```bash
 cargo fmt -p cn_futures --check
@@ -180,4 +190,4 @@ python3 crates/cn_futures/tests/yida_bridge_smoke.py \
   --binary target/debug/yida-trader
 ```
 
-合成 SDK 按配套 1.502.53.182 头文件生成未使用接口 stub，覆盖 TCP / UDP / XTCP 三种配置，验证原生生命周期、追平、手工引用 0、交易所同号隔离、超 32 位订单 / 成交编号及相同截断编号的隔离、平今平昨拆单、FAK / FOK、重复成交、64 位系统号撤单、同步 / 异步拒单、发送不确定以及重连恢复。额外覆盖只读模式、只许平仓权限、多连接账户保护、终态先于事实成交、部分成交部分撤单、冲突重复成交、畸形委托回报、UDP / XTCP 未开通、XTCP 未连上和断线、下单与撤单无回报超时、不能关联的撤单错误审计，以及对账后恢复。在允许使用至少两个 CPU 的 Linux 上，还验证业务线程单核亲和性以及后台输入 / 审计线程保留原有亲和性。它不连接网络、不验证实际协议报文，也不能替代真实柜台仿真。CTP 的既有单元测试和合成桥接联测同时回归。
+合成 SDK 按配套 1.502.53.182 头文件生成未使用接口 stub，覆盖 TCP / UDP / XTCP 三种配置，验证原生生命周期、追平、手工引用 0、交易所同号隔离、超 32 位订单 / 成交编号及相同截断编号的隔离、平今平昨拆单、FAK / FOK、重复成交、64 位系统号撤单、同步 / 异步拒单、发送不确定以及重连恢复。额外覆盖三协议 × 两交易所原生市价 Day / FAK / FOK 映射、零价格市价回报与正价事实成交、独立数量规则、市价自成交检查与恢复、缺少原生涨跌停数据时不发送、无系统号历史拒单重放、只读模式、只许平仓权限、多连接账户保护、终态先于事实成交、部分成交部分撤单、冲突重复成交、畸形委托回报、UDP / XTCP 未开通、XTCP 未连上和断线、下单与撤单无回报超时、不能关联的撤单错误审计，以及对账后恢复。在允许使用至少两个 CPU 的 Linux 上，还验证业务线程单核亲和性以及后台输入 / 审计线程保留原有亲和性。它不连接网络、不验证实际协议报文，也不能替代真实柜台仿真。CTP 的既有单元测试和合成桥接联测同时回归。

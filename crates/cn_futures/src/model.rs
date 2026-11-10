@@ -89,6 +89,14 @@ pub enum TimeInForce {
     Fok,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceType {
+    #[default]
+    Limit,
+    Market,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrderKey {
@@ -105,7 +113,9 @@ pub struct Intent {
     pub side: Side,
     pub offset: Offset,
     pub lots: i32,
-    /// Integer multiples of the venue's actual price tick.
+    #[serde(default)]
+    pub price_type: PriceType,
+    /// Integer multiples of the venue's actual price tick; must be zero for market orders.
     pub price_ticks: i64,
     pub time_in_force: TimeInForce,
 }
@@ -117,9 +127,17 @@ pub struct Instrument {
     pub price_tick: f64,
     pub min_lots: i32,
     pub max_lots: i32,
+    /// None means unavailable/unsupported, never fall back to limit-order quantity rules.
+    pub market_lots: Option<LotLimits>,
     pub active: bool,
     /// Local cash-budget requirement, explicitly configured; not an exchange margin quote.
     pub cash_budget_per_open_lot: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LotLimits {
+    pub minimum: i32,
+    pub maximum: i32,
 }
 impl Instrument {
     pub fn validate(&self) -> Result<()> {
@@ -138,6 +156,13 @@ impl Instrument {
             "invalid lot limits for {}",
             self.symbol
         );
+        if let Some(limits) = self.market_lots {
+            ensure!(
+                limits.minimum > 0 && limits.maximum >= limits.minimum,
+                "invalid market lot limits for {}",
+                self.symbol
+            );
+        }
         ensure!(
             self.cash_budget_per_open_lot.is_finite() && self.cash_budget_per_open_lot > 0.0,
             "missing positive cash budget for {}",
@@ -233,6 +258,7 @@ pub struct OrderUpdate {
     pub offset: Offset,
     pub lots: i32,
     pub traded: i32,
+    pub price_type: PriceType,
     pub limit_price: f64,
     pub status: OrderStatus,
     pub cancel_rejected: bool,
@@ -415,7 +441,10 @@ pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<
             "invalid order snapshot"
         );
         ensure!(
-            o.status.terminal() || o.limit_price > 0.0,
+            o.limit_price >= 0.0
+                && (o.status.terminal()
+                    || o.price_type == PriceType::Market
+                    || o.limit_price > 0.0),
             "working order without a usable limit price requires reconciliation"
         );
         ensure!(

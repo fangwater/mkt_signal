@@ -173,6 +173,7 @@ impl RawEvent {
             offset: offset(self.offset)?,
             lots: self.volume,
             traded: self.traded,
+            price_type: PriceType::Limit,
             limit_price: self.price,
             status,
             cancel_rejected: self.submit_status == i32::from(b'5'),

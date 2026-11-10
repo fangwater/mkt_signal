@@ -218,6 +218,7 @@ impl Session {
                         price_tick: e.price_tick,
                         min_lots: e.minimum,
                         max_lots: e.maximum,
+                        market_lots: None,
                         active: e.active != 0,
                         cash_budget_per_open_lot: config.cash_budget_per_open_lot,
                     };
