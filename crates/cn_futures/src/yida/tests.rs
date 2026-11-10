@@ -81,7 +81,8 @@ fn public_simulation_retains_option_inventory_without_making_it_tradable() {
                 lots: 1,
                 price_ticks: 2000,
                 price_type: PriceType::Limit,
-                time_in_force: TimeInForce::Day
+                time_in_force: TimeInForce::Day,
+                execution_route: None,
             },
             std::time::Instant::now()
         )
@@ -354,7 +355,7 @@ fn malformed_order_reports_never_become_valid_oms_updates() {
         },
         RawEvent { hedge: 3, ..base },
         RawEvent {
-            order_group: 1,
+            order_group: 256,
             ..base
         },
         RawEvent { flag: 1, ..base },
@@ -499,7 +500,7 @@ fn factual_fill_parser_preserves_identity_and_rejects_invalid_evidence() {
             ..base
         },
         RawEvent {
-            order_group: 1,
+            order_group: 256,
             ..base
         },
         RawEvent { hedge: 3, ..base },
@@ -552,6 +553,7 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
                     price_ticks: 20000,
                     price_type: PriceType::Limit,
                     time_in_force: TimeInForce::Day,
+                    execution_route: None,
                 },
                 std::time::Instant::now(),
             )
@@ -877,4 +879,65 @@ fn server_accept_without_system_id_keeps_known_local_order_pending() {
     assert!(o.system_id.is_empty());
     e.status = 1;
     assert!(e.to_order(key).is_err());
+}
+
+#[test]
+fn nonzero_groups_isolate_reference_identity_and_native_fills() {
+    let mut first = valid_order();
+    first.order_group = 7;
+    let mut second = first;
+    second.order_group = 8;
+    let a = first.recovered_key().unwrap();
+    let b = second.recovered_key().unwrap();
+    assert_ne!(a, b);
+    assert_eq!(parse_group_key(&a).unwrap(), (20261109, 7, 101));
+    first.kind = TRADE;
+    first.trade_id = 17;
+    second.kind = TRADE;
+    second.trade_id = 18;
+    assert_eq!(first.to_fill().unwrap().order_key, Some(a));
+    assert_eq!(second.to_fill().unwrap().order_key, Some(b));
+    let mut c = config();
+    c.order_group = 0;
+    assert!(c.validate().is_err());
+    c.order_group = 255;
+    c.validate().unwrap();
+}
+
+#[test]
+fn execution_routes_require_a_specific_seat_only_for_fixed_and_preferred() {
+    for mode in [ConnectionSelection::Any, ConnectionSelection::Packed] {
+        ExecutionRoute {
+            mode,
+            connection_id: None,
+        }
+        .validate()
+        .unwrap();
+        assert!(ExecutionRoute {
+            mode,
+            connection_id: Some(0)
+        }
+        .validate()
+        .is_err());
+    }
+    for mode in [ConnectionSelection::Fixed, ConnectionSelection::Preferred] {
+        assert!(ExecutionRoute {
+            mode,
+            connection_id: None
+        }
+        .validate()
+        .is_err());
+        assert!(ExecutionRoute {
+            mode,
+            connection_id: Some(64)
+        }
+        .validate()
+        .is_err());
+        ExecutionRoute {
+            mode,
+            connection_id: Some(63),
+        }
+        .validate()
+        .unwrap();
+    }
 }

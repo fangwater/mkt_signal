@@ -1,4 +1,4 @@
-use crate::model::{is_future_symbol, RiskLimits, Venue};
+use crate::model::{is_future_symbol, ExecutionRoute, RiskLimits, Venue};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,6 +14,10 @@ pub struct Config {
     /// Broker-supplied native Yida server config; no account secrets in this file.
     pub sdk_config: PathBuf,
     pub trading_protocol: TradingProtocol,
+    #[serde(default = "default_order_group")]
+    pub order_group: u8,
+    #[serde(default)]
+    pub execution_route: ExecutionRoute,
     /// The official public simulator preloads options alongside futures. Retain
     /// those positions as read-only evidence while testing one-lot futures orders.
     #[serde(default)]
@@ -30,6 +34,9 @@ pub struct Config {
     pub idle_sleep_us: u64,
     pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
+}
+fn default_order_group() -> u8 {
+    1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -78,6 +85,11 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.order_group != 0,
+            "nonzero Yida order_group (1..255) required for pre-ack cancellation"
+        );
+        self.execution_route.validate()?;
         if self.public_simulation {
             ensure!(
                 self.risk.max_order_lots == 1 && self.risk.max_working_lots <= 2,

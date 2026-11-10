@@ -127,6 +127,7 @@ def main():
     parser.add_argument('--buy-price-ticks', type=int)
     parser.add_argument('--sell-price-ticks', type=int)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--native-controls', action='store_true', help='test group-reference cancellation, routing and native batches')
     parser.add_argument('--market', action='store_true', help='also exercise native market Day/FAK/FOK')
     args = parser.parse_args()
     for name in ('YIDA_USER_ID', 'YIDA_PASSWORD', 'YIDA_APP_ID', 'YIDA_AUTH_CODE'):
@@ -172,10 +173,10 @@ def main():
     def order(state, key):
         return next(o for o in state['state']['orders'] if o['key'] == key)
 
-    def submit(side, offset, tif, price, price_type='limit'):
+    def submit(side, offset, tif, price, price_type='limit', execution_route=None):
         runtime.send({'op': 'submit', 'intent': {'venue': args.venue, 'symbol': args.symbol,
                      'side': side, 'offset': offset, 'lots': 1,
-                     'price_type': price_type,
+                     'price_type': price_type, 'execution_route': execution_route,
                      'price_ticks': price, 'time_in_force': tif}}, mutate=True)
         receipt = runtime.wait('submit_receipt')['receipt']
         owned_keys.extend(c['key'] for c in receipt['children'])
@@ -199,8 +200,8 @@ def main():
         return await_order(key, lambda o: o['status'] in ('filled', 'cancelled', 'rejected')
                            and o['filled'] == o['reported_filled'])
 
-    def cancel(key):
-        runtime.send({'op': 'cancel', 'key': key}, mutate=True)
+    def cancel(key, immediate=False):
+        runtime.send({'op': 'cancel', 'key': key}, mutate=not immediate)
         runtime.wait('cancel_submitted_locally')
         return terminal(key)
 
@@ -235,6 +236,48 @@ def main():
                     closed = filled(submit('sell', 'close_today', tif, 0, 'market'))
                     results.append({'case': f'market_{tif}', 'open_system_id': opened['system_id'],
                                     'close_system_id': closed['system_id'], 'factual_fills': 2})
+            if args.native_controls:
+                # Ask to cancel immediately after local submission, without waiting for an order report.
+                time.sleep(1.1)
+                key = submit('buy', 'open', 'day', args.passive_price_ticks)
+                cancelled = cancel(key, immediate=True)
+                assert cancelled['status'] == 'cancelled' and cancelled['filled'] == 0
+                results.append({'case': 'immediate_group_cancel', 'key': key})
+                time.sleep(1.1)
+                seats = [c for c in baseline['connections']
+                         if c['venue'] == args.venue and c['connected'] and (c['public'] or c['dedicated'])]
+                assert seats, 'no connected authorized execution seat'
+                connection = seats[0]['connection_id']
+                for mode in ('fixed', 'preferred', 'packed'):
+                    route = {'mode': mode}
+                    if mode != 'packed':
+                        route['connection_id'] = connection
+                    key = submit('buy', 'open', 'day', args.passive_price_ticks, execution_route=route)
+                    await_order(key, lambda o: o['status'] == 'working')
+                    cancelled = cancel(key)
+                    assert cancelled['status'] == 'cancelled' and cancelled['filled'] == 0
+                    results.append({'case': f'route_{mode}', 'connection_id': connection})
+                intents = [{'venue': args.venue, 'symbol': args.symbol, 'side': 'buy', 'offset': 'open',
+                            'lots': 1, 'price_ticks': args.passive_price_ticks, 'time_in_force': 'day',
+                            'execution_route': {'mode': mode, 'connection_id': connection}}
+                           for mode in ('fixed', 'preferred')]
+                # Each child consumes the usual action budget; let earlier actions expire.
+                time.sleep(1.1)
+                runtime.send({'op': 'submit_batch', 'intents': intents}, mutate=True)
+                receipt = runtime.wait('submit_receipt')['receipt']
+                batch_keys = [c['key'] for c in receipt['children']]
+                owned_keys.extend(batch_keys)
+                assert receipt['all_submitted_locally'] and len(batch_keys) == 2, receipt
+                for key in batch_keys:
+                    await_order(key, lambda o: o['status'] == 'working')
+                time.sleep(1.1)
+                runtime.send({'op': 'cancel_batch', 'keys': batch_keys}, mutate=True)
+                receipt = runtime.wait('cancel_batch_receipt')['receipt']
+                assert receipt['all_submitted_locally'], receipt
+                for key in batch_keys:
+                    item = terminal(key)
+                    assert item['status'] == 'cancelled' and item['filled'] == 0
+                results.append({'case': 'native_batch_submit_cancel', 'keys': batch_keys, 'orders': 2})
             final = runtime.reconcile()
             assert positions(final) == positions(baseline), 'account futures inventory changed'
             assert read_only_positions(final) == read_only_positions(baseline), 'read-only inventory changed'
@@ -272,7 +315,7 @@ def main():
                 runtime.process.wait(timeout=10)
         summary = {'protocol': args.protocol, 'venue': args.venue, 'symbol': args.symbol,
                    'execute': args.execute, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-                   'market': args.market,
+                   'market': args.market, 'native_controls': args.native_controls,
                    'read_only_position_rows': len(baseline['read_only_positions']) if baseline else None,
                    'results': results, 'error': error, 'cleanup_error': cleanup_error,
                    'runtime_exit_code': runtime.process.returncode}

@@ -89,7 +89,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     // No core reservations are released; unresolved local orders must still
                     // reconcile against the complete caught-up snapshot.
                     e.to_order(OrderKey {
-                        session: session_key(e.day),
+                        session: group_session_key(e.day, e.order_group),
                         order_ref: e.reference.to_string(),
                     })?;
                     return Ok(());
@@ -165,7 +165,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                             Command::State {} => {
                                 let transport_ready = runtime.trader.transport_ready();
                                 Ok(
-                                    json!({"type":"state","state":runtime.core.view(),"read_only_positions":session.read_only_positions,"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
+                                    json!({"type":"state","state":runtime.core.view(),"read_only_positions":session.read_only_positions,"order_group":config.order_group,"connections":session.connections.values().collect::<Vec<_>>(),"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
                                 )
                             }
                             Command::Shutdown {} => {
@@ -184,10 +184,29 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 let receipt=runtime.submit_planned_with(intent,Instant::now(),|p|journal.record(json!({"type":"prepared_submit","key":p.key,"intent":p.intent,"limit_price":p.limit_price}),false))?;
                                 Ok(json!({"type":"submit_receipt","receipt":receipt}))
                             }
-                            Command::Cancel { key } => {
+                            Command::Cancel {
+                                key,
+                                execution_route,
+                            } => {
                                 runtime.trader.ensure_transport_ready()?;
-                                runtime.cancel_with(&key,Instant::now(),|p|journal.record(json!({"type":"prepared_cancel","key":p.key,"venue":p.venue,"symbol":p.symbol,"system_id":p.system_id}),false))?;
+                                runtime.cancel_with_route(&key,execution_route,Instant::now(),|p|journal.record(json!({"type":"prepared_cancel","key":p.key,"venue":p.venue,"symbol":p.symbol,"system_id":p.system_id}),false))?;
                                 Ok(json!({"type":"cancel_submitted_locally","key":key}))
+                            }
+                            Command::Connections {} => Ok(
+                                json!({"type":"connections","connections":session.connections.values().collect::<Vec<_>>()}),
+                            ),
+                            Command::SubmitBatch { intents } => {
+                                runtime.trader.ensure_transport_ready()?;
+                                let receipt=runtime.submit_batch_with(intents,Instant::now(),|p|journal.record(json!({"type":"prepared_submit","key":p.key,"intent":p.intent,"limit_price":p.limit_price}),false))?;
+                                Ok(json!({"type":"submit_receipt","receipt":receipt}))
+                            }
+                            Command::CancelBatch {
+                                keys,
+                                execution_route,
+                            } => {
+                                runtime.trader.ensure_transport_ready()?;
+                                let receipt=runtime.cancel_batch_with_route(keys,execution_route,Instant::now(),|p|journal.record(json!({"type":"prepared_cancel","key":p.key,"venue":p.venue,"symbol":p.symbol,"system_id":p.system_id}),false))?;
+                                Ok(json!({"type":"cancel_batch_receipt","receipt":receipt}))
                             }
                         }
                     })();

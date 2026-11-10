@@ -21,8 +21,23 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
-    Submit { intent: Intent },
-    Cancel { key: OrderKey },
+    Submit {
+        intent: Intent,
+    },
+    Cancel {
+        key: OrderKey,
+        #[serde(default)]
+        execution_route: Option<crate::model::ExecutionRoute>,
+    },
+    SubmitBatch {
+        intents: Vec<Intent>,
+    },
+    CancelBatch {
+        keys: Vec<OrderKey>,
+        #[serde(default)]
+        execution_route: Option<crate::model::ExecutionRoute>,
+    },
+    Connections {},
     State {},
     Reconcile {},
     Shutdown {},
@@ -335,10 +350,13 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                                 .submit_planned_with(intent, Instant::now(), |prepared| journal.record(json!({"type":"prepared_submit","key":prepared.key,"intent":prepared.intent,"limit_price":prepared.limit_price}), false))
                                 .map(|receipt| json!({"type":"submit_receipt","receipt":receipt}))
                         }
-                        Ok(Command::Cancel { key }) => {
+                        Ok(Command::Cancel { key, execution_route: None }) => {
                             runtime
                                 .cancel_with(&key, Instant::now(), |prepared| journal.record(json!({"type":"prepared_cancel","key":prepared.key,"symbol":prepared.symbol,"system_id":prepared.system_id}), false))
                                 .map(|_| json!({"type":"cancel_submitted_locally","key":key}))
+                        }
+                        Ok(Command::SubmitBatch { .. } | Command::CancelBatch { .. } | Command::Connections {} | Command::Cancel { execution_route: Some(_), .. }) => {
+                            Err(anyhow::anyhow!("native batch/seat commands are available on the Yida runtime only"))
                         }
                         Err(error) => Err(error),
                     };

@@ -113,6 +113,7 @@ fn intent(side: Side, offset: Offset, lots: i32) -> Intent {
         price_type: PriceType::Limit,
         price_ticks: 20_000,
         time_in_force: TimeInForce::Day,
+        execution_route: None,
     }
 }
 fn update(request: &PreparedOrder, traded: i32, status: OrderStatus) -> OrderUpdate {
@@ -142,6 +143,7 @@ fn fill(request: &PreparedOrder, id: &str, lots: i32) -> Fill {
             side: request.intent.side,
         },
         order_ref: request.key.order_ref.clone(),
+        order_key: None,
         system_id: format!("SYS-{}", request.key.order_ref),
         offset: request.intent.offset,
         lots,
@@ -737,7 +739,7 @@ fn split_send_failure_returns_every_identity_and_preserves_correct_reservations(
     }
 }
 #[test]
-fn native_cancel_waits_for_system_identity() {
+fn native_cancel_before_system_identity_retains_reservations() {
     let mut r = SingleLoop {
         core: cn_core(),
         trader: Fake::default(),
@@ -747,12 +749,13 @@ fn native_cancel_waits_for_system_identity() {
         .core
         .prepare(cn_intent(Offset::CloseToday, 1), Instant::now())
         .unwrap();
-    assert!(r.cancel(&p.key, Instant::now()).is_err());
-    assert_eq!(r.trader.cancels, 0);
+    r.cancel(&p.key, Instant::now()).unwrap();
+    assert!(r.core.order(&p.key).unwrap().cancel_pending);
+    assert_eq!(r.trader.cancels, 1);
     r.core
         .on_order(cn_update(&p, 0, OrderStatus::Working))
         .unwrap();
-    r.cancel(&p.key, Instant::now()).unwrap();
+    assert!(r.cancel(&p.key, Instant::now()).is_err());
     assert_eq!(r.trader.cancels, 1);
     assert_eq!(
         r.core.position(Venue::Shfe, "cu2612", Side::Buy).frozen(),
@@ -823,6 +826,7 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
             side: Side::Sell,
         },
         order_ref: "0".into(),
+        order_key: None,
         system_id: "77".into(),
         offset: Offset::Open,
         lots: 1,
@@ -957,4 +961,227 @@ fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
         c.order(&p.key).unwrap().request.price_type,
         PriceType::Market
     );
+}
+
+#[derive(Clone, Copy)]
+enum BatchBehavior {
+    Success,
+    LocalReject,
+    Uncertain,
+}
+struct BatchFake {
+    behavior: BatchBehavior,
+    insert_calls: usize,
+    cancel_calls: usize,
+}
+impl Trader for BatchFake {
+    fn insert(&mut self, _: &PreparedOrder) -> Result<i32> {
+        panic!("batch must call native batch API")
+    }
+    fn cancel(&mut self, _: &PreparedCancel) -> Result<i32> {
+        panic!("batch must call native batch API")
+    }
+    fn insert_batch(&mut self, _: &[PreparedOrder]) -> Result<BatchSend> {
+        self.insert_calls += 1;
+        self.result()
+    }
+    fn cancel_batch(&mut self, _: &[PreparedCancel]) -> Result<BatchSend> {
+        self.cancel_calls += 1;
+        self.result()
+    }
+}
+impl BatchFake {
+    fn result(&self) -> Result<BatchSend> {
+        match self.behavior {
+            BatchBehavior::Success => Ok(BatchSend::SubmittedLocally),
+            BatchBehavior::LocalReject => Ok(BatchSend::RejectedBeforeSend { index: 1, code: 40 }),
+            BatchBehavior::Uncertain => {
+                anyhow::bail!("native batch partly sent; outcome uncertain")
+            }
+        }
+    }
+}
+fn batch_loop(behavior: BatchBehavior) -> SingleLoop<BatchFake> {
+    SingleLoop {
+        core: cn_core(),
+        trader: BatchFake {
+            behavior,
+            insert_calls: 0,
+            cancel_calls: 0,
+        },
+        execute: true,
+    }
+}
+fn close_batch() -> Vec<Intent> {
+    vec![
+        cn_intent(Offset::CloseToday, 1),
+        cn_intent(Offset::CloseYesterday, 1),
+    ]
+}
+
+#[test]
+fn native_batch_outcomes_release_only_certainly_unsent_reservations() {
+    for behavior in [
+        BatchBehavior::Success,
+        BatchBehavior::LocalReject,
+        BatchBehavior::Uncertain,
+    ] {
+        let mut runtime = batch_loop(behavior);
+        let receipt = runtime
+            .submit_batch_with(close_batch(), Instant::now(), |_| Ok(()))
+            .unwrap();
+        assert_eq!(runtime.trader.insert_calls, 1);
+        assert_eq!(
+            receipt
+                .children
+                .iter()
+                .map(|c| c.parent_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let released = matches!(behavior, BatchBehavior::LocalReject);
+        assert_eq!(
+            runtime
+                .core
+                .position(Venue::Shfe, "cu2612", Side::Buy)
+                .frozen(),
+            if released { 0 } else { 2 }
+        );
+        assert_eq!(
+            runtime.core.is_ready(),
+            !matches!(behavior, BatchBehavior::Uncertain)
+        );
+        assert_eq!(
+            receipt.all_submitted_locally,
+            matches!(behavior, BatchBehavior::Success)
+        );
+        if matches!(behavior, BatchBehavior::Uncertain) {
+            assert!(receipt
+                .children
+                .iter()
+                .all(|c| matches!(c.outcome, ChildOutcome::Uncertain)));
+            assert!(runtime.core.restore(cn_snapshot()).is_err());
+        }
+    }
+}
+
+#[test]
+fn batch_preflight_and_audit_failure_send_nothing() {
+    for audit_failure in [false, true] {
+        let mut runtime = batch_loop(BatchBehavior::Success);
+        let mut intents = close_batch();
+        if !audit_failure {
+            intents[1].lots = 10000;
+        }
+        let result = runtime.submit_batch_with(intents, Instant::now(), |_| {
+            anyhow::bail!("audit unavailable")
+        });
+        assert_eq!(runtime.trader.insert_calls, 0);
+        assert_eq!(
+            runtime
+                .core
+                .position(Venue::Shfe, "cu2612", Side::Buy)
+                .frozen(),
+            0
+        );
+        if audit_failure {
+            assert!(result
+                .unwrap()
+                .children
+                .iter()
+                .all(|c| matches!(c.outcome, ChildOutcome::NotSent)));
+        } else {
+            assert!(result.is_err());
+        }
+    }
+    let mut runtime = batch_loop(BatchBehavior::Success);
+    assert!(runtime
+        .submit_batch_with(vec![], Instant::now(), |_| Ok(()))
+        .is_err());
+    assert!(runtime
+        .submit_batch_with(
+            vec![cn_intent(Offset::Open, 1); 17],
+            Instant::now(),
+            |_| Ok(())
+        )
+        .is_err());
+    assert_eq!(runtime.trader.insert_calls, 0);
+}
+
+#[test]
+fn batch_cancel_before_ack_keeps_frozen_inventory_until_factual_outcomes() {
+    for behavior in [
+        BatchBehavior::Success,
+        BatchBehavior::LocalReject,
+        BatchBehavior::Uncertain,
+    ] {
+        let mut runtime = batch_loop(behavior);
+        let keys: Vec<_> = close_batch()
+            .into_iter()
+            .map(|i| runtime.core.prepare(i, Instant::now()).unwrap().key)
+            .collect();
+        assert!(keys
+            .iter()
+            .all(|k| runtime.core.order(k).unwrap().system_id.is_empty()));
+        let receipt = runtime
+            .cancel_batch_with(keys.clone(), Instant::now(), |_| Ok(()))
+            .unwrap();
+        assert_eq!(runtime.trader.cancel_calls, 1);
+        assert_eq!(
+            runtime
+                .core
+                .position(Venue::Shfe, "cu2612", Side::Buy)
+                .frozen(),
+            2
+        );
+        assert_eq!(
+            receipt.all_submitted_locally,
+            matches!(behavior, BatchBehavior::Success)
+        );
+        assert!(keys
+            .iter()
+            .all(|k| runtime.core.order(k).unwrap().cancel_pending
+                != matches!(behavior, BatchBehavior::LocalReject)));
+        assert_eq!(
+            runtime.core.is_ready(),
+            !matches!(behavior, BatchBehavior::Uncertain)
+        );
+    }
+}
+
+#[test]
+fn duplicate_or_invalid_batch_cancel_never_leaves_a_false_pending_flag() {
+    let mut runtime = batch_loop(BatchBehavior::Success);
+    let key = runtime
+        .core
+        .prepare(cn_intent(Offset::CloseToday, 1), Instant::now())
+        .unwrap()
+        .key;
+    assert!(runtime
+        .cancel_batch_with(vec![key.clone(), key.clone()], Instant::now(), |_| Ok(()))
+        .is_err());
+    let bad = OrderKey {
+        session: key.session.clone(),
+        order_ref: "99999".into(),
+    };
+    assert!(runtime
+        .cancel_batch_with(vec![key.clone(), bad], Instant::now(), |_| Ok(()))
+        .is_err());
+    assert!(!runtime.core.order(&key).unwrap().cancel_pending);
+    assert_eq!(runtime.trader.cancel_calls, 0);
+}
+
+#[test]
+fn fill_reference_from_another_native_group_cannot_match_a_local_order() {
+    let mut runtime = cn_core();
+    let order = runtime
+        .prepare(cn_intent(Offset::Open, 1), Instant::now())
+        .unwrap();
+    let mut fill = cn_fill(&order, "group-collision", 1);
+    fill.order_key = Some(OrderKey {
+        session: crate::yida::group_session_key(20261109, 7),
+        order_ref: order.key.order_ref.clone(),
+    });
+    assert!(runtime.on_fill(fill).is_err());
+    assert_eq!(runtime.order(&order.key).unwrap().filled, 0);
 }

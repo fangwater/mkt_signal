@@ -246,6 +246,7 @@ impl TradingCore {
                     price_type: update.price_type,
                     price_ticks: 0,
                     time_in_force: TimeInForce::Day,
+                    execution_route: None,
                 },
                 key: update.key.clone(),
                 system_id: update.system_id,
@@ -361,6 +362,9 @@ impl TradingCore {
     }
 
     pub fn prepare(&mut self, intent: Intent, now: Instant) -> Result<PreparedOrder> {
+        if let Some(route) = intent.execution_route {
+            route.validate()?;
+        }
         ensure!(self.is_ready(), "trading blocked: {}", self.reason);
         ensure!(
             self.scope.venues.contains(&intent.venue),
@@ -652,10 +656,13 @@ impl TradingCore {
             .get(&(fill.identity.venue, fill.system_id.clone()))
             .cloned()
             .or_else(|| {
-                let key = OrderKey {
+                if fill.order_key.is_none() && !self.scope.allow_implicit_fill_reference {
+                    return None;
+                }
+                let key = fill.order_key.clone().unwrap_or_else(|| OrderKey {
                     session: self.session.clone(),
                     order_ref: fill.order_ref.clone(),
-                };
+                });
                 self.orders
                     .get(&key)
                     .filter(|o| o.system_id.is_empty() || o.system_id == fill.system_id)
@@ -667,6 +674,10 @@ impl TradingCore {
             .get(&key)
             .context("missing correlated order")?
             .clone();
+        ensure!(
+            fill.order_key.as_ref().is_none_or(|k| k == &key),
+            "fill logical order identity conflicts with system identity"
+        );
         ensure!(
             !order.owned || fill.order_ref.is_empty() || fill.order_ref == order.key.order_ref,
             "fill order reference conflicts with exchange order identity"
@@ -754,6 +765,7 @@ impl TradingCore {
             symbol: order.request.symbol.clone(),
             venue: order.request.venue,
             system_id: order.system_id.clone(),
+            execution_route: order.request.execution_route,
         };
         self.rate_check(now)?;
         self.orders
@@ -820,8 +832,23 @@ impl<T: Trader> SingleLoop<T> {
         now: Instant,
         before_native: impl FnOnce(&PreparedCancel) -> Result<()>,
     ) -> Result<()> {
+        self.cancel_with_route(key, None, now, before_native)
+    }
+    pub fn cancel_with_route(
+        &mut self,
+        key: &OrderKey,
+        route: Option<ExecutionRoute>,
+        now: Instant,
+        before_native: impl FnOnce(&PreparedCancel) -> Result<()>,
+    ) -> Result<()> {
         ensure!(self.execute, "read-only runtime: cancellations disabled");
-        let request = self.core.prepare_cancel(key, now)?;
+        if let Some(route) = route {
+            route.validate()?;
+        }
+        let mut request = self.core.prepare_cancel(key, now)?;
+        if route.is_some() {
+            request.execution_route = route;
+        }
         if let Err(error) = before_native(&request) {
             self.core.cancel_failed(key);
             self.core.block("cancellation audit failed before SDK call");
@@ -851,6 +878,7 @@ pub enum ChildOutcome {
 }
 #[derive(Debug, Serialize)]
 pub struct ChildReceipt {
+    pub parent_index: usize,
     pub key: OrderKey,
     pub offset: Offset,
     pub lots: i32,
@@ -973,6 +1001,7 @@ impl<T: Trader> SingleLoop<T> {
                 }
             };
             receipt.children.push(ChildReceipt {
+                parent_index: 0,
                 key: p.key,
                 offset: p.intent.offset,
                 lots: p.intent.lots,
@@ -985,5 +1014,6 @@ impl<T: Trader> SingleLoop<T> {
     }
 }
 
+mod batch;
 #[cfg(test)]
 mod tests;

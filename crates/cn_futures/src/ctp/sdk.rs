@@ -250,7 +250,7 @@ impl CtpTrader {
 impl Trader for CtpTrader {
     fn insert(&mut self, order: &PreparedOrder) -> Result<i32> {
         ensure!(
-            order.intent.price_type == PriceType::Limit,
+            order.intent.price_type == PriceType::Limit && order.intent.execution_route.is_none(),
             "CTP native market orders are not enabled"
         );
         let id = self.next_id()?;

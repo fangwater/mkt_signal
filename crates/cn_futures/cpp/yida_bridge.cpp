@@ -18,10 +18,11 @@
 namespace {
 constexpr int invalid = -9901;
 constexpr int transport_unavailable = 9902; // Certain local rejection: no SDK send attempted.
+constexpr int local_invalid = 9904; // Certain pre-send argument/permission rejection.
 constexpr int market_price_unavailable = 9903; // Missing native daily price-limit data; nothing sent.
 // Event IDs are bridge-owned, vendor integer constants remain unchanged in the fields.
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
-       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport };
+       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
 void msg(char* out, size_t cap, const char* value) { if (out && cap) std::snprintf(out, cap, "%s", value); }
 template<size_t N, size_t M> void field(char (&out)[N], const char (&in)[M]) {
@@ -58,8 +59,10 @@ public:
     std::mutex destroy_mutex;
     std::condition_variable destroyed_cv;
     bool destroyed = false;
-    int max_ref = 0;
-    Bridge(const char* lib, const char* config, int transport, CnYidaCallback cb, void* ctx): library(lib), callback(cb), context(ctx), protocol(transport) {
+    int max_ref = -1;
+    const int order_group;
+    Bridge(const char* lib, const char* config, int transport, int group, CnYidaCallback cb, void* ctx): library(lib), callback(cb), context(ctx), protocol(transport), order_group(group) {
+        if (group<1 || group>255) throw std::runtime_error("nonzero order group required");
         if (protocol<0 || protocol>2) throw std::runtime_error("invalid native trading protocol");
         library.check(); api = library.symbol<YDExtendedApi*(*)(const char*)>("makeYDExtendedApi")(config);
         if (!api) throw std::runtime_error("makeYDExtendedApi failed");
@@ -106,6 +109,7 @@ public:
         e.lots=o->OrderVolume; e.traded=o->TradeVolume; e.price=o->Price;
         e.error=o->ErrorNo; e.flag=o->YDOrderFlag; e.native_time=o->InsertTime;
         e.order_type=o->OrderType; e.order_attribute=o->ExchangeOrderAttribute;
+        e.selection_type=o->ConnectionSelectionType; e.connection_id=o->ConnectionID; e.real_connection_id=o->RealConnectionID;
         original(e, i->m_pExchange, o->OrderSysID); send(e);
     }
     void unsupported(const YDOrder* o) {
@@ -147,6 +151,10 @@ public:
         // loop concurrently with live state reads. Live interleaving is rejected in Rust.
         CnYidaEvent begin{}; begin.kind=Begin; begin.day=api->getTradingDay(); begin.reference=max_ref; send(begin);
         account(true);
+        for(int k=0;k<api->getExchangeCount();++k) {
+            const auto* x=api->getExchange(k);
+            if(x && (!std::strcmp(x->ExchangeID,"SHFE") || !std::strcmp(x->ExchangeID,"INE"))) connections(x);
+        }
         for (int k=0; k<api->getInstrumentCount(); ++k) {
             const auto* i=api->getInstrument(k);
             if (!i || !i->m_pExchange) throw std::runtime_error("invalid catalog row");
@@ -207,13 +215,17 @@ public:
     }); }
     void notifyReadyForLogin(bool failed) override { CnYidaEvent e{}; e.kind=ReadyLogin; e.error=failed?1:0; send(e); }
     void notifyLogin(int err,int ref,bool monitor) override { guarded([&] {
-        max_ref=ref; logged_in=err==0 && !monitor;
+        max_ref=-1; logged_in=err==0 && !monitor;
         if (logged_in) tcp_connected=true;
         CnYidaEvent e{}; e.kind=Login; e.error=err; e.reference=ref; e.flag=monitor; e.day=api->getTradingDay(); send(e);
     }); }
+    void notifyGroupMaxOrderRef(const int refs[]) override { guarded([&] {
+        if (!refs || refs[order_group]<0) throw std::runtime_error("invalid group maximum reference");
+        max_ref=refs[order_group];
+    }); }
     void notifyFinishInit() override { initialized=true; CnYidaEvent e{}; e.kind=Init; send(e); }
     void notifyCaughtUp() override { guarded([&] {
-        if (!initialized || !logged_in) throw std::runtime_error("caught up before initialization/login");
+        if (!initialized || !logged_in || max_ref<0) throw std::runtime_error("caught up before initialization/login");
         read_trading_port(); snapshot(); caught_up=true; transport_event();
     }); }
     void notifyOrder(const YDOrder* o,const YDInstrument* i,const YDAccount* a) override { guarded([&] { if (mine(a)) order(o,i); }); }
@@ -223,6 +235,69 @@ public:
         CnYidaEvent e{}; e.kind=FailedCancel; field(e.exchange,x->ExchangeID); e.system_id=o->LongOrderSysID;
         e.legacy_system_id=o->OrderSysID; e.order_group=o->OrderGroupID; e.reference=o->OrderRef; e.error=o->ErrorNo; send(e);
     }); }
+    void connections(const YDExchange* x) {
+        if (!x || x->ConnectionCount<0 || x->ConnectionCount>64 || (x->ConnectionCount && !x->ConnectionInfos)) throw std::runtime_error("invalid native seat catalog");
+        const auto* a=api->getAccountExchangeInfo(x);
+        if (!a) throw std::runtime_error("missing account seat permissions");
+        for(int k=0;k<x->ConnectionCount;++k) {
+            const auto& c=x->ConnectionInfos[k]; CnYidaEvent e{}; e.kind=Connection;
+            field(e.exchange,x->ExchangeID); e.connection_id=k; e.connection_count=x->ConnectionCount;
+            e.connection_status=c.ConnectionStatus; e.public_connection=x->IsPublicConnectionID[k]; e.dedicated_connection=a->IsDedicatedConnectionID[k];
+            field(e.connection_info,c.Info); field(e.insert_flow,c.InsertFlowControl); field(e.cancel_flow,c.CancelFlowControl); send(e);
+        }
+    }
+    void notifyExchangeConnectionInfo(const YDExchangeConnectionInfo* c) override { guarded([&] {
+        if (!c) throw std::runtime_error("missing seat update");
+        for(int k=0;k<api->getExchangeCount();++k) { const auto* x=api->getExchange(k); if(x && x->ExchangeRef==c->ExchangeRef) { connections(x); return; } }
+        throw std::runtime_error("seat update for unknown exchange");
+    }); }
+    int route(const YDExchange* x,int selection,int connection) {
+        if(selection<YD_CS_Any || selection>YD_CS_Packed) return local_invalid;
+        if(selection==YD_CS_Any || selection==YD_CS_Packed) return connection==0?0:local_invalid;
+        const auto* a=api->getAccountExchangeInfo(x);
+        if(!a || connection<0 || connection>=x->ConnectionCount || connection>=64 || !x->ConnectionInfos ||
+            (!x->IsPublicConnectionID[connection] && !a->IsDedicatedConnectionID[connection])) return local_invalid;
+        if(selection==YD_CS_Fixed && x->ConnectionInfos[connection].ConnectionStatus!=YD_ECS_CONNECTED) return local_invalid;
+        return 0;
+    }
+    int make_order(const CnYidaOrderRequest& r,YDInputOrder& o,const YDInstrument*& i) {
+        if(!can_send()) return transport_unavailable;
+        i=api->getInstrumentByID(r.symbol);
+        if(!i || !i->m_pExchange || std::strcmp(i->m_pExchange->ExchangeID,r.exchange) || i->ProductClass!=YD_PC_Futures || !i->m_pExchange->UseTodayPosition || r.reference<=0) return local_invalid;
+        if(std::strcmp(r.exchange,"SHFE") && std::strcmp(r.exchange,"INE")) return local_invalid;
+        if(r.offset!=YD_OF_Open && r.offset!=YD_OF_CloseToday && r.offset!=YD_OF_CloseYesterday) return local_invalid;
+        if(r.tif!=YD_ODT_Limit && r.tif!=YD_ODT_FAK && r.tif!=YD_ODT_FOK) return local_invalid;
+        if(r.market!=0 && r.market!=1) return local_invalid;
+        if(r.direction!=YD_D_Buy && r.direction!=YD_D_Sell) return local_invalid;
+        const auto* a=api->getMyAccount(); if(!a || a->LoginCount!=1) return local_invalid;
+        const int permission=right(i);
+        if(permission==YD_TR_Forbidden || (permission==YD_TR_CloseOnly && r.offset==YD_OF_Open) || i->ExpireDate<api->getTradingDay()) return 10;
+        int code=route(i->m_pExchange,r.selection,r.connection); if(code) return code;
+        o.Direction=r.direction; o.OffsetFlag=r.offset; o.HedgeFlag=YD_HF_Speculation;
+        o.OrderRef=r.reference; o.OrderGroupID=order_group; o.GroupOrderRefControl=YD_GORF_Increase;
+        o.ConnectionSelectionType=r.selection; o.ConnectionID=r.connection;
+        o.Price=r.price; o.OrderVolume=r.lots; o.OrderType=r.tif; o.YDOrderFlag=YD_YOF_Normal;
+        if(r.market) {
+            o.ExchangeOrderAttribute=!std::strcmp(r.exchange,"SHFE")?YD_EOA_SHFE_MarketPrice:YD_EOA_INE_MarketPrice;
+            const auto* m=i->m_pMarketData; if(!m) return market_price_unavailable;
+            o.Price=r.direction==YD_D_Buy?m->UpperLimitPrice:m->LowerLimitPrice;
+            if(!std::isfinite(o.Price) || o.Price<=0) return market_price_unavailable;
+        }
+        if(!api->checkOrder(&o,i)) return o.ErrorNo>0?o.ErrorNo:local_invalid;
+        return o.OrderRef==r.reference && o.OrderGroupID==order_group?0:local_invalid;
+    }
+    int make_cancel(const CnYidaCancelRequest& r,YDCancelOrder& o,const YDExchange*& x) {
+        if(!can_send()) return transport_unavailable;
+        x=api->getExchangeByID(r.exchange); if(!x) return local_invalid;
+        const int code=route(x,r.selection,r.connection); if(code) return code;
+        if(r.system_id>0) o.LongOrderSysID=r.system_id;
+        else {
+            if(r.group<=0 || r.group>255 || r.reference<=0) return local_invalid;
+            o.OrderGroupID=r.group; o.OrderRef=r.reference;
+        }
+        o.ConnectionSelectionType=r.selection; o.ConnectionID=r.connection; o.YDOrderFlag=YD_YOF_Normal;
+        return 0;
+    }
     void invalidated() { CnYidaEvent e{}; e.kind=Invalidated; send(e); }
     void notifyAccount(const YDAccount*) override { invalidated(); }
     void notifyAccountExchangeInfo(const YDAccountExchangeInfo*) override { invalidated(); }
@@ -248,8 +323,8 @@ Bridge* get(void* p) { auto* b=static_cast<Bridge*>(p); if(!b || b->destroying) 
 extern "C" {
 size_t cn_yida_event_size() { return sizeof(CnYidaEvent); }
 int cn_yida_version(const char* path,char* out,size_t cap) { try { Library l(path); l.check(); msg(out,cap,l.symbol<const char*(*)()>("getYDVersion")()); return 0; } catch(const std::exception& e) { msg(out,cap,e.what()); return invalid; } }
-void* cn_yida_create(const char* lib,const char* config,int protocol,CnYidaCallback cb,void* ctx,char* error,size_t cap) {
-    try { return new Bridge(lib,config,protocol,cb,ctx); } catch(const std::exception& e) { msg(error,cap,e.what()); return nullptr; } catch(...) { msg(error,cap,"Yida create exception"); return nullptr; }
+void* cn_yida_create(const char* lib,const char* config,int protocol,int group,CnYidaCallback cb,void* ctx,char* error,size_t cap) {
+    try { return new Bridge(lib,config,protocol,group,cb,ctx); } catch(const std::exception& e) { msg(error,cap,e.what()); return nullptr; } catch(...) { msg(error,cap,"Yida create exception"); return nullptr; }
 }
 int cn_yida_destroy(void* p) {
     auto* b=static_cast<Bridge*>(p); if(!b) return 0;
@@ -266,7 +341,7 @@ int cn_yida_start(void* p) { try {
     return b->api->startExtended(b,b) ? 0 : invalid;
 } catch(...) { return invalid; } }
 int cn_yida_login(void* p,const char* u,const char* pass,const char* app,const char* auth) { try { return get(p)->api->login(u,pass,app,auth) ? 0 : invalid; } catch(...) { return invalid; } }
-int cn_yida_reference(void* p) { try { return get(p)->api->getNextOrderRef(0,true); } catch(...) { return invalid; } }
+int cn_yida_reference(void* p) { try { return get(p)->api->getNextOrderRef(get(p)->order_group,true); } catch(...) { return invalid; } }
 int cn_yida_transport_ready(void* p) { try { return get(p)->can_send()?1:0; } catch(...) { return 0; } }
 int cn_yida_public_simulation_target(void* p) { try {
     auto* api=get(p)->api;
@@ -274,46 +349,31 @@ int cn_yida_public_simulation_target(void* p) { try {
     const char* port=api->getConfig("TradingServerPort");
     return host && port && !std::strcmp(host,"118.190.175.212") && !std::strcmp(port,"41600") ? 1 : 0;
 } catch(...) { return 0; } }
-int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int direction,int offset,int tif,int market,int lots,double price) {
-    try {
-        auto* b=get(p); const auto* i=b->api->getInstrumentByID(symbol);
-        if (!b->can_send()) return transport_unavailable;
-        if (!i || !i->m_pExchange || std::strcmp(i->m_pExchange->ExchangeID,exchange) || i->ProductClass!=YD_PC_Futures || !i->m_pExchange->UseTodayPosition || !ref || ref<0) return invalid;
-        if (offset!=YD_OF_Open && offset!=YD_OF_CloseToday && offset!=YD_OF_CloseYesterday) return invalid;
-        if (tif!=YD_ODT_Limit && tif!=YD_ODT_FAK && tif!=YD_ODT_FOK) return invalid;
-        if (market!=0 && market!=1) return invalid;
-        if (std::strcmp(exchange,"SHFE") && std::strcmp(exchange,"INE")) return invalid;
-        const auto* a=b->api->getMyAccount(); if (!a || a->LoginCount!=1 || !b->logged_in || !b->initialized) return invalid;
-        const int right=b->right(i);
-        if (right<YD_TR_Allow || right>YD_TR_Forbidden) return invalid;
-        if (right==YD_TR_Forbidden || (right==YD_TR_CloseOnly && offset==YD_OF_Open)) return 10;
-        if (i->ExpireDate<=0 || i->ExpireDate<b->api->getTradingDay()) return 10;
-        YDInputOrder o{}; o.Direction=direction; o.OffsetFlag=offset; o.HedgeFlag=YD_HF_Speculation;
-        o.ConnectionSelectionType=YD_CS_Any; o.Price=price; o.OrderVolume=lots; o.OrderRef=ref;
-        o.OrderType=tif; o.YDOrderFlag=YD_YOF_Normal;
-        // SHFE/INE AnyPrice is an exchange attribute, NOT YD_ODT_Market (guide 7.1.1.1).
-        if (market) {
-            o.ExchangeOrderAttribute=!std::strcmp(exchange,"SHFE")?YD_EOA_SHFE_MarketPrice:YD_EOA_INE_MarketPrice;
-            // AnyPrice still needs an in-range Price for the counter's pre-trade checks.
-            // These native daily limits arrive during initialization, without live quotes.
-            const auto* m=i->m_pMarketData;
-            if (!m) return market_price_unavailable;
-            o.Price=direction==YD_D_Buy?m->UpperLimitPrice:m->LowerLimitPrice;
-            if (!std::isfinite(o.Price) || o.Price<=0) return market_price_unavailable;
-        }
-        // checkOrder cannot send. A false return here is a certain local rejection.
-        if (!b->api->checkOrder(&o,i)) return o.ErrorNo>0 ? o.ErrorNo : invalid;
-        if (o.OrderRef!=ref) return invalid;
-        // The allocator is called before our own reservation/audit. insertOrder preserves
-        // that identity. A false send is conservatively uncertain, regardless of ErrorNo.
-        return b->api->insertOrder(&o,i) ? 0 : invalid;
-    } catch(...) { return invalid; }
-}
-int cn_yida_cancel(void* p,const char* exchange,int64_t id) { try {
-    auto* b=get(p); const auto* x=b->api->getExchangeByID(exchange); if(!x || id<=0) return invalid;
-    if (!b->can_send()) return transport_unavailable;
-    YDCancelOrder o{}; o.LongOrderSysID=id; o.ConnectionSelectionType=YD_CS_Any; o.YDOrderFlag=YD_YOF_Normal;
-    return b->api->cancelOrder(&o,x) ? 0 : invalid;
+int cn_yida_insert(void* p,const CnYidaOrderRequest* r) { try {
+    if(!r) { return local_invalid; }
+    auto* b=get(p); YDInputOrder o{}; const YDInstrument* i=nullptr;
+    int code=b->make_order(*r,o,i); if(code) return code;
+    return b->api->insertOrder(&o,i)?0:invalid;
+} catch(...) { return invalid; } }
+int cn_yida_cancel(void* p,const CnYidaCancelRequest* r) { try {
+    if(!r) { return local_invalid; }
+    auto* b=get(p); YDCancelOrder o{}; const YDExchange* x=nullptr;
+    int code=b->make_cancel(*r,o,x); if(code) return code;
+    return b->api->cancelOrder(&o,x)?0:invalid;
+} catch(...) { return invalid; } }
+int cn_yida_insert_batch(void* p,const CnYidaOrderRequest* r,int count,int* failed) { try {
+    if(failed) *failed=0;
+    if(!r || !failed || count<1 || count>16) return local_invalid;
+    auto* b=get(p); YDInputOrder orders[16]{}; const YDInstrument* instruments[16]{};
+    for(int k=0;k<count;++k) { *failed=k; int code=b->make_order(r[k],orders[k],instruments[k]); if(code) return code; }
+    *failed=-1; return b->api->insertMultiOrders(count,orders,instruments)?0:invalid;
+} catch(...) { return invalid; } }
+int cn_yida_cancel_batch(void* p,const CnYidaCancelRequest* r,int count,int* failed) { try {
+    if(failed) *failed=0;
+    if(!r || !failed || count<1 || count>16) return local_invalid;
+    auto* b=get(p); YDCancelOrder orders[16]{}; const YDExchange* exchanges[16]{};
+    for(int k=0;k<count;++k) { *failed=k; int code=b->make_cancel(r[k],orders[k],exchanges[k]); if(code) return code; }
+    *failed=-1; return b->api->cancelMultiOrders(count,orders,exchanges)?0:invalid;
 } catch(...) { return invalid; } }
 void cn_yida_disconnect(void* p) { try { get(p)->api->disconnect(); } catch(...) {} }
 }

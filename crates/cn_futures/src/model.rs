@@ -39,6 +39,7 @@ pub struct ExecutionScope {
     pub reference_limit: u64,
     pub require_market_status: bool,
     pub cancel_requires_system_id: bool,
+    pub allow_implicit_fill_reference: bool,
 }
 impl ExecutionScope {
     pub fn validate(&self) -> Result<()> {
@@ -97,6 +98,36 @@ pub enum PriceType {
     Market,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionSelection {
+    #[default]
+    Any,
+    Fixed,
+    Preferred,
+    Packed,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionRoute {
+    pub mode: ConnectionSelection,
+    pub connection_id: Option<u8>,
+}
+impl ExecutionRoute {
+    pub fn validate(self) -> Result<()> {
+        ensure!(
+            match self.mode {
+                ConnectionSelection::Fixed | ConnectionSelection::Preferred =>
+                    self.connection_id.is_some_and(|id| id < 64),
+                _ => self.connection_id.is_none(),
+            },
+            "fixed/preferred requires connection_id 0..63; any/packed must omit it"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrderKey {
@@ -118,6 +149,8 @@ pub struct Intent {
     /// Integer multiples of the venue's actual price tick; must be zero for market orders.
     pub price_ticks: i64,
     pub time_in_force: TimeInForce,
+    #[serde(default)]
+    pub execution_route: Option<ExecutionRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -277,6 +310,8 @@ pub struct TradeIdentity {
 pub struct Fill {
     pub identity: TradeIdentity,
     pub order_ref: String,
+    /// Native logical identity when the adapter can determine it without a system ID.
+    pub order_key: Option<OrderKey>,
     pub system_id: String,
     pub offset: Offset,
     pub lots: i32,
@@ -368,6 +403,12 @@ pub struct PreparedCancel {
     pub symbol: String,
     pub venue: Venue,
     pub system_id: String,
+    pub execution_route: Option<ExecutionRoute>,
+}
+
+pub enum BatchSend {
+    SubmittedLocally,
+    RejectedBeforeSend { index: usize, code: i32 },
 }
 
 pub trait Trader {
@@ -378,6 +419,12 @@ pub trait Trader {
     /// Nonzero is a documented synchronous SDK rejection, not an asynchronous business reject.
     fn insert(&mut self, order: &PreparedOrder) -> Result<i32>;
     fn cancel(&mut self, order: &PreparedCancel) -> Result<i32>;
+    fn insert_batch(&mut self, _: &[PreparedOrder]) -> Result<BatchSend> {
+        bail!("native batch submission unsupported")
+    }
+    fn cancel_batch(&mut self, _: &[PreparedCancel]) -> Result<BatchSend> {
+        bail!("native batch cancellation unsupported")
+    }
 }
 
 pub(crate) fn validate_snapshot(s: &Snapshot, scope: &ExecutionScope) -> Result<()> {

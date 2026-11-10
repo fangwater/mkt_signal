@@ -194,6 +194,7 @@ impl RawEvent {
                 side: side(self.direction)?,
             },
             order_ref: text(&self.order_ref)?,
+            order_key: None,
             system_id: text(&self.system_id)?,
             offset: offset(self.offset)?,
             lots: self.volume,
@@ -222,6 +223,7 @@ pub fn scope() -> ExecutionScope {
         reference_limit: 999_999_999_999,
         require_market_status: true,
         cancel_requires_system_id: false,
+        allow_implicit_fill_reference: true,
     }
 }
 pub fn session_key(front: i32, session: i32) -> String {

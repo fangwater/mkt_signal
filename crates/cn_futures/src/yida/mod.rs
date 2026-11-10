@@ -27,6 +27,7 @@ pub const INVALIDATED: i32 = 14;
 pub const SEGMENT: i32 = 15;
 pub const FATAL: i32 = 16;
 pub const TRANSPORT: i32 = 17;
+pub const CONNECTION: i32 = 18;
 pub const SDK_REFERENCE: &str = "1.502.53.182";
 
 pub fn scope() -> ExecutionScope {
@@ -34,11 +35,34 @@ pub fn scope() -> ExecutionScope {
         venues: [Venue::Shfe, Venue::Ine].into_iter().collect(),
         reference_limit: i32::MAX as u64,
         require_market_status: false,
-        cancel_requires_system_id: true,
+        cancel_requires_system_id: false,
+        allow_implicit_fill_reference: false,
     }
 }
 pub fn session_key(day: i32) -> String {
     format!("yida:{day}")
+}
+pub fn group_session_key(day: i32, group: i32) -> String {
+    if group == 0 {
+        session_key(day)
+    } else {
+        format!("yida:{day}:group:{group}")
+    }
+}
+pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
+    let parts: Vec<_> = key.session.split(':').collect();
+    ensure!(
+        parts.len() == 4 && parts[0] == "yida" && parts[2] == "group",
+        "order has no native group identity"
+    );
+    let day = parts[1].parse::<i32>()?;
+    let group = parts[3].parse::<i32>()?;
+    let reference = key.order_ref.parse::<i32>()?;
+    ensure!(
+        day.to_string().len() == 8 && (1..=255).contains(&group) && reference > 0,
+        "invalid native group identity"
+    );
+    Ok((day, group, reference))
 }
 
 #[repr(C)]
@@ -75,6 +99,13 @@ pub struct RawEvent {
     pub order_attribute: i32,
     pub market_minimum: i32,
     pub market_maximum: i32,
+    pub selection_type: i32,
+    pub connection_id: i32,
+    pub real_connection_id: i32,
+    pub connection_status: i32,
+    pub connection_count: i32,
+    pub public_connection: i32,
+    pub dedicated_connection: i32,
     pub system_id: i64,
     pub trade_id: i64,
     pub price: f64,
@@ -87,6 +118,9 @@ pub struct RawEvent {
     pub original_order_id: [u8; 64],
     #[serde(serialize_with = "serialize_bytes")]
     pub original_trade_id: [u8; 64],
+    pub connection_info: [u8; 28],
+    pub insert_flow: [u8; 32],
+    pub cancel_flow: [u8; 32],
 }
 fn serialize_bytes<S: serde::Serializer>(
     bytes: &[u8; 64],
@@ -123,6 +157,20 @@ impl RawEvent {
     }
     pub fn recovered_key(&self) -> Result<OrderKey> {
         ensure!(
+            (0..=255).contains(&self.order_group),
+            "invalid native order group"
+        );
+        if self.order_group != 0 {
+            ensure!(
+                self.reference > 0,
+                "nonzero group requires positive reference"
+            );
+            return Ok(OrderKey {
+                session: group_session_key(self.day, self.order_group),
+                order_ref: self.reference.to_string(),
+            });
+        }
+        ensure!(
             self.system_id > 0,
             "recovered order without system identity"
         );
@@ -142,7 +190,7 @@ impl RawEvent {
                 && self.hedge == 1
                 && self.flag == 0
                 && self.product_class == 1
-                && self.order_group == 0,
+                && (0..=255).contains(&self.order_group),
             "unsupported Yida hedge/order flag/product class"
         );
         let status = match self.status {
@@ -188,7 +236,7 @@ impl RawEvent {
             self.system_id > 0
                 || (matches!(status, OrderStatus::Pending | OrderStatus::Rejected)
                     && self.reference > 0
-                    && key.session == session_key(self.day)),
+                    && key.session == group_session_key(self.day, self.order_group)),
             "order without native system identity or known local pending identity"
         );
         Ok(OrderUpdate {
@@ -218,7 +266,7 @@ impl RawEvent {
                 && self.product_class == 1
                 && self.trade_id > 0
                 && self.system_id > 0
-                && self.order_group == 0
+                && (0..=255).contains(&self.order_group)
                 && self.trade_flag == 0
                 && self.no_order == 0
                 && self.commission.is_finite()
@@ -244,6 +292,11 @@ impl RawEvent {
                 side: self.side()?,
             },
             order_ref: self.reference.to_string(),
+            order_key: if self.order_group != 0 {
+                Some(self.recovered_key()?)
+            } else {
+                None
+            },
             system_id: self.system_id.to_string(),
             offset: self.offset()?,
             lots: self.lots,

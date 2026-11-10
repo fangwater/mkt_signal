@@ -15,7 +15,19 @@ pub struct Session {
     initialized: bool,
     pub ready: bool,
     pub read_only_positions: Vec<RawEvent>,
+    pub connections: HashMap<(Venue, i32), ExecutionConnection>,
     pending_read_only_positions: Vec<RawEvent>,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecutionConnection {
+    pub venue: Venue,
+    pub connection_id: i32,
+    pub connected: bool,
+    pub public: bool,
+    pub dedicated: bool,
+    pub info: String,
+    pub insert_flow: String,
+    pub cancel_flow: String,
 }
 impl Session {
     /// Login replays rejected requests that never acquired an exchange system ID.
@@ -59,6 +71,25 @@ impl Session {
             "live native update interleaved with caught-up snapshot; recover again"
         );
         match e.kind {
+            CONNECTION => {
+                ensure!(
+                    (0..64).contains(&e.connection_id) && (0..=1).contains(&e.connection_status),
+                    "invalid native seat metadata"
+                );
+                self.connections.insert(
+                    (e.venue()?, e.connection_id),
+                    ExecutionConnection {
+                        venue: e.venue()?,
+                        connection_id: e.connection_id,
+                        connected: e.connection_status == 1,
+                        public: e.public_connection == 1,
+                        dedicated: e.dedicated_connection == 1,
+                        info: text(&e.connection_info)?,
+                        insert_flow: text(&e.insert_flow)?,
+                        cancel_flow: text(&e.cancel_flow)?,
+                    },
+                );
+            }
             CONNECTED | DISCONNECTED => {
                 self.poisoned = false;
                 self.ready = false;
@@ -85,7 +116,7 @@ impl Session {
                 self.pending_read_only_positions.clear();
                 self.snapshot = Some(Snapshot {
                     trading_day: e.day.to_string(),
-                    session: session_key(e.day),
+                    session: group_session_key(e.day, i32::from(config.order_group)),
                     max_order_ref: e
                         .reference
                         .try_into()
