@@ -12,7 +12,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 extern "C" {
     fn cn_yida_event_size() -> usize;
@@ -20,6 +20,7 @@ extern "C" {
     fn cn_yida_create(
         lib: *const c_char,
         config: *const c_char,
+        protocol: i32,
         callback: unsafe extern "C" fn(*mut c_void, *const RawEvent),
         context: *mut c_void,
         error: *mut c_char,
@@ -46,7 +47,8 @@ extern "C" {
         lots: i32,
         price: f64,
     ) -> i32;
-    fn cn_yida_cancel(handle: *mut c_void, exchange: *const c_char, system_id: i32) -> i32;
+    fn cn_yida_cancel(handle: *mut c_void, exchange: *const c_char, system_id: i64) -> i32;
+    fn cn_yida_transport_ready(handle: *mut c_void) -> i32;
     fn cn_yida_disconnect(handle: *mut c_void);
 }
 fn path_string(p: &Path) -> Result<CString> {
@@ -97,6 +99,9 @@ pub struct YidaTrader {
     pub fault: Arc<AtomicBool>,
     credentials: config::Credentials,
     references: HashMap<i32, (Venue, OrderKey)>,
+    pending_acks: HashMap<i32, Instant>,
+    pending_cancels: HashMap<(Venue, String), Instant>,
+    ack_timeout_reported: bool,
     _single_owner: PhantomData<Rc<()>>,
 }
 impl YidaTrader {
@@ -119,6 +124,7 @@ impl YidaTrader {
             cn_yida_create(
                 lib.as_ptr(),
                 native_config.as_ptr(),
+                config.trading_protocol.native_code(),
                 callback,
                 (&mut *context as *mut ContextData).cast(),
                 error.as_mut_ptr(),
@@ -138,6 +144,9 @@ impl YidaTrader {
             fault,
             credentials,
             references: HashMap::new(),
+            pending_acks: HashMap::new(),
+            pending_cancels: HashMap::new(),
+            ack_timeout_reported: false,
             _single_owner: PhantomData,
         })
     }
@@ -167,24 +176,70 @@ impl YidaTrader {
     pub fn reconnect(&mut self) {
         unsafe { cn_yida_disconnect(self.handle.as_ptr()) };
     }
+    pub fn transport_ready(&self) -> bool {
+        unsafe { cn_yida_transport_ready(self.handle.as_ptr()) == 1 }
+    }
+    pub fn ensure_transport_ready(&self) -> Result<()> {
+        ensure!(
+            self.transport_ready(),
+            "configured native trading transport unavailable; no send attempted"
+        );
+        Ok(())
+    }
+    pub fn observe_order(&mut self, e: &RawEvent) -> Result<()> {
+        if e.kind == ORDER && e.order_group == 0 {
+            if let Some((venue, key)) = self.references.get(&e.reference) {
+                if *venue == e.venue()? && key.session == session_key(e.day) {
+                    self.pending_acks.remove(&e.reference);
+                }
+            }
+            if matches!(e.status, 2..=4) && e.system_id > 0 {
+                self.pending_cancels
+                    .remove(&(e.venue()?, e.system_id.to_string()));
+            }
+        }
+        Ok(())
+    }
+    pub fn expired_response(&mut self, now: Instant, timeout: Duration) -> Option<ResponseTimeout> {
+        if self.ack_timeout_reported {
+            return None;
+        }
+        let expired = self
+            .pending_acks
+            .iter()
+            .find(|(_, sent)| now.duration_since(**sent) >= timeout)
+            .map(|(reference, _)| ResponseTimeout::Submit {
+                order_ref: *reference,
+            })
+            .or_else(|| {
+                self.pending_cancels
+                    .iter()
+                    .find(|(_, sent)| now.duration_since(**sent) >= timeout)
+                    .map(|((venue, id), _)| ResponseTimeout::Cancel {
+                        venue: *venue,
+                        system_id: id.clone(),
+                    })
+            });
+        self.ack_timeout_reported = expired.is_some();
+        expired
+    }
+    pub fn recovered(&mut self) {
+        self.ack_timeout_reported = false;
+        // A complete snapshot restores current working/terminal orders. It never
+        // releases their position/cash reservations or resends a cancellation.
+        self.pending_cancels.clear();
+    }
     pub fn key(&self, e: &RawEvent) -> Result<OrderKey> {
+        ensure!(
+            e.order_group == 0,
+            "unsupported native order group; evidence retained"
+        );
         if let Some((venue, key)) = self.references.get(&e.reference) {
             if *venue == e.venue()? && key.session == session_key(e.day) {
                 return Ok(key.clone());
             }
         }
         e.recovered_key()
-    }
-    pub fn failed_key(&self, e: &RawEvent) -> Result<OrderKey> {
-        let (venue, key) = self
-            .references
-            .get(&e.reference)
-            .context("unmatched native failed-order reference")?;
-        ensure!(
-            *venue == e.venue()? && key.session == session_key(e.day),
-            "failed-order venue/day mismatch"
-        );
-        Ok(key.clone())
     }
 }
 fn send_result(code: i32) -> Result<i32> {
@@ -232,7 +287,8 @@ impl Trader for YidaTrader {
             TimeInForce::Fak => 1,
             TimeInForce::Fok => 3,
         };
-        send_result(unsafe {
+        self.pending_acks.insert(reference, Instant::now());
+        let result = send_result(unsafe {
             cn_yida_insert(
                 self.handle.as_ptr(),
                 exchange.as_ptr(),
@@ -247,17 +303,35 @@ impl Trader for YidaTrader {
                 o.intent.lots,
                 o.limit_price,
             )
-        })
+        });
+        if matches!(result, Ok(code) if code > 0) {
+            self.pending_acks.remove(&reference);
+        }
+        result
     }
     fn cancel(&mut self, o: &PreparedCancel) -> Result<i32> {
         let exchange = CString::new(o.venue.as_str())?;
         let id = o
             .system_id
-            .parse::<i32>()
+            .parse::<i64>()
             .context("invalid native system ID")?;
         ensure!(id > 0, "native cancel requires a positive system ID");
-        send_result(unsafe { cn_yida_cancel(self.handle.as_ptr(), exchange.as_ptr(), id) })
+        let key = (o.venue, o.system_id.clone());
+        self.pending_cancels.insert(key.clone(), Instant::now());
+        let result =
+            send_result(unsafe { cn_yida_cancel(self.handle.as_ptr(), exchange.as_ptr(), id) });
+        if matches!(result, Ok(code) if code > 0) {
+            self.pending_cancels.remove(&key);
+        }
+        result
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum ResponseTimeout {
+    Submit { order_ref: i32 },
+    Cancel { venue: Venue, system_id: String },
 }
 impl Drop for YidaTrader {
     fn drop(&mut self) {

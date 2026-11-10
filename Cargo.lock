@@ -917,6 +917,7 @@ dependencies = [
  "cc",
  "crossbeam-channel",
  "encoding_rs",
+ "libc",
  "serde",
  "serde_json",
  "toml 0.8.23",

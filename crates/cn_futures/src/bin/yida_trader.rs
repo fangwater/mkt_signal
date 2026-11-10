@@ -32,7 +32,7 @@ fn run() -> Result<()> {
             "--execute" => execute = true,
             "--check-config" => check_config = true,
             "--help" | "-h" => {
-                println!("yida-trader --config PATH [--check-config] [--connect [--execute]]\nyida-trader --sdk-version /absolute/path/libyd.so\n\nDefault: validate configuration only; no network or credentials required.\n--connect logs in and waits for native notifyCaughtUp account recovery.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, submit, cancel, shutdown. EOF stops the runtime.\nExisting venue orders are never automatically cancelled on startup or exit.");
+                println!("yida-trader --config PATH [--check-config] [--connect [--execute]]\nyida-trader --sdk-version /absolute/path/yd.so\n\nNative SDK: 1.502.53.182; trading_protocol: tcp / udp / xtcp.\nDefault: validate project configuration only; no network or credentials required.\n--connect validates native config, logs in and waits for notifyCaughtUp account recovery.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, submit, cancel, shutdown. EOF stops the runtime.\nExisting venue orders are never automatically cancelled on startup or exit.");
                 return Ok(());
             }
             _ => bail!("unknown argument; use --help"),

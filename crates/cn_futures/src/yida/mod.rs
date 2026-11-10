@@ -22,11 +22,12 @@ pub const POSITION: i32 = 9;
 pub const ORDER: i32 = 10;
 pub const TRADE: i32 = 11;
 pub const END: i32 = 12;
-pub const FAILED_ORDER: i32 = 13;
-pub const FAILED_CANCEL: i32 = 14;
-pub const INVALIDATED: i32 = 15;
-pub const SEGMENT: i32 = 16;
-pub const FATAL: i32 = 17;
+pub const FAILED_CANCEL: i32 = 13;
+pub const INVALIDATED: i32 = 14;
+pub const SEGMENT: i32 = 15;
+pub const FATAL: i32 = 16;
+pub const TRANSPORT: i32 = 17;
+pub const SDK_REFERENCE: &str = "1.502.53.182";
 
 pub fn scope() -> ExecutionScope {
     ExecutionScope {
@@ -47,8 +48,6 @@ pub struct RawEvent {
     pub error: i32,
     pub day: i32,
     pub reference: i32,
-    pub system_id: i32,
-    pub trade_id: i32,
     pub direction: i32,
     pub offset: i32,
     pub hedge: i32,
@@ -67,6 +66,13 @@ pub struct RawEvent {
     pub login_count: i32,
     pub flag: i32,
     pub native_time: i32,
+    pub order_group: i32,
+    pub trade_flag: i32,
+    pub no_order: i32,
+    pub legacy_system_id: i32,
+    pub legacy_trade_id: i32,
+    pub system_id: i64,
+    pub trade_id: i64,
     pub price: f64,
     pub tick: f64,
     pub available: f64,
@@ -128,7 +134,11 @@ impl RawEvent {
     }
     pub fn to_order(&self, key: OrderKey) -> Result<OrderUpdate> {
         ensure!(
-            self.hedge == 1 && self.flag == 0 && self.product_class == 1,
+            self.kind == ORDER
+                && self.hedge == 1
+                && self.flag == 0
+                && self.product_class == 1
+                && self.order_group == 0,
             "unsupported Yida hedge/order flag/product class"
         );
         let status = match self.status {
@@ -140,6 +150,25 @@ impl RawEvent {
             v => bail!("unsupported Yida status {v}"),
         };
         ensure!(
+            self.lots > 0
+                && self.traded >= 0
+                && self.traded <= self.lots
+                && self.price.is_finite()
+                && (status == OrderStatus::Rejected || self.price > 0.0)
+                && (self.error == 0 || status == OrderStatus::Rejected)
+                && (status != OrderStatus::Filled || self.traded == self.lots)
+                && (status != OrderStatus::Rejected || self.traded == 0),
+            "inconsistent native order status/error/quantity/price; evidence retained"
+        );
+        let venue = self.venue()?;
+        let symbol = text(&self.symbol)?;
+        ensure!(
+            matches!(venue, Venue::Shfe | Venue::Ine)
+                && is_future_symbol(venue, &symbol)
+                && self.day.to_string().len() == 8,
+            "native order outside supported futures/day scope"
+        );
+        ensure!(
             self.system_id > 0
                 || (matches!(status, OrderStatus::Pending | OrderStatus::Rejected)
                     && self.reference > 0
@@ -148,8 +177,8 @@ impl RawEvent {
         );
         Ok(OrderUpdate {
             key,
-            symbol: text(&self.symbol)?,
-            venue: self.venue()?,
+            symbol,
+            venue,
             system_id: if self.system_id > 0 {
                 self.system_id.to_string()
             } else {
@@ -167,17 +196,32 @@ impl RawEvent {
     }
     pub fn to_fill(&self) -> Result<Fill> {
         ensure!(
-            self.hedge == 1
+            self.kind == TRADE
+                && self.hedge == 1
                 && self.product_class == 1
                 && self.trade_id > 0
                 && self.system_id > 0
-                && self.commission.is_finite(),
+                && self.order_group == 0
+                && self.trade_flag == 0
+                && self.no_order == 0
+                && self.commission.is_finite()
+                && self.lots > 0
+                && self.price.is_finite()
+                && self.price > 0.0,
             "unsupported/malformed native fill; retain evidence"
+        );
+        let venue = self.venue()?;
+        let symbol = text(&self.symbol)?;
+        ensure!(
+            matches!(venue, Venue::Shfe | Venue::Ine)
+                && is_future_symbol(venue, &symbol)
+                && self.day.to_string().len() == 8,
+            "native fill outside supported futures/day scope"
         );
         Ok(Fill {
             identity: TradeIdentity {
-                venue: self.venue()?,
-                symbol: text(&self.symbol)?,
+                venue,
+                symbol,
                 trading_day: self.day.to_string(),
                 trade_id: self.trade_id.to_string(),
                 side: self.side()?,

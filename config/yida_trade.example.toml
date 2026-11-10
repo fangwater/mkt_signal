@@ -1,6 +1,8 @@
-# Native Hanlin YDApi reference 1.188.78.0. Keep SDK/config files outside the repo.
-sdk_library = "/opt/yida/1.188.78.0/libyd.so"
+# Native Hanlin YDApi 1.502.53.182. Keep vendor files outside the repo.
+sdk_library = "/opt/yida/1.502.53.182/linux64/yd.so"
 sdk_config = "/opt/yida/trade-server.cfg"
+trading_protocol = "xtcp" # tcp / udp / xtcp; must match native TradingProtocol
+# business_core = <isolated CPU>; set SDK thread CPUIDs to other CPUs in sdk_config.
 flow_directory = "/tmp/mkt_yida_sim/flow"
 journal = "/tmp/mkt_yida_sim/events.jsonl"
 user_id_env = "YIDA_USER_ID"
@@ -9,7 +11,7 @@ app_id_env = "YIDA_APP_ID"
 auth_code_env = "YIDA_AUTH_CODE"
 event_capacity = 8192
 response_timeout_ms = 30000
-idle_sleep_us = 50
+idle_sleep_us = 0
 
 [[symbols]]
 venue = "SHFE"

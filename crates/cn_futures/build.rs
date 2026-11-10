@@ -34,7 +34,7 @@ fn main() {
     {
         let sdk = std::path::PathBuf::from(
             std::env::var_os("YIDA_SDK_DIR")
-                .expect("yida-sdk requires YIDA_SDK_DIR with native 1.188.78.0 headers"),
+                .expect("yida-sdk requires YIDA_SDK_DIR with native 1.502.53.182 headers"),
         );
         for name in ["ydApi.h", "ydDataStruct.h", "ydDataType.h"] {
             assert!(sdk.join(name).is_file(), "missing {} in YIDA_SDK_DIR", name);

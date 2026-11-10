@@ -165,6 +165,7 @@ impl Session {
                     .as_mut()
                     .context("position row outside caught-up snapshot")?;
                 let venue = e.venue()?;
+                let symbol = text(&e.symbol)?;
                 ensure!(
                     scope().venues.contains(&venue),
                     "account holds positions outside SHFE/INE scope"
@@ -175,14 +176,14 @@ impl Session {
                         && e.lots >= 0
                         && e.frozen >= 0
                         && e.frozen <= e.lots,
-                    "unsupported/invalid native position"
+                    "unsupported/invalid native position: venue={} symbol={} product_class={} hedge={} lots={} frozen={}",
+                    venue.as_str(), symbol, e.product_class, e.hedge, e.lots, e.frozen
                 );
                 let side = match e.position_direction {
                     2 => Side::Buy,
                     3 => Side::Sell,
                     _ => anyhow::bail!("invalid native position direction"),
                 };
-                let symbol = text(&e.symbol)?;
                 ensure!(
                     self.seen_positions
                         .insert((venue, symbol.clone(), side, e.date)),
@@ -235,7 +236,7 @@ impl Session {
                 }
             }
             FATAL => anyhow::bail!("native SDK fatal/missing-order event; stop and recover"),
-            INVALIDATED if self.ready => {
+            INVALIDATED if self.ready || self.snapshot.is_some() => {
                 self.ready = false;
                 anyhow::bail!("native permissions/account changed; reconnect and recover");
             }

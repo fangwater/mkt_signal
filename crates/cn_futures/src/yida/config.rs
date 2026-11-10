@@ -1,6 +1,6 @@
 use crate::model::{is_future_symbol, RiskLimits, Venue};
 use anyhow::{ensure, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     ffi::CString,
@@ -13,6 +13,8 @@ pub struct Config {
     pub sdk_library: PathBuf,
     /// Broker-supplied native Yida server config; no account secrets in this file.
     pub sdk_config: PathBuf,
+    pub trading_protocol: TradingProtocol,
+    pub business_core: Option<usize>,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
     pub user_id_env: String,
@@ -24,6 +26,30 @@ pub struct Config {
     pub idle_sleep_us: u64,
     pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TradingProtocol {
+    Tcp,
+    Udp,
+    Xtcp,
+}
+impl TradingProtocol {
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+            Self::Xtcp => "XTCP",
+        }
+    }
+    pub fn native_code(self) -> i32 {
+        match self {
+            Self::Tcp => 0,
+            Self::Udp => 1,
+            Self::Xtcp => 2,
+        }
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +74,13 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(core) = self.business_core {
+            ensure!(
+                core < libc::CPU_SETSIZE as usize,
+                "business_core exceeds CPU_SETSIZE"
+            );
+        }
         for p in [
             &self.sdk_library,
             &self.sdk_config,
@@ -97,11 +130,14 @@ impl Config {
         }
         self.risk.validate()
     }
-    /// Validate the broker-owned native config before loading the vendor library. This
-    /// first implementation only permits TCP trading with all Yida market data disabled.
+    /// Check the broker-owned native config before loading any vendor code. The
+    /// transport must be explicit and match the business configuration.
     pub fn validate_sdk_config(&self) -> Result<()> {
         let text =
             std::fs::read_to_string(&self.sdk_config).context("read native Yida server config")?;
+        self.validate_sdk_config_text(&text)
+    }
+    pub(super) fn validate_sdk_config_text(&self, text: &str) -> Result<()> {
         let mut values = std::collections::HashMap::new();
         for raw in text.lines() {
             let line = raw.split('#').next().unwrap_or_default().trim();
@@ -116,8 +152,12 @@ impl Config {
                 "duplicate native Yida config key"
             );
         }
+        ensure!(
+            !values.contains_key("UDPTrading"),
+            "remove legacy UDPTrading; explicitly configure TradingProtocol"
+        );
         for (key, expected) in [
-            ("UDPTrading", "no"),
+            ("TradingProtocol", self.trading_protocol.native_name()),
             ("ConnectTCPMarketData", "no"),
             ("ReceiveUDPMarketData", "no"),
             ("RecalcMode", "off"),
@@ -132,6 +172,37 @@ impl Config {
                 values.get(key).is_some_and(|v| !v.is_empty()),
                 "missing native Yida server config key {key}"
             );
+        }
+        let port = values["TradingServerPort"].parse::<u16>();
+        ensure!(port.is_ok_and(|p| p > 0), "invalid TCP TradingServerPort");
+        match self.trading_protocol {
+            TradingProtocol::Udp => ensure!(
+                matches!(values.get("UDPTradingType"), Some(&"socket" | &"sf" | &"exa" | &"yusnic")),
+                "UDPTradingType must explicitly select socket, sf, exa or yusnic; automatic can silently fall back"
+            ),
+            TradingProtocol::Xtcp => ensure!(
+                matches!(values.get("XTCPTradingType"), Some(&"automatic" | &"socket")),
+                "XTCPTradingType must explicitly select automatic or socket"
+            ),
+            TradingProtocol::Tcp => {}
+        }
+        if let Some(core) = self.business_core {
+            let mut keys = vec!["TCPTradingCPUID", "TimerCPUID"];
+            if self.trading_protocol == TradingProtocol::Xtcp {
+                keys.push("XTCPTradingCPUID");
+            }
+            for key in keys {
+                let sdk_core = values
+                    .get(key)
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .with_context(|| format!("explicit {key} required with business_core"))?;
+                #[cfg(target_os = "linux")]
+                ensure!(
+                    sdk_core < libc::CPU_SETSIZE as usize,
+                    "{key} exceeds CPU_SETSIZE"
+                );
+                ensure!(sdk_core != core, "{key} must differ from business_core");
+            }
         }
         Ok(())
     }

@@ -30,9 +30,15 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     };
     let mut session = Session::default();
     let input = input_commands()?;
-    journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":"1.188.78.0","execute":execute,"venues":["SHFE","INE"]}),true)?;
+    journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"business_core":config.business_core,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
     runtime.trader.start()?;
+    // Create input, journal and SDK workers before pinning this business thread.
+    // SDK workers have their own explicit CPUIDs when business_core is configured.
+    if let Some(core) = config.business_core {
+        pin_business_thread(core)?;
+    }
     let mut stopping = false;
+    let mut transport_seen_ready = false;
     let mut recovery_since = Instant::now();
     while !stopping {
         anyhow::ensure!(!runtime.trader.fault.load(Ordering::Acquire) && !journal.failed.load(Ordering::Acquire),"reliable Yida ingress/journal failed; stop and reconcile before retry; venue orders not cancelled");
@@ -55,6 +61,18 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 runtime.core.disconnect();
                 recovery_since = Instant::now();
             }
+            if e.kind == TRANSPORT {
+                if e.flag == 1 {
+                    transport_seen_ready = true;
+                } else if transport_seen_ready
+                    && config.trading_protocol == config::TradingProtocol::Xtcp
+                {
+                    runtime
+                        .core
+                        .block("XTCP unavailable; reconcile after transport recovers");
+                }
+                journal.record(json!({"type":"transport_status","trading_protocol":config.trading_protocol,"ready":e.flag==1,"advertised_port":e.minimum}),true)?;
+            }
             if e.kind == READY_LOGIN {
                 anyhow::ensure!(
                     e.error == 0,
@@ -69,13 +87,17 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             };
             let was_ready = session.ready;
             let outcome = (|| -> Result<()> {
-                if e.kind == FAILED_ORDER {
-                    let key = runtime.trader.failed_key(&e)?;
-                    runtime.core.reject(&key)?;
+                if e.kind == ORDER {
+                    e.to_order(
+                        key.clone()
+                            .ok_or_else(|| anyhow::anyhow!("missing native order key"))?,
+                    )?;
+                    runtime.trader.observe_order(&e)?;
                 }
 
                 if let Some(s) = session.on_event(&e, &config, key.clone())? {
                     runtime.core.restore(s)?;
+                    runtime.trader.recovered();
                     journal.record(
                         json!({"type":"reconciled","state":runtime.core.view()}),
                         true,
@@ -88,21 +110,9 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                         TRADE => {
                             runtime.core.on_fill(e.to_fill()?)?;
                         }
-                        FAILED_CANCEL => {
-                            let venue = e.venue()?;
-                            let id = e.system_id.to_string();
-                            let key = runtime
-                                .core
-                                .view()
-                                .orders
-                                .into_iter()
-                                .find(|o| o.request.venue == venue && o.system_id == id)
-                                .map(|o| o.key.clone())
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!("unmatched native cancel rejection")
-                                })?;
-                            runtime.core.cancel_failed(&key);
-                        }
+                        // The SDK explicitly does not promise one-to-one cancel-error
+                        // correlation. Preserve this evidence without changing OMS state.
+                        FAILED_CANCEL => {}
                         ACCOUNT => runtime.core.constrain_cash(e.available)?,
                         _ => {}
                     }
@@ -127,6 +137,13 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 || recovery_since.elapsed() < Duration::from_millis(config.response_timeout_ms),
             "Yida login/recovery timed out; existing venue orders not cancelled"
         );
+        if let Some(request) = runtime.trader.expired_response(
+            Instant::now(),
+            Duration::from_millis(config.response_timeout_ms),
+        ) {
+            runtime.core.block("native order/cancel response timed out; retain reservation and reconcile; no automatic retry");
+            journal.record(json!({"type":"trading_blocked","request":request,"error":"native order/cancel response timed out; reservation retained; no automatic retry"}),true)?;
+        }
         if runtime.trader.events.is_empty() {
             match input.try_recv() {
                 Ok(command) => {
@@ -134,7 +151,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     let result = (|| -> Result<serde_json::Value> {
                         match command? {
                             Command::State {} => {
-                                Ok(json!({"type":"state","state":runtime.core.view()}))
+                                let transport_ready = runtime.trader.transport_ready();
+                                Ok(
+                                    json!({"type":"state","state":runtime.core.view(),"trading_protocol":config.trading_protocol,"transport_ready":transport_ready,"can_trade":runtime.execute && runtime.core.is_ready() && transport_ready}),
+                                )
                             }
                             Command::Shutdown {} => {
                                 stopping = true;
@@ -148,10 +168,12 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 Ok(json!({"type":"reconciling"}))
                             }
                             Command::Submit { intent } => {
+                                runtime.trader.ensure_transport_ready()?;
                                 let receipt=runtime.submit_planned_with(intent,Instant::now(),|p|journal.record(json!({"type":"prepared_submit","key":p.key,"intent":p.intent,"limit_price":p.limit_price}),false))?;
                                 Ok(json!({"type":"submit_receipt","receipt":receipt}))
                             }
                             Command::Cancel { key } => {
+                                runtime.trader.ensure_transport_ready()?;
                                 runtime.cancel_with(&key,Instant::now(),|p|journal.record(json!({"type":"prepared_cancel","key":p.key,"venue":p.venue,"symbol":p.symbol,"system_id":p.system_id}),false))?;
                                 Ok(json!({"type":"cancel_submitted_locally","key":key}))
                             }
@@ -182,4 +204,29 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         true,
     )?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn pin_business_thread(core: usize) -> Result<()> {
+    anyhow::ensure!(
+        core < libc::CPU_SETSIZE as usize,
+        "business_core exceeds CPU_SETSIZE"
+    );
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        libc::CPU_SET(core, &mut set);
+        if libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set) != 0 {
+            anyhow::bail!(
+                "pin Yida business thread to CPU {core}: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pin_business_thread(_core: usize) -> Result<()> {
+    anyhow::bail!("business_core pinning requires Linux")
 }

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
@@ -15,9 +16,10 @@
 
 namespace {
 constexpr int invalid = -9901;
+constexpr int transport_unavailable = 9902; // Certain local rejection: no SDK send attempted.
 // Event IDs are bridge-owned, vendor integer constants remain unchanged in the fields.
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
-       Position, Order, Trade, End, FailedOrder, FailedCancel, Invalidated, Segment, Fatal };
+       Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
 void msg(char* out, size_t cap, const char* value) { if (out && cap) std::snprintf(out, cap, "%s", value); }
 template<size_t N, size_t M> void field(char (&out)[N], const char (&in)[M]) {
@@ -36,7 +38,7 @@ struct Library {
     explicit Library(const char* path): handle(dlopen(path, RTLD_NOW | RTLD_LOCAL)) { if (!handle) throw std::runtime_error("cannot load Yida library/dependencies"); }
     ~Library() { if (handle && !retain) dlclose(handle); }
     template<typename T> T symbol(const char* name) { auto p = dlsym(handle, name); if (!p) throw std::runtime_error("missing native Yida symbol"); return reinterpret_cast<T>(p); }
-    void check() { const char* v = symbol<const char*(*)()>("getYDVersion")(); if (!v || std::strcmp(v, "1.188.78.0")) throw std::runtime_error("Yida SDK must match reference headers 1.188.78.0"); }
+    void check() { const char* v = symbol<const char*(*)()>("getYDVersion")(); if (!v || std::strcmp(v, "1.502.53.182")) throw std::runtime_error("Yida SDK must match reference headers 1.502.53.182"); }
 };
 template<typename T> struct ResultDeleter { void operator()(YDQueryResult<T>* p) const { if (p) p->destroy(); } };
 template<typename T> using Query = std::unique_ptr<YDQueryResult<T>, ResultDeleter<T>>;
@@ -48,11 +50,15 @@ public:
     CnYidaCallback callback;
     void* context;
     std::atomic<bool> destroying{false}, initialized{false}, logged_in{false};
+    std::atomic<bool> tcp_connected{false}, xtcp_connected{false}, caught_up{false};
+    std::atomic<int> trading_port{0};
+    const int protocol; // TCP=0, UDP=1, XTCP=2.
     std::mutex destroy_mutex;
     std::condition_variable destroyed_cv;
     bool destroyed = false;
     int max_ref = 0;
-    Bridge(const char* lib, const char* config, CnYidaCallback cb, void* ctx): library(lib), callback(cb), context(ctx) {
+    Bridge(const char* lib, const char* config, int transport, CnYidaCallback cb, void* ctx): library(lib), callback(cb), context(ctx), protocol(transport) {
+        if (protocol<0 || protocol>2) throw std::runtime_error("invalid native trading protocol");
         library.check(); api = library.symbol<YDExtendedApi*(*)(const char*)>("makeYDExtendedApi")(config);
         if (!api) throw std::runtime_error("makeYDExtendedApi failed");
         // Keep code mapped even after asynchronous API destruction: vendor threads may still
@@ -61,6 +67,22 @@ public:
     }
     void send(CnYidaEvent e) noexcept { callback(context, &e); }
     void fatal() noexcept { CnYidaEvent e{}; e.kind=Fatal; e.error=invalid; send(e); }
+    bool can_send() const {
+        return !destroying && tcp_connected && initialized && logged_in && caught_up &&
+            (protocol==0 || (trading_port>0 && (protocol!=2 || xtcp_connected)));
+    }
+    void transport_event() {
+        CnYidaEvent e{}; e.kind=Transport; e.status=protocol; e.flag=can_send(); e.minimum=trading_port; send(e);
+    }
+    void read_trading_port() {
+        trading_port=0;
+        if (protocol==0) return;
+        const auto* param=api->getSystemParamByName(protocol==1?"UDPTradingPort":"XTCPTradingPort","System");
+        if (!param || strnlen(param->Value,sizeof(param->Value))==sizeof(param->Value)) return;
+        char* end=nullptr;
+        const long value=std::strtol(param->Value,&end,10);
+        if (end!=param->Value && *end=='\0' && value>0 && value<=65535) trading_port=static_cast<int>(value);
+    }
     template<typename F> void guarded(F f) noexcept { try { f(); } catch (...) { fatal(); } }
     void base(CnYidaEvent& e, const YDInstrument* i) {
         if (!i || !i->m_pExchange) throw std::runtime_error("missing Yida instrument metadata");
@@ -76,7 +98,8 @@ public:
         if (!o) throw std::runtime_error("missing order");
         if (o->YDOrderFlag!=YD_YOF_Normal) { unsupported(o); return; }
         CnYidaEvent e{}; e.kind=Order; e.replay=replay; base(e, i);
-        e.reference=o->OrderRef; e.system_id=o->OrderSysID; e.direction=o->Direction;
+        e.reference=o->OrderRef; e.system_id=o->LongOrderSysID; e.direction=o->Direction;
+        e.legacy_system_id=o->OrderSysID; e.order_group=o->OrderGroupID;
         e.offset=o->OffsetFlag; e.hedge=o->HedgeFlag; e.status=o->OrderStatus;
         e.lots=o->OrderVolume; e.traded=o->TradeVolume; e.price=o->Price;
         e.error=o->ErrorNo; e.flag=o->YDOrderFlag; e.native_time=o->InsertTime;
@@ -84,7 +107,8 @@ public:
     }
     void unsupported(const YDOrder* o) {
         CnYidaEvent e{}; e.kind=Fatal; e.error=invalid;
-        if(o) { e.reference=o->OrderRef; e.system_id=o->OrderSysID; e.flag=o->YDOrderFlag;
+        if(o) { e.reference=o->OrderRef; e.system_id=o->LongOrderSysID; e.flag=o->YDOrderFlag;
+            e.legacy_system_id=o->OrderSysID; e.order_group=o->OrderGroupID;
             e.direction=o->Direction; e.offset=o->OffsetFlag; e.hedge=o->HedgeFlag;
             e.status=o->OrderStatus; e.lots=o->OrderVolume; e.traded=o->TradeVolume; }
         send(e);
@@ -92,7 +116,9 @@ public:
     void trade(const YDTrade* t, const YDInstrument* i, bool replay=false) {
         if (!t) throw std::runtime_error("missing trade");
         CnYidaEvent e{}; e.kind=Trade; e.replay=replay; base(e, i);
-        e.reference=t->OrderRef; e.system_id=t->OrderSysID; e.trade_id=t->TradeID;
+        e.reference=t->OrderRef; e.system_id=t->LongOrderSysID; e.trade_id=t->LongTradeID;
+        e.legacy_system_id=t->OrderSysID; e.legacy_trade_id=t->TradeID; e.order_group=t->OrderGroupID;
+        e.trade_flag=t->YDTradeFlag; e.no_order=t->NoOrderFlag;
         e.direction=t->Direction; e.offset=t->OffsetFlag; e.hedge=t->HedgeFlag;
         e.lots=t->Volume; e.price=t->Price; e.commission=t->Commission; e.native_time=t->TradeTime;
         original(e, i->m_pExchange, t->OrderSysID, t->TradeID); send(e);
@@ -159,35 +185,44 @@ public:
     void start_destroy() { if (!destroying.exchange(true)) api->startDestroy(); }
     void notifyAfterApiDestroy() override { std::lock_guard<std::mutex> lock(destroy_mutex); destroyed=true; destroyed_cv.notify_all(); }
     void notifyEvent(int event) override { guarded([&] {
-        if (event==YD_AE_ServerRestarted) { logged_in=false; fatal(); start_destroy(); return; }
+        if (event==YD_AE_ServerRestarted) { logged_in=false; caught_up=false; fatal(); start_destroy(); return; }
         CnYidaEvent e{};
-        if (event==YD_AE_TCPTradeConnected) e.kind=Connected;
-        else if (event==YD_AE_TCPTradeDisconnected || event==YD_AE_ServerSwitched) { logged_in=false; e.kind=Disconnected; }
+        if (event==YD_AE_XTCPTradeConnected || event==YD_AE_XTCPTradeDisconnected) {
+            xtcp_connected=event==YD_AE_XTCPTradeConnected; transport_event(); return;
+        }
+        if (event==YD_AE_TCPTradeConnected) { tcp_connected=true; e.kind=Connected; }
+        else if (event==YD_AE_TCPTradeDisconnected || event==YD_AE_ServerSwitched) {
+            tcp_connected=false; logged_in=false; caught_up=false; xtcp_connected=false; e.kind=Disconnected;
+        }
         else return;
-        e.status=event; send(e);
+        e.status=event; send(e); transport_event();
     }); }
     void notifyReadyForLogin(bool failed) override { CnYidaEvent e{}; e.kind=ReadyLogin; e.error=failed?1:0; send(e); }
     void notifyLogin(int err,int ref,bool monitor) override { guarded([&] {
         max_ref=ref; logged_in=err==0 && !monitor;
+        if (logged_in) tcp_connected=true;
         CnYidaEvent e{}; e.kind=Login; e.error=err; e.reference=ref; e.flag=monitor; e.day=api->getTradingDay(); send(e);
     }); }
     void notifyFinishInit() override { initialized=true; CnYidaEvent e{}; e.kind=Init; send(e); }
-    void notifyCaughtUp() override { guarded([&] { if (!initialized || !logged_in) throw std::runtime_error("caught up before initialization/login"); snapshot(); }); }
+    void notifyCaughtUp() override { guarded([&] {
+        if (!initialized || !logged_in) throw std::runtime_error("caught up before initialization/login");
+        read_trading_port(); snapshot(); caught_up=true; transport_event();
+    }); }
     void notifyOrder(const YDOrder* o,const YDInstrument* i,const YDAccount* a) override { guarded([&] { if (mine(a)) order(o,i); }); }
     void notifyTrade(const YDTrade* t,const YDInstrument* i,const YDAccount* a) override { guarded([&] { if (mine(a)) trade(t,i); }); }
-    void notifyFailedOrder(const YDInputOrder* o,const YDInstrument* i,const YDAccount* a) override { guarded([&] {
-        if (!mine(a) || !o) return;
-        CnYidaEvent e{}; e.kind=FailedOrder; base(e,i); e.reference=o->OrderRef; e.error=o->ErrorNo; send(e);
-    }); }
     void notifyFailedCancelOrder(const YDFailedCancelOrder* o,const YDExchange* x,const YDAccount* a) override { guarded([&] {
         if (!mine(a) || !o || !x) return;
-        CnYidaEvent e{}; e.kind=FailedCancel; field(e.exchange,x->ExchangeID); e.system_id=o->OrderSysID; e.error=o->ErrorNo; send(e);
+        CnYidaEvent e{}; e.kind=FailedCancel; field(e.exchange,x->ExchangeID); e.system_id=o->LongOrderSysID;
+        e.legacy_system_id=o->OrderSysID; e.order_group=o->OrderGroupID; e.reference=o->OrderRef; e.error=o->ErrorNo; send(e);
     }); }
     void invalidated() { CnYidaEvent e{}; e.kind=Invalidated; send(e); }
     void notifyAccount(const YDAccount*) override { invalidated(); }
     void notifyAccountExchangeInfo(const YDAccountExchangeInfo*) override { invalidated(); }
     void notifyAccountProductInfo(const YDAccountProductInfo*) override { invalidated(); }
     void notifyAccountInstrumentInfo(const YDAccountInstrumentInfo*) override { invalidated(); }
+    void notifyAccountMarginModelInfo(const YDAccountMarginModelInfo*) override { invalidated(); }
+    void notifyUpdateMarginRate(const YDUpdateMarginRate*) override { invalidated(); }
+    void notifyAccountLoginInfo(const YDAccountLoginInfo*) override { invalidated(); }
     void notifyMissingOrder(const YDMissingOrder* o) override { unsupported(o); }
     void notifyCombPositionOrder(const YDOrder* o,const YDCombPositionDef*,const YDAccount*) override { unsupported(o); }
     void notifyOptionExecTogetherOrder(const YDOrder* o,const YDInstrument*,const YDInstrument*,const YDAccount*) override { unsupported(o); }
@@ -205,8 +240,8 @@ Bridge* get(void* p) { auto* b=static_cast<Bridge*>(p); if(!b || b->destroying) 
 extern "C" {
 size_t cn_yida_event_size() { return sizeof(CnYidaEvent); }
 int cn_yida_version(const char* path,char* out,size_t cap) { try { Library l(path); l.check(); msg(out,cap,l.symbol<const char*(*)()>("getYDVersion")()); return 0; } catch(const std::exception& e) { msg(out,cap,e.what()); return invalid; } }
-void* cn_yida_create(const char* lib,const char* config,CnYidaCallback cb,void* ctx,char* error,size_t cap) {
-    try { return new Bridge(lib,config,cb,ctx); } catch(const std::exception& e) { msg(error,cap,e.what()); return nullptr; } catch(...) { msg(error,cap,"Yida create exception"); return nullptr; }
+void* cn_yida_create(const char* lib,const char* config,int protocol,CnYidaCallback cb,void* ctx,char* error,size_t cap) {
+    try { return new Bridge(lib,config,protocol,cb,ctx); } catch(const std::exception& e) { msg(error,cap,e.what()); return nullptr; } catch(...) { msg(error,cap,"Yida create exception"); return nullptr; }
 }
 int cn_yida_destroy(void* p) {
     auto* b=static_cast<Bridge*>(p); if(!b) return 0;
@@ -216,12 +251,19 @@ int cn_yida_destroy(void* p) {
         lock.unlock(); delete b; return 0;
     } catch (...) { return invalid; } // On timeout leak listener/context, never free live callback targets.
 }
-int cn_yida_start(void* p) { try { auto* b=get(p); return b->api->startExtended(b,b) ? 0 : invalid; } catch(...) { return invalid; } }
+int cn_yida_start(void* p) { try {
+    auto* b=get(p); const char* configured=b->api->getConfig("TradingProtocol");
+    const char* expected=b->protocol==0?"TCP":b->protocol==1?"UDP":"XTCP";
+    if (!configured || std::strcmp(configured,expected)) return invalid;
+    return b->api->startExtended(b,b) ? 0 : invalid;
+} catch(...) { return invalid; } }
 int cn_yida_login(void* p,const char* u,const char* pass,const char* app,const char* auth) { try { return get(p)->api->login(u,pass,app,auth) ? 0 : invalid; } catch(...) { return invalid; } }
-int cn_yida_reference(void* p) { try { return get(p)->api->getNextOrderRef(); } catch(...) { return invalid; } }
+int cn_yida_reference(void* p) { try { return get(p)->api->getNextOrderRef(0,true); } catch(...) { return invalid; } }
+int cn_yida_transport_ready(void* p) { try { return get(p)->can_send()?1:0; } catch(...) { return 0; } }
 int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int direction,int offset,int tif,int lots,double price) {
     try {
         auto* b=get(p); const auto* i=b->api->getInstrumentByID(symbol);
+        if (!b->can_send()) return transport_unavailable;
         if (!i || !i->m_pExchange || std::strcmp(i->m_pExchange->ExchangeID,exchange) || i->ProductClass!=YD_PC_Futures || !i->m_pExchange->UseTodayPosition || !ref || ref<0) return invalid;
         if (offset!=YD_OF_Open && offset!=YD_OF_CloseToday && offset!=YD_OF_CloseYesterday) return invalid;
         if (tif!=YD_ODT_Limit && tif!=YD_ODT_FAK && tif!=YD_ODT_FOK) return invalid;
@@ -241,9 +283,10 @@ int cn_yida_insert(void* p,const char* exchange,const char* symbol,int ref,int d
         return b->api->insertOrder(&o,i) ? 0 : invalid;
     } catch(...) { return invalid; }
 }
-int cn_yida_cancel(void* p,const char* exchange,int id) { try {
+int cn_yida_cancel(void* p,const char* exchange,int64_t id) { try {
     auto* b=get(p); const auto* x=b->api->getExchangeByID(exchange); if(!x || id<=0) return invalid;
-    YDCancelOrder o{}; o.OrderSysID=id; o.ConnectionSelectionType=YD_CS_Any; o.YDOrderFlag=YD_YOF_Normal;
+    if (!b->can_send()) return transport_unavailable;
+    YDCancelOrder o{}; o.LongOrderSysID=id; o.ConnectionSelectionType=YD_CS_Any; o.YDOrderFlag=YD_YOF_Normal;
     return b->api->cancelOrder(&o,x) ? 0 : invalid;
 } catch(...) { return invalid; } }
 void cn_yida_disconnect(void* p) { try { get(p)->api->disconnect(); } catch(...) {} }
