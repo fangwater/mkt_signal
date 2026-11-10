@@ -918,8 +918,11 @@ dependencies = [
  "crossbeam-channel",
  "encoding_rs",
  "libc",
+ "persist_common",
+ "persist_manager",
  "serde",
  "serde_json",
+ "sha2",
  "toml 0.8.23",
 ]
 

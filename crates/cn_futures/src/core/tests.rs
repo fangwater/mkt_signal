@@ -128,6 +128,7 @@ fn update(request: &PreparedOrder, traded: i32, status: OrderStatus) -> OrderUpd
         lots: request.intent.lots,
         traded,
         price_type: request.intent.price_type,
+        time_in_force: request.intent.time_in_force,
         limit_price: request.limit_price,
         status,
         cancel_rejected: false,
@@ -812,6 +813,7 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
             lots: 1,
             traded: 0,
             price_type: PriceType::Limit,
+            time_in_force: TimeInForce::Day,
             limit_price: 4000.0,
             status: OrderStatus::Working,
             cancel_rejected: false,
@@ -1345,4 +1347,26 @@ fn options_cannot_bypass_scope_metadata_or_the_premium_check_when_closing() {
     let mut s = option_snapshot();
     s.instruments[0].option = None;
     assert!(option_core().restore(s).is_err());
+}
+
+#[test]
+fn complete_fills_on_a_native_cancel_report_restore_as_filled_and_keep_tif() {
+    let mut core = core();
+    core.limits.enable_fak_fok = true;
+    let mut intent = intent(Side::Buy, Offset::Open, 1);
+    intent.time_in_force = TimeInForce::Fok;
+    let request = core.prepare(intent, Instant::now()).unwrap();
+    let mut snapshot = snapshot();
+    snapshot
+        .orders
+        .push(update(&request, 1, OrderStatus::Cancelled));
+    snapshot
+        .trades
+        .push(fill(&request, "terminal-cancel-race", 1));
+    core.restore(snapshot).unwrap();
+    let restored = core.order(&request.key).unwrap();
+    assert_eq!(restored.status, OrderStatus::Filled);
+    assert_eq!(restored.request.time_in_force, TimeInForce::Fok);
+    assert_eq!(restored.filled, 1);
+    assert_eq!(restored.cancelled, 0);
 }

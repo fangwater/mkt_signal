@@ -4,5 +4,6 @@ pub mod config;
 pub mod core;
 pub mod ctp;
 pub mod model;
+pub mod persistence;
 pub mod runtime;
 pub mod yida;

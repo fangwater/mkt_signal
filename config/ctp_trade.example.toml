@@ -3,6 +3,8 @@
 sdk_library = "/opt/ctp/6.7.11/libthosttraderapi_se.so"
 flow_directory = "/tmp/mkt_ctp_sim/flow"
 journal = "/tmp/mkt_ctp_sim/events.jsonl"
+# persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
+sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
 front = "tcp://127.0.0.1:1"
 broker_id = "REPLACE"
 # CTP 6.7.11 factory option: false selects the evaluation API, true the production API.

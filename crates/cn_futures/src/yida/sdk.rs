@@ -334,7 +334,17 @@ fn send_result(code: i32) -> Result<i32> {
 }
 impl Trader for YidaTrader {
     fn allocate_reference(&mut self, minimum: u64) -> Result<u64> {
-        let reference = unsafe { cn_yida_reference(self.handle.as_ptr()) };
+        // The server maximum excludes requests rejected before sending. Consume those
+        // references again locally after a restart, never reuse their durable identities.
+        let mut reference = unsafe { cn_yida_reference(self.handle.as_ptr()) };
+        while reference > 0 && (reference as u64) < minimum {
+            let next = unsafe { cn_yida_reference(self.handle.as_ptr()) };
+            ensure!(
+                next > reference,
+                "native reference allocator did not advance"
+            );
+            reference = next;
+        }
         ensure!(
             reference > 0 && reference as u64 >= minimum,
             "native allocator returned exhausted/non-monotone reference"
@@ -512,6 +522,7 @@ impl Drop for YidaTrader {
     fn drop(&mut self) {
         let code = unsafe { cn_yida_destroy(self.handle.as_ptr()) };
         if code != 0 {
+            self.fault.store(true, Ordering::Release);
             if let Some(c) = self.context.take() {
                 Box::leak(c);
             }

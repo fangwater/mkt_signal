@@ -118,7 +118,7 @@ python3 crates/cn_futures/tests/yida_public_sim_smoke.py \
 
 ## 一套交易契约
 
-一个业务线程直接执行意图、风控、预占、OMS 和 SDK 提交；SDK 内部线程回调只传递有界队列中的复制事件。异步 JSONL 审计和 stdin 读取在后台。没有策略兼容层，也没有风险到执行之间的 IPC。
+一个业务线程直接执行意图、风控、预占、OMS 和 SDK 提交；SDK 内部线程回调只传递有界队列中的复制事件。RocksDB 写盘、JSONL 审计和 stdin 读取在后台。没有策略兼容层，也没有风险到执行之间的 IPC。
 
 | 能力 | 原生映射与约束 |
 | --- | --- |
@@ -235,23 +235,25 @@ stdin 每行一个 JSON。CTP 和易达使用同一 `Intent` 与 `OrderKey` 结�
 - `notifyTradingSegment` 的参数没有被解释成“连续交易中”。首期不提供已验证的实时交易时段门控，使用原生权限、合约有效期和 `checkOrder` / 柜台验证；本地不能保证休市时提前拒绝。后续接入可靠交易状态源后再启用相应门控。
 - 权限 / 账户变化会阻断新增订单并要求恢复；可靠队列溢出通过队列外故障标记使进程停下，不静默继续。SDK `ServerRestarted` 回调会触发 `startDestroy`，避免厂商默认直接退出进程；之后需要新建实例并恢复。
 - SDK 生命周期遵循异步 `startDestroy` → `notifyAfterApiDestroy`，不直接 `delete api`。若 5 秒未完成销毁，保留回调对象到进程退出，避免释放仍可能被调用的地址；已启动的动态库保持映射，避免 SDK 尾部线程返回到卸载代码。
-- 日志是后台 JSONL，100 ms 刷盘，尚未接现有 RocksDB / uniform_orders；提交前入日志队列不等于掉电持久化。初版也没有自动做市、追单、实时保证金计算或端到端延迟承诺。
+- 原生回报、归一化订单与事实成交已接进程内 RocksDB，支持重启核对和原生导出，详见[持久化说明](cn_order_persistence.md)。默认异步发送前记录存在崩溃窗口，可配置 `sync_before_send=true` 等待落盘；原加密市场 account_monitor、Parquet 与 gRPC 同步尚未接入此入口。没有自动做市、追单、实时保证金计算或端到端延迟承诺。
 
 ## 本地验证
 
-2026-11-10 验证结果：CTP + 易达双 SDK feature 的 89 项常规单元测试通过；默认忽略的 CTP 官方库离线构造 / 销毁测试单独指定配套动态库后也通过。release 二进制通过 43 个易达合成 SDK 场景（含联调脚本拒绝触碰已有一手持仓的保护）、CTP 桥接回归及上述期货 6 组、期权 12 组实际公共仿真测试，`cargo fmt`、双 SDK `clippy -D warnings` 和本地 release 构建通过。订单解析覆盖两市场、双方向、三种开平、五种状态的 60 个组合，以及无效身份 / 数量 / 价格 / 错误状态等拒绝路径。期权解析另覆盖两市场、认购／认沽、双方向、三种开平、三种原生订单类型、限价／市价和五种状态；资金测试覆盖买开／买平权利金、涨停价上界、部分撤单退款及不预支卖出收入。
+2026-11-10 验证结果：CTP + 易达双 SDK feature 的 93 项常规单元测试通过，`persist_common` 15 项和完整 `persist_manager/runtime` 74 项测试通过；默认忽略的 CTP 官方库离线构造 / 销毁测试单独指定配套动态库后也通过。release 二进制通过 43 个易达合成 SDK 场景（含联调脚本拒绝触碰已有一手持仓的保护）、CTP 桥接回归及上述期货 6 组、期权 12 组实际公共仿真测试，`cargo fmt`、双 SDK `clippy -D warnings` 和本地 release 构建通过。订单解析覆盖两市场、双方向、三种开平、五种状态的 60 个组合，以及无效身份 / 数量 / 价格 / 错误状态等拒绝路径。期权解析另覆盖两市场、认购／认沽、双方向、三种开平、三种原生订单类型、限价／市价和五种状态；资金测试覆盖买开／买平权利金、涨停价上界、部分撤单退款及不预支卖出收入。
 
 ```bash
+# 交易程序与 cn_order_export 放在同一个构建目录，桥接测试会实际重开 RocksDB。
+cargo build --release -p persist_manager --features embedded --bin cn_order_export
 cargo fmt -p cn_futures --check
 cargo test -p cn_futures
 YIDA_SDK_DIR=/absolute/path/to/ydClient/ydAPI_c++/include \
   cargo test -p cn_futures --features yida-sdk
 YIDA_SDK_DIR=/absolute/path/to/ydClient/ydAPI_c++/include \
-  cargo clippy -p cn_futures --all-targets --features yida-sdk -- -D warnings
+  cargo clippy --no-deps -p cn_futures --all-targets --features yida-sdk -- -D warnings
 
 python3 crates/cn_futures/tests/yida_bridge_smoke.py \
   --sdk-dir /absolute/path/to/ydClient/ydAPI_c++/include \
-  --binary target/debug/yida-trader
+  --binary target/release/yida-trader
 ```
 
 合成 SDK 还覆盖四种期权合约的双向开平、权利金资金预占、原生涨停价抬高时拒绝使用旧预算发单，以及超大期权目录仍只复制白名单。合成 SDK 按配套 1.502.53.182 头文件生成未使用接口 stub，覆盖 TCP / UDP / XTCP 三种配置，验证原生生命周期、追平、手工引用 0、交易所同号隔离、超 32 位订单 / 成交编号及相同截断编号的隔离、平今平昨拆单、FAK / FOK、重复成交、64 位系统号撤单、同步 / 异步拒单、发送不确定以及重连恢复。额外覆盖三协议无系统号撤单、非零组身份与恢复、固定／首选席位权限和断线、原生批量及部分发送／部分撤单不确定性、逐笔回执和父意图索引，以及三协议 × 两交易所原生市价 Day / FAK / FOK 映射、零价格市价回报与正价事实成交、独立数量规则、市价自成交检查与恢复、缺少原生涨跌停数据时不发送、无系统号历史拒单重放、只读模式、只许平仓权限、多连接账户保护、终态先于事实成交、部分成交部分撤单、冲突重复成交、畸形委托回报、UDP / XTCP 未开通、XTCP 未连上和断线、下单与撤单无回报超时、不能关联的撤单错误审计，以及对账后恢复。在允许使用至少两个 CPU 的 Linux 上，还验证业务线程单核亲和性以及后台输入 / 审计线程保留原有亲和性。它不连接网络、不验证实际协议报文，也不能替代真实柜台仿真。CTP 的既有单元测试和合成桥接联测同时回归。

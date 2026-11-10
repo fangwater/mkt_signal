@@ -4,6 +4,7 @@
 No vendor library is loaded and no network endpoints are contacted. Unused virtual
 methods are generated from the real headers, not a separately maintained SDK ABI.
 """
+from native_persistence_check import verify_persistence
 import argparse
 import json
 import os
@@ -393,7 +394,11 @@ def run_fixture(args,protocol,scenario='normal'):
                 if scenario in ('terminal_first','partial_cancel_first','conflicting_fill','malformed_report'):
                     ticks={'terminal_first':25040,'partial_cancel_first':25045,'conflicting_fill':25050,'malformed_report':25055}[scenario]
                     receipt=submit(lots=3,ticks=ticks);key=receipt['children'][0]['key'];assert receipt['all_submitted_locally']
-                    if scenario in ('conflicting_fill','malformed_report'):wait('trading_blocked')
+                    if scenario=='conflicting_fill':
+                        assert process.wait(timeout=10) != 0
+                        stderr.seek(0);assert 'conflicting duplicate native trade fact' in stderr.read()
+                        print(json.dumps({'protocol':protocol,'scenario':scenario,'persistence_failed_closed':True}));return
+                    if scenario=='malformed_report':wait('trading_blocked')
                     after=full_state();order=next(o for o in after['state']['orders'] if o['key']==key)
                     if scenario=='terminal_first':assert order['status']=='filled' and order['filled']==3
                     if scenario=='partial_cancel_first':assert order['status']=='cancelled' and order['filled']==1 and order['cancelled']==2
@@ -537,6 +542,9 @@ def run_fixture(args,protocol,scenario='normal'):
                 print(json.dumps({'bridge':'native 1.502.53.182 header ABI + synthetic SDK','protocol':protocol,'scenario':scenario,'network_connections':0,'caught_up':True,'manual_ref_zero':True,'shfe_ine_identity_isolation':True,'long_order_and_trade_ids':True,'split_close':True,'native_cancel':True,'fak_fok':True,'reconcile':True,'local_and_async_reject':True,'cancel_error_audit':True,'uncertain_send':True,'journal_events':len(events)}))
             finally:
                 if process.poll() is None:process.kill();process.wait()
+                if process.returncode == 0 or scenario == 'conflicting_fill':
+                    persisted = verify_persistence(temp/'flow'/'persist_manager', args.binary.resolve().parent/'cn_order_export', temp/'db-export', allow_projection_error=scenario=='conflicting_fill')
+                    print(json.dumps({'protocol':protocol,'scenario':scenario,**persisted}))
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)

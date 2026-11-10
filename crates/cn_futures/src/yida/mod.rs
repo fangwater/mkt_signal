@@ -295,6 +295,12 @@ impl RawEvent {
             lots: self.lots,
             traded: self.traded,
             price_type,
+            time_in_force: match self.order_type {
+                0 => TimeInForce::Day,
+                1 => TimeInForce::Fak,
+                3 => TimeInForce::Fok,
+                _ => unreachable!("validated native order type"),
+            },
             limit_price: self.price,
             status,
             cancel_rejected: false,

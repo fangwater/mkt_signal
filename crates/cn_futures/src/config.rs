@@ -11,6 +11,10 @@ pub struct Config {
     pub sdk_library: PathBuf,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
+    /// Defaults to flow_directory/persist_manager. Never shared across accounts.
+    pub persistence_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub sync_before_send: bool,
     pub front: String,
     pub broker_id: String,
     pub production_mode: bool,
@@ -114,6 +118,9 @@ impl Config {
                 !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
                 "invalid credential environment variable name"
             );
+        }
+        if let Some(path) = &self.persistence_directory {
+            ensure!(path.is_absolute(), "persistence_directory must be absolute");
         }
         self.risk.validate()
     }

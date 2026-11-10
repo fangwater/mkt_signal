@@ -8,6 +8,8 @@ public_simulation = false # explicit official-simulator-only, one-lot test mode
 # business_core = <isolated CPU>; set SDK thread CPUIDs to other CPUs in sdk_config.
 flow_directory = "/tmp/mkt_yida_sim/flow"
 journal = "/tmp/mkt_yida_sim/events.jsonl"
+# persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
+sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
 user_id_env = "YIDA_USER_ID"
 password_env = "YIDA_PASSWORD"
 app_id_env = "YIDA_APP_ID"

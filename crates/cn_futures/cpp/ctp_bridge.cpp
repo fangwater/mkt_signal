@@ -51,6 +51,7 @@ class Spi final : public CThostFtdcTraderSpi {
         field(e.trading_day, p->TradingDay); field(e.investor, p->InvestorID);
         field(e.message, p->StatusMsg); e.front = p->FrontID; e.session = p->SessionID;
         e.volume = p->VolumeTotalOriginal; e.traded = p->VolumeTraded; e.remaining = p->VolumeTotal;
+        e.time_condition = p->TimeCondition; e.volume_condition = p->VolumeCondition;
         e.price = p->LimitPrice; e.status = p->OrderStatus; e.submit_status = p->OrderSubmitStatus;
         e.direction = p->Direction; e.offset = p->CombOffsetFlag[0]; e.hedge = p->CombHedgeFlag[0];
     }

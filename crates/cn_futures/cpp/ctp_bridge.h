@@ -8,6 +8,7 @@ struct NfEvent {
     int32_t front, session, volume, traded, remaining, today, yesterday;
     int32_t status, submit_status, direction, offset, hedge, position_direction, position_date;
     int32_t active, product_class, minimum, maximum;
+    int32_t time_condition, volume_condition;
     double price, price_tick, available;
     char symbol[81], exchange[9], order_ref[13], system_id[21], trade_id[21];
     char trading_day[9], investor[13], max_order_ref[13], message[256];

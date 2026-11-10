@@ -95,6 +95,8 @@ pub struct RawEvent {
     pub product_class: i32,
     pub minimum: i32,
     pub maximum: i32,
+    pub time_condition: i32,
+    pub volume_condition: i32,
     pub price: f64,
     pub price_tick: f64,
     pub available: f64,
@@ -174,6 +176,12 @@ impl RawEvent {
             lots: self.volume,
             traded: self.traded,
             price_type: PriceType::Limit,
+            time_in_force: match (self.time_condition, self.volume_condition) {
+                (51, 49) => TimeInForce::Day,
+                (49, 49) => TimeInForce::Fak,
+                (49, 51) => TimeInForce::Fok,
+                _ => bail!("unsupported CTP time/volume condition; raw evidence retained"),
+            },
             limit_price: self.price,
             status,
             cancel_rejected: self.submit_status == i32::from(b'5'),
@@ -213,7 +221,7 @@ impl RawEvent {
             "remaining":self.remaining,"today":self.today,"yesterday":self.yesterday,"direction":self.direction,"offset":self.offset,"hedge":self.hedge,
             "position_direction":self.position_direction,"position_date":self.position_date,"status":self.status,"submit_status":self.submit_status,
             "price":self.price,"price_tick":self.price_tick,"available":self.available,"active":self.active,"product_class":self.product_class,
-            "minimum":self.minimum,"maximum":self.maximum,"message":error_text(&self.message)})
+            "minimum":self.minimum,"maximum":self.maximum,"time_condition":self.time_condition,"volume_condition":self.volume_condition,"message":error_text(&self.message)})
     }
 }
 

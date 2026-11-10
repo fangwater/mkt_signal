@@ -70,6 +70,19 @@ impl TradingCore {
             _single_owner: PhantomData,
         })
     }
+    pub fn apply_reference_floors(
+        &mut self,
+        floors: &HashMap<(String, String), u64>,
+    ) -> Result<()> {
+        if let Some(floor) = floors.get(&(self.day.clone(), self.session.clone())) {
+            ensure!(
+                *floor <= self.scope.reference_limit,
+                "durable native order reference exhausted"
+            );
+            self.next_ref = self.next_ref.max(*floor);
+        }
+        Ok(())
+    }
     pub fn is_ready(&self) -> bool {
         self.ready && self.connected
     }
@@ -85,6 +98,18 @@ impl TradingCore {
         self.connected = true;
         self.continuous.clear();
         self.block("session/bootstrap incomplete");
+    }
+    pub fn trading_day(&self) -> &str {
+        &self.day
+    }
+    pub fn instrument(&self, venue: Venue, symbol: &str) -> Option<&Instrument> {
+        self.instruments.get(&(venue, symbol.to_owned()))
+    }
+    pub fn fill_order_key(&self, fill: &Fill) -> Option<OrderKey> {
+        self.system_ids
+            .get(&(fill.identity.venue, fill.system_id.clone()))
+            .cloned()
+            .or_else(|| fill.order_key.clone())
     }
     pub fn order(&self, key: &OrderKey) -> Option<&Order> {
         self.orders.get(key)
@@ -167,6 +192,7 @@ impl TradingCore {
                     && recovered.side == old.request.side
                     && recovered.offset == old.request.offset
                     && recovered.price_type == old.request.price_type
+                    && recovered.time_in_force == old.request.time_in_force
                     && recovered.lots == old.request.lots
                     && recovered.traded >= old.filled,
                 "snapshot conflicts with known unresolved order identity/quantity"
@@ -247,13 +273,18 @@ impl TradingCore {
                     lots: update.lots,
                     price_type: update.price_type,
                     price_ticks: 0,
-                    time_in_force: TimeInForce::Day,
+                    time_in_force: update.time_in_force,
                     execution_route: None,
                 },
                 key: update.key.clone(),
                 system_id: update.system_id,
                 limit_price: update.limit_price,
-                status: update.status,
+                // A cancel racing the final fill can be reported as cancelled with no remainder.
+                status: if update.traded == update.lots {
+                    OrderStatus::Filled
+                } else {
+                    update.status
+                },
                 filled: update.traded,
                 reported_filled: update.traded,
                 cancelled: if update.status.terminal() {
@@ -621,6 +652,7 @@ impl TradingCore {
                 && order.request.side == update.side
                 && order.request.offset == update.offset
                 && order.request.price_type == update.price_type
+                && order.request.time_in_force == update.time_in_force
                 && order.request.lots == update.lots,
             "order identity fields changed"
         );

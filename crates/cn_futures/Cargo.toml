@@ -9,7 +9,10 @@ ctp-sdk = ["dep:cc"]
 yida-sdk = ["dep:cc"]
 
 [dependencies]
+persist_common = { path = "../persist_common" }
+persist_manager = { path = "../persist_manager", features = ["embedded"] }
 anyhow.workspace = true
+sha2 = "0.10"
 crossbeam-channel = "0.5"
 encoding_rs = "0.8"
 serde = { version = "1.0", features = ["derive"] }

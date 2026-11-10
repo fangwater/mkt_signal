@@ -8,6 +8,7 @@ Credentials come from YIDA_* environment variables. Default: login and inspect.
 Legitimate unfilled option IOC/FOK outcomes use separately recorded market
 seed/cleanup orders so each requested close type can be tested. Only this run's orders and new position are eligible for cleanup.
 """
+from native_persistence_check import verify_persistence
 import argparse
 import hashlib
 import math
@@ -124,6 +125,8 @@ def main():
     parser.add_argument('--buy-price-ticks', type=int)
     parser.add_argument('--sell-price-ticks', type=int)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--restart-check', action='store_true', help='reopen the same RocksDB and SDK flow in a second read-only process')
+    parser.add_argument('--sync-before-send', action='store_true', help='wait for durable send intent before each SDK mutation')
     parser.add_argument('--native-controls', action='store_true', help='test group-reference cancellation, routing and native batches')
     parser.add_argument('--quotes-file', type=Path, help='optional independent live quote snapshot for marketable limit tests')
     parser.add_argument('--option', action='store_true', help='test native option metadata and both long/short ordinary orders')
@@ -162,10 +165,13 @@ def main():
                (f'cash_buffer_per_buy_lot = {args.cash_buffer_per_buy_lot}\n' if args.option else '') +
                '\n[risk]\n' + template.split('[risk]', 1)[1])
     config = config.replace('enable_fak_fok = false', 'enable_fak_fok = true')
+    if args.sync_before_send:
+        config = config.replace('sync_before_send = false', 'sync_before_send = true')
     path = work / 'config.toml'
     path.write_text(config)
     runtime = Runtime(binary, path, work, args.execute)
     owned_keys = []
+    final = None
     results = []
     baseline = None
     baseline_verified_flat = False
@@ -347,10 +353,32 @@ def main():
             if runtime.process.poll() is None:
                 runtime.process.terminate()
                 runtime.process.wait(timeout=10)
+        persistence = None
+        restarted = False
+        if runtime.process.returncode == 0:
+            try:
+                persistence = verify_persistence(work/'flow'/'persist_manager', binary.parent/'cn_order_export', work/'db-export')
+                if args.restart_check and not error and not cleanup_error:
+                    restart_work = work/'restart'
+                    restart_work.mkdir()
+                    restarted_runtime = Runtime(binary, path, restart_work, False)
+                    try:
+                        restarted_runtime.wait('reconciled')
+                        recovered = restarted_runtime.ready_state()
+                        assert not recovered['can_trade']
+                        assert positions(recovered) == positions(final if final else baseline)
+                        restarted = True
+                    finally:
+                        restarted_runtime.stop()
+                    assert restarted_runtime.process.returncode == 0
+                    verify_persistence(work/'flow'/'persist_manager', binary.parent/'cn_order_export', work/'db-export-after-restart')
+            except Exception as exc_persist:
+                error = error or f'{type(exc_persist).__name__}: persistence/restart check: {exc_persist}'
         summary = {'protocol': args.protocol, 'venue': args.venue, 'symbol': args.symbol,
                    'execute': args.execute, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                    'market': args.market, 'native_controls': args.native_controls,
-                   'option': args.option,
+                   'option': args.option, 'persistence': persistence, 'restart_verified': restarted,
+                   'sync_before_send': args.sync_before_send,
                    'initial_position_rows': len(positions(baseline)) if baseline else None,
                    'submitted_order_count': len(owned_keys), 'results': results, 'error': error, 'cleanup_error': cleanup_error,
                    'runtime_exit_code': runtime.process.returncode}

@@ -98,7 +98,9 @@ protoc-bin-vendored = { version = "3", optional = true }
 
 [features]
 default = []
+embedded = ["dep:rocksdb", "dep:serde", "dep:serde_json"]
 runtime = [
+    "embedded",
     "dep:bigdecimal",
     "dep:axum",
     "dep:bytes",
@@ -130,3 +132,8 @@ runtime = [
     "tonic-build",
     "protoc-bin-vendored",
 ]
+
+[[bin]]
+name = "cn_order_export"
+path = "src/bin/cn_order_export.rs"
+required-features = ["embedded"]

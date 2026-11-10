@@ -5,6 +5,7 @@ The official header supplies the ABI. Unused pure-virtual methods are generated
 as failing stubs, so the test does not maintain a parallel hand-written SDK ABI.
 This fixture is for tests only, not a CTP-compatible runtime backend.
 """
+from native_persistence_check import verify_persistence
 import argparse
 import json
 import os
@@ -115,6 +116,7 @@ public:
         std::strcpy(o.TradingDay, "20261109"); o.FrontID = 7; o.SessionID = 11;
         o.Direction = p->Direction; o.CombOffsetFlag[0] = p->CombOffsetFlag[0]; o.CombHedgeFlag[0] = p->CombHedgeFlag[0];
         o.VolumeTotalOriginal = p->VolumeTotalOriginal; o.VolumeTotal = p->VolumeTotalOriginal; o.LimitPrice = p->LimitPrice;
+        o.TimeCondition = p->TimeCondition; o.VolumeCondition = p->VolumeCondition;
         o.OrderStatus = THOST_FTDC_OST_NoTradeQueueing; o.OrderSubmitStatus = THOST_FTDC_OSS_Accepted;
         orders[o.OrderRef] = o; auto& stored = orders.at(o.OrderRef);
         if (p->TimeCondition == THOST_FTDC_TC_IOC) {
@@ -234,6 +236,9 @@ def main():
             assert "fixture-only" not in (temp / "events.jsonl").read_text()
             print(json.dumps({"bridge": "official header ABI + synthetic SDK", "native_network_connections": 0, "bootstrap": True, "limit_cancel": True, "fak_fok": True, "duplicate_fills": True, "close": True, "async_rejection": True, "reconcile": True, "journal_events": len(events)}))
         finally:
+            if process.returncode == 0:
+                persisted = verify_persistence(temp / "flow" / "persist_manager", args.binary.resolve().parent / "cn_order_export", temp / "db-export")
+                print(json.dumps(persisted))
             if process.poll() is None:
                 process.kill()
                 process.wait()
