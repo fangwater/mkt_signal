@@ -2,6 +2,8 @@
 
 最后更新：2026-11-11
 
+**运行地点限制：禁止在当前开发机和所有内网机器运行 CTP，包括实盘、仿真、只读、离线 SDK、连接探针及执行 CTP 的测试/基准。** 本机仅可编辑、静态检查、格式化和编译；本页运行、SDK 版本查询及测试命令仅可在用户明确指定并授权的外部主机执行。历史本机测试记录不构成继续运行的授权，完整规则见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
+
 `crates/cn_futures` 直接使用上期技术官方 **CTP 6.7.11**，提供 `ctp-trader` 和 `ctp-md`。交易核心、风控、订单状态和持久化与易达共用；SDK 网络线程只投递有界原始事件，业务状态由单一线程维护。不使用第三方 CTP 兼容柜台作为运行时替代。
 
 支持 CFFEX（中金所）、SHFE（上期所）、INE（能源中心）、DCE（大商所）、CZCE（郑商所）、GFEX（广期所）的普通投机期货。仅显式配置并由柜台确认有效的合约可报新单。期权、组合、套利和套保账本不在本次范围；已有易达期权功能保持其独立边界。
@@ -128,7 +130,7 @@ target/release/ctp-md --config /absolute/private/md.toml --connect --duration-se
 
 最初的短时探针 `scripts/ctp_md_probe.cpp` 仍可用于独立排查；它在断线时退出，不承担持续行情服务的重连职责。持续运行使用 `ctp-md`。
 
-## 本地验证
+## 验证命令（仅限获准的外部主机）
 
 ```bash
 CTP_SDK_DIR=/absolute/ctp \

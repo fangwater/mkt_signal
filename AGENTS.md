@@ -279,6 +279,28 @@ Before live-impact commands, state the target env, exchange, symbol scope, and w
 
 Never revert user or operator changes in environment directories unless explicitly asked. If repo and env copies differ, inspect both and explain which one you are modifying.
 
+## CTP Execution Location Restriction
+
+CTP must not run on the current development machine or on any intranet machine.
+This applies to `ctp-trader`, `ctp-md`, `ctp-md-probe`, and other CTP clients,
+probes, tests, and benchmarks, including production, simulation, read-only,
+synthetic-SDK, and offline SDK execution. Do not initialize or load the CTP SDK,
+connect to CTP fronts, or probe their TCP ports from these machines. Do not
+bypass this restriction through SSH, jump hosts, proxies, or tunnels to another
+intranet machine.
+
+Code editing, static review, formatting, and compilation without executing CTP
+code are allowed here. Do not run CTP binaries, `cargo run`, CTP tests or smoke
+scripts, SDK-version queries, or mixed test/benchmark suites that execute CTP
+code on these machines.
+
+CTP execution requires an external host explicitly designated and authorized by
+the user. Until such a host is specified, do not deploy, start, or test CTP.
+Existing credentials, configuration files, historical test instructions, and
+permission to implement or build CTP do not authorize execution on a prohibited
+machine. This restriction takes precedence over generic build/test and runtime
+examples elsewhere in the repository.
+
 ## Coding Conventions
 
 - Keep changes scoped to the touched exchange/path/strategy.
