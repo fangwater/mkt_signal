@@ -2,13 +2,31 @@
 
 最后更新：2026-11-10 UTC。
 
-`crates/cn_futures` 现有 `ctp-trader`（中金所）和 `yida-trader`（上期所 / 上海国际能源交易中心）两个入口，共用一个交易核心。易达入口支持 SHFE / INE 普通投机期货与期权；CTP 入口仍只开放中金所期货。易达直接调用 Hanlin **YDExtendedApi**，没有通过易达的 CTP 兼容接口。行情独立，暂按 CTP 考虑，本次没有接入易达行情。
+`crates/cn_futures` 的 `ctp-trader` 和 `yida-trader` 共用一个交易核心。易达入口支持 SHFE / INE 普通投机期货与期权；CTP 的国内期货范围见 [CTP 接入说明](ctp_trade.md)。易达直接调用 Hanlin **YDExtendedApi**，没有通过易达的 CTP 兼容接口。行情独立，尚未接入易达行情。
 
-实现已完成本地单元测试、按真实原生头文件编译的合成 SDK 桥接联测，以及官网公共仿真的真实 SDK 联调。TCP / UDP / XTCP 在 SHFE `cu2612`、INE `sc2612` 上均已验证非零组回报前撤单、席位选择、原生批量报撤、限价报撤单、限价 FAK / FOK 开平仓、原生市价 Day / FAK / FOK 开平仓、事实成交和重连对账。**没有生产部署或端到端性能测量**。
+实现已完成本地单元测试、按真实原生头文件编译的合成 SDK 桥接联测，以及官网公共仿真的真实 SDK 联调。TCP / UDP / XTCP 在 SHFE `cu2612`、INE `sc2612` 上均已验证非零组回报前撤单、席位选择、原生批量报撤、限价报撤单、限价 FAK / FOK 开平仓、原生市价 Day / FAK / FOK 开平仓、事实成交和重连对账。没有生产部署或真实柜台延迟测量；完整本地适配器链路的离线结果见[性能记录](cn_futures_performance.md)。
 
 ## SDK 依据
 
-以用户提供的 **`ydClient_1_502_53_182.tgz`** 为当前配套 SDK，使用其中 `ydAPI_c++/include/`、`ydAPI_c++/linux64/yd.so` 和 233 页的 **1.502** 编程指南。官网[下载页](https://www.hanlinit.com/downloads/)及[文档页](https://www.hanlinit.com/docs/)匿名访问需要登录；没有据此确认官网最新版本，也没有确认某家期货公司柜台允许的 API 版本范围。此前单独提供的 132 页指南适用于 1.386，不作为本次 ABI 依据。公共仿真的服务器配置独立生成；官网仿真授权参数只从环境变量注入，不复制到仓库。
+以用户提供的 **`ydClient_1_502_53_182.tgz`** 为当前代码的配套 SDK，使用其中 `ydAPI_c++/include/`、`ydAPI_c++/linux64/yd.so` 和 233 页的 **1.502** 编程指南。官网[下载页](https://www.hanlinit.com/downloads/)及[文档页](https://www.hanlinit.com/docs/)匿名访问需要登录。2026-11-11 使用用户授权的官网账号登录成功，并确认下载权限；官网账号不作为交易柜台凭据使用。
+
+该次官网核验的版本如下，发布日期取自下载列表：
+
+| 官网分类 | SDK | 发布日期 | 详情 |
+| --- | --- | --- | --- |
+| 生产版本，最新 | `1.502.55.35` | 2026-10-28 | [官网说明](https://www.hanlinit.com/download/ydclient_1_502_55_35/) |
+| 生产版本 | `1.502.53.204` | 2026-08-25 | [官网说明](https://www.hanlinit.com/download/ydclient_1_502_53_204/) |
+| 历史版本，当前代码基准 | `1.502.53.182` | 2026-07-31 | [官网说明](https://www.hanlinit.com/download/ydclient_1_502_53_182/) |
+
+两个生产版的完整归档、解压目录和下载来源／SHA-256 清单留在本机 `~/ds/`，归档名分别为 `ydClient_1_502_55_35.tgz`、`ydClient_1_502_53_204.tgz`，清单为同名 `.manifest.json`。官网凭据和会话留在仓库外的私有目录，不进入提交。下载新包不改变当前桥接的版本约束；某家期货公司柜台实际允许的 API 版本范围仍须由该柜台核对。
+
+已静态比较两个新包的三个配套头文件：相对 `1.502.53.182`，两者都在 `ydExtendedApi` 中新增 `getMaxWithdrawable` 虚函数，并调整了委托扩展属性。`1.502.55.35` 还将 `YDInstrument` 的原始代码字段改为 `ShortInstrumentID`，在另一个位置存放 64 字节的 `InstrumentID`，并增加 `Margin2` / `MarginPerLot2` 等字段。旧头文件构建的程序不能直接替换为新动态库；新 SDK 的编译适配与回归尚未进行。官网详情另列出经 `ydFront` 使用 UDP 报单时，`UDPTradingServerIP` / `UDPTradingServerPort` 配置不生效的修复。
+
+`1.502.55.35` 的 Linux 动态库目录为 `ydAPI_c++/x86_64/yd.so` 和 `ydAPI_c++/x86_64_onload9/yd.so`，与旧包的 `linux64/yd.so` 布局不同；头文件仍在 `ydAPI_c++/include/`。
+
+官网[服务端发布历史](https://www.hanlinit.com/docs/release-history/)还列有 `1.502.55.43`；它不是本次客户端下载列表提供的 SDK 包，不作为客户端最新下载版本。
+
+此前单独提供的 132 页指南适用于 1.386，不作为本次 ABI 依据。公共仿真的服务器配置独立生成；官网仿真授权参数只从环境变量注入，不复制到仓库。
 
 SDK 文件留在仓库外；代码使用配套的 `ydApi.h` / `ydDataStruct.h` / `ydDataType.h` 编译 C++ shim，通过 `makeYDExtendedApi` 和 `getYDVersion` 加载 `yd.so`。运行时严格核对 **1.502.53.182**，其他版本必须先核对头文件 / ABI 并重新验证。只维护当前这一套桥接和内部事件结构。
 
