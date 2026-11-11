@@ -1,6 +1,14 @@
 # Delist Risk Server
 
-最后更新：2026-11-11 03:41 UTC（上线 FR 七日及三十日年化表格；Delist保持CPU28）
+最后更新：2026-11-11 04:12 UTC（上线 FR 年化异常表格；Delist保持CPU28）
+
+2026-11-11 04:10 UTC，发布 `arbmm d71d7841` 的 React / Ant Design FR 年化
+异常表格。release 二进制、页面和本地前端组件资源均经 SHA-256 校验并原子
+安装；环境脚本重启 Delist PID2887312 与 SG 隧道 PID2887284，均绑 CPU28。
+NAV 目录13项，11个 FR PnL 请求返回 HTTP 200；`bitget_fr_arb01` 的有效历史
+约20.25小时，按不足7天排除。受保护接口及前端资源匿名返回401。
+回退备份在 `~/delist_risk_server/backups/fr_yield_ui_d71d7841/`。
+
 
 2026-11-11 03:40 UTC，发布 `arbmm 64f220c7` 的 FR 七日及三十日年化表格。
 本机构建的 release 二进制和页面上传后 SHA-256 校验并原子安装；
