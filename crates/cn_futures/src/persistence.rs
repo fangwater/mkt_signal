@@ -32,22 +32,33 @@ pub fn record(
 ) -> NativeOrderRecord {
     record_at(day, order, instrument, send_state, now_us())
 }
-fn record_at(
+pub(crate) fn record_at(
     day: &str,
     order: &Order,
     instrument: Option<Instrument>,
     send_state: SendState,
     now: u64,
 ) -> NativeOrderRecord {
+    record_owned_at(day, order.clone(), instrument, send_state, now)
+}
+pub(crate) fn record_owned_at(
+    day: &str,
+    order: Order,
+    instrument: Option<Instrument>,
+    send_state: SendState,
+    now: u64,
+) -> NativeOrderRecord {
+    let submitted_intent = order.owned.then(|| order.request.clone());
+    let locally_submitted = order.owned;
     NativeOrderRecord {
         identity: PersistedOrderKey {
             trading_day: day.into(),
             venue: order.request.venue,
             native: order.key.clone(),
         },
-        order: order.clone(),
-        submitted_intent: order.owned.then(|| order.request.clone()),
-        locally_submitted: order.owned,
+        order,
+        submitted_intent,
+        locally_submitted,
         send_state,
         instrument,
         first_received_us: now,
@@ -110,9 +121,9 @@ pub(crate) fn prepared_at(day: &str, p: &PreparedOrder, received_us: u64) -> Nat
         owned: true,
     };
     NativeMutation {
-        orders: vec![record_at(
+        orders: vec![record_owned_at(
             day,
-            &order,
+            order,
             None,
             SendState::Prepared,
             received_us,

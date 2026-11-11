@@ -1,6 +1,13 @@
 //! Offline, release-mode microbenchmark. No vendor SDK, network, or real orders.
 use anyhow::Result;
-use cn_futures::{core::TradingCore, ctp, model::*, persistence, runtime::Journal, yida};
+use cn_futures::{
+    core::{SingleLoop, TradingCore},
+    ctp,
+    model::*,
+    persistence,
+    runtime::Journal,
+    yida,
+};
 use serde_json::json;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -120,16 +127,29 @@ fn report(name: &str, mut times: Vec<u64>, allocs: u64, bytes: u64, extra: serde
         json!({"benchmark":name,"operations":n,"p50_ns":times[n/2],"p95_ns":times[(n-1)*95/100],"p99_ns":times[(n-1)*99/100],"p999_ns":times[(n-1)*999/1000],"allocations_per_op":allocs as f64/n as f64,"allocated_bytes_per_op":bytes as f64/n as f64,"context":extra})
     );
 }
+fn faults() -> (i64, i64) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        assert_eq!(libc::getrusage(libc::RUSAGE_THREAD, &mut usage), 0);
+        (usage.ru_minflt, usage.ru_majflt)
+    }
+    #[cfg(not(target_os = "linux"))]
+    (0, 0)
+}
 fn core_bench(samples: usize, ops: usize) -> Result<()> {
     for (history, working) in [(0, 0), (10000, 0), (10000, 8)] {
         let base = snapshot(history, working);
         let mut times = Vec::with_capacity(samples * ops);
         let mut allocs = 0;
         let mut bytes = 0;
+        let mut minor = 0;
+        let mut major = 0;
         for _ in 0..samples {
             let mut core = TradingCore::new(limits(), ctp::scope())?;
             core.set_trading_status(Venue::Cffex, "IF", true);
             core.restore(base.clone())?;
+            let before_faults = faults();
             let start = Instant::now();
             ALLOCS.with(|c| c.set(Some((0, 0))));
             for i in 0..ops {
@@ -143,13 +163,121 @@ fn core_bench(samples: usize, ops: usize) -> Result<()> {
             let (n, b) = ALLOCS.with(|c| c.replace(None).unwrap());
             allocs += n;
             bytes += b;
+            let after_faults = faults();
+            minor += after_faults.0 - before_faults.0;
+            major += after_faults.1 - before_faults.1;
         }
         report(
             "prepare_and_local_reject",
             times,
             allocs,
             bytes,
-            json!({"history_at_start_of_each_sample":history,"working_orders":working,"ops_per_sample":ops}),
+            json!({"history_at_start_of_each_sample":history,"working_orders":working,"ops_per_sample":ops,"minor_page_faults":minor,"major_page_faults":major}),
+        );
+    }
+    Ok(())
+}
+struct LocalReject;
+impl Trader for LocalReject {
+    fn insert(&mut self, _: &PreparedOrder) -> Result<i32> {
+        Ok(10)
+    }
+    fn cancel(&mut self, _: &PreparedCancel) -> Result<i32> {
+        Ok(10)
+    }
+}
+fn planned_bench(samples: usize, ops: usize) -> Result<()> {
+    let mut times = Vec::with_capacity(samples * ops);
+    let (mut allocs, mut bytes) = (0, 0);
+    for _ in 0..samples {
+        let mut core = TradingCore::new(limits(), ctp::scope())?;
+        core.set_trading_status(Venue::Cffex, "IF", true);
+        core.restore(snapshot(0, 0))?;
+        let mut runtime = SingleLoop {
+            core,
+            trader: LocalReject,
+            execute: true,
+        };
+        let now = Instant::now();
+        ALLOCS.with(|c| c.set(Some((0, 0))));
+        for n in 0..ops {
+            let start = Instant::now();
+            let receipt = runtime.submit_planned_with(
+                black_box(intent()),
+                now + Duration::from_micros(n as u64),
+                |_| Ok(()),
+            )?;
+            times.push(start.elapsed().as_nanos() as u64);
+            black_box(receipt);
+        }
+        let (n, b) = ALLOCS.with(|c| c.replace(None).unwrap());
+        allocs += n;
+        bytes += b;
+    }
+    report(
+        "planned_submit_and_local_reject",
+        times,
+        allocs,
+        bytes,
+        json!({"native_library":false,"receipt_and_planning_included":true}),
+    );
+    Ok(())
+}
+fn projection_bench(j: &Journal, samples: usize, ops: usize) -> Result<()> {
+    let mut core = TradingCore::new(limits(), ctp::scope())?;
+    core.set_trading_status(Venue::Cffex, "IF", true);
+    core.restore(snapshot(0, 0))?;
+    let p = core.prepare(intent(), Instant::now())?;
+    let fill = Fill {
+        identity: TradeIdentity {
+            venue: Venue::Cffex,
+            symbol: "IF2612".into(),
+            trading_day: "20261110".into(),
+            trade_id: "projection-benchmark".into(),
+            side: Side::Buy,
+        },
+        order_ref: p.key.order_ref.clone(),
+        order_key: Some(p.key.clone()),
+        system_id: "projection-system-id".into(),
+        offset: Offset::Open,
+        lots: 1,
+        price: p.limit_price,
+    };
+    core.on_fill(&fill)?;
+    for trade in [false, true] {
+        let mut times = Vec::with_capacity(samples * ops);
+        let (mut allocs, mut bytes) = (0, 0);
+        for _ in 0..samples {
+            barrier(j)?;
+            ALLOCS.with(|c| c.set(Some((0, 0))));
+            for _ in 0..ops {
+                let start = Instant::now();
+                if trade {
+                    j.trade_for(&core, &fill, Some(1.25), Some(16230), 123, true)?;
+                } else {
+                    j.orders(
+                        &core,
+                        std::slice::from_ref(&p.key),
+                        std::slice::from_ref(&p.key),
+                    )?;
+                }
+                times.push(start.elapsed().as_nanos() as u64);
+            }
+            let (n, b) = ALLOCS.with(|c| c.replace(None).unwrap());
+            allocs += n;
+            bytes += b;
+        }
+        barrier(j)?;
+        report(
+            if trade {
+                "trade_and_order_projection_enqueue"
+            } else {
+                "order_projection_enqueue"
+            },
+            times,
+            allocs,
+            bytes,
+            json!({"fsync_wait_in_timing":false,"snapshot_captured_on_producer":true}),
         );
     }
     Ok(())
@@ -277,7 +405,9 @@ fn main() -> Result<()> {
         json!({"environment":{"cpu":cpu,"sdk_loaded":false,"network":false,"includes_allocation_counter_overhead":true,"cpu_isolated":false}})
     );
     core_bench(samples, ops)?;
+    planned_bench(samples, ops)?;
     journal_bench(&j, samples, ops, args.iter().any(|s| s == "--legacy-audit"))?;
+    projection_bench(&j, samples, ops)?;
     j.finish()?;
     std::fs::remove_dir_all(path)?;
     Ok(())

@@ -106,7 +106,7 @@ impl<T: Trader> SingleLoop<T> {
             });
         }
         Ok(SubmitReceipt {
-            children,
+            children: children.into(),
             all_submitted_locally,
         })
     }

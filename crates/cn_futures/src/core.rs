@@ -1,11 +1,13 @@
 use crate::model::*;
 use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
+use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet, VecDeque};
 mod book;
 use book::*;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Not Send/Sync: only the business-loop thread may own or mutate this state.
@@ -21,7 +23,7 @@ pub struct TradingCore {
     reason: String,
     cash: f64,
     symbols: Symbols,
-    instruments: Vec<Option<Instrument>>,
+    instruments: Vec<Option<Arc<Instrument>>>,
     continuous: [HashMap<String, bool>; VENUE_SLOTS],
     positions: Vec<[Option<Position>; 2]>,
     orders: OrderArena,
@@ -58,6 +60,10 @@ impl TradingCore {
     pub fn new(limits: RiskLimits, scope: ExecutionScope) -> Result<Self> {
         limits.validate()?;
         scope.validate()?;
+        let capacity = limits.max_actions_per_second.min(INITIAL_ORDER_SLOTS);
+        let mut actions = VecDeque::with_capacity(capacity);
+        actions.resize(capacity, Instant::now());
+        actions.clear();
         Ok(Self {
             limits,
             day: String::new(),
@@ -79,7 +85,7 @@ impl TradingCore {
             working_lots: 0,
             system_ids: Default::default(),
             fills: Vec::new(),
-            actions: VecDeque::new(),
+            actions,
             _single_owner: PhantomData,
         })
     }
@@ -107,6 +113,18 @@ impl TradingCore {
                 .reserve_session(&self.session, self.order_reserve)
                 .context("reserve native reference index")?;
         }
+        self.reserve_actions(self.order_reserve)?;
+        Ok(())
+    }
+    fn reserve_actions(&mut self, count: usize) -> Result<()> {
+        let count = count.min(self.limits.max_actions_per_second);
+        self.actions
+            .try_reserve(count.saturating_sub(self.actions.len()))
+            .context("reserve native action-rate window")?;
+        if self.actions.is_empty() {
+            self.actions.resize(count, Instant::now());
+            self.actions.clear();
+        }
         Ok(())
     }
     pub fn is_ready(&self) -> bool {
@@ -133,7 +151,12 @@ impl TradingCore {
     pub fn instrument(&self, venue: Venue, symbol: &str) -> Option<&Instrument> {
         self.instruments
             .get(self.symbols.id(venue, symbol)?.0)?
-            .as_ref()
+            .as_deref()
+    }
+    pub(crate) fn instrument_handle(&self, venue: Venue, symbol: &str) -> Option<Arc<Instrument>> {
+        self.instruments
+            .get(self.symbols.id(venue, symbol)?.0)?
+            .clone()
     }
     pub fn fill_order_key<'a>(&'a self, fill: &'a Fill) -> Option<&'a OrderKey> {
         self.system_ids[venue_index(fill.identity.venue)]
@@ -199,7 +222,11 @@ impl TradingCore {
     }
     pub fn view(&self) -> CoreView<'_> {
         CoreView {
-            instruments: self.instruments.iter().filter_map(Option::as_ref).collect(),
+            instruments: self
+                .instruments
+                .iter()
+                .filter_map(Option::as_deref)
+                .collect(),
             ready: self.is_ready(),
             connected: self.connected,
             reason: &self.reason,
@@ -245,7 +272,7 @@ impl TradingCore {
         self.instruments.fill(None);
         for rule in instruments {
             let id = self.ensure_symbol(rule.venue, &rule.symbol);
-            self.instruments[id.0] = Some(rule);
+            self.instruments[id.0] = Some(Arc::new(rule));
         }
         Ok(())
     }
@@ -317,6 +344,7 @@ impl TradingCore {
         );
         next.cash = s.available_cash;
         next.order_reserve = self.order_reserve;
+        next.reserve_actions(self.order_reserve)?;
         next.orders
             .reserve(
                 s.orders
@@ -1085,19 +1113,19 @@ pub struct ChildReceipt {
 }
 #[derive(Debug, Serialize)]
 pub struct SubmitReceipt {
-    pub children: Vec<ChildReceipt>,
+    pub children: SmallVec<[ChildReceipt; 2]>,
     pub all_submitted_locally: bool,
 }
 impl TradingCore {
     /// Translate a generic SHFE/INE close into explicit inventory-date requests.
     /// A parent FOK cannot be implemented as independently executable children.
-    pub fn plan(&self, intent: Intent) -> Result<Vec<Intent>> {
+    pub fn plan(&self, intent: Intent) -> Result<SmallVec<[Intent; 2]>> {
         ensure!(
             intent.lots > 0 && intent.lots <= self.limits.max_order_lots,
             "invalid parent quantity"
         );
         if !intent.venue.separate_close_dates() || intent.offset != Offset::Close {
-            return Ok(vec![intent]);
+            return Ok(smallvec![intent]);
         }
         let (today, yesterday) = self.allocate_close(
             intent.venue,
@@ -1110,7 +1138,7 @@ impl TradingCore {
             intent.time_in_force != TimeInForce::Fok || today == 0 || yesterday == 0,
             "cannot split FOK across today/yesterday inventory; specify one date"
         );
-        let mut children = vec![];
+        let mut children = SmallVec::new();
         let allocations = match self.limits.close_priority {
             ClosePriority::TodayFirst => [
                 (Offset::CloseToday, today),
@@ -1144,7 +1172,7 @@ impl<T: Trader> SingleLoop<T> {
     ) -> Result<SubmitReceipt> {
         ensure!(self.execute, "read-only runtime: submissions disabled");
         let children = self.core.plan(intent)?;
-        let mut prepared: Vec<PreparedOrder> = vec![];
+        let mut prepared: SmallVec<[PreparedOrder; 2]> = SmallVec::new();
         for child in children {
             let preparation = (|| {
                 let reference = self.trader.allocate_reference(self.core.next_ref)?;
@@ -1166,7 +1194,7 @@ impl<T: Trader> SingleLoop<T> {
             }
         }
         let mut receipt = SubmitReceipt {
-            children: vec![],
+            children: SmallVec::new(),
             all_submitted_locally: true,
         };
         let mut stop = false;

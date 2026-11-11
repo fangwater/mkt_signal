@@ -1,6 +1,6 @@
 //! Operational I/O stays off the business thread. No automatic order cancellation,
 //! cross-account routing, or strategy attribution is performed on startup/recovery.
-use crate::compact::{CancelAudit, SubmitAudit};
+use crate::compact::{CancelAudit, FillAudit, OrderAudit, SubmitAudit};
 use crate::model::{Intent, OrderKey};
 use anyhow::{Context, Result};
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
@@ -10,6 +10,7 @@ use persist_common::cn_futures::{NativeMutation, NativeTradeRecord, StoreIdentit
 use persist_manager::cn_futures::NativeStore;
 use serde::Deserialize;
 use serde_json::Value;
+use smallvec::SmallVec;
 use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
@@ -79,8 +80,15 @@ enum AuditPayload {
     },
     PreparedSubmit(SubmitAudit),
     PreparedCancel(CancelAudit),
-    OrderProjection,
+    OrderProjection(SmallVec<[OrderAudit; 1]>),
     NormalizedTrade,
+    ProjectedTrade {
+        fill: FillAudit,
+        order: Option<OrderAudit>,
+        commission: Option<f64>,
+        native_time: Option<i32>,
+        received_us: u64,
+    },
 }
 impl AuditPayload {
     fn materialize(self, mut mutation: NativeMutation) -> (Value, NativeMutation) {
@@ -118,7 +126,12 @@ impl AuditPayload {
                 let order = audit.owned();
                 serde_json::json!({"type":"prepared_cancel","key":order.key,"venue":order.venue,"symbol":order.symbol,"system_id":order.system_id,"execution_route":order.execution_route})
             }
-            Self::OrderProjection => serde_json::json!({"type":"order_projection"}),
+            Self::OrderProjection(orders) => {
+                for order in orders {
+                    order.append(&mut mutation);
+                }
+                serde_json::json!({"type":"order_projection"})
+            }
             Self::NormalizedTrade => {
                 let trade = mutation
                     .trades
@@ -126,6 +139,28 @@ impl AuditPayload {
                     .expect("normalized trade payload has one factual trade");
                 trade.commission_currency = trade.commission.map(|_| "CNY".into());
                 serde_json::json!({"type":"normalized_trade","identity":trade.fill.identity})
+            }
+            Self::ProjectedTrade {
+                fill,
+                order,
+                commission,
+                native_time,
+                received_us,
+            } => {
+                if let Some(order) = order {
+                    order.append(&mut mutation);
+                }
+                let fill = fill.owned();
+                let value = serde_json::json!({"type":"normalized_trade","identity":fill.identity});
+                mutation.trades.push(NativeTradeRecord {
+                    fill,
+                    commission,
+                    commission_currency: commission.map(|_| "CNY".into()),
+                    native_time,
+                    received_us,
+                    evidence_seq: 0,
+                });
+                value
             }
         };
         (value, mutation)
@@ -458,9 +493,48 @@ impl Journal {
         });
         self.enqueue(AuditPayload::NormalizedTrade, false, mutation, false)
     }
+    pub fn trade_for(
+        &self,
+        core: &crate::core::TradingCore,
+        fill: &crate::model::Fill,
+        commission: Option<f64>,
+        native_time: Option<i32>,
+        received_us: u64,
+        applied: bool,
+    ) -> Result<()> {
+        let order = if applied {
+            core.fill_order_key(fill)
+                .and_then(|key| core.order(key))
+                .map(|order| {
+                    OrderAudit::new(
+                        core.trading_day(),
+                        order,
+                        core.instrument_handle(order.request.venue, &order.request.symbol),
+                        core.is_ready(),
+                        false,
+                        crate::persistence::now_us(),
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        self.enqueue(
+            AuditPayload::ProjectedTrade {
+                fill: FillAudit::new(fill)?,
+                order,
+                commission,
+                native_time,
+                received_us,
+            },
+            false,
+            NativeMutation::default(),
+            false,
+        )
+    }
     pub fn state(&self, core: &crate::core::TradingCore, observed: &[OrderKey]) -> Result<()> {
         self.enqueue(
-            AuditPayload::OrderProjection,
+            AuditPayload::OrderProjection(SmallVec::new()),
             false,
             crate::persistence::projection(core, observed, false),
             false,
@@ -475,10 +549,23 @@ impl Journal {
         if keys.is_empty() {
             return Ok(());
         }
+        let mut orders = SmallVec::new();
+        for key in keys {
+            if let Some(order) = core.order(key) {
+                orders.push(OrderAudit::new(
+                    core.trading_day(),
+                    order,
+                    core.instrument_handle(order.request.venue, &order.request.symbol),
+                    core.is_ready(),
+                    observed.contains(key),
+                    crate::persistence::now_us(),
+                )?);
+            }
+        }
         self.enqueue(
-            AuditPayload::OrderProjection,
+            AuditPayload::OrderProjection(orders),
             false,
-            crate::persistence::projection_for(core, keys, observed),
+            NativeMutation::default(),
             false,
         )
     }
@@ -772,25 +859,13 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                     };
                     if event.kind == ctp::TRADE {
                         if let Ok(crate::model::DecodedUpdate::Trade(fill)) = &decoded {
-                            let mutation = if outcome.is_ok() {
-                                crate::persistence::projection_for(
-                                    &runtime.core,
-                                    runtime
-                                        .core
-                                        .fill_order_key(fill)
-                                        .map(std::slice::from_ref)
-                                        .unwrap_or_default(),
-                                    &[],
-                                )
-                            } else {
-                                NativeMutation::default()
-                            };
-                            journal.trade_with_projection(
-                                fill.clone(),
+                            journal.trade_for(
+                                &runtime.core,
+                                fill,
                                 None,
                                 None,
                                 received.received_us,
-                                mutation,
+                                outcome.is_ok(),
                             )?;
                         }
                     }
@@ -1316,3 +1391,7 @@ mod deferred_audit_tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "runtime/projection_tests.rs"]
+mod projection_tests;

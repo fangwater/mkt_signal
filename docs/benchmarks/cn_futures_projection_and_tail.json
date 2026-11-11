@@ -1,0 +1,2363 @@
+{
+  "measured_on": "2026-11-11",
+  "baseline_commit": "5460fdfd",
+  "business_cpu": 190,
+  "shared_host": true,
+  "cpu_isolated": false,
+  "sdk_loaded": false,
+  "network": false,
+  "samples_per_run": 40,
+  "operations_per_sample": 512,
+  "paired_runs": 3,
+  "notes": [
+    "The baseline adds only the common measurement wrappers and per-thread getrusage counters to committed production behavior.",
+    "Allocation counts are producer-thread only; canonical records are still allocated on the writer.",
+    "Fault sampling occurs outside individual operation timing, once before and once after each sample.",
+    "after_allocations excludes the subsequent cold-path prefault and rate-window reservation work.",
+    "Summary quantiles are medians of the three per-run quantiles, not pooled quantiles.",
+    "The shared CPU and background writer can add scheduler and disk-related tails.",
+    "The diagnostic allocation-only phase predates the final owned-record writer optimisation as well as the prefault work."
+  ],
+  "diagnostic_runs": [
+    {
+      "repeat": 0,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 76.2421875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 3519,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 872,
+          "p95_ns": 3888,
+          "p999_ns": 11883,
+          "p99_ns": 6282
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 183,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 561,
+          "p95_ns": 661,
+          "p999_ns": 4970,
+          "p99_ns": 932
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 375,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 621,
+          "p95_ns": 721,
+          "p999_ns": 5220,
+          "p99_ns": 2615
+        },
+        {
+          "allocated_bytes_per_op": 970.2421875,
+          "allocations_per_op": 12.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 722,
+          "p95_ns": 811,
+          "p999_ns": 1112,
+          "p99_ns": 932
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 201,
+          "p95_ns": 341,
+          "p999_ns": 6963,
+          "p99_ns": 541
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 421,
+          "p95_ns": 2976,
+          "p999_ns": 8827,
+          "p99_ns": 3246
+        },
+        {
+          "allocated_bytes_per_op": 2641.0,
+          "allocations_per_op": 14.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 2715,
+          "p95_ns": 8306,
+          "p999_ns": 48000,
+          "p99_ns": 11772
+        },
+        {
+          "allocated_bytes_per_op": 3392.0,
+          "allocations_per_op": 18.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3486,
+          "p95_ns": 8977,
+          "p999_ns": 47039,
+          "p99_ns": 12013
+        }
+      ]
+    },
+    {
+      "repeat": 0,
+      "implementation": "after_allocations",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 65.453125,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 2239,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 611,
+          "p95_ns": 3076,
+          "p999_ns": 8376,
+          "p99_ns": 4929
+        },
+        {
+          "allocated_bytes_per_op": 69.875,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 447,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 561,
+          "p95_ns": 691,
+          "p999_ns": 5170,
+          "p99_ns": 2585
+        },
+        {
+          "allocated_bytes_per_op": 69.875,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 48,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 612,
+          "p95_ns": 682,
+          "p999_ns": 3005,
+          "p99_ns": 862
+        },
+        {
+          "allocated_bytes_per_op": 111.453125,
+          "allocations_per_op": 7.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 691,
+          "p95_ns": 751,
+          "p999_ns": 972,
+          "p99_ns": 832
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 210,
+          "p95_ns": 371,
+          "p999_ns": 7123,
+          "p99_ns": 521
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 441,
+          "p95_ns": 2865,
+          "p999_ns": 7674,
+          "p99_ns": 3066
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 781,
+          "p95_ns": 992,
+          "p999_ns": 9528,
+          "p99_ns": 1182
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1042,
+          "p95_ns": 1312,
+          "p999_ns": 17363,
+          "p99_ns": 1503
+        }
+      ]
+    },
+    {
+      "repeat": 0,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 33.578125,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 531,
+          "p95_ns": 871,
+          "p999_ns": 2765,
+          "p99_ns": 1082
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 541,
+          "p95_ns": 671,
+          "p999_ns": 1132,
+          "p99_ns": 711
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 0,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 591,
+          "p95_ns": 672,
+          "p999_ns": 1082,
+          "p99_ns": 761
+        },
+        {
+          "allocated_bytes_per_op": 79.578125,
+          "allocations_per_op": 7.0,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 671,
+          "p95_ns": 751,
+          "p999_ns": 941,
+          "p99_ns": 861
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 231,
+          "p95_ns": 571,
+          "p999_ns": 8276,
+          "p99_ns": 732
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 421,
+          "p95_ns": 11572,
+          "p999_ns": 24836,
+          "p99_ns": 15559
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 792,
+          "p95_ns": 1132,
+          "p999_ns": 14467,
+          "p99_ns": 1332
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1032,
+          "p95_ns": 1392,
+          "p999_ns": 14107,
+          "p99_ns": 1643
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 76.2421875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 3516,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 621,
+          "p95_ns": 3867,
+          "p999_ns": 9087,
+          "p99_ns": 5120
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 183,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 571,
+          "p95_ns": 651,
+          "p999_ns": 3857,
+          "p99_ns": 942
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 375,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 621,
+          "p95_ns": 781,
+          "p999_ns": 5240,
+          "p99_ns": 2645
+        },
+        {
+          "allocated_bytes_per_op": 970.2421875,
+          "allocations_per_op": 12.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 741,
+          "p95_ns": 821,
+          "p999_ns": 1112,
+          "p99_ns": 962
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 200,
+          "p95_ns": 381,
+          "p999_ns": 6102,
+          "p99_ns": 501
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 331,
+          "p95_ns": 1944,
+          "p999_ns": 6022,
+          "p99_ns": 3176
+        },
+        {
+          "allocated_bytes_per_op": 2641.0,
+          "allocations_per_op": 14.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 2735,
+          "p95_ns": 8446,
+          "p999_ns": 45486,
+          "p99_ns": 11852
+        },
+        {
+          "allocated_bytes_per_op": 3392.0,
+          "allocations_per_op": 18.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3527,
+          "p95_ns": 9438,
+          "p999_ns": 46648,
+          "p99_ns": 12303
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "after_allocations",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 65.453125,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 2239,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 572,
+          "p95_ns": 2575,
+          "p999_ns": 8917,
+          "p99_ns": 4879
+        },
+        {
+          "allocated_bytes_per_op": 69.875,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 447,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 561,
+          "p95_ns": 691,
+          "p999_ns": 5280,
+          "p99_ns": 2634
+        },
+        {
+          "allocated_bytes_per_op": 69.875,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 48,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 612,
+          "p95_ns": 712,
+          "p999_ns": 2925,
+          "p99_ns": 871
+        },
+        {
+          "allocated_bytes_per_op": 111.453125,
+          "allocations_per_op": 7.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 691,
+          "p95_ns": 792,
+          "p999_ns": 1172,
+          "p99_ns": 912
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 210,
+          "p95_ns": 380,
+          "p999_ns": 6282,
+          "p99_ns": 491
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 471,
+          "p95_ns": 2976,
+          "p999_ns": 13986,
+          "p99_ns": 3306
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 912,
+          "p95_ns": 1122,
+          "p999_ns": 12394,
+          "p99_ns": 1333
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1102,
+          "p95_ns": 1262,
+          "p999_ns": 14047,
+          "p99_ns": 1493
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 33.578125,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 531,
+          "p95_ns": 852,
+          "p999_ns": 1693,
+          "p99_ns": 972
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 531,
+          "p95_ns": 601,
+          "p999_ns": 881,
+          "p99_ns": 681
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 0,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 591,
+          "p95_ns": 631,
+          "p999_ns": 1062,
+          "p99_ns": 752
+        },
+        {
+          "allocated_bytes_per_op": 79.578125,
+          "allocations_per_op": 7.0,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 671,
+          "p95_ns": 722,
+          "p999_ns": 972,
+          "p99_ns": 832
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 201,
+          "p95_ns": 340,
+          "p999_ns": 6783,
+          "p99_ns": 471
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 481,
+          "p95_ns": 3016,
+          "p999_ns": 13726,
+          "p99_ns": 3307
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 821,
+          "p95_ns": 1002,
+          "p999_ns": 10139,
+          "p99_ns": 1152
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1042,
+          "p95_ns": 1233,
+          "p999_ns": 15159,
+          "p99_ns": 1453
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 76.2421875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 3519,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 611,
+          "p95_ns": 3857,
+          "p999_ns": 10610,
+          "p99_ns": 5010
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 183,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 561,
+          "p95_ns": 682,
+          "p999_ns": 5270,
+          "p99_ns": 1062
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 375,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 612,
+          "p95_ns": 761,
+          "p999_ns": 5230,
+          "p99_ns": 2655
+        },
+        {
+          "allocated_bytes_per_op": 970.2421875,
+          "allocations_per_op": 12.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 742,
+          "p95_ns": 812,
+          "p999_ns": 1162,
+          "p99_ns": 952
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 211,
+          "p95_ns": 451,
+          "p999_ns": 6232,
+          "p99_ns": 531
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 511,
+          "p95_ns": 2926,
+          "p999_ns": 13205,
+          "p99_ns": 3236
+        },
+        {
+          "allocated_bytes_per_op": 2641.0,
+          "allocations_per_op": 14.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3416,
+          "p95_ns": 11292,
+          "p999_ns": 74150,
+          "p99_ns": 23875
+        },
+        {
+          "allocated_bytes_per_op": 3392.0,
+          "allocations_per_op": 18.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 4338,
+          "p95_ns": 11983,
+          "p999_ns": 71695,
+          "p99_ns": 23104
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "after_allocations",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 65.453125,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 2239,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 571,
+          "p95_ns": 2555,
+          "p999_ns": 8436,
+          "p99_ns": 4930
+        },
+        {
+          "allocated_bytes_per_op": 69.875,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 447,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 561,
+          "p95_ns": 711,
+          "p999_ns": 5640,
+          "p99_ns": 2765
+        },
+        {
+          "allocated_bytes_per_op": 69.875,
+          "allocations_per_op": 6.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 48,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 621,
+          "p95_ns": 741,
+          "p999_ns": 2915,
+          "p99_ns": 901
+        },
+        {
+          "allocated_bytes_per_op": 111.453125,
+          "allocations_per_op": 7.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 691,
+          "p95_ns": 752,
+          "p999_ns": 992,
+          "p99_ns": 862
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 211,
+          "p95_ns": 481,
+          "p999_ns": 8416,
+          "p99_ns": 632
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 421,
+          "p95_ns": 11512,
+          "p999_ns": 24767,
+          "p99_ns": 16421
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 861,
+          "p95_ns": 1152,
+          "p999_ns": 11371,
+          "p99_ns": 1343
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1042,
+          "p95_ns": 1322,
+          "p999_ns": 15459,
+          "p99_ns": 1553
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 33.578125,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 531,
+          "p95_ns": 862,
+          "p999_ns": 1954,
+          "p99_ns": 1112
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 541,
+          "p95_ns": 581,
+          "p999_ns": 931,
+          "p99_ns": 681
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 0,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 591,
+          "p95_ns": 631,
+          "p999_ns": 972,
+          "p99_ns": 751
+        },
+        {
+          "allocated_bytes_per_op": 79.578125,
+          "allocations_per_op": 7.0,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 671,
+          "p95_ns": 731,
+          "p999_ns": 922,
+          "p99_ns": 842
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 220,
+          "p95_ns": 471,
+          "p999_ns": 8005,
+          "p99_ns": 571
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 421,
+          "p95_ns": 11551,
+          "p999_ns": 24726,
+          "p99_ns": 16120
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 791,
+          "p95_ns": 1082,
+          "p999_ns": 11061,
+          "p99_ns": 1323
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1042,
+          "p95_ns": 1322,
+          "p999_ns": 15579,
+          "p99_ns": 1583
+        }
+      ]
+    }
+  ],
+  "final_runs": [
+    {
+      "repeat": 0,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 76.2421875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 3519,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 591,
+          "p95_ns": 4288,
+          "p999_ns": 12514,
+          "p99_ns": 5110
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 183,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 581,
+          "p95_ns": 781,
+          "p999_ns": 6883,
+          "p99_ns": 1563
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 375,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 631,
+          "p95_ns": 832,
+          "p999_ns": 7153,
+          "p99_ns": 2865
+        },
+        {
+          "allocated_bytes_per_op": 970.2421875,
+          "allocations_per_op": 12.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 741,
+          "p95_ns": 872,
+          "p999_ns": 1272,
+          "p99_ns": 992
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 210,
+          "p95_ns": 381,
+          "p999_ns": 13296,
+          "p99_ns": 581
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 451,
+          "p95_ns": 3156,
+          "p999_ns": 22814,
+          "p99_ns": 3447
+        },
+        {
+          "allocated_bytes_per_op": 2641.0,
+          "allocations_per_op": 14.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 2505,
+          "p95_ns": 7804,
+          "p999_ns": 45948,
+          "p99_ns": 10671
+        },
+        {
+          "allocated_bytes_per_op": 3392.0,
+          "allocations_per_op": 18.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3236,
+          "p95_ns": 8816,
+          "p999_ns": 44475,
+          "p99_ns": 12153
+        }
+      ]
+    },
+    {
+      "repeat": 0,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 33.578125,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 531,
+          "p95_ns": 932,
+          "p999_ns": 3887,
+          "p99_ns": 1172
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 541,
+          "p95_ns": 671,
+          "p999_ns": 3647,
+          "p99_ns": 832
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 0,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 601,
+          "p95_ns": 742,
+          "p999_ns": 4087,
+          "p99_ns": 932
+        },
+        {
+          "allocated_bytes_per_op": 79.578125,
+          "allocations_per_op": 7.0,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 671,
+          "p95_ns": 721,
+          "p999_ns": 892,
+          "p99_ns": 762
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 210,
+          "p95_ns": 370,
+          "p999_ns": 12844,
+          "p99_ns": 551
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 441,
+          "p95_ns": 3106,
+          "p999_ns": 21932,
+          "p99_ns": 3387
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 792,
+          "p95_ns": 952,
+          "p999_ns": 20399,
+          "p99_ns": 1162
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1042,
+          "p95_ns": 1192,
+          "p999_ns": 19657,
+          "p99_ns": 1393
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 76.2421875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 3518,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 961,
+          "p95_ns": 4298,
+          "p999_ns": 10470,
+          "p99_ns": 5210
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 183,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 561,
+          "p95_ns": 661,
+          "p999_ns": 5290,
+          "p99_ns": 952
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 375,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 621,
+          "p95_ns": 731,
+          "p999_ns": 5260,
+          "p99_ns": 2685
+        },
+        {
+          "allocated_bytes_per_op": 970.2421875,
+          "allocations_per_op": 12.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 732,
+          "p95_ns": 821,
+          "p999_ns": 1362,
+          "p99_ns": 992
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 201,
+          "p95_ns": 371,
+          "p999_ns": 7455,
+          "p99_ns": 531
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 431,
+          "p95_ns": 3116,
+          "p999_ns": 12193,
+          "p99_ns": 3346
+        },
+        {
+          "allocated_bytes_per_op": 2641.0,
+          "allocations_per_op": 14.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3306,
+          "p95_ns": 11021,
+          "p999_ns": 75033,
+          "p99_ns": 26120
+        },
+        {
+          "allocated_bytes_per_op": 3392.0,
+          "allocations_per_op": 18.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 4168,
+          "p95_ns": 11762,
+          "p999_ns": 68200,
+          "p99_ns": 27011
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 33.578125,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 532,
+          "p95_ns": 962,
+          "p999_ns": 7625,
+          "p99_ns": 1072
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 541,
+          "p95_ns": 581,
+          "p999_ns": 972,
+          "p99_ns": 672
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 0,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 591,
+          "p95_ns": 632,
+          "p999_ns": 1273,
+          "p99_ns": 732
+        },
+        {
+          "allocated_bytes_per_op": 79.578125,
+          "allocations_per_op": 7.0,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 671,
+          "p95_ns": 722,
+          "p999_ns": 912,
+          "p99_ns": 761
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 211,
+          "p95_ns": 360,
+          "p999_ns": 7113,
+          "p99_ns": 501
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 431,
+          "p95_ns": 2966,
+          "p999_ns": 14448,
+          "p99_ns": 3187
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 791,
+          "p95_ns": 942,
+          "p999_ns": 10320,
+          "p99_ns": 1132
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1072,
+          "p95_ns": 1212,
+          "p999_ns": 11372,
+          "p99_ns": 1402
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "before",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 76.2421875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 3519,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 612,
+          "p95_ns": 4269,
+          "p999_ns": 10350,
+          "p99_ns": 5300
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 183,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 571,
+          "p95_ns": 651,
+          "p999_ns": 5310,
+          "p99_ns": 992
+        },
+        {
+          "allocated_bytes_per_op": 82.875,
+          "allocations_per_op": 8.015625,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 375,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 622,
+          "p95_ns": 781,
+          "p999_ns": 5090,
+          "p99_ns": 2695
+        },
+        {
+          "allocated_bytes_per_op": 970.2421875,
+          "allocations_per_op": 12.015625,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 741,
+          "p95_ns": 812,
+          "p999_ns": 1122,
+          "p99_ns": 942
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 201,
+          "p95_ns": 380,
+          "p999_ns": 6352,
+          "p99_ns": 511
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 451,
+          "p95_ns": 3086,
+          "p999_ns": 13396,
+          "p99_ns": 3336
+        },
+        {
+          "allocated_bytes_per_op": 2641.0,
+          "allocations_per_op": 14.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3337,
+          "p95_ns": 10550,
+          "p999_ns": 71857,
+          "p99_ns": 24707
+        },
+        {
+          "allocated_bytes_per_op": 3392.0,
+          "allocations_per_op": 18.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 3868,
+          "p95_ns": 10390,
+          "p999_ns": 66427,
+          "p99_ns": 18786
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "implementation": "after",
+      "rows": [
+        {
+          "environment": {
+            "cpu": 190,
+            "cpu_isolated": false,
+            "includes_allocation_counter_overhead": true,
+            "network": false,
+            "sdk_loaded": false
+          }
+        },
+        {
+          "allocated_bytes_per_op": 33.578125,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 0,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 531,
+          "p95_ns": 942,
+          "p999_ns": 1603,
+          "p99_ns": 1052
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 39,
+            "ops_per_sample": 512,
+            "working_orders": 0
+          },
+          "operations": 20480,
+          "p50_ns": 541,
+          "p95_ns": 621,
+          "p999_ns": 912,
+          "p99_ns": 701
+        },
+        {
+          "allocated_bytes_per_op": 38.0,
+          "allocations_per_op": 6.0,
+          "benchmark": "prepare_and_local_reject",
+          "context": {
+            "history_at_start_of_each_sample": 10000,
+            "major_page_faults": 0,
+            "minor_page_faults": 0,
+            "ops_per_sample": 512,
+            "working_orders": 8
+          },
+          "operations": 20480,
+          "p50_ns": 591,
+          "p95_ns": 641,
+          "p999_ns": 1453,
+          "p99_ns": 742
+        },
+        {
+          "allocated_bytes_per_op": 79.578125,
+          "allocations_per_op": 7.0,
+          "benchmark": "planned_submit_and_local_reject",
+          "context": {
+            "native_library": false,
+            "receipt_and_planning_included": true
+          },
+          "operations": 20480,
+          "p50_ns": 681,
+          "p95_ns": 731,
+          "p999_ns": 901,
+          "p99_ns": 771
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "raw_yida_audit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 221,
+          "p95_ns": 501,
+          "p999_ns": 7585,
+          "p99_ns": 721
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "prepared_submit_enqueue",
+          "context": {
+            "audit_mode": "writer_thread_json",
+            "fsync_wait_in_timing": false,
+            "writer_thread_affinity": "original process mask"
+          },
+          "operations": 20480,
+          "p50_ns": 431,
+          "p95_ns": 3046,
+          "p999_ns": 14869,
+          "p99_ns": 3286
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 782,
+          "p95_ns": 1042,
+          "p999_ns": 11151,
+          "p99_ns": 1303
+        },
+        {
+          "allocated_bytes_per_op": 0.0,
+          "allocations_per_op": 0.0,
+          "benchmark": "trade_and_order_projection_enqueue",
+          "context": {
+            "fsync_wait_in_timing": false,
+            "snapshot_captured_on_producer": true
+          },
+          "operations": 20480,
+          "p50_ns": 1042,
+          "p95_ns": 1302,
+          "p999_ns": 13255,
+          "p99_ns": 1553
+        }
+      ]
+    }
+  ],
+  "pipeline_runs": [
+    {
+      "backlog_peak_observed": 640,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 32,
+      "burst_through_durability": {
+        "count": 62,
+        "p50_ns": 29563424,
+        "p95_ns": 37010804,
+        "p999_ns": 42509588,
+        "p99_ns": 42509588
+      },
+      "callback_processing": {
+        "count": 16000,
+        "p50_ns": 2214,
+        "p95_ns": 5872,
+        "p999_ns": 21822,
+        "p99_ns": 9318
+      },
+      "callback_to_oms": {
+        "count": 16000,
+        "p50_ns": 16442,
+        "p95_ns": 33574,
+        "p999_ns": 540668,
+        "p99_ns": 106693
+      },
+      "cycles": 2000,
+      "durable_records": 40085,
+      "journal": true,
+      "largest_wal_batch": 64,
+      "late_duplicate_verified": true,
+      "mode": "fak_open_close",
+      "native_bridge_call": {
+        "count": 4000,
+        "p50_ns": 3436,
+        "p95_ns": 8547,
+        "p999_ns": 203727,
+        "p99_ns": 88238
+      },
+      "native_requests": 4000,
+      "native_requests_per_second": 2106.2959878924376,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "tcp",
+      "submit_path": {
+        "count": 4000,
+        "p50_ns": 7113,
+        "p95_ns": 15429,
+        "p999_ns": 357840,
+        "p99_ns": 104198
+      },
+      "synced_wal_batches": 723,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 4000,
+        "p50_ns": 34856,
+        "p95_ns": 57940,
+        "p999_ns": 649385,
+        "p99_ns": 242581
+      },
+      "wall_ns": 1899068328,
+      "persistence": {
+        "rocksdb_orders": 4002,
+        "rocksdb_unique_trades": 4000,
+        "rocksdb_evidence": 40086,
+        "projection_error_retained": false
+      }
+    },
+    {
+      "backlog_peak_observed": 2496,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 128,
+      "burst_through_durability": {
+        "count": 15,
+        "p50_ns": 120434732,
+        "p95_ns": 138266324,
+        "p999_ns": 138266324,
+        "p99_ns": 138266324
+      },
+      "callback_processing": {
+        "count": 16000,
+        "p50_ns": 2044,
+        "p95_ns": 4999,
+        "p999_ns": 21210,
+        "p99_ns": 8807
+      },
+      "callback_to_oms": {
+        "count": 16000,
+        "p50_ns": 14949,
+        "p95_ns": 30277,
+        "p999_ns": 874152,
+        "p99_ns": 44063
+      },
+      "cycles": 2000,
+      "durable_records": 40038,
+      "journal": true,
+      "largest_wal_batch": 64,
+      "late_duplicate_verified": true,
+      "mode": "fak_open_close",
+      "native_bridge_call": {
+        "count": 4000,
+        "p50_ns": 3346,
+        "p95_ns": 6552,
+        "p999_ns": 382878,
+        "p99_ns": 11872
+      },
+      "native_requests": 4000,
+      "native_requests_per_second": 2098.98102038287,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "udp",
+      "submit_path": {
+        "count": 4000,
+        "p50_ns": 6863,
+        "p95_ns": 13596,
+        "p999_ns": 485553,
+        "p99_ns": 21070
+      },
+      "synced_wal_batches": 659,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 4000,
+        "p50_ns": 30277,
+        "p95_ns": 52570,
+        "p999_ns": 1288009,
+        "p99_ns": 70454
+      },
+      "wall_ns": 1905686598,
+      "persistence": {
+        "rocksdb_orders": 4002,
+        "rocksdb_unique_trades": 4000,
+        "rocksdb_evidence": 40039,
+        "projection_error_retained": false
+      }
+    },
+    {
+      "backlog_peak_observed": 288,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 32,
+      "burst_through_durability": {
+        "count": 62,
+        "p50_ns": 11885825,
+        "p95_ns": 16818321,
+        "p999_ns": 17276042,
+        "p99_ns": 17276042
+      },
+      "callback_processing": {
+        "count": 6000,
+        "p50_ns": 1162,
+        "p95_ns": 2264,
+        "p999_ns": 15540,
+        "p99_ns": 3937
+      },
+      "callback_to_oms": {
+        "count": 6000,
+        "p50_ns": 3677,
+        "p95_ns": 9228,
+        "p999_ns": 137802,
+        "p99_ns": 91513
+      },
+      "cycles": 2000,
+      "durable_records": 18086,
+      "journal": true,
+      "largest_wal_batch": 64,
+      "late_duplicate_verified": true,
+      "mode": "passive_cancel",
+      "native_bridge_call": {
+        "count": 2000,
+        "p50_ns": 1503,
+        "p95_ns": 2935,
+        "p999_ns": 97385,
+        "p99_ns": 75995
+      },
+      "native_requests": 4000,
+      "native_requests_per_second": 5101.279079540099,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "xtcp",
+      "submit_path": {
+        "count": 2000,
+        "p50_ns": 3306,
+        "p95_ns": 11251,
+        "p999_ns": 129617,
+        "p99_ns": 96684
+      },
+      "synced_wal_batches": 377,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 2000,
+        "p50_ns": 16251,
+        "p95_ns": 29556,
+        "p999_ns": 45436,
+        "p99_ns": 34686
+      },
+      "wall_ns": 784117069,
+      "persistence": {
+        "rocksdb_orders": 2002,
+        "rocksdb_unique_trades": 0,
+        "rocksdb_evidence": 18087,
+        "projection_error_retained": false
+      }
+    },
+    {
+      "backlog_peak_observed": 0,
+      "benchmark": "native_sdk_pipeline",
+      "burst_cycles": 1024,
+      "burst_through_durability": {
+        "count": 107,
+        "p50_ns": 16985999,
+        "p95_ns": 25478702,
+        "p999_ns": 42502114,
+        "p99_ns": 41148720
+      },
+      "callback_processing": {
+        "count": 880000,
+        "p50_ns": 761,
+        "p95_ns": 1673,
+        "p999_ns": 7825,
+        "p99_ns": 3858
+      },
+      "callback_to_oms": {
+        "count": 880000,
+        "p50_ns": 3636,
+        "p95_ns": 6232,
+        "p999_ns": 13886,
+        "p99_ns": 8707
+      },
+      "cycles": 110000,
+      "durable_records": null,
+      "journal": false,
+      "largest_wal_batch": null,
+      "late_duplicate_verified": true,
+      "mode": "fak_open_close",
+      "native_bridge_call": {
+        "count": 220000,
+        "p50_ns": 1593,
+        "p95_ns": 3907,
+        "p999_ns": 10210,
+        "p99_ns": 6191
+      },
+      "native_requests": 220000,
+      "native_requests_per_second": 110105.93644484355,
+      "network": false,
+      "pending_requests_after_run": 0,
+      "profiling_feature": true,
+      "protocol": "tcp",
+      "submit_path": {
+        "count": 220000,
+        "p50_ns": 2996,
+        "p95_ns": 5561,
+        "p999_ns": 13315,
+        "p99_ns": 8106
+      },
+      "synced_wal_batches": null,
+      "synthetic_sdk": true,
+      "terminal_path": {
+        "count": 220000,
+        "p50_ns": 7394,
+        "p95_ns": 11742,
+        "p999_ns": 22813,
+        "p99_ns": 15489
+      },
+      "wall_ns": 1998075736
+    }
+  ]
+}

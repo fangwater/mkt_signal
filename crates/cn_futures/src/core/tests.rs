@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history() {
+    let mut c = core();
+    c.limits.max_actions_per_second = 2;
+    let now = Instant::now();
+    let a = c.prepare(intent(Side::Buy, Offset::Open, 1), now).unwrap();
+    let before = serde_json::to_value(c.view()).unwrap();
+    c.reserve_orders(16_384).unwrap();
+    assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
+    assert!(c
+        .order(&OrderKey {
+            session: a.key.session.clone(),
+            order_ref: "4095".into()
+        })
+        .is_none());
+    let b = c.prepare(intent(Side::Buy, Offset::Open, 1), now).unwrap();
+    assert_eq!(
+        b.key.order_ref.parse::<u64>().unwrap(),
+        a.key.order_ref.parse::<u64>().unwrap() + 1
+    );
+    assert!(c
+        .prepare(intent(Side::Buy, Offset::Open, 1), now)
+        .unwrap_err()
+        .to_string()
+        .contains("rate limit"));
+    assert_eq!(c.orders.slots.len(), 2);
+    assert_working_index(&c);
+}
+
+#[test]
 fn same_session_reconciliation_keeps_rejected_attempt_references_consumed() {
     let mut core = core();
     let request = core

@@ -364,23 +364,13 @@ pub fn journal_update(
 ) -> Result<()> {
     match parsed {
         DecodedUpdate::Trade(fill) => {
-            let mutation = if applied {
-                crate::persistence::projection_for(
-                    core,
-                    core.fill_order_key(fill)
-                        .map(std::slice::from_ref)
-                        .unwrap_or_default(),
-                    &[],
-                )
-            } else {
-                Default::default()
-            };
-            journal.trade_with_projection(
-                fill.clone(),
+            journal.trade_for(
+                core,
+                fill,
                 Some(e.commission),
                 Some(e.native_time),
                 received_us,
-                mutation,
+                applied,
             )?;
         }
         DecodedUpdate::Order(order) if applied => journal.orders(
