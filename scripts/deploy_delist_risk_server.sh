@@ -87,6 +87,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$DO_SCRIPTS" -eq 1 ]]; then
+  npm ci --prefix "$ROOT_DIR/web/delist_risk/frontend" --no-audit --no-fund
+  npm run build --prefix "$ROOT_DIR/web/delist_risk/frontend"
+fi
+
 if [[ "$DO_BUILD" -eq 1 ]]; then
   CARGO_TARGET_ROOT="$({
     cd "$ROOT_DIR"
@@ -127,6 +132,9 @@ install_tree() {
     if [[ -f "$ROOT_DIR/web/delist_risk/index.html" ]]; then
       cp "$ROOT_DIR/web/delist_risk/index.html" "$dest/web/delist_risk/index.html"
     fi
+    mkdir -p "$dest/web/delist_risk/dist"
+    cp "$ROOT_DIR/web/delist_risk/dist/fr-yield.js" "$dest/web/delist_risk/dist/.fr-yield.js.new"
+    mv -f "$dest/web/delist_risk/dist/.fr-yield.js.new" "$dest/web/delist_risk/dist/fr-yield.js"
     if [[ ! -f "$dest/config/delist_risk_server.env" ]]; then
       cp "$ROOT_DIR/config/delist_risk_server.env.example" "$dest/config/delist_risk_server.env"
       chmod 600 "$dest/config/delist_risk_server.env"
@@ -324,6 +332,15 @@ if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   if [[ -f "$STAGING/docs/delist_risk_server.md" ]]; then
     "${SCP[@]}" "$STAGING/docs/delist_risk_server.md" "$SSH_HOST:~/delist_risk_server/docs/delist_risk_server.md"
   fi
+  "${SSH[@]}" "$SSH_HOST" "mkdir -p ~/delist_risk_server/web/delist_risk/dist"
+  LOCAL_YIELD_SHA="$(sha256sum "$STAGING/web/delist_risk/dist/fr-yield.js" | awk '{print $1}')"
+  "${SCP[@]}" "$STAGING/web/delist_risk/dist/fr-yield.js" "$SSH_HOST:~/delist_risk_server/web/delist_risk/dist/.fr-yield.js.new"
+  REMOTE_YIELD_SHA="$("${SSH[@]}" "$SSH_HOST" "sha256sum ~/delist_risk_server/web/delist_risk/dist/.fr-yield.js.new | awk '{print \$1}'")"
+  if [[ "$LOCAL_YIELD_SHA" != "$REMOTE_YIELD_SHA" ]]; then
+    echo "[ERROR] uploaded FR yield bundle checksum mismatch" >&2
+    exit 1
+  fi
+  "${SSH[@]}" "$SSH_HOST" "mv -f ~/delist_risk_server/web/delist_risk/dist/.fr-yield.js.new ~/delist_risk_server/web/delist_risk/dist/fr-yield.js"
   if [[ -f "$STAGING/web/delist_risk/index.html" ]]; then
     "${SCP[@]}" "$STAGING/web/delist_risk/index.html" "$SSH_HOST:~/delist_risk_server/web/delist_risk/index.html"
   fi

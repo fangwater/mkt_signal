@@ -81,17 +81,6 @@
 
       .error-state { margin-top: 20px; padding: 13px 15px; border: 1px solid #edc9c6; border-left: 3px solid var(--danger); background: var(--danger-soft); color: #84312d; font-size: 13px; }
       .error-state strong { display: block; margin-bottom: 2px; }
-      #fr-yield .error-state { overflow-wrap: anywhere; }
-      .yield-panel { margin-top: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
-      .yield-heading { padding: 13px 16px; font-size: 14px; font-weight: 650; }
-      .yield-heading small { margin-left: 10px; color: var(--muted); font-size: 12px; font-weight: 400; }
-      .yield-alert { color: var(--danger); }
-      .yield-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
-      .yield-table th, .yield-table td { padding: 7px 16px; border-top: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; }
-      .yield-table th { background: var(--surface-hover); color: var(--muted); font-weight: 500; }
-      .yield-table th:first-child, .yield-table td:first-child { width: 50%; text-align: left; overflow-wrap: anywhere; }
-      .yield-table small { display: block; color: var(--muted); font-size: 11px; }
-      .yield-table .yield-alert { font-weight: 650; }
       .exchange-list { margin-top: 20px; }
       .exchange { margin-bottom: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 2px 5px #202f3a03; }
       .exchange__header { min-height: 68px; padding: 12px 18px; display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(170px, 1fr) auto; align-items: center; gap: 18px; }
@@ -304,6 +293,7 @@
       <section class="exchange-list" id="cta-strategies" data-view="cta" aria-label="CTA 组合与执行账户"></section>
       <section class="exchange-list" id="exchange-list" data-view="fr" aria-label="交易所风险明细"></section>
     </main>
+    <script defer src="fr-yield.js" onerror="const root = document.getElementById('fr-yield'); if (root) root.textContent = 'FR 收益检查加载失败，请刷新页面。'"></script>
     <script>
       const PAGE = new URLSearchParams(location.search).get('view') === 'cta' ? 'cta' : 'fr';
       document.querySelectorAll('[data-view]').forEach(node => { if (node.dataset.view !== PAGE) node.remove(); });
@@ -322,8 +312,6 @@
       let backupStatus = null;
       let exposurePayload = null;
       let notificationPayload = null;
-      let yieldPayload = null;
-      let yieldError = '';
       let exposureError = '';
       let flattenByKey = new Map();
       let positionStatusByKey = new Map();
@@ -351,20 +339,6 @@
       function setSystem(tone, text) {
         document.getElementById('system-state').innerHTML = `<span class="state-dot state-dot--${tone}"></span><span>${escapeHtml(text)}</span>`;
         document.getElementById('system-state').title = text;
-      }
-      function renderYield() {
-        const root = document.getElementById('fr-yield');
-        const accounts = [...(yieldPayload?.accounts || [])].sort((a, b) => {
-          const rank = item => item.annualized_return == null ? 1 : item.annualized_return < 0.1 ? 0 : 2;
-          return rank(a) - rank(b);
-        });
-        const low = accounts.filter(a => typeof a.annualized_return === 'number' && a.annualized_return < 0.1);
-        if (yieldError || !yieldPayload?.catalog_current) {
-          root.innerHTML = '<div class="error-state"><strong>FR 年化暂不可用</strong> NAV 数据或 FR 名单不可用、过期，无法判断是否低于 10%。</div>';
-          return;
-        }
-        const cell = (value, covered, days, alert) => value == null ? '<td>--</td>' : `<td class="${alert ? 'yield-alert' : ''}">${alert && value >= 0.09995 ? '&lt;10.00%' : `${(value * 100).toFixed(2)}%`}${covered < days * 86400000 ? `<small>不足 ${days} 天</small>` : ''}</td>`;
-        root.innerHTML = `<div class="yield-panel"><div class="yield-heading">FR 年化收益<small class="${low.length ? 'yield-alert' : ''}">${low.length ? `${low.length} 个账户近 7 日低于 10%` : '近 7 日低于 10% 时提示'} · ${escapeHtml(formatTime(yieldPayload.checked_ms))}</small></div><table class="yield-table"><thead><tr><th>账户</th><th>近 7 日</th><th>近 30 日</th></tr></thead><tbody>${accounts.map(a => `<tr><td>${escapeHtml(a.alias || a.slug)}${a.alias && a.alias !== a.slug ? `<small>${escapeHtml(a.slug)}</small>` : ''}</td>${cell(a.annualized_return, a.covered_ms, 7, a.annualized_return != null && a.annualized_return < 0.1)}${cell(a.annualized_return_30d, a.covered_30d_ms, 30, false)}</tr>`).join('')}</tbody></table></div>`;
       }
       function exposureAccounts() {
         const now = Date.now();
@@ -743,11 +717,6 @@
           document.getElementById('error').innerHTML = `<div class="error-state"><strong>${PAGE === 'cta' ? 'CTA 信息' : '账户风险'}加载失败</strong>${escapeHtml(error.message || '未知错误')}</div>`;
         }
       }
-      async function loadYield() {
-        try { yieldPayload = await api('fr-yield'); yieldError = ''; }
-        catch (error) { yieldPayload = null; yieldError = error.message || '读取失败'; }
-        renderYield();
-      }
       async function executeManualFlatten(button) {
         const account = button.dataset.account;
         const symbol = button.dataset.symbol;
@@ -775,7 +744,7 @@
           await load();
         }
       }
-      document.getElementById('refresh').addEventListener('click', () => { load(); if (PAGE === 'fr') { loadExposures(); loadYield(); } });
+      document.getElementById('refresh').addEventListener('click', () => { load(); if (PAGE === 'fr') loadExposures(); });
       document.getElementById('logout').addEventListener('click', async () => {
         await api('logout', { method: 'POST' });
         window.sessionStorage.removeItem('delistFlattenToken');
@@ -784,8 +753,6 @@
       load();
       window.setInterval(load, 60_000);
       if (PAGE === 'fr') {
-        loadYield();
-        window.setInterval(loadYield, 60_000);
         loadExposures();
         window.setInterval(loadExposures, 10_000);
       }

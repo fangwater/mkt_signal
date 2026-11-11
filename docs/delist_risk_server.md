@@ -200,9 +200,12 @@ strategy PnL API as the source of the `rolling7d` and `rolling30d` annualized
 returns. The active NAV `funding_rate` catalog defines the accounts checked. Values are
 refreshed at startup and hourly, with a two-hour freshness limit; a changed or
 unavailable catalog and failed or missing PnL are shown as unavailable rather
-than healthy. The heartbeat waits for the initial refresh if necessary. Seven-day
-values strictly below 10% are highlighted in the account table at the start of the
-heartbeat and above the FR board's summary. Both windows show unavailable data
+than healthy. The heartbeat waits for the initial refresh if necessary. Only
+accounts with at least seven days of history and a seven-day annualized return
+strictly below 10% appear in the alert table. Newer accounts are excluded from
+both the dashboard and heartbeat; accounts with unavailable seven-day data are
+counted separately. The table is rendered with React and Ant Design, and the
+deployment builds and serves its self-hosted bundle. Both windows show unavailable data
 and flag coverage shorter than the nominal window. These are NAV's linear
 annualizations using the latest account equity; they are not forecasts or trading actions.
 

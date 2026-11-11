@@ -28,6 +28,7 @@ def main():
     mode = {'gate': 'building'}
     backups = []
     slugs = ['gate_fr_arb01', 'gate_fr_arb04', 'bybit_fr_arb01']
+    nav_slugs = slugs + ['bitget_fr_arb01']
     with tempfile.TemporaryDirectory(prefix='delist-exposure-browser-') as temporary:
         root = Path(temporary)
         (root/'data').mkdir()
@@ -72,18 +73,19 @@ def main():
                 if self.path.split('?', 1)[0] == '/nav-api/strategies':
                     return self.respond([{'slug': slug, 'alias': '<img src=x onerror=alert(1)>' if slug == slugs[0] else slug,
                                           'host': 'sg' if slug.startswith('bybit') else 'jp',
-                                          'strategyKind': 'funding_rate', 'exchange': 'bybit' if slug.startswith('bybit') else 'gate'} for slug in slugs]
+                                          'strategyKind': 'funding_rate', 'exchange': 'bybit' if slug.startswith('bybit') else 'bitget' if slug.startswith('bitget') else 'gate'} for slug in nav_slugs]
                                          + [{'slug': 'binance_exec_trade01', 'host': 'jp', 'strategyKind': 'cta', 'exchange': 'binance'}])
                 if self.path.split('?', 1)[0].startswith('/nav-api/strategies/') and self.path.split('?', 1)[0].endswith('/pnl'):
                     slug = self.path.split('/')[3]
-                    annualized = {slugs[0]: 0.09, slugs[1]: 0.1, slugs[2]: None}[slug]
-                    annualized_30d = {slugs[0]: 0.25, slugs[1]: 0.03, slugs[2]: None}[slug]
-                    return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': 86400000},
+                    annualized = {slugs[0]: 0.09, slugs[1]: 0.1, slugs[2]: None, nav_slugs[3]: -0.5}[slug]
+                    annualized_30d = {slugs[0]: 0.25, slugs[1]: 0.03, slugs[2]: None, nav_slugs[3]: -0.5}[slug]
+                    coverage = 86400000 if slug == nav_slugs[3] else 7 * 86400000
+                    return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': coverage},
                                                          'rolling30d': {'annualizedReturn': annualized_30d, 'coveredMs': 7 * 86400000}}})
                 if self.path == '/snapshot':
                     now = int(time.time()*1000)
                     entries = []
-                    for slug in slugs:
+                    for slug in nav_slugs:
                         if slug == slugs[0] and mode['gate'] == 'failed':
                             continue
                         qty = 160 if slug == slugs[0] and mode['gate'] != 'recovered' else 1
@@ -158,7 +160,7 @@ def main():
                   'password_hash': hashlib.pbkdf2_hmac('sha256', b'fixture-password', salt, 600_000).hex(),
                   'password_iterations': 600_000, 'public_origin': origin, 'fr_envs': slugs}
         (root/'access.json').write_text(json.dumps(access))
-        (root/'snapshots.toml').write_text('[snapshots]\n' + ''.join(f'{slug} = "{origin}/snapshot"\n' for slug in slugs))
+        (root/'snapshots.toml').write_text('[snapshots]\n' + ''.join(f'{slug} = "{origin}/snapshot"\n' for slug in nav_slugs))
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('DELIST_', 'LOCAL_NOTIFICATION_'))}
         log = open(root/'service.log', 'wb')
         server = subprocess.Popen([str(args.delist_binary.resolve()), '--bind', f'127.0.0.1:{port}',
@@ -216,19 +218,20 @@ def main():
                 assert not next(a for a in report()['accounts'] if a['slug'] == slugs[0])['breaches']
                 mode['gate'] = 'excess'
                 data = wait_account(lambda a: a['risk_status'] == 'alert')
-                assert len(data['accounts']) == 3
+                assert len(data['accounts']) == 4
                 assert next(a for a in data['accounts'] if a['slug'] == slugs[2])['risk_status'] == 'unknown'
                 page.goto(origin+'/delist/')
                 page.wait_for_selector('#exchange-list .backup-action')
                 page.wait_for_function("document.querySelector('#fr-yield').textContent.includes('9.00%')")
                 assert '低于 10%' in page.locator('#fr-yield').inner_text()
-                assert '不足 7 天' in page.locator('#fr-yield').inner_text()
                 assert '不足 30 天' in page.locator('#fr-yield').inner_text()
                 assert '25.00%' in page.locator('#fr-yield').inner_text()
-                assert 'bybit_fr_arb01' in page.locator('#fr-yield').inner_text()
-                assert 'gate_fr_arb04' in page.locator('#fr-yield').inner_text()
-                assert page.locator('#fr-yield tbody tr').count() == 3
-                assert page.locator('#fr-yield tbody tr').first.locator('.yield-alert').inner_text().startswith('9.00%')
+                assert 'bybit_fr_arb01' not in page.locator('#fr-yield').inner_text()
+                assert 'gate_fr_arb04' not in page.locator('#fr-yield').inner_text()
+                assert 'bitget_fr_arb01' not in page.locator('#fr-yield').inner_text()
+                assert '1 个 FR 年化数据不可用' in page.locator('#fr-yield').inner_text()
+                assert page.locator('#fr-yield tbody tr').count() == 1
+                assert '9.00%' in page.locator('#fr-yield tbody tr').first.inner_text()
                 assert page.locator('#fr-yield img').count() == 0
                 assert not page.locator('#exposure-panel').evaluate('e => e.open')
                 assert page.locator('#cta-strategies, #cta-config-entries').count() == 0

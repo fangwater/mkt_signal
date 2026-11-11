@@ -1151,6 +1151,7 @@ async fn main() -> Result<()> {
         .route("/accounts", get(query_accounts))
         .route("/exposures", get(query_exposures))
         .route("/fr-yield", get(query_fr_yield))
+        .route("/fr-yield.js", get(fr_yield_script))
         .route("/notifications", get(query_notifications))
         .route("/parameter-changes", get(parameter_history_page))
         .route("/api/parameter-changes", get(parameter_history))
@@ -2111,7 +2112,24 @@ async fn fr_event(state: &AppState, kind: &str, message: String) -> bool {
 }
 
 async fn query_fr_yield(State(state): State<AppState>) -> impl IntoResponse {
-    Json(fr_yield::report(&state).await)
+    Json(fr_yield::report(&state).await.view())
+}
+
+async fn fr_yield_script(State(state): State<AppState>) -> Response {
+    match tokio::fs::read(state.web_dir.join("dist/fr-yield.js")).await {
+        Ok(script) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/javascript; charset=utf-8",
+                ),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            script,
+        )
+            .into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 async fn fr_heartbeat(state: &AppState, nav_client: &Client) {
@@ -2133,7 +2151,8 @@ async fn fr_heartbeat(state: &AppState, nav_client: &Client) {
         .filter(|s| !s.ok && notifications::fr_source(&s.source, &active_fr))
         .map(|s| s.source.as_str())
         .collect::<Vec<_>>();
-    let summary = format!("{}\nFR 覆盖 {} 个：敞口告警 {}，数据不完整 {}\n公告及监控源：{}\n本轮按现有配置检查；没有新增策略、手工下单或调仓。自动风控实际操作列在下方日志中。", fr_yield::report(state).await.summary(), report.accounts.len(), report.accounts.iter().filter(|a| a.risk_status == "alert").count(), report.accounts.iter().filter(|a| !a.complete).count(), if failures.is_empty() { "全部已报告成功".into() } else { format!("存在失败/未知：{}", failures.join(", ")) });
+    let yield_summary = fr_yield::report(state).await.summary();
+    let summary = format!("{}FR 覆盖 {} 个：敞口告警 {}，数据不完整 {}\n公告及监控源：{}\n本轮按现有配置检查；没有新增策略、手工下单或调仓。自动风控实际操作列在下方日志中。", if yield_summary.is_empty() { String::new() } else { format!("{yield_summary}\n") }, report.accounts.len(), report.accounts.iter().filter(|a| a.risk_status == "alert").count(), report.accounts.iter().filter(|a| !a.complete).count(), if failures.is_empty() { "全部已报告成功".into() } else { format!("存在失败/未知：{}", failures.join(", ")) });
     if let Err(err) = notifier.heartbeat(&summary).await {
         warn!("queue FR heartbeat failed: {err}");
     }
