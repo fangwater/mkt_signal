@@ -230,8 +230,8 @@ def main():
                 assert 'gate_fr_arb04' not in page.locator('#fr-yield').inner_text()
                 assert 'bitget_fr_arb01' not in page.locator('#fr-yield').inner_text()
                 assert '1 个 FR 年化数据不可用' in page.locator('#fr-yield').inner_text()
-                assert page.locator('#fr-yield tbody tr').count() == 1
-                assert '9.00%' in page.locator('#fr-yield tbody tr').first.inner_text()
+                assert page.locator('#fr-yield tbody tr[data-row-key]').count() == 1
+                assert '9.00%' in page.locator('#fr-yield tbody tr[data-row-key]').first.inner_text()
                 assert page.locator('#fr-yield img').count() == 0
                 assert not page.locator('#exposure-panel').evaluate('e => e.open')
                 assert page.locator('#cta-strategies, #cta-config-entries').count() == 0
@@ -313,7 +313,7 @@ def main():
                 assert page.locator('#metrics strong').first.inner_text() == '3'
                 page.locator('#exposure-panel > summary').click()
                 page.wait_for_selector('[data-exposure-account="gate_fr_arb01"]')
-                assert page.locator('[data-exposure-account]').count() == 3
+                assert page.locator('[data-exposure-account]').count() == 4
                 assert '持续超限' in page.locator('#exposures').inner_text()
                 assert page.locator('#exposures img').count() == 0
                 assert page.locator('#exposures a[href*="gate_fr_arb04"]').count() == 1
