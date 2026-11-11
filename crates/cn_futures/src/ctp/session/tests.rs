@@ -36,9 +36,13 @@ fn set<const N: usize>(out: &mut [u8; N], value: &str) {
 }
 fn response(kind: i32, id: i32) -> RawEvent {
     let mut e = RawEvent {
-        kind,
-        request: id,
-        last: 1,
+        hot: HotEvent {
+            kind,
+            request: id,
+            last: 1,
+            ..(RawEvent::default()).hot
+        },
+
         ..RawEvent::default()
     };
     match kind {
@@ -104,7 +108,11 @@ fn begin() -> (Session, Instant) {
     let mut s = Session::new(config(), "TEST".into(), now);
     s.on_raw_event(
         &RawEvent {
-            kind: CONNECTED,
+            hot: HotEvent {
+                kind: CONNECTED,
+                ..(RawEvent::default()).hot
+            },
+
             ..RawEvent::default()
         },
         now,
@@ -202,7 +210,11 @@ fn concurrent_live_event_invalidates_snapshot_pass() {
             account_queries += 1;
             if account_queries == 1 {
                 let mut live = RawEvent {
-                    kind: ORDER,
+                    hot: HotEvent {
+                        kind: ORDER,
+                        ..(RawEvent::default()).hot
+                    },
+
                     ..RawEvent::default()
                 };
                 set(&mut live.exchange, "CFFEX");
@@ -239,7 +251,11 @@ fn disconnect_abandons_old_correlation_and_requires_new_login() {
     let (_, e) = dispatch(&mut s, &mut now, 1);
     s.on_raw_event(
         &RawEvent {
-            kind: DISCONNECTED,
+            hot: HotEvent {
+                kind: DISCONNECTED,
+                ..(RawEvent::default()).hot
+            },
+
             ..RawEvent::default()
         },
         now,
@@ -252,7 +268,11 @@ fn disconnect_abandons_old_correlation_and_requires_new_login() {
         .is_none());
     s.on_raw_event(
         &RawEvent {
-            kind: CONNECTED,
+            hot: HotEvent {
+                kind: CONNECTED,
+                ..(RawEvent::default()).hot
+            },
+
             ..RawEvent::default()
         },
         now,

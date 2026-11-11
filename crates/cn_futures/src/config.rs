@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub sdk_library: PathBuf,
+    pub placement: crate::placement::PlacementConfig,
+    #[serde(default = "default_preallocated_requests")]
+    pub preallocated_requests: usize,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
@@ -57,6 +60,10 @@ pub struct Credentials {
     pub auth_code: CString,
 }
 
+fn default_preallocated_requests() -> usize {
+    16384
+}
+
 fn default_reconnect_backoff() -> u64 {
     5000
 }
@@ -70,6 +77,11 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        self.placement.validate()?;
+        ensure!(
+            (1024..=2_000_000).contains(&self.preallocated_requests),
+            "preallocated_requests must be 1024..2000000; it is a capacity hint, not a history limit"
+        );
         ensure!(
             self.reconnect_backoff_ms >= 1000,
             "CTP reconnect backoff must be at least 1000 ms"

@@ -21,11 +21,12 @@ auth_code_env = "CTP_AUTH_CODE"
 require_authentication = true
 # investor_id_env = "CTP_INVESTOR_ID" # Optional when InvestorID is the same as UserID.
 event_capacity = 8192
+preallocated_requests = 16384
 preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
 query_interval_ms = 1100
 response_timeout_ms = 30000
 # 0 = busy polling. Choose/pin CPU after measuring on the actual execution machine.
-idle_sleep_us = 50
+idle_sleep_us = 0
 
 [[symbols]]
 venue = "CFFEX"
@@ -44,3 +45,10 @@ minimum_cash_remaining = 10000.0
 enable_fak_fok = false
 # Verify the CFFEX Close allocation with the actual broker during simulation.
 close_priority = "today_first"
+
+# Required: replace these example CPU IDs/node with the authorized external host topology.
+[placement]
+numa_node = 0
+business_cpu = 0
+sdk_cpus = [1]
+background_cpus = [2]

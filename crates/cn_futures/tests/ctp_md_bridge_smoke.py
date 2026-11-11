@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import tomllib
 
 MOCK = r'''
 #include "ThostFtdcMdApi.h"
@@ -66,13 +67,19 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk-dir',type=Path,required=True)
     parser.add_argument('--binary',type=Path,required=True)
+    parser.add_argument("--placement-config",type=Path,required=True,help="explicit CPU/NUMA placement for the authorized external host")
     args=parser.parse_args()
+    placement=tomllib.loads(args.placement_config.read_text())
+    required={"numa_node","business_cpu","sdk_cpus","background_cpus"}
+    if set(placement)!=required: raise ValueError("placement config must contain exactly NUMA node and three CPU domains")
+    placement_table="[placement]\n"+"\n".join(k+" = "+json.dumps(placement[k]) for k in ["numa_node","business_cpu","sdk_cpus","background_cpus"])+"\n"
     root=Path(__file__).resolve().parents[3]
     with tempfile.TemporaryDirectory(prefix='mkt-ctp-md-fixture-') as directory:
         temp=Path(directory);source=temp/'fixture.cpp';library=temp/'fixture.so'
         source.write_text(fixture_source(args.sdk_dir))
         subprocess.run(['c++','-std=c++17','-shared','-fPIC','-isystem',str(args.sdk_dir),str(source),'-o',str(library)],check=True)
         template=(root/'config/ctp_market_data.example.toml').read_text()
+        template=template[:template.index("[placement]")]+placement_table
         for failure in [False,True]:
             case=temp/('login-error' if failure else 'reconnect');case.mkdir()
             config=template.replace('/opt/ctp/6.7.11/libthostmduserapi_se.so',str(library)).replace('/tmp/mkt_ctp_md/flow',str(case/'flow')).replace('/tmp/mkt_ctp_md/market_data.jsonl',str(case/'events.jsonl')).replace('broker_id = "REPLACE"','broker_id = "TEST"')

@@ -58,6 +58,30 @@ SDK 注册主/备用前置并负责传输重连。传输或控制响应超时后
 
 行情服务不包含自动交易策略，也未添加现有加密市场行情 IPC 的兼容层。库中的 `market_data::Tick` 为同进程消费者提供原生行情契约；进程消费者可读取 stdout 的 JSON 行。
 
+## CPU、NUMA 与热路径
+
+交易和行情配置现在都必须包含 `[placement]`；旧私有配置需补齐后才能使用。配置加载只检查字段范围、非空和 CPU 集合互斥，不改变 CPU 或内存策略。只有实际连接运行时才检查外部主机拓扑并应用绑定：
+
+```toml
+[placement]
+numa_node = 0
+business_cpu = 0
+sdk_cpus = [1]
+background_cpus = [2]
+```
+
+CPU 编号仅为占位。业务、SDK、后台三个域必须位于同一指定 NUMA 节点，属于进程原本允许的 CPU 集合，且不同域不能共享 SMT 物理核。行情与交易若同时运行，需分别分配物理核；示例配置没有替实际主机预留 CPU。SDK Create/Init 和重建期间临时切至 SDK CPU 集合，使其工作线程继承绑定；首次回调再次强制校验并绑定。业务线程内的普通同步回调保留业务 CPU，Create/Init 内的同步回调保留 SDK CPU，避免破坏后续工作线程的继承。Journal、RocksDB 后台线程、stdin 与行情输出线程继承后台 CPU 集合。
+
+运行时强制 `MPOL_BIND | MPOL_F_STATIC_NODES`，新分配页受指定节点策略约束。节点须在 `Mems_allowed_list` 中，宿主机必须允许 `get_mempolicy`、`set_mempolicy` 和绑核系统调用。拓扑、权限、绑定或临时切核后恢复失败都会返回错误；回调内失败会使主循环报错退出，没有自动放宽策略。该策略不负责迁移已经分配的旧页或保证 SDK 文件映射页全部位于指定节点。
+
+高频委托、成交、报撤响应和订单/成交查询使用 **328 字节**紧凑事件；低频账户、合约及费率响应保留 **928 字节**完整事件，放入预分配池。两类事件进入同一个有界 MPSC 队列，保留入队顺序；审计持有池槽引用，直到后台序列化完成才释放。官方 81 字节错误消息字段保留完整容量。以上为编译期布局大小，不是延迟测量。
+
+报撤单固定账户/合约字段在冷路径准备不可变模板，每次请求复制模板并覆盖动态字段，避免每单构造多份 `CString`，也不依赖 SDK 保持输入结构不变。白名单外已有订单可冷路径准备仅供撤单的模板，不因此获得报新单权限。请求 ID 使用每页 1024 项的直接索引；`preallocated_requests` 默认 16384，范围 1024–2000000，只决定初始容量，历史仍可增长且保留迟到响应关联。重连移交关联表，不克隆全表。
+
+两份示例均设 `idle_sleep_us=0`，空闲时忙轮询，占用业务 CPU；可设 1–1000 微秒，仅在空闲时休眠。行情业务线程只校验并复制固定 `TickRecord`，字符串、无效数值转换、JSON 与脱敏放在输出线程。输出每批最多处理当前已就绪的 64 条消息，不等待凑批；stdout 每批 flush，文件约每 100 毫秒 flush，退出时同步文件并传播失败。
+
+共享 OMS 和归一化仍有字符串分配，不能宣称整条链路零分配。本轮只做静态审阅、格式化、编译和 Clippy；新增回归用例仅编译，CTP 测试、SDK、进程及性能基准均未执行。真实延迟与吞吐待用户指定并授权外部主机后验证，不能套用易达历史结果，见[性能说明](cn_futures_performance.md)。
+
 ## SDK 与本地构建
 
 SDK 必须在仓库外，头文件和动态库均使用匹配的 Linux x86-64 官方 6.7.11 版本：
@@ -78,13 +102,13 @@ CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
   cargo build --release -p cn_futures --features ctp-sdk --bin ctp-trader --bin ctp-md
 cargo build --release -p persist_manager --features embedded --bin cn_order_export
 
-# 以下操作不连接网络
+# 以下即使不连接网络，也仅限用户指定并授权的外部主机
 target/release/ctp-trader --config config/ctp_trade.example.toml --check-config
 target/release/ctp-md --config config/ctp_market_data.example.toml
 target/release/ctp-md --sdk-version /absolute/path/libthostmduserapi_se.so
 ```
 
-本地验证使用 [vnpy_ctp 固定提交所附官方 SDK](https://github.com/vnpy/vnpy_ctp/tree/1be9bfb5292208e5c258cc769c90be4abe83f9a9/vnpy_ctp/api)，没有使用其 Python 运行时。交易库 SHA-256 为 `ad4da95953ea5d0f4ed28ac746462ddba1f3434d0df1727919ae0d97591b4085`；行情库为 `9c6d321f3d880e1c91ec225cc46950f8aa1502f43fc9f41d1d92f10ee04d190a`。官方库离线版本为 `v6.7.11_20250617 16:22:00.10369`。
+历史验证使用 [vnpy_ctp 固定提交所附官方 SDK](https://github.com/vnpy/vnpy_ctp/tree/1be9bfb5292208e5c258cc769c90be4abe83f9a9/vnpy_ctp/api)，没有使用其 Python 运行时。交易库 SHA-256 为 `ad4da95953ea5d0f4ed28ac746462ddba1f3434d0df1727919ae0d97591b4085`；行情库为 `9c6d321f3d880e1c91ec225cc46950f8aa1502f43fc9f41d1d92f10ee04d190a`。历史离线版本查询记录为 `v6.7.11_20250617 16:22:00.10369`；本轮没有加载 SDK 或重做版本查询。
 
 ## 配置与命令
 
@@ -132,6 +156,8 @@ target/release/ctp-md --config /absolute/private/md.toml --connect --duration-se
 
 ## 验证命令（仅限获准的外部主机）
 
+合成 SDK smoke 脚本需要 Python 3.11 或更新版本。独立 placement 文件只含 `numa_node`、`business_cpu`、`sdk_cpus`、`background_cpus` 四个顶层字段，不加 `[placement]` 表头。被忽略的官方 SDK 构造/释放用例同样需要通过 `CTP_TEST_PLACEMENT_CONFIG` 指向该文件，并通过 `CTP_TEST_SDK_LIBRARY` 指向官方库。
+
 ```bash
 CTP_SDK_DIR=/absolute/ctp \
   cargo test -p cn_futures --features ctp-sdk
@@ -139,13 +165,17 @@ cargo test -p persist_common
 cargo test -p persist_manager --features embedded --lib cn_futures
 
 # 官方头文件 ABI + 合成交易 SDK：每个市场独立验证真实 Rust/C++ 路径与 RocksDB 导出
+# 先复制并按获准外部主机拓扑修改 config/ctp_placement.example.toml
 python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
-  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --venue CZCE --symbol SR701
+  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --venue CZCE --symbol SR701 \
+  --placement-config /absolute/private/ctp_placement.toml
 # 同样覆盖 CFFEX/IF2612、SHFE/rb2701、INE/sc2701、DCE/m2701、GFEX/lc2701
 python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
-  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --unconfirmed-settlement
+  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --unconfirmed-settlement \
+  --placement-config /absolute/private/ctp_placement.toml
 python3 crates/cn_futures/tests/ctp_md_bridge_smoke.py \
-  --sdk-dir /absolute/ctp --binary target/release/ctp-md
+  --sdk-dir /absolute/ctp --binary target/release/ctp-md \
+  --placement-config /absolute/private/ctp_placement.toml
 ```
 
 交易联测覆盖认证、只读结算状态查询、账户字段、合约乘数、手续费、相对保证金率合并、两轮对账、限价撤单、FAK/FOK、重复成交、平仓、异步拒单及持久化导出。未确认结算的联测要求账户/规则仍可读，但交易被阻断且没有结算确认或订单请求。行情联测覆盖五档、断线 gap、重新登录/订阅和错误密码只尝试一次。这些合成 SDK 不发起网络连接，不能代替真实柜台仿真或实盘验证。

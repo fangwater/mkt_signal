@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub sdk_library: PathBuf,
+    pub placement: crate::placement::PlacementConfig,
+    #[serde(default)]
+    pub idle_sleep_us: u64,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
     pub fronts: Vec<String>,
@@ -36,6 +39,8 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        self.placement.validate()?;
+        ensure!(self.idle_sleep_us <= 1000, "invalid MD idle sleep");
         ensure!(
             self.sdk_library.is_absolute()
                 && self.flow_directory.is_absolute()
@@ -139,6 +144,82 @@ pub struct Tick {
     pub bid_volume: [i32; 5],
     pub ask_volume: [i32; 5],
 }
+#[derive(Clone, Copy)]
+pub struct TickRecord {
+    pub received_us: u64,
+    pub connection_generation: u64,
+    pub venue: Venue,
+    pub symbol: [u8; 81],
+    pub exchange: [u8; 9],
+    pub trading_day: [u8; 9],
+    pub action_day: [u8; 9],
+    pub update_time: [u8; 9],
+    pub millisec: i32,
+    pub last_price: f64,
+    pub turnover: f64,
+    pub open_interest: f64,
+    pub upper_limit: f64,
+    pub lower_limit: f64,
+    pub volume: i32,
+    pub bid: [f64; 5],
+    pub ask: [f64; 5],
+    pub bid_volume: [i32; 5],
+    pub ask_volume: [i32; 5],
+}
+impl TickRecord {
+    pub fn capture(
+        e: &RawEvent,
+        received_us: u64,
+        connection_generation: u64,
+        venue: Venue,
+    ) -> Self {
+        Self {
+            received_us,
+            connection_generation,
+            venue,
+            symbol: e.symbol,
+            exchange: e.exchange,
+            trading_day: e.trading_day,
+            action_day: e.action_day,
+            update_time: e.update_time,
+            millisec: e.millisec,
+            last_price: e.last_price,
+            turnover: e.turnover,
+            open_interest: e.open_interest,
+            upper_limit: e.upper_limit,
+            lower_limit: e.lower_limit,
+            volume: e.volume,
+            bid: e.bid,
+            ask: e.ask,
+            bid_volume: e.bid_volume,
+            ask_volume: e.ask_volume,
+        }
+    }
+    pub fn decode(&self) -> Result<Tick> {
+        Ok(Tick {
+            received_us: self.received_us,
+            connection_generation: self.connection_generation,
+            venue: self.venue,
+            symbol: super::text(&self.symbol)?,
+            exchange_reported: super::text(&self.exchange)?,
+            trading_day: super::text(&self.trading_day)?,
+            action_day: super::text(&self.action_day)?,
+            update_time: super::text(&self.update_time)?,
+            update_millisec: self.millisec,
+            last_price: value(self.last_price),
+            turnover: value(self.turnover),
+            open_interest: value(self.open_interest),
+            upper_limit: value(self.upper_limit),
+            lower_limit: value(self.lower_limit),
+            volume: self.volume,
+            bid: self.bid.map(value),
+            ask: self.ask.map(value),
+            bid_volume: self.bid_volume,
+            ask_volume: self.ask_volume,
+        })
+    }
+}
+
 fn value(price: f64) -> Option<f64> {
     (price.is_finite() && price.abs() < 1e100).then_some(price)
 }
@@ -221,17 +302,17 @@ impl Session {
     pub fn ready(&self) -> bool {
         self.connected && self.logged_in && self.subscribed.len() == self.allowed.len()
     }
-    pub fn tick(&self, e: &RawEvent, received_us: u64) -> Result<Tick> {
+    pub fn tick_venue(&self, e: &RawEvent) -> Result<Venue> {
         ensure!(
             self.connected && self.logged_in && e.present != 0,
             "MD tick before login"
         );
-        let symbol = super::text(&e.symbol)?;
+        let symbol = super::text_ref(&e.symbol)?;
         let venue = *self
             .allowed
-            .get(&symbol)
+            .get(symbol)
             .context("MD tick outside subscription allowlist")?;
-        let exchange = super::text(&e.exchange)?;
+        let exchange = super::text_ref(&e.exchange)?;
         ensure!(
             exchange.is_empty() || exchange == venue.as_str(),
             "MD tick exchange differs from configured symbol"
@@ -242,27 +323,13 @@ impl Session {
                 && e.bid_volume.iter().chain(&e.ask_volume).all(|v| *v >= 0),
             "invalid MD timestamp or volume"
         );
-        Ok(Tick {
-            received_us,
-            connection_generation: self.generation,
-            venue,
-            symbol,
-            exchange_reported: exchange,
-            trading_day: super::text(&e.trading_day)?,
-            action_day: super::text(&e.action_day)?,
-            update_time: super::text(&e.update_time)?,
-            update_millisec: e.millisec,
-            last_price: value(e.last_price),
-            turnover: value(e.turnover),
-            open_interest: value(e.open_interest),
-            upper_limit: value(e.upper_limit),
-            lower_limit: value(e.lower_limit),
-            volume: e.volume,
-            bid: e.bid.map(value),
-            ask: e.ask.map(value),
-            bid_volume: e.bid_volume,
-            ask_volume: e.ask_volume,
-        })
+        super::text_ref(&e.trading_day)?;
+        super::text_ref(&e.action_day)?;
+        super::text_ref(&e.update_time)?;
+        Ok(venue)
+    }
+    pub fn tick(&self, e: &RawEvent, received_us: u64) -> Result<Tick> {
+        TickRecord::capture(e, received_us, self.generation, self.tick_venue(e)?).decode()
     }
 }
 
@@ -274,6 +341,31 @@ pub use native::{run, version};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deferred_tick_owns_prices_and_timestamp_before_callback_buffer_reuse() {
+        let mut raw = RawEvent {
+            last_price: 3500.0,
+            bid: [f64::MAX; 5],
+            ask: [f64::NAN; 5],
+            millisec: 123,
+            ..RawEvent::default()
+        };
+        raw.symbol[..6].copy_from_slice(b"rb2701");
+        raw.exchange[..4].copy_from_slice(b"SHFE");
+        raw.trading_day[..8].copy_from_slice(b"20261111");
+        raw.update_time[..8].copy_from_slice(b"10:15:00");
+        let record = TickRecord::capture(&raw, 999, 7, Venue::Shfe);
+        raw.last_price = 0.0;
+        raw.symbol.fill(0);
+        let tick = record.decode().unwrap();
+        assert_eq!(tick.symbol, "rb2701");
+        assert_eq!(tick.received_us, 999);
+        assert_eq!(tick.connection_generation, 7);
+        assert_eq!(tick.update_millisec, 123);
+        assert_eq!(tick.last_price, Some(3500.0));
+        assert_eq!(tick.bid, [None; 5]);
+        assert_eq!(tick.ask, [None; 5]);
+    }
     fn config() -> Config {
         toml::from_str(include_str!(
             "../../../../config/ctp_market_data.example.toml"

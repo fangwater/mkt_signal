@@ -7,5 +7,6 @@ pub mod ctp;
 pub mod deadline;
 pub mod model;
 pub mod persistence;
+pub mod placement;
 pub mod runtime;
 pub mod yida;

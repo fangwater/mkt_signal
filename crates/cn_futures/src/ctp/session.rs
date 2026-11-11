@@ -164,7 +164,7 @@ impl Session {
         self.trades.clear();
         self.positions.clear();
     }
-    fn owns(&self, e: &RawEvent) -> Result<bool> {
+    fn owns(&self, e: &HotEvent) -> Result<bool> {
         if text_ref(&e.investor)? != self.investor {
             return Ok(false);
         }
@@ -172,12 +172,13 @@ impl Session {
         Ok(true)
     }
 
-    pub fn on_event(
+    pub fn on_event<'a>(
         &mut self,
-        e: &RawEvent,
+        event: impl Into<super::ingress::EventRef<'a>>,
         now: Instant,
         decoded: &Result<DecodedUpdate>,
     ) -> Result<Option<Snapshot>> {
+        let e = event.into();
         if e.kind == CONNECTED {
             self.ready = false;
             self.maintenance = false;
@@ -211,7 +212,7 @@ impl Session {
             return Ok(None);
         }
         if matches!(e.kind, ORDER | TRADE) {
-            if self.owns(e)? {
+            if self.owns(&e)? {
                 self.revision = self
                     .revision
                     .checked_add(1)
@@ -239,7 +240,7 @@ impl Session {
                 ensure!(e.present != 0, "login success without response fields");
                 let day = text(&e.trading_day)?;
                 ensure!(day.len() == 8, "invalid login trading day");
-                let order_ref = text(&e.max_order_ref)?;
+                let order_ref = text(&e.control()?.max_order_ref)?;
                 let max_ref = if order_ref.trim().is_empty() {
                     0
                 } else {
@@ -260,30 +261,32 @@ impl Session {
                     .find(|s| s.venue == venue && s.symbol == symbol)
                 {
                     ensure!(
-                        e.product_class == i32::from(b'1'),
+                        e.control()?.product_class == i32::from(b'1'),
                         "configured contract is not a native future"
                     );
+                    let expiry = e.control()?.expiry;
                     let instrument = Instrument {
                         option: None,
                         venue,
                         symbol: symbol.clone(),
-                        price_tick: e.price_tick,
-                        contract_multiple: e.contract_multiple,
-                        expiry_date: e.expiry,
+                        price_tick: e.control()?.price_tick,
+                        contract_multiple: e.control()?.contract_multiple,
+                        expiry_date: e.control()?.expiry,
                         commission: None,
                         margin: None,
-                        min_lots: e.minimum,
-                        max_lots: e.maximum,
+                        min_lots: e.control()?.minimum,
+                        max_lots: e.control()?.maximum,
                         market_lots: None,
-                        active: e.active != 0
+                        active: e.control()?.active != 0
                             && self.login.as_ref().is_some_and(|login| {
-                                login.0.parse::<i32>().is_ok_and(|day| e.expiry >= day)
+                                login.0.parse::<i32>().is_ok_and(|day| expiry >= day)
                             }),
                         cash_budget_per_open_lot: config.cash_budget_per_open_lot,
                     };
                     instrument.validate()?;
                     let key = (venue, symbol);
-                    self.products.insert(key.clone(), text(&e.product)?);
+                    self.products
+                        .insert(key.clone(), text(&e.control()?.product)?);
                     if let Some(old) = self.instruments.insert(key, instrument.clone()) {
                         ensure!(old == instrument, "conflicting duplicate instrument row");
                     }
@@ -294,15 +297,18 @@ impl Session {
                     text(&e.investor)? == self.investor && text(&e.exchange)? == "CNY",
                     "unexpected CTP account/currency snapshot"
                 );
-                ensure!(e.available.is_finite(), "nonfinite CTP account available");
+                ensure!(
+                    e.control()?.available.is_finite(),
+                    "nonfinite CTP account available"
+                );
                 let day = text(&e.trading_day)?;
                 ensure!(
                     day.is_empty() || self.login.as_ref().is_some_and(|login| login.0 == day),
                     "account trading day changed; reconnect and reconcile"
                 );
                 ensure!(self.available.is_none(), "duplicate CNY account row");
-                self.account = Some(AccountSnapshot::from_event(e)?);
-                self.available = Some(e.available);
+                self.account = Some(AccountSnapshot::from_event(e.control()?)?);
+                self.available = Some(e.control()?.available);
             }
             SETTLEMENT_STATUS => {
                 if e.present != 0 {
@@ -335,7 +341,8 @@ impl Session {
                 );
                 if kind != EXCHANGE_MARGIN {
                     ensure!(
-                        e.investor_range != i32::from(b'3') || text(&e.investor)? == self.investor,
+                        e.control()?.investor_range != i32::from(b'3')
+                            || text(&e.investor)? == self.investor,
                         "rate response belongs to another investor"
                     );
                 }
@@ -346,7 +353,7 @@ impl Session {
                     .get_mut(&key)
                     .context("rate contract absent")?;
                 if kind == COMMISSION {
-                    let r = e.commission_rates;
+                    let r = e.control()?.commission_rates;
                     let rate = CommissionRate {
                         open_by_money: r[0],
                         open_by_volume: r[1],
@@ -362,7 +369,7 @@ impl Session {
                         e.hedge == i32::from(b'1'),
                         "non-speculative margin response"
                     );
-                    let r = e.margin_rates;
+                    let r = e.control()?.margin_rates;
                     let mut rate = MarginRate {
                         long_by_money: r[0],
                         long_by_volume: r[1],
@@ -371,8 +378,11 @@ impl Session {
                     };
                     rate.validate()?;
                     if kind == MARGIN {
-                        ensure!(matches!(e.relative, 0 | 1), "invalid relative margin flag");
-                        self.relative_margin = e.relative != 0;
+                        ensure!(
+                            matches!(e.control()?.relative, 0 | 1),
+                            "invalid relative margin flag"
+                        );
+                        self.relative_margin = e.control()?.relative != 0;
                     } else {
                         let addon = rule.margin.context("missing broker margin add-on")?;
                         rate.long_by_money += addon.long_by_money;
@@ -384,7 +394,7 @@ impl Session {
                     rule.margin = Some(rate);
                 }
             }
-            QUERY_ORDER if e.present != 0 && self.owns(e)? => {
+            QUERY_ORDER if e.present != 0 && self.owns(&e)? => {
                 self.orders.push(
                     decoded
                         .as_ref()
@@ -394,7 +404,7 @@ impl Session {
                         .clone(),
                 );
             }
-            QUERY_TRADE if e.present != 0 && self.owns(e)? => {
+            QUERY_TRADE if e.present != 0 && self.owns(&e)? => {
                 self.trades.push(
                     decoded
                         .as_ref()
@@ -404,16 +414,16 @@ impl Session {
                         .clone(),
                 );
             }
-            POSITION if e.present != 0 && self.owns(e)? && e.volume != 0 => {
+            POSITION if e.present != 0 && self.owns(&e)? && e.volume != 0 => {
                 ensure!(
                     e.hedge == i32::from(b'1'),
                     "non-speculative native position requires a separate hedge ledger"
                 );
                 ensure!(
-                    e.volume >= 0 && e.today >= 0 && e.today <= e.volume,
+                    e.volume >= 0 && e.control()?.today >= 0 && e.control()?.today <= e.volume,
                     "invalid CTP position row"
                 );
-                let side = match e.position_direction {
+                let side = match e.control()?.position_direction {
                     50 => Side::Buy,
                     51 => Side::Sell,
                     _ => anyhow::bail!("unsupported CTP position direction"),
@@ -423,16 +433,16 @@ impl Session {
                 let venue = Venue::parse(&text(&e.exchange)?)?;
                 let today = if venue.separate_close_dates() {
                     ensure!(
-                        matches!(e.position_date, 49 | 50),
+                        matches!(e.control()?.position_date, 49 | 50),
                         "invalid SHFE/INE position date"
                     );
-                    if e.position_date == 49 {
+                    if e.control()?.position_date == 49 {
                         e.volume
                     } else {
                         0
                     }
                 } else {
-                    e.today
+                    e.control()?.today
                 };
                 let row = PositionSnapshot {
                     venue,
@@ -443,7 +453,7 @@ impl Session {
                 };
                 ensure!(
                     self.positions
-                        .insert((venue, symbol, side, e.position_date), row)
+                        .insert((venue, symbol, side, e.control()?.position_date), row)
                         .is_none(),
                     "duplicate position-date row; investment-unit split is not supported"
                 );

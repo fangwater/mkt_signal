@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 
 
 MOCK = r'''
@@ -180,7 +181,12 @@ def main():
     parser.add_argument("--symbol", default="IF2612")
     parser.add_argument("--unconfirmed-settlement",action="store_true")
     parser.add_argument("--transport-timeout",action="store_true")
+    parser.add_argument("--placement-config",type=Path,required=True,help="explicit CPU/NUMA placement for the authorized external host")
     args = parser.parse_args()
+    placement=tomllib.loads(args.placement_config.read_text())
+    required={"numa_node","business_cpu","sdk_cpus","background_cpus"}
+    if set(placement)!=required: raise ValueError("placement config must contain exactly NUMA node and three CPU domains")
+    placement_table="[placement]\n"+"\n".join(k+" = "+json.dumps(placement[k]) for k in ["numa_node","business_cpu","sdk_cpus","background_cpus"])+"\n"
     root = Path(__file__).resolve().parents[3]
     with tempfile.TemporaryDirectory(prefix="mkt-ctp-bridge-fixture-") as directory:
         temp = Path(directory)
@@ -191,6 +197,7 @@ def main():
         source.write_text(fixture)
         subprocess.run(["c++", "-std=c++17", "-shared", "-fPIC", "-isystem", str(args.sdk_dir), str(source), "-o", str(library)], check=True)
         config = (root / "config/ctp_trade.example.toml").read_text()
+        config=config[:config.index("[placement]")]+placement_table
         for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('/tmp/mkt_ctp_sim/events.jsonl', str(temp / 'events.jsonl')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 10000.0'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
         config=config.replace('venue = "CFFEX"',f'venue = "{args.venue}"').replace('symbol = "IF2612"',f'symbol = "{args.symbol}"')

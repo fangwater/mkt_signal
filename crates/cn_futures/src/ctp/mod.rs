@@ -1,4 +1,5 @@
 //! Official CTP 6.7.11 Trader API mapping; no CTP-compatible replacement libraries.
+pub mod ingress;
 pub mod market_data;
 #[cfg(feature = "ctp-sdk")]
 pub mod sdk;
@@ -46,28 +47,88 @@ impl Correlation {
         }
     }
 }
+const REQUEST_PAGE: usize = 1024;
+#[derive(Default, Clone)]
+struct RequestPages {
+    pages: Vec<Option<Box<[Option<Correlation>]>>>,
+}
+impl RequestPages {
+    fn allocate_page() -> Result<Box<[Option<Correlation>]>> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(REQUEST_PAGE)?;
+        values.resize(REQUEST_PAGE, None);
+        Ok(values.into_boxed_slice())
+    }
+    fn reserve(&mut self, entries: usize) -> Result<()> {
+        let count = entries.saturating_add(1).div_ceil(REQUEST_PAGE);
+        self.pages
+            .try_reserve(count.saturating_sub(self.pages.len()))?;
+        self.pages.resize_with(self.pages.len().max(count), || None);
+        for page in self.pages.iter_mut().take(count) {
+            if page.is_none() {
+                *page = Some(Self::allocate_page()?);
+            }
+        }
+        Ok(())
+    }
+    fn get(&self, id: i32) -> Option<&Correlation> {
+        let id = usize::try_from(id).ok()?;
+        self.pages
+            .get(id / REQUEST_PAGE)?
+            .as_ref()?
+            .get(id % REQUEST_PAGE)?
+            .as_ref()
+    }
+    fn insert(&mut self, id: i32, value: Correlation) -> Result<()> {
+        ensure!(id > 0, "CTP business request ID must be positive");
+        let id = id as usize;
+        let page = id / REQUEST_PAGE;
+        if page >= self.pages.len() {
+            self.pages.try_reserve(page + 1 - self.pages.len())?;
+            self.pages.resize_with(page + 1, || None);
+        }
+        if self.pages[page].is_none() {
+            self.pages[page] = Some(Self::allocate_page()?);
+        }
+        let slot = &mut self.pages[page].as_mut().expect("page allocated above")[id % REQUEST_PAGE];
+        ensure!(slot.is_none(), "duplicate native request ID");
+        *slot = Some(value);
+        Ok(())
+    }
+}
 #[derive(Default, Clone)]
 pub struct ResponseCorrelation {
-    requests: HashMap<i32, Correlation>,
+    requests: RequestPages,
     // None records the documented ambiguity of OrderRef across native sessions.
     by_reference: HashMap<(i32, u64), Option<Correlation>>,
 }
 impl ResponseCorrelation {
+    pub fn reserve(&mut self, entries: usize) -> Result<()> {
+        self.requests.reserve(entries)?;
+        self.by_reference.try_reserve(entries)?;
+        Ok(())
+    }
     pub fn register(&mut self, id: i32, kind: i32, key: OrderKey) -> Result<()> {
-        ensure!(
-            !self.requests.contains_key(&id),
-            "duplicate native request ID"
-        );
         let (front, session) = parse_session(&key.session)?;
+        self.register_numeric(id, kind, front, session, key.order_ref.parse()?)
+    }
+    pub fn register_numeric(
+        &mut self,
+        id: i32,
+        kind: i32,
+        front: i32,
+        session: i32,
+        reference: u64,
+    ) -> Result<()> {
         let correlation = Correlation {
             kind,
             front,
             session,
-            reference: key.order_ref.parse()?,
+            reference,
         };
-        self.requests.insert(id, correlation);
+        self.requests.insert(id, correlation)?;
         self.by_reference
-            .entry((kind, correlation.reference))
+            .entry((kind, reference))
             .and_modify(|old| {
                 if *old != Some(correlation) {
                     *old = None;
@@ -76,11 +137,11 @@ impl ResponseCorrelation {
             .or_insert(Some(correlation));
         Ok(())
     }
-    pub fn resolve(&self, e: &RawEvent) -> Result<OrderKey> {
+    pub fn resolve(&self, e: &HotEvent) -> Result<OrderKey> {
         if e.request > 0 {
             let c = self
                 .requests
-                .get(&e.request)
+                .get(e.request)
                 .context("unknown CTP business response request ID")?;
             ensure!(c.kind == e.kind, "CTP business response kind mismatch");
             return Ok(c.key());
@@ -97,7 +158,7 @@ impl ResponseCorrelation {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct RawEvent {
+pub struct HotEvent {
     pub kind: i32,
     pub request: i32,
     pub error: i32,
@@ -108,50 +169,77 @@ pub struct RawEvent {
     pub volume: i32,
     pub traded: i32,
     pub remaining: i32,
-    pub today: i32,
-    pub yesterday: i32,
     pub status: i32,
     pub submit_status: i32,
     pub direction: i32,
     pub offset: i32,
     pub hedge: i32,
+    pub time_condition: i32,
+    pub volume_condition: i32,
+    pub price: f64,
+    pub symbol: [u8; 81],
+    pub exchange: [u8; 9],
+    pub order_ref: [u8; 13],
+    pub system_id: [u8; 21],
+    pub trade_id: [u8; 21],
+    pub trading_day: [u8; 9],
+    pub investor: [u8; 13],
+    pub message: [u8; 81],
+}
+impl Default for HotEvent {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RawEvent {
+    pub hot: HotEvent,
+    pub today: i32,
+    pub yesterday: i32,
     pub position_direction: i32,
     pub position_date: i32,
     pub active: i32,
     pub product_class: i32,
     pub minimum: i32,
     pub maximum: i32,
-    pub time_condition: i32,
-    pub volume_condition: i32,
     pub contract_multiple: i32,
     pub expiry: i32,
     pub market_minimum: i32,
     pub market_maximum: i32,
     pub relative: i32,
     pub investor_range: i32,
-    pub price: f64,
     pub price_tick: f64,
     pub available: f64,
     pub commission_rates: [f64; 6],
     pub margin_rates: [f64; 4],
     pub account_values: [f64; 44],
-    pub symbol: [u8; 81],
-    pub exchange: [u8; 9],
-    pub order_ref: [u8; 13],
-    pub system_id: [u8; 21],
-    pub trade_id: [u8; 21],
     pub product: [u8; 81],
-    pub trading_day: [u8; 9],
-    pub investor: [u8; 13],
     pub max_order_ref: [u8; 13],
-    pub message: [u8; 256],
 }
+impl std::ops::Deref for RawEvent {
+    type Target = HotEvent;
+    fn deref(&self) -> &HotEvent {
+        &self.hot
+    }
+}
+impl std::ops::DerefMut for RawEvent {
+    fn deref_mut(&mut self) -> &mut HotEvent {
+        &mut self.hot
+    }
+}
+
 impl Default for RawEvent {
     fn default() -> Self {
         // All fields are plain numeric/byte values.
         unsafe { std::mem::zeroed() }
     }
 }
+// Current Linux x86-64 bridge ABI; compile-time checks do not load or run an SDK.
+const _: () = {
+    assert!(std::mem::size_of::<HotEvent>() == 328);
+    assert!(std::mem::size_of::<RawEvent>() == 928);
+};
 
 pub fn text_ref(bytes: &[u8]) -> Result<&str> {
     let n = bytes
@@ -192,7 +280,7 @@ fn offset(raw: i32, venue: Venue) -> Result<Offset> {
         _ => bail!("unsupported CTP offset code {raw}; retain raw evidence and reconcile"),
     }
 }
-impl RawEvent {
+impl HotEvent {
     pub fn key(&self) -> Result<OrderKey> {
         Ok(OrderKey {
             session: session_key(self.front, self.session),
@@ -258,6 +346,8 @@ impl RawEvent {
             price: self.price,
         })
     }
+}
+impl RawEvent {
     /// The CTP error message may contain GBK. Credentials are removed by the runtime writer.
     pub fn audit(&self, received_us: u64) -> Value {
         let lossy = |b: &[u8]| {
@@ -271,6 +361,20 @@ impl RawEvent {
             "position_direction":self.position_direction,"position_date":self.position_date,"status":self.status,"submit_status":self.submit_status,
             "price":self.price,"price_tick":self.price_tick,"metadata":{"contract_multiple":self.contract_multiple,"expiry_date":self.expiry,"commission_rates":self.commission_rates,"margin_rates":self.margin_rates,"margin_is_relative":self.relative,"account_values":self.account_values.as_slice()},"available":self.available,"active":self.active,"product_class":self.product_class,
             "minimum":self.minimum,"maximum":self.maximum,"time_condition":self.time_condition,"volume_condition":self.volume_condition,"message":error_text(&self.message)})
+    }
+}
+
+impl HotEvent {
+    pub fn audit(&self, received_us: u64) -> Value {
+        let lossy = |b: &[u8]| {
+            String::from_utf8_lossy(&b[..b.iter().position(|v| *v == 0).unwrap_or(b.len())])
+                .into_owned()
+        };
+        json!({"received_us":received_us,"kind":self.kind,"request_id":self.request,"error_code":self.error,"last":self.last,"present":self.present,
+        "front_id":self.front,"session_id":self.session,"symbol":lossy(&self.symbol),"exchange":lossy(&self.exchange),"order_ref":lossy(&self.order_ref),
+        "system_id":lossy(&self.system_id),"trade_id":lossy(&self.trade_id),"trading_day":lossy(&self.trading_day),"volume":self.volume,"traded":self.traded,
+        "remaining":self.remaining,"direction":self.direction,"offset":self.offset,"hedge":self.hedge,"status":self.status,"submit_status":self.submit_status,
+        "price":self.price,"time_condition":self.time_condition,"volume_condition":self.volume_condition,"message":error_text(&self.message)})
     }
 }
 
@@ -299,6 +403,91 @@ pub fn parse_session(value: &str) -> Result<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_fill_retains_nonnumeric_exchange_identifiers_and_forced_close_offset() {
+        let mut event = HotEvent {
+            kind: TRADE,
+            present: 1,
+            direction: i32::from(b'1'),
+            offset: i32::from(b'2'),
+            hedge: i32::from(b'1'),
+            volume: 2,
+            price: 3500.0,
+            ..HotEvent::default()
+        };
+        event.exchange[..4].copy_from_slice(b"SHFE");
+        event.symbol[..6].copy_from_slice(b"rb2701");
+        event.trading_day[..8].copy_from_slice(b"20261111");
+        event.order_ref[..8].copy_from_slice(b"EXCHANGE");
+        event.system_id[..6].copy_from_slice(b"SYS-A1");
+        event.trade_id[..7].copy_from_slice(b"FILL-A1");
+        let DecodedUpdate::Trade(fill) = decode_event(&event).unwrap() else {
+            panic!("expected a factual trade");
+        };
+        assert_eq!(fill.order_ref, "EXCHANGE");
+        assert_eq!(fill.system_id, "SYS-A1");
+        assert_eq!(fill.identity.trade_id, "FILL-A1");
+        assert_eq!(fill.offset, Offset::Close);
+        assert!(fill.order_key.is_none());
+        let audit = event.audit(123);
+        assert_eq!(audit["offset"], i32::from(b'2'));
+        assert_eq!(audit["order_ref"], "EXCHANGE");
+    }
+    #[test]
+    fn direct_request_pages_keep_old_ids_and_reject_duplicates_without_overwriting() {
+        let mut correlation = ResponseCorrelation::default();
+        correlation.reserve(4096).unwrap();
+        for id in [1, 1023, 1024, 4095, 210001] {
+            correlation
+                .register_numeric(id, INSERT_RESPONSE, 7, 11, id as u64)
+                .unwrap();
+        }
+        assert!(correlation
+            .register_numeric(1024, INSERT_RESPONSE, 99, 99, 1)
+            .is_err());
+        for id in [1, 1023, 1024, 4095, 210001] {
+            let event = HotEvent {
+                kind: INSERT_RESPONSE,
+                request: id,
+                ..HotEvent::default()
+            };
+            let key = correlation.resolve(&event).unwrap();
+            assert_eq!(key.session, "ctp:7:11");
+            assert_eq!(key.order_ref, id.to_string());
+        }
+        assert!(correlation
+            .resolve(&HotEvent {
+                kind: CANCEL_RESPONSE,
+                request: 1024,
+                ..HotEvent::default()
+            })
+            .is_err());
+        assert!(correlation
+            .resolve(&HotEvent {
+                kind: INSERT_RESPONSE,
+                request: 210002,
+                ..HotEvent::default()
+            })
+            .is_err());
+    }
+    #[test]
+    fn numeric_registration_retains_cross_session_ambiguity_for_unidentified_errors() {
+        let mut correlation = ResponseCorrelation::default();
+        correlation
+            .register_numeric(1, CANCEL_RESPONSE, 7, 11, 19)
+            .unwrap();
+        correlation
+            .register_numeric(2, CANCEL_RESPONSE, 7, 12, 19)
+            .unwrap();
+        let mut event = HotEvent {
+            kind: CANCEL_RESPONSE,
+            ..HotEvent::default()
+        };
+        event.order_ref[..2].copy_from_slice(b"19");
+        assert!(correlation.resolve(&event).is_err());
+        event.request = 1;
+        assert_eq!(correlation.resolve(&event).unwrap().session, "ctp:7:11");
+    }
     #[test]
     fn identifiers_must_be_terminated_and_ascii() {
         assert!(text(&[b'x'; 13]).is_err());
@@ -332,8 +521,12 @@ mod tests {
             .unwrap();
         correlation.register(101, INSERT_RESPONSE, new).unwrap();
         let mut event = RawEvent {
-            kind: INSERT_RESPONSE,
-            request: 100,
+            hot: HotEvent {
+                kind: INSERT_RESPONSE,
+                request: 100,
+                ..(RawEvent::default()).hot
+            },
+
             ..RawEvent::default()
         };
         assert_eq!(correlation.resolve(&event).unwrap(), old);
@@ -357,8 +550,12 @@ mod tests {
                 .unwrap();
         }
         let mut event = RawEvent {
-            kind: INSERT_RESPONSE,
-            request: 1,
+            hot: HotEvent {
+                kind: INSERT_RESPONSE,
+                request: 1,
+                ..RawEvent::default().hot
+            },
+
             ..Default::default()
         };
         let expected = OrderKey {
@@ -374,7 +571,7 @@ mod tests {
     }
 }
 
-pub fn decode_event(e: &RawEvent) -> Result<DecodedUpdate> {
+pub fn decode_event(e: &HotEvent) -> Result<DecodedUpdate> {
     Ok(match e.kind {
         ORDER | QUERY_ORDER if e.present != 0 => DecodedUpdate::Order(e.to_order()?),
         TRADE | QUERY_TRADE if e.present != 0 => DecodedUpdate::Trade(e.to_fill()?),

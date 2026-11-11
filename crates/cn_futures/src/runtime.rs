@@ -74,7 +74,7 @@ enum AuditPayload {
         shutdown_tail: bool,
     },
     Ctp {
-        event: crate::ctp::RawEvent,
+        event: crate::ctp::ingress::Event,
         received_us: u64,
         shutdown_tail: bool,
     },
@@ -429,13 +429,13 @@ impl Journal {
     }
     pub fn ctp_event(
         &self,
-        event: &crate::ctp::RawEvent,
+        event: &crate::ctp::ingress::Event,
         received_us: u64,
         shutdown_tail: bool,
     ) -> Result<()> {
         self.enqueue(
             AuditPayload::Ctp {
-                event: *event,
+                event: event.clone(),
                 received_us,
                 shutdown_tail,
             },
@@ -698,6 +698,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
     use crate::core::{SingleLoop, TradingCore};
     use crate::ctp::{self, sdk::CtpTrader, session::Session};
     use serde_json::json;
+    let placement = crate::placement::Placement::enter(&config.placement)?;
     let _flow_lock = lock_flow(&config.flow_directory)?;
     let credentials = config.credentials()?;
     let redactions = [
@@ -721,15 +722,17 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             credentials.investor.as_bytes(),
         ],
     );
-    let journal = Journal::start(
-        &config.journal,
-        config.event_capacity,
-        redactions,
-        &database,
-        identity,
-        config.sync_before_send,
-    )?;
-    let trader = CtpTrader::new(&config, credentials)?;
+    let journal = placement.on_background(|| {
+        Journal::start(
+            &config.journal,
+            config.event_capacity,
+            redactions,
+            &database,
+            identity,
+            config.sync_before_send,
+        )
+    })?;
+    let trader = placement.on_sdk(|| CtpTrader::new(&config, credentials, placement.callback()))?;
     let investor = trader
         .investor()
         .to_str()
@@ -743,20 +746,27 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         trader,
         execute,
     };
-    let input = input_commands()?;
-    journal.record(json!({"type":"runtime_start","execute":execute,"exchanges":crate::model::Venue::ALL.map(|v|v.as_str()),"production_mode":config.production_mode,"sdk":ctp::sdk::version(&config.sdk_library)?}), true)?;
-    runtime.trader.start(
-        &std::iter::once(config.front.as_str())
-            .chain(config.fallback_fronts.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(","),
-    )?;
+    let input = placement.on_background(input_commands)?;
+    let sdk_version = placement.on_sdk(|| ctp::sdk::version(&config.sdk_library))?;
+    journal.record(json!({"type":"runtime_start","execute":execute,"exchanges":crate::model::Venue::ALL.map(|v|v.as_str()),"production_mode":config.production_mode,"sdk":sdk_version}), true)?;
+    placement.on_sdk(|| {
+        runtime.trader.start(
+            &std::iter::once(config.front.as_str())
+                .chain(config.fallback_fronts.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    })?;
     let mut stopping = false;
     let mut transport_online = false;
     let mut transport_progress = Instant::now();
     let mut retry_at: Option<Instant> = None;
     let outcome = (|| -> Result<()> {
         while !stopping {
+            if runtime.trader.placement_fault.load(Ordering::Acquire) {
+                runtime.core.block("CTP SDK CPU/NUMA binding failed");
+                anyhow::bail!("CTP SDK CPU/NUMA binding failed; no fallback is permitted");
+            }
             if runtime.trader.fault.load(Ordering::Acquire)
                 || journal.failed.load(Ordering::Acquire)
             {
@@ -768,6 +778,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             );
             }
             let mut work = false;
+            let batch_now = Instant::now();
             for _ in 0..256 {
                 let Ok(received) = runtime.trader.events.try_recv() else {
                     break;
@@ -810,7 +821,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                         event.status == i32::from(b'2'),
                     );
                 }
-                if let Some(snapshot) = session.on_event(&event, Instant::now(), &decoded)? {
+                if let Some(snapshot) = session.on_event(event.as_ref(), batch_now, &decoded)? {
                     let trades = snapshot.trades.clone();
                     runtime.core.restore(snapshot)?;
                     if !session.settlement_confirmed() {
@@ -916,12 +927,14 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             }
             let now = Instant::now();
             if retry_at.is_some_and(|due| now >= due) {
-                runtime.trader.start(
-                    &std::iter::once(config.front.as_str())
-                        .chain(config.fallback_fronts.iter().map(String::as_str))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                )?;
+                placement.on_sdk(|| {
+                    runtime.trader.start(
+                        &std::iter::once(config.front.as_str())
+                            .chain(config.fallback_fronts.iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    )
+                })?;
                 retry_at = None;
                 transport_progress = now;
             }
@@ -934,8 +947,10 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             {
                 runtime.core.disconnect();
                 journal.state(&runtime.core, &[])?;
-                let mut replacement = CtpTrader::new(&config, config.credentials()?)?;
-                replacement.inherit_requests(&runtime.trader);
+                let mut replacement = placement.on_sdk(|| {
+                    CtpTrader::new(&config, config.credentials()?, placement.callback())
+                })?;
+                replacement.inherit_requests(&mut runtime.trader);
                 let tail = runtime.trader.events.clone();
                 let previous = std::mem::replace(&mut runtime.trader, replacement);
                 drop(previous); // Release joins all callbacks before auditing the tail.
@@ -1314,12 +1329,18 @@ mod deferred_audit_tests {
         j.yida_event(&yida, 124, true).unwrap();
         yida.trade_id = 17; // The producer may immediately reuse its event buffer.
         let mut ctp = crate::ctp::RawEvent {
-            kind: crate::ctp::ERROR,
-            error: 31,
+            hot: crate::ctp::HotEvent {
+                kind: crate::ctp::ERROR,
+                error: 31,
+                ..crate::ctp::RawEvent::default().hot
+            },
+
             ..Default::default()
         };
         ctp.message[..14].copy_from_slice(b"fixture-secret");
-        j.ctp_event(&ctp, 125, true).unwrap();
+        let pool = crate::ctp::ingress::ControlPool::new(1).unwrap();
+        let event = crate::ctp::ingress::Event::Control(pool.capture(&ctp).unwrap());
+        j.ctp_event(&event, 125, true).unwrap();
         let prepared = crate::model::PreparedOrder {
             key: OrderKey {
                 session: "yida:20261110:group:1".into(),
