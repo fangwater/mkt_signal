@@ -77,7 +77,9 @@ def main():
                 if self.path.split('?', 1)[0].startswith('/nav-api/strategies/') and self.path.split('?', 1)[0].endswith('/pnl'):
                     slug = self.path.split('/')[3]
                     annualized = {slugs[0]: 0.09, slugs[1]: 0.1, slugs[2]: None}[slug]
-                    return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': 86400000}}})
+                    annualized_30d = {slugs[0]: 0.25, slugs[1]: 0.03, slugs[2]: None}[slug]
+                    return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': 86400000},
+                                                         'rolling30d': {'annualizedReturn': annualized_30d, 'coveredMs': 7 * 86400000}}})
                 if self.path == '/snapshot':
                     now = int(time.time()*1000)
                     entries = []
@@ -221,8 +223,12 @@ def main():
                 page.wait_for_function("document.querySelector('#fr-yield').textContent.includes('9.00%')")
                 assert '低于 10%' in page.locator('#fr-yield').inner_text()
                 assert '不足 7 天' in page.locator('#fr-yield').inner_text()
+                assert '不足 30 天' in page.locator('#fr-yield').inner_text()
+                assert '25.00%' in page.locator('#fr-yield').inner_text()
                 assert 'bybit_fr_arb01' in page.locator('#fr-yield').inner_text()
-                assert 'gate_fr_arb04' not in page.locator('#fr-yield').inner_text()
+                assert 'gate_fr_arb04' in page.locator('#fr-yield').inner_text()
+                assert page.locator('#fr-yield tbody tr').count() == 3
+                assert page.locator('#fr-yield tbody tr').first.locator('.yield-alert').inner_text().startswith('9.00%')
                 assert page.locator('#fr-yield img').count() == 0
                 assert not page.locator('#exposure-panel').evaluate('e => e.open')
                 assert page.locator('#cta-strategies, #cta-config-entries').count() == 0

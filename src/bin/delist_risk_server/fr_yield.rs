@@ -17,6 +17,8 @@ pub struct Account {
     pub alias: String,
     pub annualized_return: Option<f64>,
     pub covered_ms: Option<i64>,
+    pub annualized_return_30d: Option<f64>,
+    pub covered_30d_ms: Option<i64>,
 }
 
 impl Report {
@@ -36,50 +38,75 @@ impl Report {
         if !self.catalog_current {
             for account in &mut self.accounts {
                 account.annualized_return = None;
+                account.annualized_return_30d = None;
             }
         }
         self
     }
 
     pub fn summary(&self) -> String {
-        let low: Vec<_> = self
-            .accounts
-            .iter()
-            .filter_map(|a| {
-                a.annualized_return.filter(|v| *v < THRESHOLD).map(|v| {
-                    format!(
-                        "{} ({:.2}%){}",
-                        a.slug,
-                        v * 100.0,
-                        if a.covered_ms.unwrap_or(0) < 7 * 86_400_000 {
-                            " [不足7天]"
-                        } else {
-                            ""
-                        }
-                    )
-                })
-            })
-            .collect();
-        let unknown: Vec<_> = self
-            .accounts
-            .iter()
-            .filter(|a| a.annualized_return.is_none())
-            .map(|a| a.slug.as_str())
-            .collect();
-        let mut lines = Vec::new();
-        if !low.is_empty() {
-            lines.push(format!("⚠ 近7日年化低于10%：{}", low.join("、")));
-        }
         if !self.catalog_current {
-            lines.push("近7日年化：数据或 FR 名单不可用/过期".into());
-        } else if !unknown.is_empty() {
-            lines.push(format!("近7日年化不可用：{}", unknown.join("、")));
+            return "FR 年化：数据或 FR 名单不可用/过期".into();
         }
-        if lines.is_empty() {
-            lines.push("近7日年化：所有 FR 均不低于10%".into());
+        let mut accounts = self.accounts.iter().collect::<Vec<_>>();
+        accounts.sort_by_key(|a| match a.annualized_return {
+            Some(v) if v < THRESHOLD => 0,
+            None => 1,
+            _ => 2,
+        });
+        let low = accounts
+            .iter()
+            .filter(|a| a.annualized_return.is_some_and(|v| v < THRESHOLD))
+            .count();
+        let mut lines = vec![
+            if low > 0 {
+                format!("⚠ {low} 个 FR 近7日年化低于10%")
+            } else {
+                "FR 年化收益".into()
+            },
+            "账户 | 7日年化 | 30日年化".into(),
+        ];
+        for account in accounts {
+            lines.push(format!(
+                "{} | {} | {}{}",
+                account.slug,
+                format_return(account.annualized_return, account.covered_ms, 7),
+                format_return(account.annualized_return_30d, account.covered_30d_ms, 30),
+                if account.annualized_return.is_some_and(|v| v < THRESHOLD) {
+                    " ⚠"
+                } else {
+                    ""
+                }
+            ));
         }
+        lines.push("* 覆盖天数不足；-- 表示不可用".into());
         lines.join("\n")
     }
+}
+
+fn format_return(value: Option<f64>, covered_ms: Option<i64>, days: i64) -> String {
+    match value {
+        Some(value) => format!(
+            "{}{}",
+            if days == 7 && (0.09995..0.1).contains(&value) {
+                "<10.00%".to_string()
+            } else {
+                format!("{:.2}%", value * 100.0)
+            },
+            if covered_ms.unwrap_or(0) < days * 86_400_000 {
+                "*"
+            } else {
+                ""
+            }
+        ),
+        None => "--".into(),
+    }
+}
+
+fn parse_window(value: &serde_json::Value) -> (Option<f64>, Option<i64>) {
+    let covered = value["coveredMs"].as_i64().filter(|v| *v > 0);
+    let annualized = value["annualizedReturn"].as_f64().filter(|v| v.is_finite());
+    (annualized.filter(|_| covered.is_some()), covered)
 }
 
 async fn read_account(client: &Client, state: &AppState, account: &AccountSpec) -> Account {
@@ -88,6 +115,8 @@ async fn read_account(client: &Client, state: &AppState, account: &AccountSpec) 
         alias: account.alias.clone(),
         annualized_return: None,
         covered_ms: None,
+        annualized_return_30d: None,
+        covered_30d_ms: None,
     };
     let base = state.nav_strategies_url.trim_end_matches('/');
     // Slugs were validated by the NAV catalog loader.
@@ -110,14 +139,10 @@ async fn read_account(client: &Client, state: &AppState, account: &AccountSpec) 
             break;
         }
         if let Ok(value) = response.json::<serde_json::Value>().await {
-            let rolling = &value["performance"]["rolling7d"];
-            result.annualized_return = rolling["annualizedReturn"]
-                .as_f64()
-                .filter(|v| v.is_finite());
-            result.covered_ms = rolling["coveredMs"].as_i64().filter(|v| *v > 0);
-            if result.covered_ms.is_none() {
-                result.annualized_return = None;
-            }
+            (result.annualized_return, result.covered_ms) =
+                parse_window(&value["performance"]["rolling7d"]);
+            (result.annualized_return_30d, result.covered_30d_ms) =
+                parse_window(&value["performance"]["rolling30d"]);
         }
         break;
     }
@@ -175,25 +200,32 @@ mod tests {
                     alias: "low".into(),
                     annualized_return: Some(0.099),
                     covered_ms: Some(86_400_000),
+                    annualized_return_30d: Some(0.2),
+                    covered_30d_ms: Some(30 * 86_400_000),
                 },
                 Account {
                     slug: "equal".into(),
                     alias: "equal".into(),
                     annualized_return: Some(0.1),
                     covered_ms: Some(7 * 86_400_000),
+                    annualized_return_30d: Some(0.03),
+                    covered_30d_ms: Some(7 * 86_400_000),
                 },
                 Account {
                     slug: "missing".into(),
                     alias: "missing".into(),
                     annualized_return: None,
                     covered_ms: None,
+                    annualized_return_30d: None,
+                    covered_30d_ms: None,
                 },
             ],
         };
         let text = report.summary();
-        assert!(text.contains("low (9.90%) [不足7天]"));
-        assert!(!text.contains("equal"));
-        assert!(text.contains("不可用：missing"));
+        assert!(text.contains("low | 9.90%* | 20.00% ⚠"));
+        assert!(text.contains("equal | 10.00% | 3.00%*"));
+        assert!(!text.contains("equal | 10.00% | 3.00%* ⚠"));
+        assert!(text.contains("missing | -- | --"));
     }
     #[test]
     fn stale_or_changed_catalog_cannot_be_reported_as_healthy() {
@@ -205,5 +237,18 @@ mod tests {
         .current(&[], true, MAX_AGE_MS + 2);
         assert!(!report.catalog_current);
         assert!(report.summary().contains("不可用/过期"));
+    }
+
+    #[test]
+    fn window_requires_valid_coverage_independently() {
+        assert_eq!(
+            parse_window(&serde_json::json!({"annualizedReturn": 0.2, "coveredMs": 10})),
+            (Some(0.2), Some(10))
+        );
+        assert_eq!(
+            parse_window(&serde_json::json!({"annualizedReturn": 0.2, "coveredMs": 0})),
+            (None, None)
+        );
+        assert_eq!(parse_window(&serde_json::Value::Null), (None, None));
     }
 }
