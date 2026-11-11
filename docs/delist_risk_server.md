@@ -1,6 +1,13 @@
 # Delist Risk Server
 
-最后更新：2026-11-11 02:54 UTC（上线 FR 七日年化提示；Delist保持CPU28）
+最后更新：2026-11-11 03:41 UTC（上线 FR 七日及三十日年化表格；Delist保持CPU28）
+
+2026-11-11 03:40 UTC，发布 `arbmm 64f220c7` 的 FR 七日及三十日年化表格。
+本机构建的 release 二进制和页面上传后 SHA-256 校验并原子安装；
+环境脚本重启 Delist PID2820172 与 SG 隧道 PID2820145，均绑 CPU28。
+NAV 目录13项，11个 FR PnL 请求返回 HTTP 200；受保护接口匿名返回401。
+回退备份在 `~/delist_risk_server/backups/fr_yield_table_64f220c7/`。
+
 
 2026-11-11 02:53 UTC，发布 `arbmm 958bb8a3` 的 FR 七日年化提示。
 本机构建的 release 二进制和页面上传后 SHA-256 校验并原子安装；
