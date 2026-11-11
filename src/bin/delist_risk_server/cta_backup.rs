@@ -1007,6 +1007,67 @@ mod tests {
     }
 
     #[test]
+    fn spread_archive_round_trip_preserves_all_supported_frequencies() {
+        let worker = cta_factors::Worker::Spread;
+        let env = cta_factors::test_environment_for(worker);
+        let directory = env.0.join("config/cta_factor_spread");
+        for entry in fs::read_dir(&directory).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        let mut expected = Vec::new();
+        for interval in ["1min", "5min", "15min", "1h"] {
+            let name = format!("spread_{interval}");
+            let combination = json!({
+                "name": name,
+                "strategy_group": "spread01",
+                "venue": "okex-futures",
+                "reference_venue": "binance-futures",
+                "interval": interval,
+                "factor_rules": [{
+                    "venue": "binance-futures", "标的": "ETHUSDT",
+                    "nq": "关闭", "符号": 1, "因子": "factor_036"
+                }],
+                "signal": {
+                    "enabled": true, "max_pos_u": 200,
+                    "entry": {"nq_change_enabled": false}, "execution": {},
+                    "spread": {"long_quantile": 0.3, "short_quantile": 0.7}
+                }
+            });
+            fs::write(
+                directory.join(format!("{name}.json")),
+                serde_json::to_vec(&combination).unwrap(),
+            )
+            .unwrap();
+            expected.push(name);
+        }
+        expected.sort();
+        let snapshot = cta_factors::snapshot(&env.0, worker).unwrap();
+        let mut blobs = Vec::new();
+        let mut warnings = Vec::new();
+        let factor = capture_factors(&env.0, snapshot, worker, &mut blobs, &mut warnings).unwrap();
+        assert_eq!(factor.combinations, expected);
+        for name in ["manager/catalog.json", "files/manager/cta-manager.toml"] {
+            push(&mut blobs, name.into(), 0o600, b"fixture".to_vec()).unwrap();
+        }
+        let spec = account(worker);
+        let manifest = Manifest {
+            site: "jp".into(),
+            environment: spec.slug.clone(),
+            captured_utc: Utc::now().to_rfc3339(),
+            exec_sources: vec![],
+            warnings,
+            files: inventory(&blobs),
+            redis: vec![],
+            factor_process: factor,
+        };
+        let root = temp_root();
+        let archive = root.join("spread.tar.gz");
+        write_tar(&archive, &manifest, &blobs).unwrap();
+        validate_archive(&archive, "jp", &spec).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn shared_worker_archives_validate_without_signal_directories_and_reject_missing_dependencies()
     {
         for worker in [cta_factors::Worker::Perp, cta_factors::Worker::Spread] {

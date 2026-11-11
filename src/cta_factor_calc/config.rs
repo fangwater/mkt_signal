@@ -466,7 +466,10 @@ impl Combination {
         ensure!(
             (1..=32).contains(&self.strategy_group.len())
                 && self.strategy_group.as_bytes()[0].is_ascii_lowercase()
-                && self.strategy_group.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                && self
+                    .strategy_group
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
             "strategy_group must start with a lowercase letter and contain 1..=32 lowercase letters, digits or underscores"
         );
         ensure!(
@@ -547,9 +550,8 @@ impl Combination {
             ensure!(
                 self.venue == Market::OkexFutures
                     && self.reference_venue == Some(Market::BinanceFutures)
-                    && matches!(self.interval, Interval::Minute | Interval::Hour)
                     && p.position_algorithm == PositionAlgorithm::V0,
-                "Spread positions require OKX/Binance futures, 1min or 1h and independent factor rules"
+                "Spread positions require OKX/Binance futures and independent factor rules"
             );
         } else {
             ensure!(
@@ -687,7 +689,9 @@ fn validate_symbol_group_name(name: &str) -> Result<()> {
         (1..=32).contains(&name.len())
             && name != "all"
             && name.as_bytes()[0].is_ascii_lowercase()
-            && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
         "symbol group must start with a lowercase letter and contain 1..=32 lowercase letters, digits or hyphens; all is reserved"
     );
     Ok(())
@@ -812,7 +816,10 @@ impl Plan {
                         parameters: parameters.clone(),
                         combinations: BTreeSet::new(),
                     });
-                ensure!(entry.parameters == parameters, "conflicting parameters for shared factor {name}; one ID must have one definition");
+                ensure!(
+                    entry.parameters == parameters,
+                    "conflicting parameters for shared factor {name}; one ID must have one definition"
+                );
                 entry.combinations.insert(combination.name.clone());
             }
             plan.combinations
