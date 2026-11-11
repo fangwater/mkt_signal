@@ -21,6 +21,7 @@ import time
 MOCK = r'''
 #include "ThostFtdcTraderApi.h"
 #include <cstring>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -72,16 +73,37 @@ public:
         check(std::strcmp(p->InvestorID, "test") == 0); spi->OnRspSettlementInfoConfirm(p, nullptr, id, true); return 0;
     }
     int ReqQryInstrument(CThostFtdcQryInstrumentField* p, int id) override {
-        check(std::strcmp(p->ExchangeID, "CFFEX") == 0); CThostFtdcInstrumentField r{};
+        check(std::strlen(p->ExchangeID) == 0); CThostFtdcInstrumentField r{};
         std::strcpy(r.InstrumentID, "IF2612"); std::strcpy(r.ExchangeID, "CFFEX");
-        r.PriceTick = .2; r.IsTrading = 1; r.ProductClass = THOST_FTDC_PC_Futures;
+        r.VolumeMultiple=300; std::strcpy(r.ExpireDate,"20261218"); std::strcpy(r.ProductID,"IF"); r.PriceTick = .2; r.IsTrading = 1; r.ProductClass = THOST_FTDC_PC_Futures;
         r.MinLimitOrderVolume = 1; r.MaxLimitOrderVolume = 100;
         spi->OnRspQryInstrument(&r, nullptr, id, true); return 0;
+    }
+    int ReqQrySettlementInfoConfirm(CThostFtdcQrySettlementInfoConfirmField*, int id) override {
+        CThostFtdcSettlementInfoConfirmField r{};std::strcpy(r.InvestorID,"test");std::strcpy(r.ConfirmDate,"20261109");
+        if(std::getenv("CTP_FIXTURE_UNCONFIRMED"))spi->OnRspQrySettlementInfoConfirm(nullptr,nullptr,id,true);
+        else spi->OnRspQrySettlementInfoConfirm(&r,nullptr,id,true);return 0;
+    }
+    int ReqQryInstrumentCommissionRate(CThostFtdcQryInstrumentCommissionRateField* p,int id) override {
+        check(std::strcmp(p->ExchangeID,"CFFEX")==0 && std::strcmp(p->InstrumentID,"IF2612")==0);
+        CThostFtdcInstrumentCommissionRateField r{};std::strcpy(r.ExchangeID,"CFFEX");std::strcpy(r.InstrumentID,"IF2612");std::strcpy(r.InvestorID,"test");r.InvestorRange=THOST_FTDC_IR_Single;
+        r.OpenRatioByMoney=.000023;r.CloseRatioByMoney=.000023;r.CloseTodayRatioByMoney=.00023;
+        spi->OnRspQryInstrumentCommissionRate(&r,nullptr,id,true);return 0;
+    }
+    int ReqQryInstrumentMarginRate(CThostFtdcQryInstrumentMarginRateField* p,int id) override {
+        check(std::strcmp(p->ExchangeID,"CFFEX")==0 && std::strcmp(p->InstrumentID,"IF2612")==0 && p->HedgeFlag==THOST_FTDC_HF_Speculation);
+        CThostFtdcInstrumentMarginRateField r{};std::strcpy(r.ExchangeID,"CFFEX");std::strcpy(r.InstrumentID,"IF2612");std::strcpy(r.InvestorID,"test");r.InvestorRange=THOST_FTDC_IR_Single;r.HedgeFlag=THOST_FTDC_HF_Speculation;r.IsRelative=1;
+        r.LongMarginRatioByMoney=.02;r.ShortMarginRatioByMoney=.03;spi->OnRspQryInstrumentMarginRate(&r,nullptr,id,true);return 0;
+    }
+    int ReqQryExchangeMarginRate(CThostFtdcQryExchangeMarginRateField* p,int id) override {
+        check(std::strcmp(p->ExchangeID,"CFFEX")==0 && std::strcmp(p->InstrumentID,"IF2612")==0);
+        CThostFtdcExchangeMarginRateField r{};std::strcpy(r.ExchangeID,"CFFEX");std::strcpy(r.InstrumentID,"IF2612");r.HedgeFlag=THOST_FTDC_HF_Speculation;r.LongMarginRatioByMoney=.10;r.ShortMarginRatioByMoney=.10;
+        spi->OnRspQryExchangeMarginRate(&r,nullptr,id,true);return 0;
     }
     int ReqQryTradingAccount(CThostFtdcQryTradingAccountField* p, int id) override {
         check(std::strcmp(p->CurrencyID, "CNY") == 0); CThostFtdcTradingAccountField r{};
         std::strcpy(r.AccountID, "test"); std::strcpy(r.CurrencyID, "CNY"); std::strcpy(r.TradingDay, "20261109");
-        r.Available = 1000000; spi->OnRspQryTradingAccount(&r, nullptr, id, true); return 0;
+        r.Available = 1000000; r.Balance=1200000; r.CurrMargin=200000; r.Commission=52.5; spi->OnRspQryTradingAccount(&r, nullptr, id, true); return 0;
     }
     int ReqQryInvestorPosition(CThostFtdcQryInvestorPositionField*, int id) override {
         for (int direction : {THOST_FTDC_PD_Long, THOST_FTDC_PD_Short}) {
@@ -107,7 +129,7 @@ public:
         check(p->RequestID == id && std::strcmp(p->InvestorID, "test") == 0 && std::strcmp(p->UserID, "test") == 0);
         check(std::strcmp(p->ExchangeID, "CFFEX") == 0 && std::strcmp(p->InstrumentID, "IF2612") == 0);
         check(p->OrderPriceType == THOST_FTDC_OPT_LimitPrice && p->CombHedgeFlag[0] == THOST_FTDC_HF_Speculation);
-        check(p->CombOffsetFlag[0] == THOST_FTDC_OF_Open || p->CombOffsetFlag[0] == THOST_FTDC_OF_Close);
+        check(p->CombOffsetFlag[0] == THOST_FTDC_OF_Open || p->CombOffsetFlag[0] == THOST_FTDC_OF_Close || p->CombOffsetFlag[0] == THOST_FTDC_OF_CloseToday || p->CombOffsetFlag[0] == THOST_FTDC_OF_CloseYesterday);
         if (p->LimitPrice > 5000) { CThostFtdcRspInfoField error{}; error.ErrorID = 31; spi->OnRspOrderInsert(p, &error, id, true); return 0; }
         CThostFtdcOrderField o{};
         std::strcpy(o.InvestorID, p->InvestorID); std::strcpy(o.ExchangeID, p->ExchangeID);
@@ -154,19 +176,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk-dir", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--venue", choices=["CFFEX","SHFE","INE","DCE","CZCE","GFEX"], default="CFFEX")
+    parser.add_argument("--symbol", default="IF2612")
+    parser.add_argument("--unconfirmed-settlement",action="store_true")
+    parser.add_argument("--transport-timeout",action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[3]
     with tempfile.TemporaryDirectory(prefix="mkt-ctp-bridge-fixture-") as directory:
         temp = Path(directory)
         source, library = temp / "fixture.cpp", temp / "fixture.so"
-        source.write_text(fixture_source(args.sdk_dir))
+        product = args.symbol.rstrip("0123456789")
+        fixture = fixture_source(args.sdk_dir).replace('"CFFEX"', json.dumps(args.venue)).replace('"IF2612"', json.dumps(args.symbol)).replace('"IF"',json.dumps(product))
+        if args.transport_timeout: fixture=re.sub(r"void Init\(\) override \{.*?\n    \}","void Init() override {}",fixture,flags=re.S)
+        source.write_text(fixture)
         subprocess.run(["c++", "-std=c++17", "-shared", "-fPIC", "-isystem", str(args.sdk_dir), str(source), "-o", str(library)], check=True)
         config = (root / "config/ctp_trade.example.toml").read_text()
         for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('/tmp/mkt_ctp_sim/events.jsonl', str(temp / 'events.jsonl')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 10000.0'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
+        config=config.replace('venue = "CFFEX"',f'venue = "{args.venue}"').replace('symbol = "IF2612"',f'symbol = "{args.symbol}"')
+        if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000").replace("reconnect_backoff_ms = 5000","reconnect_backoff_ms = 1000")
         config_path = temp / "config.toml"
         config_path.write_text(config)
         environment = dict(os.environ, CTP_USER_ID="test", CTP_PASSWORD="fixture-only", CTP_APP_ID="fixture", CTP_AUTH_CODE="fixture")
+        if args.unconfirmed_settlement: environment["CTP_FIXTURE_UNCONFIRMED"]="1"
         stderr = open(temp / "stderr.log", "w+")
         process = subprocess.Popen([str(args.binary.resolve()), "--config", str(config_path), "--connect", "--execute"], env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
         responses = queue.Queue()
@@ -194,16 +226,41 @@ def main():
 
         def state():
             send({"op": "state"})
-            return wait("state")["state"]
+            result=wait("state")
+            assert result["account"]["balance"]==1200000 and result["account"]["commission"]==52.5
+            return result["state"]
 
         def submit(tif="day", side="buy", offset="open", lots=1, ticks=20000):
-            send({"op": "submit", "intent": {"venue": "CFFEX", "symbol": "IF2612", "side": side, "offset": offset, "lots": lots, "price_ticks": ticks, "time_in_force": tif}})
+            send({"op": "submit", "intent": {"venue": args.venue, "symbol": args.symbol, "side": side, "offset": offset, "lots": lots, "price_ticks": ticks, "time_in_force": tif}})
             receipt = wait("submit_receipt")["receipt"]
             assert receipt["all_submitted_locally"]
             return receipt["children"][0]["key"]
 
         try:
+            if args.transport_timeout:
+                wait("reconnecting",timeout=15)
+                send({"op":"state"});snapshot=wait("state")
+                assert snapshot["account"] is None and not snapshot["state"]["ready"]
+                send({"op":"shutdown"});wait("runtime_stopped");assert process.wait(timeout=10)==0
+                events=[json.loads(line) for line in (temp/"events.jsonl").read_text().splitlines()]
+                assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
+                print(json.dumps({"transport_timeout":True,"reconnect_backoff":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
+                return
+            if args.unconfirmed_settlement:
+                assert not wait("reconciled")["state"]["ready"]
+                assert state()["instruments"][0]["contract_multiple"]==300
+                send({"op":"submit","intent":{"venue":args.venue,"symbol":args.symbol,"side":"buy","offset":"open","lots":1,"price_ticks":20000,"time_in_force":"day"}})
+                wait("command_rejected")
+                send({"op":"shutdown"});wait("runtime_stopped");assert process.wait(timeout=10)==0
+                events=[json.loads(line) for line in (temp/"events.jsonl").read_text().splitlines()]
+                assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
+                print(json.dumps({"unconfirmed_settlement":True,"account_and_rules_readable":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
+                return
             assert wait("reconciled")["state"]["ready"]
+            rule=state()["instruments"][0]
+            assert rule["contract_multiple"]==300 and rule["expiry_date"]==20261218
+            assert abs(rule["margin"]["long_by_money"]-.12)<1e-12
+            assert rule["commission"]["close_today_by_money"]==.00023
             day = submit(lots=2)
             send({"op": "cancel", "key": day})
             wait("cancel_submitted_locally")
@@ -232,9 +289,10 @@ def main():
             assert process.wait(timeout=10) == 0
             events = [json.loads(line) for line in (temp / "events.jsonl").read_text().splitlines()]
             assert any(e.get("event", {}).get("error_code") == 31 for e in events)
+            assert not any(e.get("event",{}).get("kind")==5 for e in events)
             assert not any(e.get("type") == "trading_blocked" for e in events)
             assert "fixture-only" not in (temp / "events.jsonl").read_text()
-            print(json.dumps({"bridge": "official header ABI + synthetic SDK", "native_network_connections": 0, "bootstrap": True, "limit_cancel": True, "fak_fok": True, "duplicate_fills": True, "close": True, "async_rejection": True, "reconcile": True, "journal_events": len(events)}))
+            print(json.dumps({"bridge": "official header ABI + synthetic SDK", "native_network_connections": 0, "venue":args.venue, "bootstrap": True, "limit_cancel": True, "fak_fok": True, "duplicate_fills": True, "close": True, "async_rejection": True, "reconcile": True, "journal_events": len(events)}))
         finally:
             if process.returncode == 0:
                 persisted = verify_persistence(temp / "flow" / "persist_manager", args.binary.resolve().parent / "cn_order_export", temp / "db-export")

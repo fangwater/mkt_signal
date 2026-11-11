@@ -1,4 +1,5 @@
 //! Official CTP 6.7.11 Trader API mapping; no CTP-compatible replacement libraries.
+pub mod market_data;
 #[cfg(feature = "ctp-sdk")]
 pub mod sdk;
 pub mod session;
@@ -24,9 +25,13 @@ pub const QUERY_ORDER: i32 = 13;
 pub const QUERY_TRADE: i32 = 14;
 pub const INSTRUMENT_STATUS: i32 = 15;
 pub const ERROR: i32 = 16;
+pub const COMMISSION: i32 = 17;
+pub const MARGIN: i32 = 18;
+pub const EXCHANGE_MARGIN: i32 = 19;
+pub const SETTLEMENT_STATUS: i32 = 20;
 
 /// Correlate business responses across reconnects. OrderRef alone is not a session identity.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ResponseCorrelation {
     requests: HashMap<i32, (i32, OrderKey)>,
 }
@@ -97,14 +102,24 @@ pub struct RawEvent {
     pub maximum: i32,
     pub time_condition: i32,
     pub volume_condition: i32,
+    pub contract_multiple: i32,
+    pub expiry: i32,
+    pub market_minimum: i32,
+    pub market_maximum: i32,
+    pub relative: i32,
+    pub investor_range: i32,
     pub price: f64,
     pub price_tick: f64,
     pub available: f64,
+    pub commission_rates: [f64; 6],
+    pub margin_rates: [f64; 4],
+    pub account_values: [f64; 44],
     pub symbol: [u8; 81],
     pub exchange: [u8; 9],
     pub order_ref: [u8; 13],
     pub system_id: [u8; 21],
     pub trade_id: [u8; 21],
+    pub product: [u8; 81],
     pub trading_day: [u8; 9],
     pub investor: [u8; 13],
     pub max_order_ref: [u8; 13],
@@ -136,11 +151,21 @@ fn side(raw: i32) -> Result<Side> {
         _ => bail!("unsupported CTP direction code {raw}"),
     }
 }
-fn offset(raw: i32) -> Result<Offset> {
+fn offset(raw: i32, venue: Venue) -> Result<Offset> {
     match raw {
         48 => Ok(Offset::Open),
         49 | 50 | 53 | 54 => Ok(Offset::Close),
-        _ => bail!("unsupported CFFEX offset code {raw}; retain raw evidence and reconcile"),
+        51 => Ok(if venue.separate_close_dates() {
+            Offset::CloseToday
+        } else {
+            Offset::Close
+        }),
+        52 => Ok(if venue.separate_close_dates() {
+            Offset::CloseYesterday
+        } else {
+            Offset::Close
+        }),
+        _ => bail!("unsupported CTP offset code {raw}; retain raw evidence and reconcile"),
     }
 }
 impl RawEvent {
@@ -172,7 +197,7 @@ impl RawEvent {
             venue: Venue::parse(&text(&self.exchange)?)?,
             system_id: text(&self.system_id)?,
             side: side(self.direction)?,
-            offset: offset(self.offset)?,
+            offset: offset(self.offset, Venue::parse(&text(&self.exchange)?)?)?,
             lots: self.volume,
             traded: self.traded,
             price_type: PriceType::Limit,
@@ -204,7 +229,7 @@ impl RawEvent {
             order_ref: text(&self.order_ref)?,
             order_key: None,
             system_id: text(&self.system_id)?,
-            offset: offset(self.offset)?,
+            offset: offset(self.offset, Venue::parse(&text(&self.exchange)?)?)?,
             lots: self.volume,
             price: self.price,
         })
@@ -220,14 +245,14 @@ impl RawEvent {
             "system_id":lossy(&self.system_id),"trade_id":lossy(&self.trade_id),"trading_day":lossy(&self.trading_day),"volume":self.volume,"traded":self.traded,
             "remaining":self.remaining,"today":self.today,"yesterday":self.yesterday,"direction":self.direction,"offset":self.offset,"hedge":self.hedge,
             "position_direction":self.position_direction,"position_date":self.position_date,"status":self.status,"submit_status":self.submit_status,
-            "price":self.price,"price_tick":self.price_tick,"available":self.available,"active":self.active,"product_class":self.product_class,
+            "price":self.price,"price_tick":self.price_tick,"metadata":{"contract_multiple":self.contract_multiple,"expiry_date":self.expiry,"commission_rates":self.commission_rates,"margin_rates":self.margin_rates,"margin_is_relative":self.relative,"account_values":self.account_values.as_slice()},"available":self.available,"active":self.active,"product_class":self.product_class,
             "minimum":self.minimum,"maximum":self.maximum,"time_condition":self.time_condition,"volume_condition":self.volume_condition,"message":error_text(&self.message)})
     }
 }
 
 pub fn scope() -> ExecutionScope {
     ExecutionScope {
-        venues: [Venue::Cffex].into_iter().collect(),
+        venues: Venue::ALL.into_iter().collect(),
         reference_limit: 999_999_999_999,
         require_market_status: true,
         cancel_requires_system_id: false,
@@ -259,7 +284,10 @@ mod tests {
     }
     #[test]
     fn forced_close_is_a_close_fact_not_an_unknown_id_filter() {
-        assert_eq!(offset(i32::from(b'2')).unwrap(), Offset::Close);
+        assert_eq!(
+            offset(i32::from(b'2'), Venue::Cffex).unwrap(),
+            Offset::Close
+        );
     }
     #[test]
     fn response_ids_keep_the_original_session_even_after_reconnect() {
@@ -285,5 +313,111 @@ mod tests {
         event.request = 0;
         event.order_ref[..2].copy_from_slice(b"17");
         assert!(correlation.resolve(&event).is_err());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AccountSnapshot {
+    pub trading_day: String,
+    pub currency: String,
+    pub pre_mortgage: f64,
+    pub pre_credit: f64,
+    pub pre_deposit: f64,
+    pub pre_balance: f64,
+    pub pre_margin: f64,
+    pub interest_base: f64,
+    pub interest: f64,
+    pub deposit: f64,
+    pub withdraw: f64,
+    pub frozen_margin: f64,
+    pub frozen_cash: f64,
+    pub frozen_commission: f64,
+    pub curr_margin: f64,
+    pub cash_in: f64,
+    pub commission: f64,
+    pub close_profit: f64,
+    pub position_profit: f64,
+    pub balance: f64,
+    pub available: f64,
+    pub withdraw_quota: f64,
+    pub reserve: f64,
+    pub credit: f64,
+    pub mortgage: f64,
+    pub exchange_margin: f64,
+    pub delivery_margin: f64,
+    pub exchange_delivery_margin: f64,
+    pub reserve_balance: f64,
+    pub pre_fund_mortgage_in: f64,
+    pub pre_fund_mortgage_out: f64,
+    pub fund_mortgage_in: f64,
+    pub fund_mortgage_out: f64,
+    pub fund_mortgage_available: f64,
+    pub mortgageable_fund: f64,
+    pub spec_product_margin: f64,
+    pub spec_product_frozen_margin: f64,
+    pub spec_product_commission: f64,
+    pub spec_product_frozen_commission: f64,
+    pub spec_product_position_profit: f64,
+    pub spec_product_close_profit: f64,
+    pub spec_product_position_profit_by_alg: f64,
+    pub spec_product_exchange_margin: f64,
+    pub frozen_swap: f64,
+    pub remain_swap: f64,
+    pub option_value: f64,
+}
+impl AccountSnapshot {
+    pub fn from_event(e: &RawEvent) -> Result<Self> {
+        ensure!(
+            e.account_values.iter().all(|v| v.is_finite()),
+            "nonfinite CTP account fields"
+        );
+        Ok(Self {
+            trading_day: text(&e.trading_day)?,
+            currency: text(&e.exchange)?,
+            pre_mortgage: e.account_values[0],
+            pre_credit: e.account_values[1],
+            pre_deposit: e.account_values[2],
+            pre_balance: e.account_values[3],
+            pre_margin: e.account_values[4],
+            interest_base: e.account_values[5],
+            interest: e.account_values[6],
+            deposit: e.account_values[7],
+            withdraw: e.account_values[8],
+            frozen_margin: e.account_values[9],
+            frozen_cash: e.account_values[10],
+            frozen_commission: e.account_values[11],
+            curr_margin: e.account_values[12],
+            cash_in: e.account_values[13],
+            commission: e.account_values[14],
+            close_profit: e.account_values[15],
+            position_profit: e.account_values[16],
+            balance: e.account_values[17],
+            available: e.account_values[18],
+            withdraw_quota: e.account_values[19],
+            reserve: e.account_values[20],
+            credit: e.account_values[21],
+            mortgage: e.account_values[22],
+            exchange_margin: e.account_values[23],
+            delivery_margin: e.account_values[24],
+            exchange_delivery_margin: e.account_values[25],
+            reserve_balance: e.account_values[26],
+            pre_fund_mortgage_in: e.account_values[27],
+            pre_fund_mortgage_out: e.account_values[28],
+            fund_mortgage_in: e.account_values[29],
+            fund_mortgage_out: e.account_values[30],
+            fund_mortgage_available: e.account_values[31],
+            mortgageable_fund: e.account_values[32],
+            spec_product_margin: e.account_values[33],
+            spec_product_frozen_margin: e.account_values[34],
+            spec_product_commission: e.account_values[35],
+            spec_product_frozen_commission: e.account_values[36],
+            spec_product_position_profit: e.account_values[37],
+            spec_product_close_profit: e.account_values[38],
+            spec_product_position_profit_by_alg: e.account_values[39],
+            spec_product_exchange_margin: e.account_values[40],
+            frozen_swap: e.account_values[41],
+            remain_swap: e.account_values[42],
+            option_value: e.account_values[43],
+        })
     }
 }

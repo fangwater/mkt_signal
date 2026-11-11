@@ -198,10 +198,9 @@ impl TradingCore {
         self.continuous
             .get(&(venue, symbol.to_owned()))
             .or_else(|| {
-                let n = symbol.len().saturating_sub(4);
                 symbol
-                    .get(..n)
-                    .and_then(|p| self.continuous.get(&(venue, p.to_owned())))
+                    .find(|c: char| c.is_ascii_digit())
+                    .and_then(|index| self.continuous.get(&(venue, symbol[..index].to_owned())))
             })
             .copied()
             .unwrap_or(false)
@@ -533,6 +532,16 @@ impl TradingCore {
                 "position limit"
             );
             cash_unit = rule.cash_budget_per_open_lot;
+            if let (Some(margin), Some(commission)) = (rule.margin, rule.commission) {
+                let margin_cash = margin.estimate(intent.side, price, rule.contract_multiple, 1)?;
+                let opening_fee =
+                    commission.estimate(Offset::Open, price, rule.contract_multiple, 1)?;
+                ensure!(
+                    (margin_cash + opening_fee).is_finite(),
+                    "opening cash requirement overflow"
+                );
+                cash_unit = cash_unit.max(margin_cash + opening_fee);
+            }
         } else {
             (today, yesterday) = self.allocate_close(
                 intent.venue,

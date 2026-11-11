@@ -209,6 +209,10 @@ impl Session {
                             venue,
                             symbol,
                             price_tick: e.tick,
+                            contract_multiple: e.contract_multiple,
+                            expiry_date: e.expiry,
+                            commission: None,
+                            margin: None,
                             min_lots: e.minimum,
                             max_lots: e.maximum,
                             market_lots: if e.market_minimum == 0 && e.market_maximum == 0 {

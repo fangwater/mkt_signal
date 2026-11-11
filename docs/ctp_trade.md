@@ -1,156 +1,158 @@
-# CTP 中金所交易实现
+# CTP 国内期货行情与交易
 
-`crates/cn_futures` 提供一个独立的国内期货交易核心和 `ctp-trader` 入口。CTP 接入直接调用上期技术官方 **6.7.11 Trader API**；“交易网关”在这里就是 SDK 适配模块，不是额外进程。行情暂不接入，调用方在同一个业务线程中通过 `SingleLoop::submit` / `cancel` 提交交易意图。现有加密交易策略的兼容不在本次范围内，不增加策略兼容层。
+最后更新：2026-11-11
 
-当前完成的是可编译、可本地测试的第一版交易接入，**没有连接真实期货公司，没有经过中金所仿真账户或实盘联调**。易达 SHFE / INE 原生交易初版见 [易达接入说明](yida_trade.md)，共用 `cn_futures` 核心，已通过本地合成 SDK 桥接联测与官网公共仿真。
+`crates/cn_futures` 直接使用上期技术官方 **CTP 6.7.11**，提供 `ctp-trader` 和 `ctp-md`。交易核心、风控、订单状态和持久化与易达共用；SDK 网络线程只投递有界原始事件，业务状态由单一线程维护。不使用第三方 CTP 兼容柜台作为运行时替代。
 
-## 已实现范围
+支持 CFFEX（中金所）、SHFE（上期所）、INE（能源中心）、DCE（大商所）、CZCE（郑商所）、GFEX（广期所）的普通投机期货。仅显式配置并由柜台确认有效的合约可报新单。期权、组合、套利和套保账本不在本次范围；已有易达期权功能保持其独立边界。
 
-- CFFEX 期货：IF、IH、IC、IM、TS、TF、T、TL，必须显式配置当前有效合约；仅支持投机仓。期权、组合、套利与套保仓不在首期范围。
-- `ReqAuthenticate` → `ReqUserLogin` → `ReqSettlementInfoConfirm` → 合约、资金、委托、成交、持仓查询。
-- 限价下单、撤单，以及 SDK 对应的 FAK / FOK 参数映射；FAK / FOK 默认关闭，需在真实仿真柜台逐项验证后启用。
-- 订单引用、原始前置 / 会话身份、交易所订单号与成交身份关联；异步业务拒单映射回原始请求，不以重连后的当前会话替代原始身份。
-- 一个业务线程负责风控、预占、委托、今昨仓、成交去重。官方 SDK 的网络 / 回调线程只向有界队列投递固定结构体。
-- 订单数量、逐侧仓位、全部未成委托、账户报撤单频率、本地资金预算、自成交、合约活跃性与连续交易状态检查。
-- 每 60 秒完整刷新合约规则；完整快照遗漏或标记不活跃的合约立即失去新下单权限。每 5 秒查询 CNY 可用资金，只能收紧本地预算。
-- 启动 / 重连保留交易阻断，使用两轮无并发回报且完全一致的委托、成交和持仓查询进行快照收敛。超过次数、查询错误或超时不进入可交易状态。
-- 后台 RocksDB 归一化订单／事实成交写盘、JSONL 交易审计、凭据脱敏、有界可靠事件故障标记，以及 flow 目录排他锁。不在启动或退出时自动撤销账户已有订单。
+本地单元测试和合成 SDK 联测不能证明柜台已接受实盘登录或订单。2026-11-11 的创元连接记录见后文；截至该记录，所有入口均拒绝连接，尚未验证创元实盘行情、交易、手续费或账户查询权限。
 
-## Maker / taker 基础能力
+## 合约与交易所语义
 
-当前接口接收调用方给定的限价和有效方式，没有独立的 maker / taker 自动执行算法：
+每个 `[[symbols]]` 必须显式填写 `venue` 和柜台原生 `symbol`。例如 `CFFEX/IF2612`、`SHFE/rb2701`、`INE/sc2701`、`DCE/m2701`、`CZCE/SR701`、`GFEX/lc2701`；这些仅是测试样本，不是当前主力合约或推荐交易标的。
 
-| 用法     | 已有能力                                                   | 边界                                                                   |
-| -------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
-| 挂单     | 普通限价 GFD（`day`）、撤单、部分成交与剩余冻结管理        | 没有 post-only 保证；普通限价单若穿过盘口，也可能立即成交              |
-| 主动成交 | 使用可成交限价；也可使用 FAK（余量撤销）或 FOK（全成或撤） | 价格由调用方给定，不自动取对手价；FAK / FOK 默认关闭，待仿真验证后开启 |
-| 自动执行 | 调用方可依据回报显式下单或撤单                             | 尚未实现盘口定价、撤单重挂、自动追价、超时补单或自动滑点保护价计算     |
+郑商所保留三位交割月代码，不自动改写成四位；其他交易所保留原生大小写。合约存在性、活跃状态、到期日、乘数、tick size、限价单最小和最大手数均读取官方 `ReqQryInstrument`。不维护产品乘数常量表，不用 `1` 填补缺失乘数。完整快照遗漏或标记不活跃的合约失去新报单权限；另须实际收到交易所连续交易状态，不能人为放开。
 
-所有报单当前都映射到 CTP 限价指令，没有发送无价格约束的市价单。指定的限价是订单的成交价格边界；它不意味着本模块已经实现按盘口计算保护价的算法。maker / taker 的实际成交角色也不能仅由 `day` / `fak` / `fok` 推定。
+- SHFE / INE 使用独立的平今、平昨指令；通用 `close` 由共享核心按实际今昨仓和 `close_priority` 拆分，逐子单返回结果、预占仓位并跟踪事实成交。
+- CFFEX / DCE / CZCE / GFEX 使用通用平仓，不向它们发送上期所式日期指令。今昨仓在各市场账本内分别核算。
+- 下单和撤单的 `ExchangeID` 来自意图中的交易所，不再写死 CFFEX；撤单保留原始 FrontID、SessionID、OrderRef 与 OrderSysID。
+- 支持限价 GFD、撤单及 FAK/FOK 参数映射。FAK/FOK 默认关闭，柜台能否接受取决于具体交易所、品种及账户，须在相应仿真逐项验证。CTP 市价单仍不开放。
+- 普通限价单没有 post-only 保证。maker/taker 角色取决于实际成交，不由有效方式推定。没有自动定价、追价或撤单重挂策略。
 
-## 代码边界
+## 账户、手续费与保证金
 
-| 文件                                       | 职责                                             |
-| ------------------------------------------ | ------------------------------------------------ |
-| `crates/cn_futures/src/model.rs`       | 重导出共享交易契约，另有适配器风控验证         |
-| `crates/cn_futures/src/core.rs`        | 单线程状态所有者、预占、成交核销、直接 SDK 调用  |
-| `crates/cn_futures/src/ctp/session.rs` | 请求关联、认证登录、查询限速、快照收敛与周期刷新 |
-| `crates/cn_futures/src/ctp/sdk.rs`     | Rust SDK 生命周期、回调入口、原始请求上下文      |
-| `crates/cn_futures/cpp/ctp_bridge.cpp` | 按官方头文件编译的 C++ / Rust 桥接与原生字段映射 |
-| `crates/cn_futures/src/runtime.rs`     | 同一业务 loop、后台输入 / 审计、明确的交易开关   |
-| `config/ctp_trade.example.toml`            | 不包含凭据的配置示例                             |
+`ReqQryTradingAccount` 的 **44 个数值字段**全部进入当前账户快照，包括权益 `balance`、可用资金 `available`、占用/冻结保证金、冻结资金、手续费及冻结手续费、持仓/平仓盈亏、出入金、可取资金、交割保证金、特殊产品字段和期权市值。`state` 同时返回 `account`、`settlement_confirmed` 和交易核心状态；尚未查询或已断线时账户快照不可用。账户更新每 5 秒查询一次，交易核心仅据此收紧已有资金预算，只有完整对账可恢复额度。
 
-默认 Cargo feature 不依赖 SDK；`ctp-sdk` feature 编译真实 C++ 桥接。没有官方 SDK 时仍可运行核心与生命周期测试，但网络接入会明确报错，不会换用其他柜台或模拟实现。
+合约元数据包含 `contract_multiple`、`expiry_date`、`price_tick`、数量约束及有效状态。每个活跃白名单合约逐项查询：
 
-## 官方 SDK 与构建
+1. `ReqQryInstrumentCommissionRate`：开仓、平仓、平今分别保留按金额与按手费率，两项相加。
+2. `ReqQryInstrumentMarginRate`：保留多头与空头按金额/按手参数。
+3. 若 `IsRelative=true`，另查 `ReqQryExchangeMarginRate`，将经纪商加收部分与交易所基础参数相加，得到绝对投资者保证金率。缺少基础参数不能当作已知保证金率。
 
-将匹配的以下组件放在仓库外，头文件和动态库必须来自同一个官方版本：
+费率响应按请求 ID、交易所、合约和投资者范围核对。柜台若以产品代码返回费率，只接受已查询到的该合约 `ProductID`，不按字符串猜产品。空结果、重复歧义、错误或不匹配均不能放开交易。查询间隔至少 1 秒；合约与费率在每 60 秒规则刷新时组成一个完整的新快照，完成后整体替换。
+
+估算费用为 `手数 × (价格 × 合约乘数 × 按金额费率 + 按手费用)`；保证金按多空各自参数使用相同金额/手数结构计算。`CommissionRate::estimate` 与 `MarginRate::estimate` 提供显式估算方法；未区分日期的通用 `close` 按普通平仓与平今两者较高费用估算，只有明确的日期指令才使用对应费率。开仓资金预占取本地每手保守预算与“查询所得保证金 + 开仓手续费”两者较大值，不因查询而放松预算。它不代替柜台组合保证金、账户风险或强平计算。
+
+**费率估算不是柜台已收的逐笔费用。** CTP 成交回报没有独立逐笔手续费字段，事实成交的费用保留未知；不能把账户累计手续费分摊或虚构成某一笔成交的事实费用。
+
+## 只读查询、结算确认与恢复
+
+默认只校验配置，不读取凭据、不创建 SDK 对象、不连接网络。`--connect` 认证、登录并查询结算确认状态、合约、费率、资金、委托、成交和持仓，默认不确认结算，不下单、不撤单。只有显式 `--confirm-settlement` 或配置 `confirm_settlement=true` 才允许调用结算确认。`--execute` 另行允许人工下单/撤单指令；当日结算未确认时即使带此开关，新交易仍被阻断。
+
+启动及重连保留交易阻断，重新认证和登录，并要求两轮无并发委托/成交回报且内容一致的委托、成交、持仓查询。原生查询间没有原子快照屏障，这只是保守收敛检查。SHFE/INE 按 PositionDate 合并今昨仓；其他交易所使用 Position 与 TodayPosition，不误用开盘时的 YdPosition 代替剩余昨仓。
+
+SDK 注册主/备用前置并负责传输重连。传输或控制响应超时后，运行时阻断交易，Release 原对象并记录所有已交付的尾部事件，再按退避时间重建连接、重新登录和对账。旧业务请求身份保留，不将旧会话拒单归给新会话。明确的认证/登录错误、歧义事件、审计故障等不会被当作网络超时无限重试。退出、重连均不自动撤销交易所挂单。
+
+回报队列和审计故障显式阻断；未知订单、非数字交易所身份、强制平仓等事实先保留原始证据，再对账，不杜撰策略归属。订单和成交进入嵌入式 RocksDB，JSONL 为可读审计。存储、掉电与恢复边界见 [国内订单持久化](cn_order_persistence.md)。
+
+## 持续行情服务
+
+`ctp-md` 使用官方 MdApi，不创建 TraderApi。它连接配置中的多个前置，登录后订阅显式合约，并持续向 stdout 与私有 journal 输出同一套 JSON 行消息；`tick` 中包含五档买卖价量、最新价、成交量/额、持仓量、涨跌停价、柜台交易日/业务日期/更新时间及本机微秒接收时间。行情权限只有一档时其余档位按原始可用值保留，不补造五档。CTP 无效浮点哨兵转换成 `null`。
+
+断线立即清除登录和订阅完成状态，输出 `gap=true`。重连必须重新登录并重新订阅全部配置合约，`connection_generation` 随会话增加。连接、登录或订阅长时间未完成时重建 SDK 并退避重试；已经完成订阅的连接不会因休市无 tick 就被判定掉线。明确的错误密码响应停止进程，不循环提交密码。
+
+原生回调只投递固定结构体到有界队列，后台线程写 journal 和 stdout；队列溢出或输出失败会显式结束不完整流。SIGINT/SIGTERM 或指定运行时长结束后释放 SDK 并排空输出。带 `--duration-seconds` 的测试若结束时未完成登录和订阅，返回失败。收到行情回调也不一定表示实时更新，需检查原始日期时间与本机接收时间。
+
+行情服务不包含自动交易策略，也未添加现有加密市场行情 IPC 的兼容层。库中的 `market_data::Tick` 为同进程消费者提供原生行情契约；进程消费者可读取 stdout 的 JSON 行。
+
+## SDK 与本地构建
+
+SDK 必须在仓库外，头文件和动态库均使用匹配的 Linux x86-64 官方 6.7.11 版本：
 
 ```text
 ThostFtdcTraderApi.h
+ThostFtdcMdApi.h
 ThostFtdcUserApiStruct.h
 ThostFtdcUserApiDataType.h
 libthosttraderapi_se.so
+libthostmduserapi_se.so
 ```
 
-`CTP_SDK_DIR` 指向头文件所在目录。运行时 `sdk_library` 指向该配套动态库，二进制通过 `dlopen` 加载，不把本机 SDK 路径编进 ELF 的 RPATH。当前桥接针对 Linux x86-64、官方 6.7.11 ABI，加载其他版本会拒绝启动；升级 SDK 应同步核实头文件、工厂参数和虚表，再重新编译验证。
+运行时动态加载配置中的库，并拒绝不匹配的版本。`production_mode` 是 SDK 工厂的生产/测评选项，应与提供方要求一致。
 
 ```bash
 CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-  cargo build -p cn_futures --features ctp-sdk --bin ctp-trader
+  cargo build --release -p cn_futures --features ctp-sdk --bin ctp-trader --bin ctp-md
+cargo build --release -p persist_manager --features embedded --bin cn_order_export
+
+# 以下操作不连接网络
+target/release/ctp-trader --config config/ctp_trade.example.toml --check-config
+target/release/ctp-md --config config/ctp_market_data.example.toml
+target/release/ctp-md --sdk-version /absolute/path/libthostmduserapi_se.so
 ```
 
-不连接网络的检查：
+本地验证使用 [vnpy_ctp 固定提交所附官方 SDK](https://github.com/vnpy/vnpy_ctp/tree/1be9bfb5292208e5c258cc769c90be4abe83f9a9/vnpy_ctp/api)，没有使用其 Python 运行时。交易库 SHA-256 为 `ad4da95953ea5d0f4ed28ac746462ddba1f3434d0df1727919ae0d97591b4085`；行情库为 `9c6d321f3d880e1c91ec225cc46950f8aa1502f43fc9f41d1d92f10ee04d190a`。官方库离线版本为 `v6.7.11_20250617 16:22:00.10369`。
+
+## 配置与命令
+
+无凭据示例为 `config/ctp_trade.example.toml` 与 `config/ctp_market_data.example.toml`。交易示例的 `front`/`fallback_fronts`、行情示例的 `fronts` 均是本地占位地址，运行前须复制到私有目录填写。交易每合约配置本地保守资金预算及交易所；行情只配置订阅。两进程使用独立的 flow/journal，不能共享 SDK 状态目录。
+
+交易凭据从配置指定的 `CTP_USER_ID`、`CTP_PASSWORD`、`CTP_APP_ID`、`CTP_AUTH_CODE` 读取；InvestorID 不同时使用 `investor_id_env`。MdApi 只使用账号密码及 BrokerID，没有交易端的 `ReqAuthenticate`，不能用行情登录证明交易端 AppID/AuthCode 授权有效。
 
 ```bash
-cargo run -p cn_futures --bin ctp-trader -- \
-  --config config/ctp_trade.example.toml --check-config
+# 目标为私有配置中显式填写的柜台和合约；只读交易端资料查询
+target/release/ctp-trader --config /absolute/private/trade.toml --connect
 
-CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-  cargo run -p cn_futures --features ctp-sdk --bin ctp-trader -- \
-  --sdk-version /absolute/path/to/ctp/6.7.11/libthosttraderapi_se.so
+# 同一显式行情目标：登录、订阅并持续输出行情；20 秒未就绪会失败
+target/release/ctp-md --config /absolute/private/md.toml --connect --duration-seconds 20
 ```
 
-默认只校验配置，不读取凭据、不创建 SDK 对象、不连接前置。`--sdk-version` 只加载库并读取版本，不调用 `Init`。
-
-本地构建验证采用 [vnpy_ctp 的公开镜像](https://github.com/vnpy/vnpy_ctp/tree/1be9bfb5292208e5c258cc769c90be4abe83f9a9/vnpy_ctp/api) 所附官方 6.7.11 头文件和 `.so`；没有使用 vnpy 的 Python 封装或运行时。动态库离线返回 `v6.7.11_20250617 16:22:00.10369`，并已验证创建 / 释放对象。SDK 未放入仓库。正式接入可使用上期技术官方下载的相同版本组件，并与期货公司确认柜台兼容性。
-
-该次验证所用 `libthosttraderapi_se.so` SHA-256：
-
-```text
-ad4da95953ea5d0f4ed28ac746462ddba1f3434d0df1727919ae0d97591b4085
-```
-
-## 仿真连接配置
-
-复制示例到环境目录后，在本地填写 SDK 路径、独立 flow / journal 路径、前置、BrokerID、合约白名单、账户预算和风控参数。示例前置是 `127.0.0.1:1` 占位地址，没有写死任何公共测试柜台。
-
-凭据只从配置指定的环境变量读取：`CTP_USER_ID`、`CTP_PASSWORD`、`CTP_APP_ID`、`CTP_AUTH_CODE`。InvestorID 若与 UserID 不同，配置独立的 `investor_id_env`。不要将实际值放到示例、聊天、命令输出或提交中。
-
-`production_mode` 是官方 6.7.11 工厂方法的参数：`false` 选择测评 API，`true` 选择生产 API。必须按前置提供方要求配置；这个布尔值本身不能证明某个地址是仿真环境。
-
-以下仅说明**本地仿真**的操作入口，不是已执行的连接或生产部署步骤：
-
-```bash
-# 目标为配置中的仿真账户及 CFFEX 合约。
-# 连接、认证、登录、确认当日结算并查询；不允许下单或撤单。
-target/debug/ctp-trader --config /absolute/path/ctp-sim.toml --connect
-
-# 同一仿真目标，额外允许 stdin 明确提交的下单 / 撤单命令。
-target/debug/ctp-trader --config /absolute/path/ctp-sim.toml --connect --execute
-```
-
-`--connect` 会调用结算确认，不能将其描述为完全不改变柜台状态。`--execute` 只开启明确命令入口，不会自动生成策略订单。生产环境仍应使用 env-local 启停脚本和仓库既有发布规范；本次没有部署脚本、远程操作或生产二进制发布。
-
-中金所联调优先申请期货公司的 CTP 仿真账户、交易前置和程序化接入权限；公共 SimNow 的最新中金所品种开放情况未在本次验证中确认，不假设其支持 IF / T。
-
-## 命令与同 loop 集成
-
-stdin 是人工仿真联调入口，输入在线程外读取；调用方直接使用核心 API，无需经 stdin、HTTP 或 IPC。所有命令都是单行 JSON，未知字段 / 指令会拒绝。
+交易 stdin 接收单行 JSON。`state` 返回完整账户及合约规则；`reconcile` 重做规则/费率与账户对账；`shutdown` 退出而不撤单。EOF 同样退出。
 
 ```json
 {"op":"state"}
-{"op":"submit","intent":{"venue":"CFFEX","symbol":"IF2612","side":"buy","offset":"open","lots":1,"price_ticks":20000,"time_in_force":"day"}}
-{"op":"cancel","key":{"session":"ctp:7:11","order_ref":"101"}}
 {"op":"reconcile"}
 {"op":"shutdown"}
 ```
 
-合约、价格和订单身份均为示例；撤单应使用实际回传的完整 `key`。`price_ticks` 是整数价格档位，实际限价等于 `price_ticks × PriceTick`。核心目前接受 CFFEX `open` / `close`，不把上期所的平今 / 平昨指令映射直接套到中金所。CFFEX 通用平仓的今昨仓核销顺序通过 `close_priority` 显式配置，需在实际柜台验证。
+在已获授权的测试柜台，开启 `--execute` 后可显式提交：
 
-命令统一返回 `submit_receipt`；`children` 中逐项保留实际订单 key、开平、手数、结果和错误。CTP 不拆日期，只有一个子项；子项 `submitted_locally` 仅说明 SDK 同步返回成功。它不等于柜台确认，更不等于成交。持仓只随事实成交改变；撤单请求不释放冻结量；撤单终结中已报告但尚未收到事实成交的数量继续占用，直至成交事实到达或完成对账。
-
-`reconcile` 在没有控制查询占用时启动；成功启动后暂停新交易，重新查询并收敛。stdin EOF 或 `shutdown` 会退出进程，**不自动撤销交易所挂单**。flow 目录不能被两个实例共用，同一账户的风险额度也不能由其他独立进程重复使用。
-
-## 风控、恢复与持久化的实际限制
-
-- `cash_budget_per_open_lot` 是显式配置的本地保守资金预算，**不是已经从柜台查询并计算的实际保证金率**。应根据真实保证金、手续费与缓冲配置；它不替代柜台保证金风控。首期没有实现实时保证金模型、强平风控或策略资金分配。
-- 成交开仓后，已消耗的本地预算继续保留；周期资金查询只收紧预算。只有完整重对账可以恢复基准，避免把陈旧资金快照错误用作新增额度。
-- SDK 私有流使用 RESUME，公共状态流使用 RESTART。新连接会清除旧交易状态许可，只有实际收到的连续交易状态才允许新下单；未收到状态时不会人为放开。
-- 两轮查询一致是一种保守收敛检查，**不是 CTP 提供的原子快照 / 全序屏障**。需要在真实仿真柜台验证重放、查询与在途事件的顺序，尤其是持续成交、断线期间成交和跨交易日场景。不可据此宣称生产恢复已获验证。
-- 交易证据先进入可靠审计队列，再尝试解析。未知订单、非数字强平身份、无法关联的成交均保留原始事件并阻断新交易，等待查询核对，不丢弃或杜撰策略归属。
-- 审计包含交易事实与发往 SDK 前的本地订单身份；后台约每 100 ms flush / sync。**它不保证报单前已刷盘或掉电零丢失**。入口 / 审计故障会显式阻断；恢复时须以柜台事实查询补齐。
-- JSONL 是首期独立原生审计存储，尚未接入统一订单数据库、账户监控和 Viz；执行入口与现有加密交易策略独立，不包含策略兼容层。设计展示页仍是静态演示，不控制此运行时。
-- 单业务线程不等于已完成绑核、SDK 线程亲和性或端到端性能优化；本次没有给出微秒延迟或 p99 指标。后续应按设计页的边界实测。
-
-## 订单持久化
-
-交易回报直接进入 `persist_manager` 的嵌入式 RocksDB，未引入 IPC。发送前落盘选择、恢复屏障、原生身份、去重与 `cn_order_export` 读取方式见[国内订单持久化](cn_order_persistence.md)。桥接联测前须构建与交易程序同目录的 exporter。
-
-## 验证
-
-```bash
-cargo test -p cn_futures
-CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-  cargo test -p cn_futures --features ctp-sdk
-
-CTP_SDK_DIR=/absolute/path/to/ctp/6.7.11 \
-CTP_TEST_SDK_LIBRARY=/absolute/path/to/ctp/6.7.11/libthosttraderapi_se.so \
-  cargo test -p cn_futures --features ctp-sdk \
-    official_sdk_constructs_and_releases_without_connecting -- --ignored
-
-python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
-  --sdk-dir /absolute/path/to/ctp/6.7.11 --binary target/debug/ctp-trader
+```json
+{"op":"submit","intent":{"venue":"SHFE","symbol":"rb2701","side":"buy","offset":"open","lots":1,"price_ticks":3500,"time_in_force":"day"}}
+{"op":"cancel","key":{"session":"ctp:7:11","order_ref":"101"}}
 ```
 
-最后一项用官方头文件生成独立的**测试假库**，驱动实际 Rust / C++ 桥接和业务 loop，验证认证、两轮查询、限价撤单、FAK/FOK、重复成交、平仓、异步拒单和审计。假库不发起网络连接，不是运行时备用后端，不能代替中金所仿真联调。
+合约、档位及订单身份仅为示例，实际限价等于 `price_ticks × PriceTick`，撤单必须使用真实回传的完整 key。逐子单回执中的 `submitted_locally` 只表示 SDK 同步接收，不表示柜台接受或已成交。
+
+## 创元生产资料与首次连接记录
+
+完整资料位于本机仓库外：
+
+- `~/.config/mkt_signal/chuangyuan_ctp/access.md`：生产通知、线路、端口及私有接入资料。
+- `~/.config/mkt_signal/chuangyuan_ctp/env.sh`：凭据与接入变量，文件权限 `600`；目录权限 `700`。
+
+密码沿用会话中先前提供的值，尚未核对是否为最新短信密码。实际账号、密码和授权码不复制到仓库文档、示例或提交中。`source env.sh` 只导出变量，不连接柜台；地址、BrokerID 等仍须填写到对应私有 TOML，不会自动覆盖程序配置。
+
+2026-11-11 北京时间 17:16–17:17，本机逐一测试 8 个行情入口及 8 个交易入口，TCP 全部返回 `ECONNREFUSED`；官方 MdApi 对两组端口各取一个代表入口，等待 15 秒均无 `OnFrontConnected`，没有提交登录、订阅、结算确认或订单请求。此时为收盘后时段，但不能据此确定拒绝原因。完整结果位于私有 `probes/20261111T091644Z/summary.json`。
+
+最初的短时探针 `scripts/ctp_md_probe.cpp` 仍可用于独立排查；它在断线时退出，不承担持续行情服务的重连职责。持续运行使用 `ctp-md`。
+
+## 本地验证
+
+```bash
+CTP_SDK_DIR=/absolute/ctp \
+  cargo test -p cn_futures --features ctp-sdk
+cargo test -p persist_common
+cargo test -p persist_manager --features embedded --lib cn_futures
+
+# 官方头文件 ABI + 合成交易 SDK：每个市场独立验证真实 Rust/C++ 路径与 RocksDB 导出
+python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
+  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --venue CZCE --symbol SR701
+# 同样覆盖 CFFEX/IF2612、SHFE/rb2701、INE/sc2701、DCE/m2701、GFEX/lc2701
+python3 crates/cn_futures/tests/ctp_bridge_smoke.py \
+  --sdk-dir /absolute/ctp --binary target/release/ctp-trader --unconfirmed-settlement
+python3 crates/cn_futures/tests/ctp_md_bridge_smoke.py \
+  --sdk-dir /absolute/ctp --binary target/release/ctp-md
+```
+
+交易联测覆盖认证、只读结算状态查询、账户字段、合约乘数、手续费、相对保证金率合并、两轮对账、限价撤单、FAK/FOK、重复成交、平仓、异步拒单及持久化导出。未确认结算的联测要求账户/规则仍可读，但交易被阻断且没有结算确认或订单请求。行情联测覆盖五档、断线 gap、重新登录/订阅和错误密码只尝试一次。这些合成 SDK 不发起网络连接，不能代替真实柜台仿真或实盘验证。
+
+
+### 扩展实现后的只读复测
+
+2026-11-11 北京时间 18:12（UTC 10:12），使用新构建的 `ctp-trader` 和 `ctp-md`，覆盖六交易所合约样本，配置 `confirm_settlement=false` 且未开启 `--execute`。行情运行 20 秒，交易查询运行约 30 秒后正常退出。
+
+16 个 TCP 入口仍全部拒绝连接。行情进程进行了带退避的重建尝试，最终因限时内未就绪返回失败；交易进程同样记录超时重连，未完成认证、登录或账户对账，账户快照为空。行情回调为 0。没有结算确认、下单或撤单；这次不能验证实盘账户、费用或订阅权限。
+
+完整报告位于私有 `probes/20261111T101205Z/summary.json`。官方 SDK 已持久保存至本机 `~/.local/share/ctp/6.7.11/`；私有 `trade.toml` / `md.toml` 及 env 中的 `CTP_TRADE_CONFIG` / `CTP_MD_CONFIG` 可用于柜台开放后的复测，未部署远程服务。

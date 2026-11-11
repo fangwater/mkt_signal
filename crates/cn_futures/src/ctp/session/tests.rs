@@ -54,10 +54,28 @@ fn response(kind: i32, id: i32) -> RawEvent {
             set(&mut e.symbol, "IF2612");
             set(&mut e.exchange, "CFFEX");
             e.price_tick = 0.2;
+            e.contract_multiple = 300;
+            e.expiry = 20261218;
+            set(&mut e.product, "IF");
             e.minimum = 1;
             e.maximum = 100;
             e.active = 1;
             e.product_class = i32::from(b'1');
+        }
+        SETTLEMENT_STATUS => {
+            e.present = 1;
+            set(&mut e.investor, "TEST");
+            set(&mut e.trading_day, "20261109");
+        }
+        COMMISSION | MARGIN | EXCHANGE_MARGIN => {
+            e.present = 1;
+            set(&mut e.symbol, "IF2612");
+            set(&mut e.exchange, "CFFEX");
+            set(&mut e.investor, "TEST");
+            e.investor_range = 51;
+            e.hedge = 49;
+            e.commission_rates = [0.000023, 0.0, 0.000023, 0.0, 0.00023, 0.0];
+            e.margin_rates = [0.12, 0.0, 0.12, 0.0];
         }
         ACCOUNT => {
             e.present = 1;
@@ -241,4 +259,77 @@ fn disconnect_abandons_old_correlation_and_requires_new_login() {
     )
     .unwrap();
     assert_eq!(s.request_due(now).unwrap(), Some(AUTHENTICATED));
+}
+
+#[test]
+fn relative_margin_adds_the_exchange_base_and_preserves_full_account_fields() {
+    let (mut session, mut now) = begin();
+    let mut snapshot = None;
+    for id in 1..=30 {
+        let (kind, mut e) = dispatch(&mut session, &mut now, id);
+        if kind == MARGIN {
+            e.relative = 1;
+            e.margin_rates = [0.02, 2.0, 0.03, 3.0];
+        }
+        if kind == EXCHANGE_MARGIN {
+            e.margin_rates = [0.10, 1.0, 0.11, 1.0];
+        }
+        if kind == ACCOUNT {
+            e.account_values[17] = 1_200_000.0;
+            e.account_values[18] = e.available;
+            e.account_values[14] = 52.5;
+        }
+        if let Some(value) = session.on_event(&e, now).unwrap() {
+            snapshot = Some(value);
+            break;
+        }
+    }
+    let rule = &snapshot.unwrap().instruments[0];
+    let rate = rule.margin.unwrap();
+    assert!((rate.long_by_money - 0.12).abs() < 1e-12);
+    assert!((rate.short_by_money - 0.14).abs() < 1e-12);
+    assert_eq!(rate.long_by_volume, 3.0);
+    assert_eq!(rate.short_by_volume, 4.0);
+    assert_eq!(rule.contract_multiple, 300);
+    assert_eq!(rule.expiry_date, 20261218);
+    assert_eq!(session.account().unwrap().balance, 1_200_000.0);
+    assert_eq!(session.account().unwrap().commission, 52.5);
+}
+
+#[test]
+fn read_only_bootstrap_never_confirms_an_unconfirmed_settlement() {
+    let (mut session, mut now) = begin();
+    let mut complete = false;
+    for id in 1..=30 {
+        let (kind, mut e) = dispatch(&mut session, &mut now, id);
+        assert_ne!(kind, SETTLED);
+        if kind == SETTLEMENT_STATUS {
+            e.present = 0;
+        }
+        if session.on_event(&e, now).unwrap().is_some() {
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete);
+    assert!(!session.settlement_confirmed());
+}
+
+#[test]
+fn missing_fee_rows_do_not_release_trading_and_late_rates_cannot_match() {
+    let (mut session, mut now) = begin();
+    for id in 1..=10 {
+        let (kind, mut e) = dispatch(&mut session, &mut now, id);
+        if kind == COMMISSION {
+            let mut late = e;
+            late.request -= 1;
+            assert!(session.on_event(&late, now).unwrap().is_none());
+            e.present = 0;
+            assert!(session.on_event(&e, now).is_err());
+            assert!(!session.ready());
+            return;
+        }
+        session.on_event(&e, now).unwrap();
+    }
+    panic!("commission query was not scheduled");
 }

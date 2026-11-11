@@ -682,6 +682,7 @@ fn begin(s: &mut Session, c: &config::Config) {
     for (venue, symbol) in [("SHFE", "cu2612"), ("INE", "sc2612")] {
         let mut e = row(INSTRUMENT, venue, symbol);
         e.expiry = 20261220;
+        e.contract_multiple = if venue == "INE" { 1000 } else { 5 };
         e.tick = 0.2;
         e.minimum = 1;
         e.maximum = 100;

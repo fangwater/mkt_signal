@@ -13,6 +13,7 @@ fn run() -> Result<()> {
     let mut config = None;
     let mut connect = false;
     let mut execute = false;
+    let mut confirm_settlement = false;
     let mut check_config = false;
     let mut sdk_version: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
@@ -30,9 +31,10 @@ fn run() -> Result<()> {
             }
             "--connect" => connect = true,
             "--execute" => execute = true,
+            "--confirm-settlement" => confirm_settlement = true,
             "--check-config" => check_config = true,
             "--help" | "-h" => {
-                println!("ctp-trader --config PATH [--check-config] [--connect [--execute]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--connect logs in, confirms settlement, and queries account state.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, submit, cancel, shutdown. EOF stops the runtime.\nExisting venue orders are never automatically cancelled on startup or exit.");
+                println!("ctp-trader --config PATH [--check-config] [--connect [--execute] [--confirm-settlement]]\nctp-trader --sdk-version /absolute/path/libthosttraderapi_se.so\n\nDefault: validate configuration only; no network or credentials required.\n--connect logs in and queries account state without confirming settlement.\n--confirm-settlement explicitly permits confirming the broker settlement.\n--execute additionally permits explicit JSON-line submit/cancel commands.\nWithout --execute, no order placement or cancellation is permitted.\nCommands: state, reconcile, submit, cancel, shutdown. EOF stops the runtime.\nExisting venue orders are never automatically cancelled on startup or exit.");
                 return Ok(());
             }
             _ => bail!("unknown argument; use --help"),
@@ -58,11 +60,15 @@ fn run() -> Result<()> {
             bail!("build with --features ctp-sdk and CTP_SDK_DIR to load the official SDK");
         }
     }
-    let config = Config::load(&config.context("--config is required; use --help")?)?;
+    let mut config = Config::load(&config.context("--config is required; use --help")?)?;
+    if confirm_settlement {
+        anyhow::ensure!(connect, "settlement confirmation requires --connect");
+        config.confirm_settlement = true;
+    }
     if !connect {
         anyhow::ensure!(!execute, "--execute also requires --connect");
         println!(
-            "CTP configuration valid; {} CFFEX contracts; no connection started",
+            "CTP configuration valid; {} domestic futures contracts; no connection started",
             config.symbols.len()
         );
         return Ok(());

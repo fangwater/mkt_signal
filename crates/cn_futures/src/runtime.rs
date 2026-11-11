@@ -123,7 +123,7 @@ impl AuditPayload {
         (value, mutation)
     }
 }
-fn redact(value: &mut Value, secrets: &[String]) {
+pub(crate) fn redact(value: &mut Value, secrets: &[String]) {
     match value {
         Value::String(text) => {
             for secret in secrets {
@@ -584,9 +584,17 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         execute,
     };
     let input = input_commands()?;
-    journal.record(json!({"type":"runtime_start","execute":execute,"exchange":"CFFEX","production_mode":config.production_mode,"sdk":ctp::sdk::version(&config.sdk_library)?}), true)?;
-    runtime.trader.start(&config.front)?;
+    journal.record(json!({"type":"runtime_start","execute":execute,"exchanges":crate::model::Venue::ALL.map(|v|v.as_str()),"production_mode":config.production_mode,"sdk":ctp::sdk::version(&config.sdk_library)?}), true)?;
+    runtime.trader.start(
+        &std::iter::once(config.front.as_str())
+            .chain(config.fallback_fronts.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(","),
+    )?;
     let mut stopping = false;
+    let mut transport_online = false;
+    let mut transport_progress = Instant::now();
+    let mut retry_at: Option<Instant> = None;
     let outcome = (|| -> Result<()> {
         while !stopping {
             if runtime.trader.fault.load(Ordering::Acquire)
@@ -608,25 +616,33 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 let event = received.event;
                 // Persist factual evidence before attempting any parser or strategy association.
                 journal.ctp_event(&event, received.received_us, false)?;
-                if (event.kind == ctp::QUERY_TRADE
-                    || (event.kind == ctp::TRADE && !session.ready()))
-                    && event.present != 0
+                let owns = matches!(
+                    event.kind,
+                    ctp::ORDER | ctp::TRADE | ctp::QUERY_ORDER | ctp::QUERY_TRADE | ctp::POSITION
+                ) && event.present != 0
                     && ctp::text(&event.investor)? == investor
-                    && ctp::text(&event.exchange)? == "CFFEX"
+                    && crate::model::Venue::parse(&ctp::text(&event.exchange)?).is_ok();
+                if owns
+                    && (event.kind == ctp::QUERY_TRADE
+                        || (event.kind == ctp::TRADE && !session.ready()))
                 {
                     if let Ok(fill) = event.to_fill() {
                         journal.trade(fill, None, None, received.received_us)?;
                     }
                 }
                 if event.kind == ctp::CONNECTED {
+                    transport_online = true;
+                    transport_progress = Instant::now();
                     runtime.core.connected();
                 }
                 if event.kind == ctp::DISCONNECTED {
+                    transport_online = false;
+                    transport_progress = Instant::now();
                     runtime.core.disconnect();
                 }
-                if event.kind == ctp::INSTRUMENT_STATUS && ctp::text(&event.exchange)? == "CFFEX" {
+                if event.kind == ctp::INSTRUMENT_STATUS {
                     runtime.core.set_trading_status(
-                        crate::model::Venue::Cffex,
+                        crate::model::Venue::parse(&ctp::text(&event.exchange)?)?,
                         &ctp::text(&event.symbol)?,
                         event.status == i32::from(b'2'),
                     );
@@ -634,6 +650,11 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 if let Some(snapshot) = session.on_event(&event, Instant::now())? {
                     let trades = snapshot.trades.clone();
                     runtime.core.restore(snapshot)?;
+                    if !session.settlement_confirmed() {
+                        runtime
+                            .core
+                            .block("settlement not confirmed; read-only queries remain available");
+                    }
                     if let Err(error) = journal.reconciled(&mut runtime.core, trades) {
                         runtime.core.block("durable recovery failed");
                         return Err(error);
@@ -647,10 +668,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 }
                 if session.ready() {
                     let outcome = match event.kind {
-                        ctp::ORDER | ctp::TRADE
-                            if ctp::text(&event.investor)? == investor
-                                && ctp::text(&event.exchange)? == "CFFEX" =>
-                        {
+                        ctp::ORDER | ctp::TRADE if owns => {
                             if event.kind == ctp::ORDER {
                                 event.to_order().and_then(|o| runtime.core.on_order(o))
                             } else {
@@ -673,7 +691,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                         )),
                         _ => Ok(()),
                     };
-                    if event.kind == ctp::TRADE {
+                    if event.kind == ctp::TRADE && owns {
                         if let Ok(fill) = event.to_fill() {
                             let mutation = if outcome.is_ok() {
                                 crate::persistence::projection_for(
@@ -736,11 +754,53 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                     }
                 }
             }
-            if let Some(kind) = session.request_due(Instant::now())? {
-                let id = runtime.trader.next_id()?;
-                let code = runtime.trader.control(kind, id)?;
-                session.sent(kind, id, code, Instant::now())?;
-                work = true;
+            let now = Instant::now();
+            if retry_at.is_some_and(|due| now >= due) {
+                runtime.trader.start(
+                    &std::iter::once(config.front.as_str())
+                        .chain(config.fallback_fronts.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )?;
+                retry_at = None;
+                transport_progress = now;
+            }
+            if retry_at.is_none()
+                && runtime.trader.events.is_empty()
+                && (session.timed_out(now)
+                    || (!transport_online
+                        && now.saturating_duration_since(transport_progress)
+                            >= Duration::from_millis(config.response_timeout_ms)))
+            {
+                runtime.core.disconnect();
+                journal.state(&runtime.core, &[])?;
+                let mut replacement = CtpTrader::new(&config, config.credentials()?)?;
+                replacement.inherit_requests(&runtime.trader);
+                let tail = runtime.trader.events.clone();
+                let previous = std::mem::replace(&mut runtime.trader, replacement);
+                drop(previous); // Release joins all callbacks before auditing the tail.
+                for received in tail.try_iter() {
+                    journal.ctp_event(&received.event, received.received_us, false)?;
+                    if matches!(received.event.kind, ctp::TRADE | ctp::QUERY_TRADE)
+                        && ctp::text(&received.event.investor)? == investor
+                    {
+                        if let Ok(fill) = received.event.to_fill() {
+                            journal.trade(fill, None, None, received.received_us)?;
+                        }
+                    }
+                }
+                session = Session::new(config.clone(), investor.clone(), now);
+                transport_online = false;
+                retry_at = Some(now + Duration::from_millis(config.reconnect_backoff_ms));
+                journal.record(json!({"type":"reconnecting","reason":"transport or control response timeout","venue_orders_cancelled":false}),true)?;
+            }
+            if retry_at.is_none() {
+                if let Some(kind) = session.request_due(Instant::now())? {
+                    let id = runtime.trader.next_id()?;
+                    let code = runtime.trader.control(kind, id, session.query_target())?;
+                    session.sent(kind, id, code, Instant::now())?;
+                    work = true;
+                }
             }
             // Never submit an opening decision ahead of a known backlog of venue events.
             if runtime.trader.events.is_empty() {
@@ -754,9 +814,9 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                             .map(command_order_keys)
                             .unwrap_or_default();
                         let result = match command {
-                            Ok(Command::State {}) => {
-                                Ok(json!({"type":"state","state":runtime.core.view()}))
-                            }
+                            Ok(Command::State {}) => Ok(
+                                json!({"type":"state","state":runtime.core.view(),"account":session.account(),"settlement_confirmed":session.settlement_confirmed()}),
+                            ),
                             Ok(Command::Shutdown {}) => {
                                 stopping = true;
                                 Ok(json!({"type":"shutdown","venue_orders_cancelled":false}))
@@ -824,7 +884,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         let event = received.event;
         journal.ctp_event(&event, received.received_us, true)?;
         if ctp::text(&event.investor).is_ok_and(|v| v == investor)
-            && ctp::text(&event.exchange).is_ok_and(|v| v == "CFFEX")
+            && ctp::text(&event.exchange).is_ok_and(|v| crate::model::Venue::parse(&v).is_ok())
         {
             if matches!(event.kind, ctp::TRADE | ctp::QUERY_TRADE) {
                 if let Ok(fill) = event.to_fill() {

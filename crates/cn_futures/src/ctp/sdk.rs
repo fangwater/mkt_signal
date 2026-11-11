@@ -55,12 +55,15 @@ extern "C" {
         id: i32,
         broker: *const c_char,
         investor: *const c_char,
+        exchange: *const c_char,
+        symbol: *const c_char,
     ) -> i32;
     fn nf_ctp_insert(
         h: *mut c_void,
         id: i32,
         broker: *const c_char,
         investor: *const c_char,
+        exchange: *const c_char,
         symbol: *const c_char,
         order_ref: *const c_char,
         direction: i32,
@@ -74,6 +77,7 @@ extern "C" {
         id: i32,
         broker: *const c_char,
         investor: *const c_char,
+        exchange: *const c_char,
         symbol: *const c_char,
         order_ref: *const c_char,
         system: *const c_char,
@@ -205,8 +209,14 @@ impl CtpTrader {
         self.next_request = id.checked_add(1).context("CTP request ID exhausted")?;
         Ok(id)
     }
-    pub fn control(&mut self, kind: i32, id: i32) -> Result<i32> {
+    pub fn inherit_requests(&mut self, previous: &Self) {
+        self.next_request = previous.next_request;
+        self.correlation = previous.correlation.clone();
+    }
+    pub fn control(&mut self, kind: i32, id: i32, target: Option<(Venue, &str)>) -> Result<i32> {
         let c = &self.credentials;
+        let exchange = CString::new(target.map(|t| t.0.as_str()).unwrap_or(""))?;
+        let symbol = CString::new(target.map(|t| t.1).unwrap_or(""))?;
         local_result(unsafe {
             match kind {
                 super::AUTHENTICATED => nf_ctp_authenticate(
@@ -236,6 +246,8 @@ impl CtpTrader {
                     id,
                     c.broker.as_ptr(),
                     c.investor.as_ptr(),
+                    exchange.as_ptr(),
+                    symbol.as_ptr(),
                 ),
             }
         })
@@ -254,6 +266,7 @@ impl Trader for CtpTrader {
             "CTP native market orders are not enabled"
         );
         let id = self.next_id()?;
+        let exchange = CString::new(order.intent.venue.as_str())?;
         let symbol = CString::new(order.intent.symbol.as_str())?;
         let order_ref = CString::new(order.key.order_ref.as_str())?;
         self.correlation
@@ -265,6 +278,7 @@ impl Trader for CtpTrader {
                 id,
                 c.broker.as_ptr(),
                 c.investor.as_ptr(),
+                exchange.as_ptr(),
                 symbol.as_ptr(),
                 order_ref.as_ptr(),
                 match order.intent.side {
@@ -274,7 +288,8 @@ impl Trader for CtpTrader {
                 match order.intent.offset {
                     Offset::Open => 48,
                     Offset::Close => 49,
-                    _ => anyhow::bail!("unsupported CFFEX offset"),
+                    Offset::CloseToday => 51,
+                    Offset::CloseYesterday => 52,
                 },
                 match order.intent.time_in_force {
                     TimeInForce::Day => 0,
@@ -288,6 +303,7 @@ impl Trader for CtpTrader {
     }
     fn cancel(&mut self, order: &PreparedCancel) -> Result<i32> {
         let id = self.next_id()?;
+        let exchange = CString::new(order.venue.as_str())?;
         let symbol = CString::new(order.symbol.as_str())?;
         let order_ref = CString::new(order.key.order_ref.as_str())?;
         let system = CString::new(order.system_id.as_str())?;
@@ -300,6 +316,7 @@ impl Trader for CtpTrader {
                 id,
                 c.broker.as_ptr(),
                 c.investor.as_ptr(),
+                exchange.as_ptr(),
                 symbol.as_ptr(),
                 order_ref.as_ptr(),
                 system.as_ptr(),

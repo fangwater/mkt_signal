@@ -10,13 +10,30 @@ pub enum Venue {
     Shfe,
     #[serde(rename = "INE")]
     Ine,
+    #[serde(rename = "DCE")]
+    Dce,
+    #[serde(rename = "CZCE")]
+    Czce,
+    #[serde(rename = "GFEX")]
+    Gfex,
 }
 impl Venue {
+    pub const ALL: [Self; 6] = [
+        Self::Cffex,
+        Self::Shfe,
+        Self::Ine,
+        Self::Dce,
+        Self::Czce,
+        Self::Gfex,
+    ];
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Cffex => "CFFEX",
             Self::Shfe => "SHFE",
             Self::Ine => "INE",
+            Self::Dce => "DCE",
+            Self::Czce => "CZCE",
+            Self::Gfex => "GFEX",
         }
     }
     pub fn parse(value: &str) -> Result<Self> {
@@ -24,6 +41,9 @@ impl Venue {
             "CFFEX" => Ok(Self::Cffex),
             "SHFE" => Ok(Self::Shfe),
             "INE" => Ok(Self::Ine),
+            "DCE" => Ok(Self::Dce),
+            "CZCE" => Ok(Self::Czce),
+            "GFEX" => Ok(Self::Gfex),
             _ => bail!("unsupported domestic-futures venue {value}"),
         }
     }
@@ -139,6 +159,10 @@ pub struct Instrument {
     pub venue: Venue,
     pub symbol: String,
     pub price_tick: f64,
+    pub contract_multiple: i32,
+    pub expiry_date: i32,
+    pub commission: Option<CommissionRate>,
+    pub margin: Option<MarginRate>,
     pub min_lots: i32,
     pub max_lots: i32,
     /// None means unavailable/unsupported, never fall back to limit-order quantity rules.
@@ -147,6 +171,97 @@ pub struct Instrument {
     /// Local cash-budget requirement, explicitly configured; not an exchange margin quote.
     pub cash_budget_per_open_lot: f64,
     pub option: Option<OptionContract>,
+}
+
+/// Account-specific rates returned by the venue, never an inferred fill fee.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CommissionRate {
+    pub open_by_money: f64,
+    pub open_by_volume: f64,
+    pub close_by_money: f64,
+    pub close_by_volume: f64,
+    pub close_today_by_money: f64,
+    pub close_today_by_volume: f64,
+}
+impl CommissionRate {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            [
+                self.open_by_money,
+                self.open_by_volume,
+                self.close_by_money,
+                self.close_by_volume,
+                self.close_today_by_money,
+                self.close_today_by_volume
+            ]
+            .iter()
+            .all(|x| x.is_finite() && *x >= 0.0),
+            "invalid commission rates"
+        );
+        Ok(())
+    }
+    pub fn estimate(&self, offset: Offset, price: f64, multiple: i32, lots: i32) -> Result<f64> {
+        self.validate()?;
+        ensure!(
+            price.is_finite() && price > 0.0 && multiple > 0 && lots > 0,
+            "invalid fee inputs"
+        );
+        let (money, volume) = match offset {
+            Offset::Open => (self.open_by_money, self.open_by_volume),
+            Offset::CloseToday => (self.close_today_by_money, self.close_today_by_volume),
+            Offset::Close | Offset::CloseYesterday => (self.close_by_money, self.close_by_volume),
+        };
+        let mut per_lot = price * f64::from(multiple) * money + volume;
+        // Generic close does not identify which date the exchange will consume.
+        if offset == Offset::Close {
+            per_lot = per_lot.max(
+                price * f64::from(multiple) * self.close_today_by_money
+                    + self.close_today_by_volume,
+            );
+        }
+        let result = per_lot * f64::from(lots);
+        ensure!(result.is_finite(), "commission overflow");
+        Ok(result)
+    }
+}
+/// Effective absolute investor rates. Relative broker add-ons are combined with
+/// independently queried exchange rates before constructing this value.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MarginRate {
+    pub long_by_money: f64,
+    pub long_by_volume: f64,
+    pub short_by_money: f64,
+    pub short_by_volume: f64,
+}
+impl MarginRate {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            [
+                self.long_by_money,
+                self.long_by_volume,
+                self.short_by_money,
+                self.short_by_volume
+            ]
+            .iter()
+            .all(|x| x.is_finite() && *x >= 0.0),
+            "invalid margin rates"
+        );
+        Ok(())
+    }
+    pub fn estimate(&self, side: Side, price: f64, multiple: i32, lots: i32) -> Result<f64> {
+        self.validate()?;
+        ensure!(
+            price.is_finite() && price > 0.0 && multiple > 0 && lots > 0,
+            "invalid margin inputs"
+        );
+        let (money, volume) = match side {
+            Side::Buy => (self.long_by_money, self.long_by_volume),
+            Side::Sell => (self.short_by_money, self.short_by_volume),
+        };
+        let result = (price * f64::from(multiple) * money + volume) * f64::from(lots);
+        ensure!(result.is_finite(), "margin overflow");
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +341,12 @@ impl Instrument {
         if let Some(option) = &self.option {
             option.validate(self.venue, &self.symbol)?;
             ensure!(
+                option.contract_multiple == self.contract_multiple
+                    && option.expiry_date == self.expiry_date,
+                "option/common contract metadata differs for {}",
+                self.symbol
+            );
+            ensure!(
                 option.cash_buffer_per_buy_lot > 0.0,
                 "positive option buyer cash buffer required"
             );
@@ -241,6 +362,38 @@ impl Instrument {
             "invalid price tick for {}",
             self.symbol
         );
+        ensure!(
+            self.contract_multiple > 0,
+            "missing positive contract multiplier for {}",
+            self.symbol
+        );
+        let year = self.expiry_date / 10000;
+        let month = self.expiry_date / 100 % 100;
+        let day = self.expiry_date % 100;
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days = match month {
+            2 => {
+                if leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            4 | 6 | 9 | 11 => 30,
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            _ => 0,
+        };
+        ensure!(
+            (1900..=9999).contains(&year) && (1..=days).contains(&day),
+            "invalid contract expiry for {}",
+            self.symbol
+        );
+        if let Some(rate) = self.commission {
+            rate.validate()?;
+        }
+        if let Some(rate) = self.margin {
+            rate.validate()?;
+        }
         ensure!(
             self.min_lots > 0 && self.max_lots >= self.min_lots,
             "invalid lot limits for {}",
@@ -281,14 +434,20 @@ pub fn is_future_symbol(venue: Venue, symbol: &str) -> bool {
     if venue == Venue::Cffex {
         return is_cffex_future(symbol);
     }
-    if !symbol.is_ascii() || !(5..=12).contains(&symbol.len()) {
+    let digits = if venue == Venue::Czce { 3 } else { 4 };
+    if !symbol.is_ascii() || !(digits + 1..=digits + 3).contains(&symbol.len()) {
         return false;
     }
-    let (product, month) = symbol.split_at(symbol.len() - 4);
-    product.bytes().all(|b| b.is_ascii_lowercase())
-        && !product.is_empty()
+    let (product, month) = symbol.split_at(symbol.len() - digits);
+    product.bytes().all(|b| {
+        if venue == Venue::Czce {
+            b.is_ascii_uppercase()
+        } else {
+            b.is_ascii_lowercase()
+        }
+    }) && !product.is_empty()
         && month.bytes().all(|b| b.is_ascii_digit())
-        && month[2..]
+        && month[digits - 2..]
             .parse::<u8>()
             .is_ok_and(|m| (1..=12).contains(&m))
 }
@@ -480,4 +639,71 @@ pub struct NativeMutation {
     pub reconciliation_day: Option<String>,
     /// Keys in `orders` backed by an actual venue order report.
     pub observed: Vec<PersistedOrderKey>,
+}
+
+#[cfg(test)]
+mod contract_economics_tests {
+    use super::*;
+    #[test]
+    fn native_symbols_cover_all_six_exchanges_without_case_or_month_inference() {
+        for (venue, symbol) in [
+            (Venue::Cffex, "IF2612"),
+            (Venue::Shfe, "rb2701"),
+            (Venue::Ine, "sc2701"),
+            (Venue::Dce, "m2701"),
+            (Venue::Czce, "SR701"),
+            (Venue::Gfex, "lc2701"),
+        ] {
+            assert!(is_future_symbol(venue, symbol));
+            assert_eq!(Venue::parse(venue.as_str()).unwrap(), venue);
+        }
+        for (venue, symbol) in [
+            (Venue::Czce, "sr701"),
+            (Venue::Dce, "M2701"),
+            (Venue::Gfex, "lc2713"),
+            (Venue::Czce, "SR700"),
+            (Venue::Shfe, "SP rb2701&rb2705"),
+        ] {
+            assert!(!is_future_symbol(venue, symbol));
+        }
+        assert!(Venue::Shfe.separate_close_dates() && Venue::Ine.separate_close_dates());
+        assert!(!Venue::Dce.separate_close_dates() && !Venue::Czce.separate_close_dates());
+    }
+    #[test]
+    fn commission_uses_both_notional_and_per_lot_rates_and_distinguishes_close_today() {
+        let rate = CommissionRate {
+            open_by_money: 0.000023,
+            open_by_volume: 2.0,
+            close_by_money: 0.000023,
+            close_by_volume: 1.0,
+            close_today_by_money: 0.00023,
+            close_today_by_volume: 3.0,
+        };
+        assert!((rate.estimate(Offset::Open, 4000.0, 300, 2).unwrap() - 59.2).abs() < 1e-8);
+        assert!((rate.estimate(Offset::CloseToday, 4000.0, 300, 2).unwrap() - 558.0).abs() < 1e-8);
+        assert!((rate.estimate(Offset::Close, 4000.0, 300, 2).unwrap() - 558.0).abs() < 1e-8);
+        assert!(
+            (rate
+                .estimate(Offset::CloseYesterday, 4000.0, 300, 2)
+                .unwrap()
+                - 57.2)
+                .abs()
+                < 1e-8
+        );
+        assert!(rate.estimate(Offset::Open, 4000.0, 0, 2).is_err());
+        let margin = MarginRate {
+            long_by_money: 0.12,
+            long_by_volume: 2.0,
+            short_by_money: 0.15,
+            short_by_volume: 5.0,
+        };
+        assert_eq!(
+            margin.estimate(Side::Buy, 4000.0, 300, 1).unwrap(),
+            144002.0
+        );
+        assert_eq!(
+            margin.estimate(Side::Sell, 4000.0, 300, 1).unwrap(),
+            180005.0
+        );
+    }
 }

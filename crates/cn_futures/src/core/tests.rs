@@ -87,6 +87,10 @@ fn snapshot() -> Snapshot {
             venue: Venue::Cffex,
             symbol: "IF2612".into(),
             price_tick: 0.2,
+            contract_multiple: 300,
+            expiry_date: 20261218,
+            commission: None,
+            margin: None,
             min_lots: 1,
             max_lots: 100,
             market_lots: None,
@@ -103,6 +107,49 @@ fn core() -> TradingCore {
     core.set_trading_status(crate::model::Venue::Cffex, "IF", true);
     core.restore(snapshot()).unwrap();
     core
+}
+
+#[test]
+fn czce_three_digit_contract_uses_its_native_product_status_and_symbol_override() {
+    let mut image = snapshot();
+    image.instruments[0].venue = Venue::Czce;
+    image.instruments[0].symbol = "SR701".into();
+    let mut core = TradingCore::new(limits(), crate::ctp::scope()).unwrap();
+    core.restore(image).unwrap();
+    core.set_trading_status(Venue::Czce, "SR", true);
+    let mut request = intent(Side::Buy, Offset::Open, 1);
+    request.venue = Venue::Czce;
+    request.symbol = "SR701".into();
+    assert!(core.prepare(request.clone(), Instant::now()).is_ok());
+    core.set_trading_status(Venue::Czce, "SR701", false);
+    assert!(core.prepare(request, Instant::now()).is_err());
+}
+
+#[test]
+fn queried_margin_and_opening_fee_can_only_increase_the_configured_cash_floor() {
+    let mut image = snapshot();
+    let rule = &mut image.instruments[0];
+    rule.margin = Some(MarginRate {
+        long_by_money: 0.12,
+        long_by_volume: 0.0,
+        short_by_money: 0.15,
+        short_by_volume: 0.0,
+    });
+    rule.commission = Some(CommissionRate {
+        open_by_money: 0.000023,
+        open_by_volume: 2.0,
+        close_by_money: 0.0,
+        close_by_volume: 0.0,
+        close_today_by_money: 0.0,
+        close_today_by_volume: 0.0,
+    });
+    let mut core = TradingCore::new(limits(), crate::ctp::scope()).unwrap();
+    core.set_trading_status(Venue::Cffex, "IF", true);
+    core.restore(image).unwrap();
+    let prepared = core
+        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+        .unwrap();
+    assert!((core.order(&prepared.key).unwrap().cash_reserved_per_lot - 144029.6).abs() < 1e-8);
 }
 fn intent(side: Side, offset: Offset, lots: i32) -> Intent {
     Intent {
@@ -1195,6 +1242,8 @@ fn option_snapshot() -> Snapshot {
     let rule = &mut s.instruments[0];
     rule.symbol = "cu2612C106000".into();
     rule.price_tick = 2.0;
+    rule.contract_multiple = 5;
+    rule.expiry_date = 20261124;
     rule.cash_budget_per_open_lot = 100.0;
     rule.market_lots = Some(LotLimits {
         minimum: 1,

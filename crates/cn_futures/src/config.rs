@@ -1,4 +1,4 @@
-use crate::model::{is_cffex_future, RiskLimits};
+use crate::model::{is_future_symbol, RiskLimits, Venue};
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -16,6 +16,12 @@ pub struct Config {
     #[serde(default)]
     pub sync_before_send: bool,
     pub front: String,
+    #[serde(default)]
+    pub fallback_fronts: Vec<String>,
+    #[serde(default)]
+    pub confirm_settlement: bool,
+    #[serde(default = "default_reconnect_backoff")]
+    pub reconnect_backoff_ms: u64,
     pub broker_id: String,
     pub production_mode: bool,
     pub user_id_env: String,
@@ -34,6 +40,7 @@ pub struct Config {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SymbolConfig {
+    pub venue: Venue,
     pub symbol: String,
     pub cash_budget_per_open_lot: f64,
 }
@@ -48,6 +55,10 @@ pub struct Credentials {
     pub auth_code: CString,
 }
 
+fn default_reconnect_backoff() -> u64 {
+    5000
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path).context("read CTP config")?;
@@ -58,10 +69,22 @@ impl Config {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
+            self.reconnect_backoff_ms >= 1000,
+            "CTP reconnect backoff must be at least 1000 ms"
+        );
+        ensure!(
             self.front.starts_with("tcp://")
                 && self.front.len() > 9
                 && !self.front.as_bytes().contains(&0),
             "CTP front must be an explicit tcp:// address"
+        );
+        ensure!(
+            self.fallback_fronts
+                .iter()
+                .all(|front| front.starts_with("tcp://")
+                    && front.len() > 9
+                    && !front.as_bytes().contains(&0)),
+            "invalid fallback CTP front"
         );
         ensure!(
             !self.broker_id.is_empty()
@@ -90,13 +113,13 @@ impl Config {
         );
         ensure!(
             !self.symbols.is_empty(),
-            "explicit CFFEX contract allowlist required"
+            "explicit domestic futures contract allowlist required"
         );
         let mut symbols = HashSet::new();
         for s in &self.symbols {
             ensure!(
-                is_cffex_future(&s.symbol) && symbols.insert(&s.symbol),
-                "invalid or duplicate CFFEX future {}",
+                is_future_symbol(s.venue, &s.symbol) && symbols.insert((s.venue, &s.symbol)),
+                "invalid or duplicate domestic future {}",
                 s.symbol
             );
             ensure!(

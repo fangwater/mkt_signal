@@ -6,6 +6,10 @@ journal = "/tmp/mkt_ctp_sim/events.jsonl"
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
 sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
 front = "tcp://127.0.0.1:1"
+fallback_fronts = []
+# Only enable explicitly when authorized to confirm the broker settlement.
+confirm_settlement = false
+reconnect_backoff_ms = 5000
 broker_id = "REPLACE"
 # CTP 6.7.11 factory option: false selects the evaluation API, true the production API.
 # Confirm the required mode with the front provider; this flag alone does not prove a front is simulated.
@@ -23,7 +27,8 @@ response_timeout_ms = 30000
 idle_sleep_us = 50
 
 [[symbols]]
-# Replace with a currently listed, authorized CFFEX contract before connecting.
+venue = "CFFEX"
+# Replace with a currently listed, authorized domestic future before connecting.
 symbol = "IF2612"
 # Explicit conservative local budget, not an exchange-quoted margin requirement.
 # Choose from the actual broker requirements plus fees/buffer; do not treat this sample as current metadata.

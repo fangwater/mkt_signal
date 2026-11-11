@@ -1,12 +1,14 @@
 #include "ctp_bridge.h"
 #include "ThostFtdcTraderApi.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace {
 static_assert(std::is_standard_layout_v<NfEvent>);
@@ -77,13 +79,40 @@ public:
     void OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField*, CThostFtdcRspInfoField* i, int r, bool l) override { NfEvent e{}; e.kind = 5; send(e, i, r, l); }
     void OnRspQryInstrument(CThostFtdcInstrumentField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
         NfEvent e{}; e.kind = 6;
-        if (p) { e.present = 1; field(e.symbol, p->InstrumentID); field(e.exchange, p->ExchangeID); e.price_tick = p->PriceTick; e.active = p->IsTrading; e.product_class = p->ProductClass; e.minimum = p->MinLimitOrderVolume; e.maximum = p->MaxLimitOrderVolume; }
+        if (p) { e.present = 1; field(e.symbol, p->InstrumentID); field(e.exchange, p->ExchangeID); e.price_tick = p->PriceTick; e.contract_multiple = p->VolumeMultiple; e.expiry = std::atoi(p->ExpireDate); e.market_minimum = p->MinMarketOrderVolume; e.market_maximum = p->MaxMarketOrderVolume; field(e.product, p->ProductID); e.active = p->IsTrading; e.product_class = p->ProductClass; e.minimum = p->MinLimitOrderVolume; e.maximum = p->MaxLimitOrderVolume; }
         send(e, i, r, l);
     }
     void OnRspQryTradingAccount(CThostFtdcTradingAccountField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
         NfEvent e{}; e.kind = 7;
-        if (p) { e.present = 1; e.available = p->Available; field(e.investor, p->AccountID); field(e.trading_day, p->TradingDay); field(e.exchange, p->CurrencyID); }
+        if (p) { e.present = 1; e.available = p->Available; e.account_values[0] = p->PreMortgage; e.account_values[1] = p->PreCredit; e.account_values[2] = p->PreDeposit; e.account_values[3] = p->PreBalance; e.account_values[4] = p->PreMargin; e.account_values[5] = p->InterestBase; e.account_values[6] = p->Interest; e.account_values[7] = p->Deposit; e.account_values[8] = p->Withdraw; e.account_values[9] = p->FrozenMargin; e.account_values[10] = p->FrozenCash; e.account_values[11] = p->FrozenCommission; e.account_values[12] = p->CurrMargin; e.account_values[13] = p->CashIn; e.account_values[14] = p->Commission; e.account_values[15] = p->CloseProfit; e.account_values[16] = p->PositionProfit; e.account_values[17] = p->Balance; e.account_values[18] = p->Available; e.account_values[19] = p->WithdrawQuota; e.account_values[20] = p->Reserve; e.account_values[21] = p->Credit; e.account_values[22] = p->Mortgage; e.account_values[23] = p->ExchangeMargin; e.account_values[24] = p->DeliveryMargin; e.account_values[25] = p->ExchangeDeliveryMargin; e.account_values[26] = p->ReserveBalance; e.account_values[27] = p->PreFundMortgageIn; e.account_values[28] = p->PreFundMortgageOut; e.account_values[29] = p->FundMortgageIn; e.account_values[30] = p->FundMortgageOut; e.account_values[31] = p->FundMortgageAvailable; e.account_values[32] = p->MortgageableFund; e.account_values[33] = p->SpecProductMargin; e.account_values[34] = p->SpecProductFrozenMargin; e.account_values[35] = p->SpecProductCommission; e.account_values[36] = p->SpecProductFrozenCommission; e.account_values[37] = p->SpecProductPositionProfit; e.account_values[38] = p->SpecProductCloseProfit; e.account_values[39] = p->SpecProductPositionProfitByAlg; e.account_values[40] = p->SpecProductExchangeMargin; e.account_values[41] = p->FrozenSwap; e.account_values[42] = p->RemainSwap; e.account_values[43] = p->OptionValue;  field(e.investor, p->AccountID); field(e.trading_day, p->TradingDay); field(e.exchange, p->CurrencyID); }
         send(e, i, r, l);
+    }
+    void OnRspQrySettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
+        NfEvent e{}; e.kind = 20;
+        if (p) { e.present = 1; field(e.trading_day, p->ConfirmDate); field(e.investor, p->InvestorID); }
+        send(e, i, r, l);
+    }
+    void OnRspQryInstrumentCommissionRate(CThostFtdcInstrumentCommissionRateField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
+        NfEvent e{}; e.kind = 17;
+        if (p) { e.present = 1; field(e.symbol,p->InstrumentID); field(e.exchange,p->ExchangeID); field(e.investor,p->InvestorID); e.investor_range=p->InvestorRange;
+            e.commission_rates[0]=p->OpenRatioByMoney; e.commission_rates[1]=p->OpenRatioByVolume;
+            e.commission_rates[2]=p->CloseRatioByMoney; e.commission_rates[3]=p->CloseRatioByVolume;
+            e.commission_rates[4]=p->CloseTodayRatioByMoney; e.commission_rates[5]=p->CloseTodayRatioByVolume; }
+        send(e,i,r,l);
+    }
+    void OnRspQryInstrumentMarginRate(CThostFtdcInstrumentMarginRateField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
+        NfEvent e{}; e.kind = 18;
+        if (p) { e.present=1; field(e.symbol,p->InstrumentID); field(e.exchange,p->ExchangeID); field(e.investor,p->InvestorID); e.investor_range=p->InvestorRange; e.hedge=p->HedgeFlag; e.relative=p->IsRelative;
+            e.margin_rates[0]=p->LongMarginRatioByMoney; e.margin_rates[1]=p->LongMarginRatioByVolume;
+            e.margin_rates[2]=p->ShortMarginRatioByMoney; e.margin_rates[3]=p->ShortMarginRatioByVolume; }
+        send(e,i,r,l);
+    }
+    void OnRspQryExchangeMarginRate(CThostFtdcExchangeMarginRateField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
+        NfEvent e{}; e.kind=19;
+        if (p) { e.present=1; field(e.symbol,p->InstrumentID); field(e.exchange,p->ExchangeID); e.hedge=p->HedgeFlag;
+            e.margin_rates[0]=p->LongMarginRatioByMoney; e.margin_rates[1]=p->LongMarginRatioByVolume;
+            e.margin_rates[2]=p->ShortMarginRatioByMoney; e.margin_rates[3]=p->ShortMarginRatioByVolume; }
+        send(e,i,r,l);
     }
     void OnRspQryInvestorPosition(CThostFtdcInvestorPositionField* p, CThostFtdcRspInfoField* i, int r, bool l) override {
         NfEvent e{}; e.kind = 8;
@@ -118,7 +147,7 @@ public:
     void OnRspError(CThostFtdcRspInfoField* i, int r, bool l) override { NfEvent e{}; e.kind = 16; send(e, i, r, l); }
 };
 struct Handle {
-    Library library; Spi spi; CThostFtdcTraderApi* api = nullptr; std::string front, user;
+    Library library; Spi spi; CThostFtdcTraderApi* api = nullptr; std::string front, user; std::vector<std::string> fronts;
     Handle(const char* path, const char* flow, bool production, NfCallback cb, void* ctx) : library(path), spi(cb, ctx) {
         auto version = library.symbol<decltype(&CThostFtdcTraderApi::GetApiVersion)>("_ZN19CThostFtdcTraderApi13GetApiVersionEv");
         const char* v = version();
@@ -147,7 +176,7 @@ extern "C" void* nf_ctp_create(const char* path, const char* flow, bool producti
 }
 extern "C" void nf_ctp_destroy(void* h) { delete static_cast<Handle*>(h); }
 extern "C" int nf_ctp_start(void* h, const char* front) {
-    return request(h, [&](Handle& x) { x.front = front; x.api->SubscribePrivateTopic(THOST_TERT_RESUME); x.api->SubscribePublicTopic(THOST_TERT_RESTART); x.api->RegisterFront(x.front.data()); x.api->Init(); return 0; });
+    return request(h, [&](Handle& x) { x.front = front; x.api->SubscribePrivateTopic(THOST_TERT_RESUME); x.api->SubscribePublicTopic(THOST_TERT_RESTART); size_t offset=0; for (;;) { auto end=x.front.find(',',offset); x.fronts.push_back(x.front.substr(offset,end==std::string::npos?end:end-offset)); if(end==std::string::npos) break; offset=end+1; } for(auto& address:x.fronts) x.api->RegisterFront(address.data()); x.api->Init(); return 0; });
 }
 extern "C" int nf_ctp_authenticate(void* h, int id, const char* broker, const char* user, const char* app, const char* auth) {
     return request(h, [&](Handle& x) { CThostFtdcReqAuthenticateField r{}; copy(r.BrokerID, broker); copy(r.UserID, user); copy(r.AppID, app); copy(r.AuthCode, auth); return x.api->ReqAuthenticate(&r, id); });
@@ -158,21 +187,25 @@ extern "C" int nf_ctp_login(void* h, int id, const char* broker, const char* use
 extern "C" int nf_ctp_settlement(void* h, int id, const char* broker, const char* investor) {
     return request(h, [&](Handle& x) { CThostFtdcSettlementInfoConfirmField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); return x.api->ReqSettlementInfoConfirm(&r, id); });
 }
-extern "C" int nf_ctp_query(void* h, int kind, int id, const char* broker, const char* investor) {
+extern "C" int nf_ctp_query(void* h, int kind, int id, const char* broker, const char* investor, const char* exchange, const char* symbol) {
     return request(h, [&](Handle& x) {
         switch (kind) {
-        case 6: { CThostFtdcQryInstrumentField r{}; copy(r.ExchangeID, "CFFEX"); return x.api->ReqQryInstrument(&r, id); }
+        case 6: { CThostFtdcQryInstrumentField r{}; return x.api->ReqQryInstrument(&r, id); }
         case 7: { CThostFtdcQryTradingAccountField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.CurrencyID, "CNY"); return x.api->ReqQryTradingAccount(&r, id); }
-        case 8: { CThostFtdcQryInvestorPositionField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.ExchangeID, "CFFEX"); return x.api->ReqQryInvestorPosition(&r, id); }
-        case 13: { CThostFtdcQryOrderField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.ExchangeID, "CFFEX"); return x.api->ReqQryOrder(&r, id); }
-        case 14: { CThostFtdcQryTradeField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.ExchangeID, "CFFEX"); return x.api->ReqQryTrade(&r, id); }
+        case 8: { CThostFtdcQryInvestorPositionField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); return x.api->ReqQryInvestorPosition(&r, id); }
+        case 13: { CThostFtdcQryOrderField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); return x.api->ReqQryOrder(&r, id); }
+        case 14: { CThostFtdcQryTradeField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); return x.api->ReqQryTrade(&r, id); }
+        case 17: { CThostFtdcQryInstrumentCommissionRateField r{}; copy(r.BrokerID,broker); copy(r.InvestorID,investor); copy(r.ExchangeID,exchange); copy(r.InstrumentID,symbol); return x.api->ReqQryInstrumentCommissionRate(&r,id); }
+        case 18: { CThostFtdcQryInstrumentMarginRateField r{}; copy(r.BrokerID,broker); copy(r.InvestorID,investor); copy(r.ExchangeID,exchange); copy(r.InstrumentID,symbol); r.HedgeFlag=THOST_FTDC_HF_Speculation; return x.api->ReqQryInstrumentMarginRate(&r,id); }
+        case 19: { CThostFtdcQryExchangeMarginRateField r{}; copy(r.BrokerID,broker); copy(r.ExchangeID,exchange); copy(r.InstrumentID,symbol); r.HedgeFlag=THOST_FTDC_HF_Speculation; return x.api->ReqQryExchangeMarginRate(&r,id); }
+        case 20: { CThostFtdcQrySettlementInfoConfirmField r{}; copy(r.BrokerID,broker); copy(r.InvestorID,investor); return x.api->ReqQrySettlementInfoConfirm(&r,id); }
         default: return invalid;
         }
     });
 }
-extern "C" int nf_ctp_insert(void* h, int id, const char* broker, const char* investor, const char* symbol, const char* ref, int direction, int offset, int tif, int lots, double price) {
+extern "C" int nf_ctp_insert(void* h, int id, const char* broker, const char* investor, const char* exchange, const char* symbol, const char* ref, int direction, int offset, int tif, int lots, double price) {
     return request(h, [&](Handle& x) {
-        CThostFtdcInputOrderField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.UserID, x.user.c_str()); copy(r.InstrumentID, symbol); copy(r.OrderRef, ref); copy(r.ExchangeID, "CFFEX");
+        CThostFtdcInputOrderField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.UserID, x.user.c_str()); copy(r.InstrumentID, symbol); copy(r.OrderRef, ref); copy(r.ExchangeID, exchange);
         r.Direction = static_cast<char>(direction); r.CombOffsetFlag[0] = static_cast<char>(offset); r.CombHedgeFlag[0] = THOST_FTDC_HF_Speculation;
         r.OrderPriceType = THOST_FTDC_OPT_LimitPrice; r.LimitPrice = price; r.VolumeTotalOriginal = lots;
         r.TimeCondition = tif == 0 ? THOST_FTDC_TC_GFD : THOST_FTDC_TC_IOC;
@@ -181,9 +214,9 @@ extern "C" int nf_ctp_insert(void* h, int id, const char* broker, const char* in
         return x.api->ReqOrderInsert(&r, id);
     });
 }
-extern "C" int nf_ctp_cancel(void* h, int id, const char* broker, const char* investor, const char* symbol, const char* ref, const char* system, int front, int session) {
+extern "C" int nf_ctp_cancel(void* h, int id, const char* broker, const char* investor, const char* exchange, const char* symbol, const char* ref, const char* system, int front, int session) {
     return request(h, [&](Handle& x) {
-        CThostFtdcInputOrderActionField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.UserID, x.user.c_str()); copy(r.InstrumentID, symbol); copy(r.ExchangeID, "CFFEX");
+        CThostFtdcInputOrderActionField r{}; copy(r.BrokerID, broker); copy(r.InvestorID, investor); copy(r.UserID, x.user.c_str()); copy(r.InstrumentID, symbol); copy(r.ExchangeID, exchange);
         copy(r.OrderRef, ref); copy(r.OrderSysID, system); r.FrontID = front; r.SessionID = session; r.RequestID = id; r.OrderActionRef = id; r.ActionFlag = THOST_FTDC_AF_Delete;
         return x.api->ReqOrderAction(&r, id);
     });

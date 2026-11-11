@@ -3,7 +3,7 @@
 use super::*;
 use crate::config::Config;
 use anyhow::{ensure, Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 pub struct Session {
@@ -13,11 +13,17 @@ pub struct Session {
     waiting: Option<(i32, i32, Instant)>,
     next_send: Instant,
     login: Option<(String, i32, i32, u64)>,
-    instruments: HashMap<String, Instrument>,
+    instruments: HashMap<(Venue, String), Instrument>,
+    products: HashMap<(Venue, String), String>,
+    rate_targets: VecDeque<(Venue, String)>,
+    rate_seen: bool,
+    relative_margin: bool,
+    account: Option<AccountSnapshot>,
+    settlement_confirmed: bool,
     available: Option<f64>,
     orders: Vec<OrderUpdate>,
     trades: Vec<Fill>,
-    positions: HashMap<(String, Side, i32), PositionSnapshot>,
+    positions: HashMap<(Venue, String, Side, i32), PositionSnapshot>,
     revision: u64,
     pass_revision: u64,
     previous: Option<(String, f64)>,
@@ -39,6 +45,12 @@ impl Session {
             next_send: now,
             login: None,
             instruments: HashMap::new(),
+            products: HashMap::new(),
+            rate_targets: VecDeque::new(),
+            rate_seen: false,
+            relative_margin: false,
+            account: None,
+            settlement_confirmed: false,
             available: None,
             orders: Vec::new(),
             trades: Vec::new(),
@@ -55,8 +67,25 @@ impl Session {
             rule_update: None,
         }
     }
+    pub fn account(&self) -> Option<&AccountSnapshot> {
+        self.account.as_ref()
+    }
+    pub fn settlement_confirmed(&self) -> bool {
+        self.settlement_confirmed
+    }
+    pub fn query_target(&self) -> Option<(Venue, &str)> {
+        self.rate_targets
+            .front()
+            .map(|(venue, symbol)| (*venue, symbol.as_str()))
+    }
     pub fn ready(&self) -> bool {
         self.ready
+    }
+    pub fn timed_out(&self, now: Instant) -> bool {
+        self.waiting.is_some_and(|(_, _, sent)| {
+            now.saturating_duration_since(sent)
+                > Duration::from_millis(self.config.response_timeout_ms)
+        })
     }
     pub fn login_identity(&self) -> Option<(i32, i32)> {
         self.login.as_ref().map(|(_, f, s, _)| (*f, *s))
@@ -81,6 +110,7 @@ impl Session {
                 self.maintenance = true;
                 self.next_kind = Some(INSTRUMENT);
                 self.instruments.clear();
+                self.products.clear();
             } else if now.saturating_duration_since(self.last_cash_poll) >= Duration::from_secs(5) {
                 self.maintenance = true;
                 self.next_kind = Some(ACCOUNT);
@@ -135,7 +165,11 @@ impl Session {
         self.positions.clear();
     }
     fn owns(&self, e: &RawEvent) -> Result<bool> {
-        Ok(text(&e.investor)? == self.investor && text(&e.exchange)? == "CFFEX")
+        if text(&e.investor)? != self.investor {
+            return Ok(false);
+        }
+        Venue::parse(&text(&e.exchange)?)?;
+        Ok(true)
     }
 
     pub fn on_event(&mut self, e: &RawEvent, now: Instant) -> Result<Option<Snapshot>> {
@@ -145,6 +179,9 @@ impl Session {
             self.cash_update = None;
             self.rule_update = None;
             self.login = None;
+            self.account = None;
+            self.settlement_confirmed = false;
+            self.rate_targets.clear();
             self.waiting = None;
             self.previous = None;
             self.passes = 0;
@@ -163,6 +200,9 @@ impl Session {
             self.next_kind = None;
             self.waiting = None;
             self.login = None;
+            self.account = None;
+            self.settlement_confirmed = false;
+            self.rate_targets.clear();
             return Ok(None);
         }
         if matches!(e.kind, ORDER | TRADE) {
@@ -207,24 +247,39 @@ impl Session {
             }
             INSTRUMENT if e.present != 0 => {
                 let symbol = text(&e.symbol)?;
-                if let Some(config) = self.config.symbols.iter().find(|s| s.symbol == symbol) {
+                let venue = Venue::parse(&text(&e.exchange)?)?;
+                if let Some(config) = self
+                    .config
+                    .symbols
+                    .iter()
+                    .find(|s| s.venue == venue && s.symbol == symbol)
+                {
                     ensure!(
-                        text(&e.exchange)? == "CFFEX" && e.product_class == i32::from(b'1'),
-                        "configured contract is not a CFFEX future"
+                        e.product_class == i32::from(b'1'),
+                        "configured contract is not a native future"
                     );
                     let instrument = Instrument {
                         option: None,
-                        venue: Venue::Cffex,
+                        venue,
                         symbol: symbol.clone(),
                         price_tick: e.price_tick,
+                        contract_multiple: e.contract_multiple,
+                        expiry_date: e.expiry,
+                        commission: None,
+                        margin: None,
                         min_lots: e.minimum,
                         max_lots: e.maximum,
                         market_lots: None,
-                        active: e.active != 0,
+                        active: e.active != 0
+                            && self.login.as_ref().is_some_and(|login| {
+                                login.0.parse::<i32>().is_ok_and(|day| e.expiry >= day)
+                            }),
                         cash_budget_per_open_lot: config.cash_budget_per_open_lot,
                     };
                     instrument.validate()?;
-                    if let Some(old) = self.instruments.insert(symbol, instrument.clone()) {
+                    let key = (venue, symbol);
+                    self.products.insert(key.clone(), text(&e.product)?);
+                    if let Some(old) = self.instruments.insert(key, instrument.clone()) {
                         ensure!(old == instrument, "conflicting duplicate instrument row");
                     }
                 }
@@ -241,7 +296,88 @@ impl Session {
                     "account trading day changed; reconnect and reconcile"
                 );
                 ensure!(self.available.is_none(), "duplicate CNY account row");
+                self.account = Some(AccountSnapshot::from_event(e)?);
                 self.available = Some(e.available);
+            }
+            SETTLEMENT_STATUS => {
+                if e.present != 0 {
+                    ensure!(
+                        text(&e.investor)? == self.investor,
+                        "settlement status for another investor"
+                    );
+                    let day = text(&e.trading_day)?;
+                    self.settlement_confirmed =
+                        self.login.as_ref().is_some_and(|login| day >= login.0);
+                }
+            }
+            SETTLED => self.settlement_confirmed = true,
+            COMMISSION | MARGIN | EXCHANGE_MARGIN if e.present != 0 => {
+                let key = self
+                    .rate_targets
+                    .front()
+                    .context("rate response without target")?
+                    .clone();
+                let exchange = text(&e.exchange)?;
+                let symbol = text(&e.symbol)?;
+                ensure!(
+                    (exchange.is_empty() || exchange == key.0.as_str())
+                        && (symbol == key.1
+                            || self
+                                .products
+                                .get(&key)
+                                .is_some_and(|product| !product.is_empty() && *product == symbol)),
+                    "CTP rate response differs from requested contract"
+                );
+                if kind != EXCHANGE_MARGIN {
+                    ensure!(
+                        e.investor_range != i32::from(b'3') || text(&e.investor)? == self.investor,
+                        "rate response belongs to another investor"
+                    );
+                }
+                ensure!(!self.rate_seen, "ambiguous duplicate CTP rate row");
+                self.rate_seen = true;
+                let rule = self
+                    .instruments
+                    .get_mut(&key)
+                    .context("rate contract absent")?;
+                if kind == COMMISSION {
+                    let r = e.commission_rates;
+                    let rate = CommissionRate {
+                        open_by_money: r[0],
+                        open_by_volume: r[1],
+                        close_by_money: r[2],
+                        close_by_volume: r[3],
+                        close_today_by_money: r[4],
+                        close_today_by_volume: r[5],
+                    };
+                    rate.validate()?;
+                    rule.commission = Some(rate);
+                } else {
+                    ensure!(
+                        e.hedge == i32::from(b'1'),
+                        "non-speculative margin response"
+                    );
+                    let r = e.margin_rates;
+                    let mut rate = MarginRate {
+                        long_by_money: r[0],
+                        long_by_volume: r[1],
+                        short_by_money: r[2],
+                        short_by_volume: r[3],
+                    };
+                    rate.validate()?;
+                    if kind == MARGIN {
+                        ensure!(matches!(e.relative, 0 | 1), "invalid relative margin flag");
+                        self.relative_margin = e.relative != 0;
+                    } else {
+                        let addon = rule.margin.context("missing broker margin add-on")?;
+                        rate.long_by_money += addon.long_by_money;
+                        rate.long_by_volume += addon.long_by_volume;
+                        rate.short_by_money += addon.short_by_money;
+                        rate.short_by_volume += addon.short_by_volume;
+                        rate.validate()?;
+                    }
+                    rule.margin = Some(rate);
+                }
             }
             QUERY_ORDER if e.present != 0 && self.owns(e)? => {
                 self.orders.push(e.to_order()?);
@@ -252,7 +388,7 @@ impl Session {
             POSITION if e.present != 0 && self.owns(e)? && e.volume != 0 => {
                 ensure!(
                     e.hedge == i32::from(b'1'),
-                    "non-speculative CFFEX position requires a separate hedge ledger"
+                    "non-speculative native position requires a separate hedge ledger"
                 );
                 ensure!(
                     e.volume >= 0 && e.today >= 0 && e.today <= e.volume,
@@ -261,20 +397,34 @@ impl Session {
                 let side = match e.position_direction {
                     50 => Side::Buy,
                     51 => Side::Sell,
-                    _ => anyhow::bail!("unsupported CFFEX position direction"),
+                    _ => anyhow::bail!("unsupported CTP position direction"),
                 };
                 let symbol = text(&e.symbol)?;
                 // YdPosition is the opening historical inventory, not necessarily today's remaining yesterday position.
+                let venue = Venue::parse(&text(&e.exchange)?)?;
+                let today = if venue.separate_close_dates() {
+                    ensure!(
+                        matches!(e.position_date, 49 | 50),
+                        "invalid SHFE/INE position date"
+                    );
+                    if e.position_date == 49 {
+                        e.volume
+                    } else {
+                        0
+                    }
+                } else {
+                    e.today
+                };
                 let row = PositionSnapshot {
-                    venue: Venue::Cffex,
+                    venue,
                     symbol: symbol.clone(),
                     side,
-                    today: e.today,
-                    yesterday: e.volume - e.today,
+                    today,
+                    yesterday: e.volume - today,
                 };
                 ensure!(
                     self.positions
-                        .insert((symbol, side, e.position_date), row)
+                        .insert((venue, symbol, side, e.position_date), row)
                         .is_none(),
                     "duplicate position-date row; investment-unit split is not supported"
                 );
@@ -291,6 +441,56 @@ impl Session {
             return Ok(None);
         }
         self.waiting = None;
+        if matches!(kind, INSTRUMENT | COMMISSION | MARGIN | EXCHANGE_MARGIN) {
+            if kind == INSTRUMENT {
+                if !self.maintenance {
+                    ensure!(
+                        self.instruments.len() == self.config.symbols.len(),
+                        "complete instrument response omitted an allowlisted contract"
+                    );
+                }
+                let mut targets: Vec<_> = self
+                    .instruments
+                    .iter()
+                    .filter(|(_, rule)| rule.active)
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                targets.sort_by(|a, b| (a.0.as_str(), &a.1).cmp(&(b.0.as_str(), &b.1)));
+                self.rate_targets = targets.into();
+            } else {
+                ensure!(
+                    self.rate_seen,
+                    "empty CTP fee/margin query; trading stays blocked"
+                );
+                if kind == COMMISSION {
+                    self.rate_seen = false;
+                    self.next_kind = Some(MARGIN);
+                    return Ok(None);
+                }
+                if kind == MARGIN && self.relative_margin {
+                    self.rate_seen = false;
+                    self.next_kind = Some(EXCHANGE_MARGIN);
+                    return Ok(None);
+                }
+                self.rate_targets.pop_front();
+            }
+            self.rate_seen = false;
+            self.relative_margin = false;
+            if !self.rate_targets.is_empty() {
+                self.next_kind = Some(COMMISSION);
+                return Ok(None);
+            }
+            self.last_rule_poll = now;
+            if self.maintenance {
+                self.rule_update = Some(self.instruments.values().cloned().collect());
+                self.maintenance = false;
+                self.next_kind = None;
+            } else {
+                self.clear_pass();
+                self.next_kind = Some(ACCOUNT);
+            }
+            return Ok(None);
+        }
         if self.maintenance {
             match kind {
                 ACCOUNT => {
@@ -309,7 +509,14 @@ impl Session {
         }
         self.next_kind = Some(match kind {
             AUTHENTICATED => LOGGED_IN,
-            LOGGED_IN => SETTLED,
+            LOGGED_IN => SETTLEMENT_STATUS,
+            SETTLEMENT_STATUS => {
+                if !self.settlement_confirmed && self.config.confirm_settlement {
+                    SETTLED
+                } else {
+                    INSTRUMENT
+                }
+            }
             SETTLED => INSTRUMENT,
             INSTRUMENT => {
                 ensure!(
@@ -339,12 +546,12 @@ impl Session {
             self.passes <= 12,
             "account snapshot did not converge; keep new orders blocked"
         );
-        let mut positions = HashMap::<(String, Side), PositionSnapshot>::new();
+        let mut positions = HashMap::<(Venue, String, Side), PositionSnapshot>::new();
         for row in self.positions.values() {
             let p = positions
-                .entry((row.symbol.clone(), row.side))
+                .entry((row.venue, row.symbol.clone(), row.side))
                 .or_insert_with(|| PositionSnapshot {
-                    venue: Venue::Cffex,
+                    venue: row.venue,
                     symbol: row.symbol.clone(),
                     side: row.side,
                     today: 0,
@@ -362,6 +569,7 @@ impl Session {
         let mut positions: Vec<_> = positions.into_values().collect();
         positions.sort_by_key(|p| {
             (
+                p.venue.as_str(),
                 p.symbol.clone(),
                 match p.side {
                     Side::Buy => 0,
@@ -373,6 +581,7 @@ impl Session {
             .sort_by_key(|o| (o.key.session.clone(), o.key.order_ref.clone()));
         self.trades.sort_by_key(|f| {
             (
+                f.identity.venue.as_str(),
                 f.identity.symbol.clone(),
                 f.identity.trade_id.clone(),
                 match f.identity.side {

@@ -30,6 +30,10 @@ name = "ctp-trader"
 path = "src/bin/ctp_trader.rs"
 
 [[bin]]
+name = "ctp-md"
+path = "src/bin/ctp_md.rs"
+
+[[bin]]
 name = "yida-trader"
 path = "src/bin/yida_trader.rs"
 

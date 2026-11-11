@@ -2,6 +2,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CTP_SDK_DIR");
     println!("cargo:rerun-if-changed=cpp/ctp_bridge.cpp");
     println!("cargo:rerun-if-changed=cpp/ctp_bridge.h");
+    println!("cargo:rerun-if-changed=cpp/ctp_md_bridge.cpp");
+    println!("cargo:rerun-if-changed=cpp/ctp_md_bridge.h");
     #[cfg(feature = "ctp-sdk")]
     {
         let sdk = std::env::var_os("CTP_SDK_DIR").expect(
@@ -10,6 +12,7 @@ fn main() {
         let sdk = std::path::PathBuf::from(sdk);
         for name in [
             "ThostFtdcTraderApi.h",
+            "ThostFtdcMdApi.h",
             "ThostFtdcUserApiStruct.h",
             "ThostFtdcUserApiDataType.h",
         ] {
@@ -23,6 +26,7 @@ fn main() {
             .flag(sdk.to_str().expect("SDK path must be UTF-8"))
             .include("cpp")
             .file("cpp/ctp_bridge.cpp")
+            .file("cpp/ctp_md_bridge.cpp")
             .warnings(true)
             .compile("cn_futures_ctp_bridge");
         println!("cargo:rustc-link-lib=dl");
