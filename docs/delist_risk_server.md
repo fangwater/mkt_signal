@@ -1,6 +1,28 @@
 # Delist Risk Server
 
-最后更新：2026-11-11 04:12 UTC（上线 FR 年化异常表格；Delist保持CPU28）
+最后更新：2026-11-11 05:15 UTC（修复 CTA Spread 四周期配置备份；Delist保持CPU28）
+
+2026-11-11 05:15 UTC，发布生产 `arbmm f6d4c06f`，修复 CTA Spread 每日备份。
+Spread worker 已支持 `1min/5min/15min/1h`，Delist 仍使用只允许 `1min/1h` 的
+旧校验，导致当日本地归档失败；COS 保留清理因 `current-day local archive missing`
+被保护检查阻止。移除过时周期限制，保留 OKX/Binance 市场对与独立因子规则校验；
+新增四周期配置快照、归档及重新验证回归，后续生产构建不再丢失这项修复。
+
+release 从同步 `arbmm` 的源码快照加本次修复在本机工作目录内构建，SCP 暂存、
+SHA-256 核验后原子安装，仅经环境本地脚本重启 Delist 与 SG 隧道。
+Delist PID3024821、隧道 PID3024552 全线程继续 CPU28；原有165个其他进程的
+身份及 CPU mask、56份配置/脚本/页面指纹保持，交易策略参数和源 IP 未改。
+二进制 SHA-256：`4b1b8fefdb78acf90ca0a5ef33777dd725dd64b34c4c89ec4b5701e6c9e27613`。
+
+11月11日归档于05:15:15补齐，05:15:16上传验证、05:15:17保留清理通过。
+四个周期、52份 payload 校验及独立 COS 回读 SHA-256 全通过，关联
+`binance_exec_spread01`/`okex_exec_trade01`，质量 warnings=[]。
+本地归档与保留清理两条告警已自动恢复，通知队列为空；Prep 各备份状态和 NAV 目录健康。
+四周期归档回归、CTA因子模块69项、备份告警恢复测试及 `cargo fmt --check` 通过；
+Redis capture 测试因本机无 redis-server 按既有逻辑跳过。
+回退二进制：`~/delist_risk_server/backups/spread_backup_f6d4c06f/`；
+核验记录：本机 `data/ops/delist_spread_backup_20261111/`、远端
+`~/delist_risk_server/run/spread-backup-20261111/`。
 
 2026-11-11 04:10 UTC，发布 `arbmm d71d7841` 的 React / Ant Design FR 年化
 异常表格。release 二进制、页面和本地前端组件资源均经 SHA-256 校验并原子

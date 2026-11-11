@@ -1,6 +1,13 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-11 04:12 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-11 05:15 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-11 05:15 UTC，发布 `arbmm f6d4c06f` 修复 Delist 的 Spread 备份周期校验。
+仅通过环境本地脚本重启 Delist PID3024821 与 SG 隧道 PID3024552，全线程仍 CPU28。
+今日四周期备份已补齐，52份 payload 及 COS 回读校验通过；本地归档/保留清理
+两条告警已恢复。原有165个其他进程身份/CPU及56份配置、脚本、页面指纹保持。
+回退 `~/delist_risk_server/backups/spread_backup_f6d4c06f/`；
+核验 `data/ops/delist_spread_backup_20261111/`，详情见 `docs/delist_risk_server.md`。
 
 2026-11-11 04:10 UTC，发布 FR 年化异常表格，Delist 二进制来自
 `arbmm d71d7841`；Delist PID2887312 和 SG 隧道 PID2887284 均绑 CPU28。
@@ -1638,7 +1645,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 24 | crypto_cta_manager / cta_web | PID1276059；目标PG副本异步更新；退役Binance FR01后清理两条旧路径并重载 |
 | 25 | binance_exec_spread01 account_monitor | PID1361356；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID4133978 / PID3939283 |
-| 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID1609111、隧道 PID1609083 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
+| 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3024821、隧道 PID3024552 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
 | 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
