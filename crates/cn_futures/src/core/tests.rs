@@ -1370,3 +1370,111 @@ fn complete_fills_on_a_native_cancel_report_restore_as_filled_and_keep_tif() {
     assert_eq!(restored.filled, 1);
     assert_eq!(restored.cancelled, 0);
 }
+
+fn assert_working_index(core: &TradingCore) {
+    use std::collections::HashSet;
+    let expected: HashSet<_> = core
+        .orders
+        .iter()
+        .filter(|(_, o)| o.remaining() > 0)
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(expected, core.working_orders.iter().collect());
+    assert_eq!(
+        core.working_lots,
+        core.orders
+            .values()
+            .map(|o| i64::from(o.remaining()))
+            .sum::<i64>()
+    );
+}
+
+#[test]
+fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills() {
+    for (lots, traded, status) in [(2, 2, OrderStatus::Filled), (3, 1, OrderStatus::Cancelled)] {
+        let mut c = core();
+        let p = c
+            .prepare(intent(Side::Sell, Offset::Open, lots), Instant::now())
+            .unwrap();
+        assert_working_index(&c);
+        c.on_order(update(&p, traded, status)).unwrap();
+        assert_eq!(c.working_lots, i64::from(traded));
+        assert_working_index(&c);
+        // A terminal report still reserves its missing factual fills for both limits and STP.
+        c.limits.max_working_lots = traded;
+        assert!(c
+            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("working lot limit"));
+        c.limits.max_working_lots = 20;
+        assert!(c
+            .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+            .unwrap_err()
+            .to_string()
+            .contains("self-trade"));
+        for n in 0..traded {
+            let f = fill(&p, &format!("indexed-fill-{n}"), 1);
+            assert!(c.on_fill(f.clone()).unwrap());
+            assert!(!c.on_fill(f).unwrap());
+            assert_working_index(&c);
+            c.on_order(update(&p, 0, OrderStatus::Working)).unwrap();
+            assert_working_index(&c);
+        }
+        assert_eq!(c.working_lots, 0);
+        c.prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+            .unwrap();
+        assert_working_index(&c);
+    }
+}
+
+#[test]
+fn working_index_matches_account_snapshot_and_batch_rollback() {
+    let mut c = core();
+    let a = c
+        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
+        .unwrap();
+    let b = c
+        .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
+        .unwrap();
+    let mut s = snapshot();
+    s.orders = vec![
+        update(&a, 0, OrderStatus::Working),
+        update(&b, 0, OrderStatus::Working),
+    ];
+    c.restore(s).unwrap();
+    assert_working_index(&c);
+    assert_eq!(c.working_lots, 5);
+    c.reject(&a.key).unwrap();
+    c.reject(&a.key).unwrap();
+    assert_working_index(&c);
+    c.reject(&b.key).unwrap();
+    assert_working_index(&c);
+    assert_eq!(c.working_lots, 0);
+    let mut r = SingleLoop {
+        core: c,
+        trader: Fake::default(),
+        execute: true,
+    };
+    let mut n = 0;
+    let receipt = r
+        .submit_batch_with(
+            vec![
+                intent(Side::Buy, Offset::Open, 1),
+                intent(Side::Buy, Offset::Open, 1),
+            ],
+            Instant::now(),
+            |_| {
+                n += 1;
+                if n == 2 {
+                    bail!("injected audit failure")
+                };
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(!receipt.all_submitted_locally);
+    assert_eq!(r.trader.inserts, 0);
+    assert_eq!(r.core.working_lots, 0);
+    assert_working_index(&r.core);
+}

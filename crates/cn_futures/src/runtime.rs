@@ -55,10 +55,73 @@ pub(crate) fn command_order_keys(command: &Command) -> Vec<OrderKey> {
 }
 
 struct Record {
-    value: Value,
+    payload: AuditPayload,
     display: bool,
     mutation: NativeMutation,
     ack: Option<Sender<std::result::Result<(), String>>>,
+}
+// Keep the queue slot small. Raw callbacks have hundreds of scalar/byte fields;
+// only their owned copy crosses the queue, and the writer builds the JSON tree.
+enum AuditPayload {
+    Json(Value),
+    Yida {
+        event: Box<crate::yida::RawEvent>,
+        received_us: u64,
+        shutdown_tail: bool,
+    },
+    Ctp {
+        event: Box<crate::ctp::RawEvent>,
+        received_us: u64,
+        shutdown_tail: bool,
+    },
+    PreparedSubmit {
+        day: String,
+        order: Box<crate::model::PreparedOrder>,
+        received_us: u64,
+    },
+    PreparedCancel(Box<crate::model::PreparedCancel>),
+}
+impl AuditPayload {
+    fn materialize(self, mut mutation: NativeMutation) -> (Value, NativeMutation) {
+        let value = match self {
+            Self::Json(value) => value,
+            Self::Yida {
+                event,
+                received_us,
+                shutdown_tail,
+            } => {
+                let mut value = serde_json::json!({"type":"yida_event","received_us":received_us,"event":event});
+                if shutdown_tail {
+                    value["shutdown_tail"] = Value::Bool(true);
+                }
+                value
+            }
+            Self::Ctp {
+                event,
+                received_us,
+                shutdown_tail,
+            } => {
+                let mut value =
+                    serde_json::json!({"type":"ctp_event","event":event.audit(received_us)});
+                if shutdown_tail {
+                    value["shutdown_tail"] = Value::Bool(true);
+                }
+                value
+            }
+            Self::PreparedSubmit {
+                day,
+                order,
+                received_us,
+            } => {
+                mutation = crate::persistence::prepared_at(&day, &order, received_us);
+                serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price})
+            }
+            Self::PreparedCancel(order) => {
+                serde_json::json!({"type":"prepared_cancel","key":order.key,"venue":order.venue,"symbol":order.symbol,"system_id":order.system_id,"execution_route":order.execution_route})
+            }
+        };
+        (value, mutation)
+    }
 }
 fn redact(value: &mut Value, secrets: &[String]) {
     match value {
@@ -122,15 +185,14 @@ impl Journal {
                     let mut last_sync = Instant::now();
                     loop {
                         match receiver.recv_timeout(Duration::from_millis(100)) {
-                            Ok(mut record) => {
-                                redact(&mut record.value, &redactions);
-                                let line = serde_json::to_string(&record.value)?;
+                            Ok(record) => {
+                                let (mut value, mutation) =
+                                    record.payload.materialize(record.mutation);
+                                redact(&mut value, &redactions);
+                                let line = serde_json::to_string(&value)?;
                                 // RocksDB is authoritative; stdout acknowledgement follows the synced WAL write.
-                                let result = store.append(
-                                    crate::persistence::now_us(),
-                                    record.value,
-                                    record.mutation,
-                                );
+                                let result =
+                                    store.append(crate::persistence::now_us(), value, mutation);
                                 if let Some(ack) = record.ack {
                                     let _ = ack.send(
                                         result.as_ref().map(|_| ()).map_err(|e| e.to_string()),
@@ -189,6 +251,15 @@ impl Journal {
         mutation: NativeMutation,
         wait: bool,
     ) -> Result<()> {
+        self.enqueue(AuditPayload::Json(value), display, mutation, wait)
+    }
+    fn enqueue(
+        &self,
+        payload: AuditPayload,
+        display: bool,
+        mutation: NativeMutation,
+        wait: bool,
+    ) -> Result<()> {
         anyhow::ensure!(
             !self.failed.load(Ordering::Acquire),
             "native persistence writer failed"
@@ -204,7 +275,7 @@ impl Journal {
             .as_ref()
             .context("journal closed")?
             .try_send(Record {
-                value,
+                payload,
                 display,
                 mutation,
                 ack,
@@ -233,13 +304,59 @@ impl Journal {
         }
         Ok(())
     }
+    pub fn yida_event(
+        &self,
+        event: &crate::yida::RawEvent,
+        received_us: u64,
+        shutdown_tail: bool,
+    ) -> Result<()> {
+        self.enqueue(
+            AuditPayload::Yida {
+                event: Box::new(*event),
+                received_us,
+                shutdown_tail,
+            },
+            false,
+            NativeMutation::default(),
+            false,
+        )
+    }
+    pub fn ctp_event(
+        &self,
+        event: &crate::ctp::RawEvent,
+        received_us: u64,
+        shutdown_tail: bool,
+    ) -> Result<()> {
+        self.enqueue(
+            AuditPayload::Ctp {
+                event: Box::new(*event),
+                received_us,
+                shutdown_tail,
+            },
+            false,
+            NativeMutation::default(),
+            false,
+        )
+    }
     pub fn prepared_submit(&self, day: &str, p: &crate::model::PreparedOrder) -> Result<()> {
-        self.record_with(serde_json::json!({"type":"prepared_submit","key":p.key,"intent":p.intent,"limit_price":p.limit_price}), false,
-            crate::persistence::prepared(day,p), self.sync_before_send)
+        self.enqueue(
+            AuditPayload::PreparedSubmit {
+                day: day.to_owned(),
+                order: Box::new(p.clone()),
+                received_us: crate::persistence::now_us(),
+            },
+            false,
+            NativeMutation::default(),
+            self.sync_before_send,
+        )
     }
     pub fn prepared_cancel(&self, p: &crate::model::PreparedCancel) -> Result<()> {
-        self.record_with(serde_json::json!({"type":"prepared_cancel","key":p.key,"venue":p.venue,"symbol":p.symbol,"system_id":p.system_id,"execution_route":p.execution_route}), false,
-            NativeMutation::default(), self.sync_before_send)
+        self.enqueue(
+            AuditPayload::PreparedCancel(Box::new(p.clone())),
+            false,
+            NativeMutation::default(),
+            self.sync_before_send,
+        )
     }
     pub fn trade(
         &self,
@@ -490,10 +607,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 work = true;
                 let event = received.event;
                 // Persist factual evidence before attempting any parser or strategy association.
-                journal.record(
-                    json!({"type":"ctp_event","event":event.audit(received.received_us)}),
-                    false,
-                )?;
+                journal.ctp_event(&event, received.received_us, false)?;
                 if (event.kind == ctp::QUERY_TRADE
                     || (event.kind == ctp::TRADE && !session.ready()))
                     && event.present != 0
@@ -708,7 +822,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
     drop(runtime.trader);
     for received in tail.try_iter() {
         let event = received.event;
-        journal.record(json!({"type":"ctp_event","event":event.audit(received.received_us),"shutdown_tail":true}), false)?;
+        journal.ctp_event(&event, received.received_us, true)?;
         if ctp::text(&event.investor).is_ok_and(|v| v == investor)
             && ctp::text(&event.exchange).is_ok_and(|v| v == "CFFEX")
         {
@@ -920,5 +1034,114 @@ mod persistence_tests {
         let journal = journal(&path);
         journal.prepared_submit("20261110", &prepared()).unwrap();
         std::process::exit(0);
+    }
+}
+
+#[cfg(test)]
+mod deferred_audit_tests {
+    use super::*;
+    #[test]
+    fn copied_native_events_keep_ids_float_bits_tail_flags_and_redaction_on_disk() {
+        let path = std::env::temp_dir().join(format!(
+            "cn-deferred-audit-{}-{}",
+            std::process::id(),
+            crate::persistence::now_us()
+        ));
+        let j = Journal::start(
+            &path.join("audit.jsonl"),
+            64,
+            vec!["fixture-secret".into()],
+            &path.join("db"),
+            crate::persistence::store_identity("fixture", &[b"deferred-audit"]),
+            false,
+        )
+        .unwrap();
+        let mut yida = crate::yida::RawEvent {
+            kind: crate::yida::TRADE,
+            trade_id: 9_007_199_254_740_997,
+            system_id: 9_007_199_254_740_993,
+            commission: 52.660000000000004,
+            ..Default::default()
+        };
+        yida.original_trade_id[0] = 255;
+        j.yida_event(&yida, 123, false).unwrap();
+        j.yida_event(&yida, 124, true).unwrap();
+        yida.trade_id = 17; // The producer may immediately reuse its event buffer.
+        let mut ctp = crate::ctp::RawEvent {
+            kind: crate::ctp::ERROR,
+            error: 31,
+            ..Default::default()
+        };
+        ctp.message[..14].copy_from_slice(b"fixture-secret");
+        j.ctp_event(&ctp, 125, true).unwrap();
+        let prepared = crate::model::PreparedOrder {
+            key: OrderKey {
+                session: "yida:20261110:group:1".into(),
+                order_ref: "101".into(),
+            },
+            intent: Intent {
+                venue: crate::model::Venue::Shfe,
+                symbol: "cu2612".into(),
+                side: crate::model::Side::Buy,
+                offset: crate::model::Offset::Open,
+                lots: 1,
+                price_type: crate::model::PriceType::Limit,
+                price_ticks: 20000,
+                time_in_force: crate::model::TimeInForce::Day,
+                execution_route: None,
+            },
+            limit_price: 100000.0,
+            option_market_buy_ceiling: 0.0,
+        };
+        let before = crate::persistence::now_us();
+        j.prepared_submit("20261110", &prepared).unwrap();
+        let enqueued = crate::persistence::now_us();
+        j.finish().unwrap();
+        let store = persist_manager::RocksDbStore::open_read_only(
+            path.join("db").to_str().unwrap(),
+            persist_manager::cn_futures::COLUMN_FAMILIES,
+        )
+        .unwrap();
+        let rows = store
+            .scan(persist_manager::cn_futures::EVENTS, None, false, None)
+            .unwrap();
+        let records: Vec<Value> = rows
+            .iter()
+            .map(|(_, v)| serde_json::from_slice::<Value>(v).unwrap()["value"].clone())
+            .collect();
+        assert_eq!(
+            records[0]["event"]["trade_id"].as_i64(),
+            Some(9_007_199_254_740_997)
+        );
+        assert_eq!(
+            records[0]["event"]["system_id"].as_i64(),
+            Some(9_007_199_254_740_993)
+        );
+        assert_eq!(
+            records[0]["event"]["commission"]
+                .as_f64()
+                .unwrap()
+                .to_bits(),
+            yida.commission.to_bits()
+        );
+        assert_eq!(records[0]["event"]["original_trade_id"][0], 255);
+        assert_eq!(records[0]["received_us"], 123);
+        assert!(records[0].get("shutdown_tail").is_none());
+        assert_eq!(records[1]["shutdown_tail"], true);
+        assert_eq!(records[2]["event"]["received_us"], 125);
+        assert_eq!(records[2]["event"]["message"], "[redacted]");
+        let orders = store
+            .scan(persist_manager::cn_futures::ORDERS, None, false, None)
+            .unwrap();
+        let order: persist_common::cn_futures::NativeOrderRecord =
+            serde_json::from_slice(&orders[0].1).unwrap();
+        assert!(
+            (before..=enqueued).contains(&order.first_received_us),
+            "prepared time must be captured on the producer, before the writer drains its backlog"
+        );
+        let audit = std::fs::read_to_string(path.join("audit.jsonl")).unwrap();
+        assert!(!audit.contains("fixture-secret"));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

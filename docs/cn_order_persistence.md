@@ -1,6 +1,6 @@
 # 国内原生订单回报与持久化
 
-CTP / 易达交易进程直接使用 `persist_manager` 的嵌入式 RocksDB 存储。业务线程负责解析、风控和 OMS；有界队列把发送意图、原始回报、归一化订单、事实成交交给后台写盘线程。这个入口不启动 IPC、Redis、Tokio runtime 或独立 persist_manager 进程。
+CTP / 易达交易进程直接使用 `persist_manager` 的嵌入式 RocksDB 存储。业务线程负责解析、风控和 OMS；原始回报与发送前审计的 JSON 构造在后台完成；有界队列把发送意图、原始回报、归一化订单、事实成交交给后台写盘线程。这个入口不启动 IPC、Redis、Tokio runtime 或独立 persist_manager 进程。
 
 交易与持久化共享 `persist_common::cn_futures` 的唯一数据契约，`cn_futures::model` 重导出这些类型。原有加密市场的 binary `uniform_orders` 编码保持原状；国内记录保留交易日、交易所、完整会话／报单组、字符串原生系统号、开平标志、手数和期权元数据，不借用 crypto venue 编号、策略来源或费用字段表达这些信息。
 
@@ -64,3 +64,5 @@ CTP / 易达合成 SDK 脚本现在每场景都调用同一目录的 `cn_order_e
 2026-11-10 本地回归结果：`cn_futures` 双 SDK 93 项常规测试、`persist_common` 15 项、`persist_manager/runtime` 74 项全部通过；官方 CTP 库离线构造／释放单独通过。易达桥接包含 42 个实际重开 DB 核对的 SDK 场景和 1 个拒绝触碰已有持仓的联调脚本保护场景；CTP 桥接落盘检查通过。`cargo fmt`、三个相关 crate 的 `clippy --no-deps -D warnings` 与本地 release 构建通过。
 
 本轮官网公共仿真使用默认异步模式，验证 SHFE `cu2612` / XTCP 的 17 笔报单、10 笔事实成交，以及 INE `sc2612C640` / UDP 的 31 笔报单、24 笔事实成交；包含限价／市价、Day／FAK／FOK、回报前撤单、席位选择和批量报撤。各组退出后实际重开并导出 RocksDB，又使用原 flow 和 DB 启动第二个只读进程、恢复账户并再次导出。各组首次结束时的订单／成交事实行数分别为 861／618 和 892／642（包含完整当日账户历史，不能当作本轮新发单数量）；测试前后的 30 条既有持仓保持一致，本次订单全部终结，新增仓位清理完成。没有生产部署。公共仿真也暴露并回归了手续费浮点往返精度问题：共享 JSON 依赖启用 `float_roundtrip`，避免将同一事实的浮点解析误差视作费用冲突。
+
+业务线程的未结订单索引、后台序列化与本地基准结果见[热路径性能说明](cn_futures_performance.md)。

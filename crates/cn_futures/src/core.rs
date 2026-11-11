@@ -1,7 +1,7 @@
 use crate::model::*;
 use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -21,6 +21,9 @@ pub struct TradingCore {
     continuous: HashMap<(Venue, String), bool>,
     positions: HashMap<(Venue, String, Side), Position>,
     orders: HashMap<OrderKey, Order>,
+    // Membership follows remaining(), including terminal reports awaiting factual fills.
+    working_orders: HashSet<OrderKey>,
+    working_lots: i64,
     system_ids: HashMap<(Venue, String), OrderKey>,
     fills: HashMap<TradeIdentity, Fill>,
     actions: VecDeque<Instant>,
@@ -64,6 +67,8 @@ impl TradingCore {
             continuous: HashMap::new(),
             positions: HashMap::new(),
             orders: HashMap::new(),
+            working_orders: HashSet::new(),
+            working_lots: 0,
             system_ids: HashMap::new(),
             fills: HashMap::new(),
             actions: VecDeque::new(),
@@ -113,6 +118,29 @@ impl TradingCore {
     }
     pub fn order(&self, key: &OrderKey) -> Option<&Order> {
         self.orders.get(key)
+    }
+    fn commit_order(&mut self, key: OrderKey, order: Order) {
+        use std::collections::hash_map::Entry;
+        let remaining = order.remaining();
+        let entry = self.orders.entry(key);
+        let (key, previous) = match &entry {
+            Entry::Occupied(entry) => (entry.key(), entry.get().remaining()),
+            Entry::Vacant(entry) => (entry.key(), 0),
+        };
+        self.working_lots += i64::from(remaining) - i64::from(previous);
+        if remaining > 0 && previous == 0 {
+            self.working_orders.insert(key.clone());
+        } else if remaining == 0 && previous > 0 {
+            self.working_orders.remove(key);
+        }
+        match entry {
+            Entry::Occupied(mut entry) => {
+                entry.insert(order);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(order);
+            }
+        }
     }
     pub fn position(&self, venue: Venue, symbol: &str, side: Side) -> Position {
         self.positions
@@ -323,7 +351,7 @@ impl TradingCore {
                     order.key.clone(),
                 );
             }
-            next.orders.insert(order.key.clone(), order);
+            next.commit_order(order.key.clone(), order);
         }
         next.connected = true;
         next.ready = true;
@@ -416,8 +444,7 @@ impl TradingCore {
         let rule = self
             .instruments
             .get(&(intent.venue, intent.symbol.clone()))
-            .context("symbol absent from complete rule snapshot")?
-            .clone();
+            .context("symbol absent from complete rule snapshot")?;
         ensure!(
             rule.active
                 && (!self.scope.require_market_status
@@ -460,22 +487,25 @@ impl TradingCore {
                 && intent.price_ticks <= 9_007_199_254_740_991,
             "limit price overflow"
         );
-        let working: i64 = self.orders.values().map(|o| i64::from(o.remaining())).sum();
         ensure!(
-            working + i64::from(intent.lots) <= i64::from(self.limits.max_working_lots),
+            self.working_lots + i64::from(intent.lots) <= i64::from(self.limits.max_working_lots),
             "working lot limit"
         );
         ensure!(
-            !self.orders.values().any(|o| o.request.venue == intent.venue
-                && o.request.symbol == intent.symbol
-                && o.request.side != intent.side
-                && o.remaining() > 0
-                && (intent.price_type == PriceType::Market
-                    || o.request.price_type == PriceType::Market
-                    || match intent.side {
-                        Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
-                        Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
-                    })),
+            !self
+                .working_orders
+                .iter()
+                .filter_map(|key| self.orders.get(key))
+                .any(|o| o.request.venue == intent.venue
+                    && o.request.symbol == intent.symbol
+                    && o.request.side != intent.side
+                    && o.remaining() > 0
+                    && (intent.price_type == PriceType::Market
+                        || o.request.price_type == PriceType::Market
+                        || match intent.side {
+                            Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
+                            Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
+                        })),
             "self-trade prevention"
         );
         let mut today = 0;
@@ -483,8 +513,9 @@ impl TradingCore {
         let mut cash_unit = 0.0;
         if intent.offset == Offset::Open {
             let pending: i64 = self
-                .orders
-                .values()
+                .working_orders
+                .iter()
+                .filter_map(|key| self.orders.get(key))
                 .filter(|o| {
                     o.request.venue == intent.venue
                         && o.request.symbol == intent.symbol
@@ -541,6 +572,12 @@ impl TradingCore {
             self.next_ref <= self.scope.reference_limit,
             "native order reference exhausted"
         );
+        let option_market_buy_ceiling =
+            if intent.side == Side::Buy && intent.price_type == PriceType::Market {
+                rule.option.as_ref().map_or(0.0, |o| o.upper_limit_price)
+            } else {
+                0.0
+            };
         self.rate_check(now)?;
         let key = OrderKey {
             session: self.session.clone(),
@@ -567,17 +604,10 @@ impl TradingCore {
             self.adjust_frozen(&order, today, yesterday)?;
         }
         self.cash -= cash;
-        self.orders.insert(key.clone(), order);
+        self.commit_order(key.clone(), order);
         Ok(PreparedOrder {
             key,
-            option_market_buy_ceiling: if rule.option.is_some()
-                && intent.side == Side::Buy
-                && intent.price_type == PriceType::Market
-            {
-                rule.option.as_ref().map_or(0.0, |o| o.upper_limit_price)
-            } else {
-                0.0
-            },
+            option_market_buy_ceiling,
             intent,
             limit_price: price,
         })
@@ -600,7 +630,7 @@ impl TradingCore {
         self.release_cancelled(&mut order, lots)?;
         order.status = OrderStatus::Rejected;
         order.cancel_pending = false;
-        self.orders.insert(key.clone(), order);
+        self.commit_order(key.clone(), order);
         Ok(())
     }
     fn release_cancelled(&mut self, order: &mut Order, total_cancelled: i32) -> Result<()> {
@@ -701,7 +731,7 @@ impl TradingCore {
         } else if !order.status.terminal() {
             order.status = update.status;
         }
-        self.orders.insert(update.key, order);
+        self.commit_order(update.key, order);
         Ok(())
     }
 
@@ -804,7 +834,7 @@ impl TradingCore {
             (fill.identity.venue, fill.identity.symbol.clone(), side),
             position,
         );
-        self.orders.insert(key, order);
+        self.commit_order(key, order);
         self.fills.insert(fill.identity.clone(), fill);
         Ok(true)
     }

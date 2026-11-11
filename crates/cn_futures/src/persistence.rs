@@ -30,7 +30,15 @@ pub fn record(
     instrument: Option<Instrument>,
     send_state: SendState,
 ) -> NativeOrderRecord {
-    let now = now_us();
+    record_at(day, order, instrument, send_state, now_us())
+}
+fn record_at(
+    day: &str,
+    order: &Order,
+    instrument: Option<Instrument>,
+    send_state: SendState,
+    now: u64,
+) -> NativeOrderRecord {
     NativeOrderRecord {
         identity: PersistedOrderKey {
             trading_day: day.into(),
@@ -82,6 +90,9 @@ pub fn projection(
     mutation
 }
 pub fn prepared(day: &str, p: &PreparedOrder) -> NativeMutation {
+    prepared_at(day, p, now_us())
+}
+pub(crate) fn prepared_at(day: &str, p: &PreparedOrder, received_us: u64) -> NativeMutation {
     let order = Order {
         request: p.intent.clone(),
         key: p.key.clone(),
@@ -99,7 +110,13 @@ pub fn prepared(day: &str, p: &PreparedOrder) -> NativeMutation {
         owned: true,
     };
     NativeMutation {
-        orders: vec![record(day, &order, None, SendState::Prepared)],
+        orders: vec![record_at(
+            day,
+            &order,
+            None,
+            SendState::Prepared,
+            received_us,
+        )],
         ..Default::default()
     }
 }

@@ -32,3 +32,7 @@ path = "src/bin/ctp_trader.rs"
 [[bin]]
 name = "yida-trader"
 path = "src/bin/yida_trader.rs"
+
+[[bench]]
+name = "native_hot_path"
+harness = false

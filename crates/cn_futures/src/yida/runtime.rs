@@ -71,10 +71,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                 };
                 work = true;
                 let e = received.event;
-                journal.record(
-                    json!({"type":"yida_event","received_us":received.received_us,"event":e}),
-                    false,
-                )?;
+                journal.yida_event(&e, received.received_us, false)?;
                 if e.kind == CONNECTED {
                     transport_seen_ready = false;
                     runtime.core.connected();
@@ -318,7 +315,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     drop(runtime.trader);
     for received in tail.try_iter() {
         let e = received.event;
-        journal.record(json!({"type":"yida_event","received_us":received.received_us,"event":e,"shutdown_tail":true}), false)?;
+        journal.yida_event(&e, received.received_us, true)?;
         if e.kind == TRADE {
             if let Ok(fill) = e.to_fill() {
                 journal.trade(
