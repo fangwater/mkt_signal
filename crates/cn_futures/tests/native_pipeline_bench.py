@@ -45,7 +45,7 @@ def main():
         native = case / 'server.cfg'
         native.write_text(f'TradingServerIP=127.0.0.1\nTradingServerPort=1\nTradingProtocol={protocol.upper()}\nUDPTradingType=socket\nXTCPTradingType=socket\nConnectTCPMarketData=no\nReceiveUDPMarketData=no\nRecalcMode=off\nTradingServerTimeout=10\n')
         config = template
-        for before, after in [('/opt/yida/1.502.53.182/linux64/yd.so', str(library)), ('/opt/yida/trade-server.cfg', str(native)), ('trading_protocol = "xtcp"', f'trading_protocol = "{protocol}"'), ('/tmp/mkt_yida_sim/flow', str(case / 'flow')), ('/tmp/mkt_yida_sim/events.jsonl', str(case / 'events.jsonl')), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 1.0'), ('max_working_lots = 2', 'max_working_lots = 20'), ('max_actions_per_second = 2', 'max_actions_per_second = 1000000'), ('enable_fak_fok = false', 'enable_fak_fok = true'), ('event_capacity = 8192', 'event_capacity = 65536')]:
+        for before, after in [('/opt/yida/1.502.55.35/x86_64/yd.so', str(library)), ('/opt/yida/trade-server.cfg', str(native)), ('trading_protocol = "xtcp"', f'trading_protocol = "{protocol}"'), ('/tmp/mkt_yida_sim/flow', str(case / 'flow')), ('/tmp/mkt_yida_sim/events.jsonl', str(case / 'events.jsonl')), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 1.0'), ('max_working_lots = 2', 'max_working_lots = 20'), ('max_actions_per_second = 2', 'max_actions_per_second = 1000000'), ('enable_fak_fok = false', 'enable_fak_fok = true'), ('event_capacity = 8192', 'event_capacity = 65536')]:
             config = config.replace(before, after)
         path = case / 'config.toml'
         path.write_text(config)

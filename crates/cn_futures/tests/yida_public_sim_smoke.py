@@ -152,7 +152,7 @@ def main():
     root = Path(__file__).resolve().parents[3]
     template = (root / 'config/yida_trade.example.toml').read_text()
     config = template.split('[[symbols]]', 1)[0]
-    for old, new in [('/opt/yida/1.502.53.182/linux64/yd.so', str(args.sdk_root.resolve() / 'linux64/yd.so')),
+    for old, new in [('/opt/yida/1.502.55.35/x86_64/yd.so', str(args.sdk_root.resolve() / 'x86_64/yd.so')),
                      ('/opt/yida/trade-server.cfg', str(native)),
                      ('trading_protocol = "xtcp"', f'trading_protocol = "{args.protocol}"'),
                      ('public_simulation = false', 'public_simulation = true'),

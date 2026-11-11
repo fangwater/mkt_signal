@@ -28,7 +28,7 @@ pub const SEGMENT: i32 = 15;
 pub const FATAL: i32 = 16;
 pub const TRANSPORT: i32 = 17;
 pub const CONNECTION: i32 = 18;
-pub const SDK_REFERENCE: &str = "1.502.53.182";
+pub const SDK_REFERENCE: &str = "1.502.55.35";
 
 pub fn scope() -> ExecutionScope {
     ExecutionScope {
@@ -128,7 +128,8 @@ pub struct RawEvent {
     pub commission: f64,
     pub strike_price: f64,
     pub upper_limit_price: f64,
-    pub symbol: [u8; 32],
+    #[serde(serialize_with = "serialize_bytes")]
+    pub symbol: [u8; 64],
     pub exchange: [u8; 12],
     #[serde(serialize_with = "serialize_bytes")]
     pub original_order_id: [u8; 64],
@@ -137,7 +138,8 @@ pub struct RawEvent {
     pub connection_info: [u8; 28],
     pub insert_flow: [u8; 32],
     pub cancel_flow: [u8; 32],
-    pub underlying: [u8; 32],
+    #[serde(serialize_with = "serialize_bytes")]
+    pub underlying: [u8; 64],
     pub underlying_exchange: [u8; 12],
 }
 fn serialize_bytes<S: serde::Serializer>(

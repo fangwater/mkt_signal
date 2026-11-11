@@ -85,10 +85,14 @@ public:
         if(std::getenv("YIDA_FIXTURE_MULTI_LOGIN"))account.LoginCount=2;
         if(std::getenv("YIDA_FIXTURE_CLOSE_ONLY"))account.TradingRight=YD_TR_CloseOnly;
         cash.m_pAccount=&account;cash.Available=std::getenv("YIDA_FIXTURE_OPTION_TRADING")?100000000:1000000;for(int& ref:group_max)ref=100;
+        cash.Margin=1234.5;cash.Margin2=9876.25;cash.Balance=2000001.0;
+        if(std::getenv("YIDA_FIXTURE_ACCOUNT_LOSS"))cash.PositionProfit=-125.5;
+        if(std::getenv("YIDA_FIXTURE_ACCOUNT_PROFIT"))cash.PositionProfit=45.25;
         for(int k=0;k<2;++k){
             std::strcpy(exchanges[k].ExchangeID,k?"INE":"SHFE");exchanges[k].UseTodayPosition=true;exchanges[k].ExchangeRef=k+1;
             std::strcpy(products[k].ProductID,k?"sc":"cu");products[k].m_pExchange=&exchanges[k];
             std::strcpy(instruments[k].InstrumentID,k?"sc2612":"cu2612");instruments[k].m_pExchange=&exchanges[k];instruments[k].m_pProduct=&products[k];
+            std::strcpy(instruments[k].ShortInstrumentID,"obsolete-short-id");
             instruments[k].ProductClass=YD_PC_Futures;instruments[k].Tick=.2;instruments[k].Multiple=5;instruments[k].ExpireDate=20261220;
             instruments[k].MinLimitOrderVolume=1;instruments[k].MaxLimitOrderVolume=100;
             instruments[k].MinMarketOrderVolume=1;instruments[k].MaxMarketOrderVolume=10;
@@ -123,6 +127,10 @@ public:
         std::strcpy(option.InstrumentID,"sc2701C790");option.ProductClass=YD_PC_Options;option.m_pExchange=&exchanges[1];option.m_pUnderlyingInstrument=&option_underlying;option.OptionsType=YD_OT_CallOption;option.StrikePrice=790;option.Multiple=1000;option.ExpireDate=20261220;
         option_ai.m_pAccount=&account;option_ai.m_pInstrument=&option;option_position.m_pAccountInstrumentInfo=&option_ai;
         option_position.Position=19;option_position.PositionDate=YD_PSD_History;option_position.PositionDirection=YD_PD_Long;option_position.HedgeFlag=YD_HF_Speculation;
+        if(std::getenv("YIDA_FIXTURE_LONG_INSTRUMENT")){
+            std::memset(option.InstrumentID,'L',63);option.InstrumentID[63]=0;
+            std::strcpy(option.ShortInstrumentID,"obsolete-short-id");
+        }
     }
     bool start(YDListener* l)override{listener=l;listener->notifyEvent(YD_AE_TCPTradeConnected);listener->notifyReadyForLogin(false);return true;}
     bool startExtended(YDListener* l,YDExtendedListener* e)override{extended=e;return start(l);}
@@ -225,7 +233,7 @@ public:
     // GENERATED_STUBS
 };
 extern "C" YDExtendedApi* makeYDExtendedApi(const char* config){return new Fixture(config);}
-extern "C" const char* getYDVersion(){return "1.502.53.182";}
+extern "C" const char* getYDVersion(){return "1.502.55.35";}
 '''
 
 def fixture_source(sdk):
@@ -244,11 +252,13 @@ def run_fixture(args,protocol,scenario='normal'):
     root=Path(__file__).resolve().parents[3]
     with tempfile.TemporaryDirectory(prefix='mkt-yida-fixture-') as directory:
         temp=Path(directory);source=temp/'fixture.cpp';library=temp/'fixture.so'
-        source.write_text(fixture_source(args.sdk_dir))
+        fixture=fixture_source(args.sdk_dir)
+        if scenario=='wrong_sdk_version':fixture=fixture.replace('return "1.502.55.35";','return "1.502.53.182";')
+        source.write_text(fixture)
         subprocess.run(['c++','-std=c++17','-shared','-fPIC','-pthread','-isystem',str(args.sdk_dir),str(source),'-o',str(library)],check=True)
         if scenario=='public_initial_position':
-            fake_sdk=temp/'sdk';(fake_sdk/'linux64').mkdir(parents=True)
-            os.link(library,fake_sdk/'linux64/yd.so')
+            fake_sdk=temp/'sdk';(fake_sdk/'x86_64').mkdir(parents=True)
+            os.link(library,fake_sdk/'x86_64/yd.so')
             # Test-only alias: the SDK remains synthetic and cannot contact a venue.
             test_binary=temp/'release/yida-trader';test_binary.parent.mkdir()
             shutil.copy2(args.binary.resolve(),test_binary)
@@ -265,7 +275,7 @@ def run_fixture(args,protocol,scenario='normal'):
         native_config=temp/'server.cfg'
         native_text=f'TradingServerIP=127.0.0.1\nTradingServerPort=1\nTradingProtocol={protocol.upper()}\nUDPTradingType=socket\nXTCPTradingType=socket\nConnectTCPMarketData=no\nReceiveUDPMarketData=no\nRecalcMode=off\n'
         config=(root/'config/yida_trade.example.toml').read_text()
-        for old,new in [('/opt/yida/1.502.53.182/linux64/yd.so',str(library)),('/opt/yida/trade-server.cfg',str(native_config)),('trading_protocol = "xtcp"',f'trading_protocol = "{protocol}"'),('/tmp/mkt_yida_sim/flow',str(temp/'flow')),('/tmp/mkt_yida_sim/events.jsonl',str(temp/'events.jsonl')),('cash_budget_per_open_lot = 250000.0','cash_budget_per_open_lot = 10000.0'),('max_order_lots = 1','max_order_lots = 10'),('max_position_lots_per_side = 2','max_position_lots_per_side = 20'),('max_working_lots = 2','max_working_lots = 20'),('max_actions_per_second = 2','max_actions_per_second = 100'),('enable_fak_fok = false','enable_fak_fok = true'),('response_timeout_ms = 30000','response_timeout_ms = 5000')]:config=config.replace(old,new)
+        for old,new in [('/opt/yida/1.502.55.35/x86_64/yd.so',str(library)),('/opt/yida/trade-server.cfg',str(native_config)),('trading_protocol = "xtcp"',f'trading_protocol = "{protocol}"'),('/tmp/mkt_yida_sim/flow',str(temp/'flow')),('/tmp/mkt_yida_sim/events.jsonl',str(temp/'events.jsonl')),('cash_budget_per_open_lot = 250000.0','cash_budget_per_open_lot = 10000.0'),('max_order_lots = 1','max_order_lots = 10'),('max_position_lots_per_side = 2','max_position_lots_per_side = 20'),('max_working_lots = 2','max_working_lots = 20'),('max_actions_per_second = 2','max_actions_per_second = 100'),('enable_fak_fok = false','enable_fak_fok = true'),('response_timeout_ms = 30000','response_timeout_ms = 5000')]:config=config.replace(old,new)
         if scenario.startswith('options'):
             swap=scenario=='options_other_rights'
             config=config.replace('cu2612','cu2612P100000' if swap else 'cu2612C100000').replace('sc2612','sc2612C650' if swap else 'sc2612P650')
@@ -300,9 +310,12 @@ def run_fixture(args,protocol,scenario='normal'):
         if scenario=='account_history':environment['YIDA_FIXTURE_ACCOUNT_HISTORY']='1'
         if scenario=='reject_history':environment['YIDA_FIXTURE_REJECT_HISTORY']='1'
         if scenario=='retained_xtcp':environment['YIDA_FIXTURE_RETAIN_XTCP']='1'
+        if scenario=='long_instrument':environment.update(YIDA_FIXTURE_OPTION_POSITION='1',YIDA_FIXTURE_LONG_INSTRUMENT='1')
+        if scenario=='account_loss':environment['YIDA_FIXTURE_ACCOUNT_LOSS']='1'
+        if scenario=='account_profit':environment['YIDA_FIXTURE_ACCOUNT_PROFIT']='1'
         with open(temp/'stderr.log','w+') as stderr:
             argv=[str(args.binary.resolve()),'--config',str(config_path),'--connect']
-            if scenario!='read_only':argv.append('--execute')
+            if scenario not in ('read_only','account_loss','account_profit','long_instrument','wrong_sdk_version'):argv.append('--execute')
             process=subprocess.Popen(argv,env=environment,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=stderr,text=True)
             responses=queue.Queue()
             threading.Thread(target=lambda:[responses.put(json.loads(line)) for line in process.stdout],daemon=True).start()
@@ -324,6 +337,19 @@ def run_fixture(args,protocol,scenario='normal'):
                 send({'op':'submit','intent':{'venue':venue,'symbol':symbol,'side':'sell','offset':offset,'lots':lots,'price_type':price_type,'price_ticks':ticks,'time_in_force':tif}})
                 return wait('submit_receipt')['receipt']
             try:
+                if scenario=='wrong_sdk_version':
+                    assert process.wait(timeout=10)!=0
+                    stderr.seek(0);assert 'must match reference headers 1.502.55.35' in stderr.read()
+                    assert not (temp/'nativecalls').exists()
+                    print(json.dumps({'protocol':protocol,'scenario':scenario,'mismatched_library_rejected_before_start':True}));return
+                if scenario=='long_instrument':
+                    wait('trading_blocked')
+                    assert not full_state()['can_trade']
+                    send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
+                    events=[json.loads(l) for l in (temp/'events.jsonl').read_text().splitlines()]
+                    assert any(bytes(e['event']['symbol'])==b'L'*63+b'\0' for e in events if e.get('type')=='yida_event' and e['event']['kind']==9)
+                    assert not any(e.get('type') in ('prepared_submit','prepared_cancel') for e in events)
+                    print(json.dumps({'protocol':protocol,'scenario':scenario,'long_identifier_audited_without_truncation':True,'unsupported_product_blocked':True}));return
                 if scenario=='multi_login':
                     assert 'exactly one login' in wait('trading_blocked')['error']
                     assert not full_state()['can_trade']
@@ -339,7 +365,8 @@ def run_fixture(args,protocol,scenario='normal'):
                     send({'op':'reconcile'});wait('reconciling');wait('reconciled');assert full_state()['can_trade']
                     send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
                     print(json.dumps({'protocol':protocol,'scenario':scenario,'futures_submit_cancel':True,'option_inventory_retained':True}));return
-                if scenario=='read_only':
+                if scenario in ('read_only','account_loss','account_profit'):
+                    assert initial['available_local_budget']==(999874.5 if scenario=='account_loss' else 1000000.0)
                     assert not full_state()['can_trade']
                     send({'op':'submit','intent':{'venue':'SHFE','symbol':'cu2612','side':'sell','offset':'open','lots':1,'price_ticks':20000,'time_in_force':'day'}})
                     assert 'read-only' in wait('command_rejected')['error']
@@ -539,7 +566,7 @@ def run_fixture(args,protocol,scenario='normal'):
                 assert any(e.get('event',{}).get('commission')==1.25 for e in events)
                 assert 'fixture-only' not in (temp/'events.jsonl').read_text()
                 assert any(e.get('event',{}).get('trade_id',0)>(1<<32) for e in events)
-                print(json.dumps({'bridge':'native 1.502.53.182 header ABI + synthetic SDK','protocol':protocol,'scenario':scenario,'network_connections':0,'caught_up':True,'manual_ref_zero':True,'shfe_ine_identity_isolation':True,'long_order_and_trade_ids':True,'split_close':True,'native_cancel':True,'fak_fok':True,'reconcile':True,'local_and_async_reject':True,'cancel_error_audit':True,'uncertain_send':True,'journal_events':len(events)}))
+                print(json.dumps({'bridge':'native 1.502.55.35 header ABI + synthetic SDK','protocol':protocol,'scenario':scenario,'network_connections':0,'caught_up':True,'manual_ref_zero':True,'shfe_ine_identity_isolation':True,'long_order_and_trade_ids':True,'split_close':True,'native_cancel':True,'fak_fok':True,'reconcile':True,'local_and_async_reject':True,'cancel_error_audit':True,'uncertain_send':True,'journal_events':len(events)}))
             finally:
                 if process.poll() is None:process.kill();process.wait()
                 if process.returncode == 0 or scenario == 'conflicting_fill':
@@ -559,6 +586,10 @@ def main():
     run_fixture(args,'udp','partial_batch')
     run_fixture(args,'xtcp','partial_cancel')
     run_fixture(args,'xtcp','market_no_limits')
+    run_fixture(args,'tcp','wrong_sdk_version')
+    run_fixture(args,'tcp','long_instrument')
+    run_fixture(args,'tcp','account_loss')
+    run_fixture(args,'tcp','account_profit')
     run_fixture(args,'tcp','large_catalog')
     run_fixture(args,'xtcp','options_ceiling_changed')
     for protocol in ('tcp','udp','xtcp'):

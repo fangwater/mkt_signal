@@ -25,6 +25,16 @@ constexpr int market_price_unavailable = 9903; // Missing native daily price-lim
 enum { Connected=1, Disconnected, ReadyLogin, Login, Init, Begin, Instrument, Account,
        Position, Order, Trade, End, FailedCancel, Invalidated, Segment, Fatal, Transport, Connection };
 static_assert(std::is_standard_layout_v<CnYidaEvent>);
+// Pin the production headers as well as the loaded library. In 1.502.55 the
+// long instrument ID moved and account/position fields shifted in place.
+static_assert(sizeof(YDInstrument::InstrumentID)==64, "1.502.55.35 requires the full instrument ID");
+static_assert(sizeof(YDInstrument::ShortInstrumentID)==32, "1.502.55.35 legacy short ID layout mismatch");
+static_assert(sizeof(YDInstrument)==544 && offsetof(YDInstrument,InstrumentID)==112, "1.502.55.35 instrument layout mismatch");
+static_assert(sizeof(YDExtendedAccount)==152 && offsetof(YDExtendedAccount,Available)==64, "1.502.55.35 account layout mismatch");
+static_assert(sizeof(YDExtendedPosition)==168 && offsetof(YDExtendedPosition,MarginPerLot2)==104, "1.502.55.35 position layout mismatch");
+// This new virtual slot is part of the ABI. The query locks the SDK trading core,
+// so do not call it in the submission/callback path (vendor guide, section 4.3).
+static_assert(std::is_same_v<decltype(&YDExtendedApi::getMaxWithdrawable),double(YDExtendedApi::*)(const YDAccount*)>, "1.502.55.35 API signature mismatch");
 void msg(char* out, size_t cap, const char* value) { if (out && cap) std::snprintf(out, cap, "%s", value); }
 template<size_t N, size_t M> void field(char (&out)[N], const char (&in)[M]) {
     const auto n = strnlen(in, M);
@@ -42,7 +52,7 @@ struct Library {
     explicit Library(const char* path): handle(dlopen(path, RTLD_NOW | RTLD_LOCAL)) { if (!handle) throw std::runtime_error("cannot load Yida library/dependencies"); }
     ~Library() { if (handle && !retain) dlclose(handle); }
     template<typename T> T symbol(const char* name) { auto p = dlsym(handle, name); if (!p) throw std::runtime_error("missing native Yida symbol"); return reinterpret_cast<T>(p); }
-    void check() { const char* v = symbol<const char*(*)()>("getYDVersion")(); if (!v || std::strcmp(v, "1.502.53.182")) throw std::runtime_error("Yida SDK must match reference headers 1.502.53.182"); }
+    void check() { const char* v = symbol<const char*(*)()>("getYDVersion")(); if (!v || std::strcmp(v, "1.502.55.35")) throw std::runtime_error("Yida SDK must match reference headers 1.502.55.35"); }
 };
 template<typename T> struct ResultDeleter { void operator()(YDQueryResult<T>* p) const { if (p) p->destroy(); } };
 template<typename T> using Query = std::unique_ptr<YDQueryResult<T>, ResultDeleter<T>>;
@@ -340,6 +350,8 @@ Bridge* get(void* p) { auto* b=static_cast<Bridge*>(p); if(!b || b->destroying) 
 }
 extern "C" {
 size_t cn_yida_event_size() { return sizeof(CnYidaEvent); }
+size_t cn_yida_order_request_size() { return sizeof(CnYidaOrderRequest); }
+size_t cn_yida_cancel_request_size() { return sizeof(CnYidaCancelRequest); }
 int cn_yida_version(const char* path,char* out,size_t cap) { try { Library l(path); l.check(); msg(out,cap,l.symbol<const char*(*)()>("getYDVersion")()); return 0; } catch(const std::exception& e) { msg(out,cap,e.what()); return invalid; } }
 void* cn_yida_create(const char* lib,const char* config,int protocol,int group,CnYidaCallback cb,void* ctx,char* error,size_t cap) {
     try { return new Bridge(lib,config,protocol,group,cb,ctx); } catch(const std::exception& e) { msg(error,cap,e.what()); return nullptr; } catch(...) { msg(error,cap,"Yida create exception"); return nullptr; }
@@ -362,7 +374,7 @@ int cn_yida_allow_instrument(void* p,const char* exchange,const char* symbol) { 
     auto* b=get(p);
     if(!exchange || !symbol || b->tcp_connected || b->initialized) return local_invalid;
     if(std::strcmp(exchange,"SHFE") && std::strcmp(exchange,"INE")) return local_invalid;
-    if(std::strlen(symbol)>=32 || !*symbol) return local_invalid;
+    if(std::strlen(symbol)>=sizeof(YDInstrument::InstrumentID) || !*symbol) return local_invalid;
     b->instrument_allowlist.emplace_back(exchange,symbol); return 0;
 } catch(...) { return invalid; } }
 int cn_yida_login(void* p,const char* u,const char* pass,const char* app,const char* auth) { try { return get(p)->api->login(u,pass,app,auth) ? 0 : invalid; } catch(...) { return invalid; } }

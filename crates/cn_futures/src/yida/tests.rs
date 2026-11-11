@@ -1,4 +1,20 @@
 use super::*;
+
+#[test]
+fn long_instrument_identifiers_remain_complete_in_raw_audit() {
+    let mut event = RawEvent::default();
+    event.symbol[..63].fill(b'x');
+    event.underlying[..63].fill(b'y');
+    assert_eq!(text(&event.symbol).unwrap(), "x".repeat(63));
+    assert_eq!(text(&event.underlying).unwrap(), "y".repeat(63));
+    let value = serde_json::to_value(event).unwrap();
+    assert_eq!(value["symbol"].as_array().unwrap().len(), 64);
+    assert_eq!(value["symbol"][62], u64::from(b'x'));
+    assert_eq!(value["symbol"][63], 0);
+    assert_eq!(value["underlying"][62], u64::from(b'y'));
+    event.symbol[63] = b'x';
+    assert!(text(&event.symbol).is_err());
+}
 use session::Session;
 fn config() -> config::Config {
     toml::from_str(include_str!("../../../../config/yida_trade.example.toml")).unwrap()
@@ -386,7 +402,7 @@ fn malformed_order_reports_never_become_valid_oms_updates() {
         },
         RawEvent { day: 0, ..base },
         RawEvent {
-            symbol: [b'x'; 32],
+            symbol: [b'x'; 64],
             ..base
         },
     ];
@@ -1037,7 +1053,7 @@ fn option_metadata_mismatch_is_rejected_before_order_or_fill_conversion() {
             ..base
         },
         RawEvent {
-            underlying: [0; 32],
+            underlying: [0; 64],
             ..base
         },
         RawEvent {

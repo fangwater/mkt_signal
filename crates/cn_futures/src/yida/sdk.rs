@@ -15,6 +15,8 @@ use std::{
 };
 extern "C" {
     fn cn_yida_event_size() -> usize;
+    fn cn_yida_order_request_size() -> usize;
+    fn cn_yida_cancel_request_size() -> usize;
     fn cn_yida_version(path: *const c_char, out: *mut c_char, cap: usize) -> i32;
     fn cn_yida_create(
         lib: *const c_char,
@@ -62,7 +64,7 @@ extern "C" {
 #[repr(C)]
 struct NativeOrder {
     exchange: [u8; 12],
-    symbol: [u8; 32],
+    symbol: [u8; 64],
     reference: i32,
     direction: i32,
     offset: i32,
@@ -206,6 +208,11 @@ impl YidaTrader {
         ensure!(
             unsafe { cn_yida_event_size() } == std::mem::size_of::<RawEvent>(),
             "Yida FFI event layout mismatch"
+        );
+        ensure!(
+            unsafe { cn_yida_order_request_size() } == std::mem::size_of::<NativeOrder>()
+                && unsafe { cn_yida_cancel_request_size() } == std::mem::size_of::<NativeCancel>(),
+            "Yida FFI request layout mismatch"
         );
         let (sender, events) = crossbeam_channel::bounded(config.event_capacity);
         let fault = Arc::new(AtomicBool::new(false));
@@ -616,6 +623,15 @@ impl Drop for YidaTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_instrument_text_keeps_all_sixty_three_bytes_and_rejects_overflow() {
+        let symbol = "a".repeat(63);
+        let raw = native_text::<64>(&symbol).unwrap();
+        assert_eq!(&raw[..63], symbol.as_bytes());
+        assert_eq!(raw[63], 0);
+        assert!(native_text::<64>(&"a".repeat(64)).is_err());
+        assert!(native_text::<64>("cu\x002612").is_err());
+    }
     #[test]
     fn deadline_identity_is_scoped_by_venue_day_group_and_operation() {
         let now = Instant::now();

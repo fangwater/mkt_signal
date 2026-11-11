@@ -1,5 +1,6 @@
-# Native Hanlin YDApi 1.502.53.182. Keep vendor files outside the repo.
-sdk_library = "/opt/yida/1.502.53.182/linux64/yd.so"
+# Native Hanlin YDApi 1.502.55.35. Keep vendor files outside the repo.
+sdk_library = "/opt/yida/1.502.55.35/x86_64/yd.so"
+# Onload 9 hosts may select the matching x86_64_onload9/yd.so from this same SDK.
 sdk_config = "/opt/yida/trade-server.cfg"
 trading_protocol = "xtcp" # tcp / udp / xtcp; must match native TradingProtocol
 order_group = 1 # account-wide 1..255, dedicated to this runtime; recovered on each login
