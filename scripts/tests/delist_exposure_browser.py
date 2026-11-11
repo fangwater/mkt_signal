@@ -69,32 +69,38 @@ def main():
                     self.wfile.write(payload)
 
             def do_GET(self):
-                if self.path == '/nav-api/strategies':
+                if self.path.split('?', 1)[0] == '/nav-api/strategies':
                     return self.respond([{'slug': slug, 'alias': '<img src=x onerror=alert(1)>' if slug == slugs[0] else slug,
                                           'host': 'sg' if slug.startswith('bybit') else 'jp',
                                           'strategyKind': 'funding_rate', 'exchange': 'bybit' if slug.startswith('bybit') else 'gate'} for slug in slugs]
                                          + [{'slug': 'binance_exec_trade01', 'host': 'jp', 'strategyKind': 'cta', 'exchange': 'binance'}])
-                if self.path.startswith('/fr/') and self.path.endswith('/snapshot'):
-                    slug = self.path.split('/')[2]
-                    if slug == slugs[0] and mode['gate'] == 'failed':
-                        return self.respond({'error': 'fixture timeout'}, status=503)
+                if self.path.split('?', 1)[0].startswith('/nav-api/strategies/') and self.path.split('?', 1)[0].endswith('/pnl'):
+                    slug = self.path.split('/')[3]
+                    annualized = {slugs[0]: 0.09, slugs[1]: 0.1, slugs[2]: None}[slug]
+                    return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': 86400000}}})
+                if self.path == '/snapshot':
                     now = int(time.time()*1000)
-                    qty = 160 if slug == slugs[0] and mode['gate'] != 'recovered' else 1
-                    price = 0 if slug == slugs[2] else 1
-                    timestamp = now-10_000 if slug == slugs[0] and mode['gate'] == 'stale' else now
-                    row = {'asset': 'TEST', 'open_qty': 1000+qty, 'hedge_qty': -1000,
-                           'open_usdt': (1000+qty)*price, 'hedge_usdt': -1000*price,
-                           'net_qty': qty, 'net_usdt': qty*price, 'is_total': False,
-                           'arb_hedge_net_qty': qty if mode['gate'] == 'building' and slug == slugs[0] else 0}
-                    rows = [row]
-                    if slug == slugs[0]:
-                        rows.append({'asset': 'UNPRICED', 'open_qty': 20, 'hedge_qty': 0,
-                                     'open_usdt': 0, 'hedge_usdt': 0, 'net_qty': 20,
-                                     'net_usdt': 0, 'is_total': False, 'arb_hedge_net_qty': 0})
-                    return self.respond({'entries': [
-                        {'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
-                        {'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000}}
-                    ]})
+                    entries = []
+                    for slug in slugs:
+                        if slug == slugs[0] and mode['gate'] == 'failed':
+                            continue
+                        qty = 160 if slug == slugs[0] and mode['gate'] != 'recovered' else 1
+                        price = 0 if slug == slugs[2] else 1
+                        timestamp = now-10_000 if slug == slugs[0] and mode['gate'] == 'stale' else now
+                        row = {'asset': 'TEST', 'open_qty': 1000+qty, 'hedge_qty': -1000,
+                               'open_usdt': (1000+qty)*price, 'hedge_usdt': -1000*price,
+                               'net_qty': qty, 'net_usdt': qty*price, 'is_total': False,
+                               'arb_hedge_net_qty': qty if mode['gate'] == 'building' and slug == slugs[0] else 0}
+                        rows = [row]
+                        if slug == slugs[0]:
+                            rows.append({'asset': 'UNPRICED', 'open_qty': 20, 'hedge_qty': 0,
+                                         'open_usdt': 0, 'hedge_usdt': 0, 'net_qty': 20,
+                                         'net_usdt': 0, 'is_total': False, 'arb_hedge_net_qty': 0})
+                        entries.extend([
+                            {'namespace': slug, 'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
+                            {'namespace': slug, 'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000}}
+                        ])
+                    return self.respond({'entries': entries})
                 # Keep the existing navigation and backups populated: an empty board
                 # misses layout regressions caused by adding the exposure section.
                 accounts = [{'slug': slug, 'alias': slug, 'kind': 'funding_rate',
@@ -150,11 +156,12 @@ def main():
                   'password_hash': hashlib.pbkdf2_hmac('sha256', b'fixture-password', salt, 600_000).hex(),
                   'password_iterations': 600_000, 'public_origin': origin, 'fr_envs': slugs}
         (root/'access.json').write_text(json.dumps(access))
+        (root/'snapshots.toml').write_text('[snapshots]\n' + ''.join(f'{slug} = "{origin}/snapshot"\n' for slug in slugs))
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('DELIST_', 'LOCAL_NOTIFICATION_'))}
         log = open(root/'service.log', 'wb')
         server = subprocess.Popen([str(args.delist_binary.resolve()), '--bind', f'127.0.0.1:{port}',
             '--access-config', str(root/'access.json'), '--book', str(root/'data/book.json'),
-            '--web-dir', str(ROOT/'web/delist_risk'), '--snapshot-base-url', origin,
+            '--web-dir', str(ROOT/'web/delist_risk'), '--snapshot-targets', str(root/'snapshots.toml'),
             '--nav-strategies-url', origin+'/nav-api/strategies', '--redis', 'redis://127.0.0.1:1/0',
             '--redis-backup-env-root', str(root), '--skip-postgres', '--skip-redis-backup',
             '--skip-ws', '--skip-llm', '--skip-official', '--skip-announcements',
@@ -211,10 +218,16 @@ def main():
                 assert next(a for a in data['accounts'] if a['slug'] == slugs[2])['risk_status'] == 'unknown'
                 page.goto(origin+'/delist/')
                 page.wait_for_selector('#exchange-list .backup-action')
+                page.wait_for_function("document.querySelector('#fr-yield').textContent.includes('9.00%')")
+                assert '低于 10%' in page.locator('#fr-yield').inner_text()
+                assert '不足 7 天' in page.locator('#fr-yield').inner_text()
+                assert 'bybit_fr_arb01' in page.locator('#fr-yield').inner_text()
+                assert 'gate_fr_arb04' not in page.locator('#fr-yield').inner_text()
+                assert page.locator('#fr-yield img').count() == 0
                 assert not page.locator('#exposure-panel').evaluate('e => e.open')
                 assert page.locator('#cta-strategies, #cta-config-entries').count() == 0
                 assert not any(url.endswith('/cta-strategies') for url in requests)
-                assert page.locator('#exchange-list').bounding_box()['y'] < 550
+                assert page.locator('#exchange-list').bounding_box()['y'] - page.locator('#fr-yield').bounding_box()['height'] < 550
                 assert page.locator('#metrics strong').first.inner_text() == '3'
                 assert page.locator('#exchange-list .backup-action').count() == 3
                 assert page.locator('#exchange-list .config-link').count() == 6

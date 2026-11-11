@@ -89,6 +89,8 @@ mod cta_factors;
 mod cta_mapping;
 #[path = "delist_risk_server/exposure.rs"]
 mod exposure;
+#[path = "delist_risk_server/fr_yield.rs"]
+mod fr_yield;
 #[path = "delist_risk_server/notifications.rs"]
 mod notifications;
 #[path = "delist_risk_server/parameter_changes.rs"]
@@ -337,6 +339,8 @@ struct AppState {
     llm_slots: Arc<Semaphore>,
     accounts: Arc<RwLock<Vec<AccountSpec>>>,
     exposure: Arc<RwLock<exposure::Monitor>>,
+    fr_yield: Arc<RwLock<fr_yield::Report>>,
+    fr_yield_lock: Arc<AsyncMutex<()>>,
     exposure_settings: exposure::Settings,
     fr_notifications: Option<Arc<notifications::Notifications>>,
     store: Option<Arc<DelistStore>>,
@@ -574,6 +578,8 @@ async fn main() -> Result<()> {
         llm_locks: Arc::new(Mutex::new(BTreeMap::new())),
         llm_slots: Arc::new(Semaphore::new(2)),
         accounts: Arc::new(RwLock::new(Vec::new())),
+        fr_yield: Arc::new(RwLock::new(fr_yield::Report::default())),
+        fr_yield_lock: Arc::new(AsyncMutex::new(())),
         exposure: Arc::new(RwLock::new(exposure::Monitor::new(
             exposure_settings.clone(),
         ))),
@@ -1144,6 +1150,7 @@ async fn main() -> Result<()> {
         .route("/status", get(query_status))
         .route("/accounts", get(query_accounts))
         .route("/exposures", get(query_exposures))
+        .route("/fr-yield", get(query_fr_yield))
         .route("/notifications", get(query_notifications))
         .route("/parameter-changes", get(parameter_history_page))
         .route("/api/parameter-changes", get(parameter_history))
@@ -2103,10 +2110,15 @@ async fn fr_event(state: &AppState, kind: &str, message: String) -> bool {
     true
 }
 
-async fn fr_heartbeat(state: &AppState) {
+async fn query_fr_yield(State(state): State<AppState>) -> impl IntoResponse {
+    Json(fr_yield::report(&state).await)
+}
+
+async fn fr_heartbeat(state: &AppState, nav_client: &Client) {
     let Some(notifier) = &state.fr_notifications else {
         return;
     };
+    fr_yield::ensure_current(state, nav_client).await;
     let current = exposure_catalog_current(state).await;
     let report = state
         .exposure
@@ -2121,7 +2133,7 @@ async fn fr_heartbeat(state: &AppState) {
         .filter(|s| !s.ok && notifications::fr_source(&s.source, &active_fr))
         .map(|s| s.source.as_str())
         .collect::<Vec<_>>();
-    let summary = format!("FR 覆盖 {} 个：敞口告警 {}，数据不完整 {}\n公告及监控源：{}\n本轮按现有配置检查；没有新增策略、手工下单或调仓。自动风控实际操作列在下方日志中。", report.accounts.len(), report.accounts.iter().filter(|a| a.risk_status == "alert").count(), report.accounts.iter().filter(|a| !a.complete).count(), if failures.is_empty() { "全部已报告成功".into() } else { format!("存在失败/未知：{}", failures.join(", ")) });
+    let summary = format!("{}\nFR 覆盖 {} 个：敞口告警 {}，数据不完整 {}\n公告及监控源：{}\n本轮按现有配置检查；没有新增策略、手工下单或调仓。自动风控实际操作列在下方日志中。", fr_yield::report(state).await.summary(), report.accounts.len(), report.accounts.iter().filter(|a| a.risk_status == "alert").count(), report.accounts.iter().filter(|a| !a.complete).count(), if failures.is_empty() { "全部已报告成功".into() } else { format!("存在失败/未知：{}", failures.join(", ")) });
     if let Err(err) = notifier.heartbeat(&summary).await {
         warn!("queue FR heartbeat failed: {err}");
     }
@@ -2176,6 +2188,20 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
 
     refresh_nav_account_catalog(&state, &nav_client).await;
 
+    let yield_state = state.clone();
+    let yield_client = Client::builder()
+        .timeout(Duration::from_secs(60))
+        .no_proxy()
+        .build()?;
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(3600));
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            fr_yield::refresh(&yield_state, &yield_client).await;
+        }
+    });
+
     if !args.skip_official {
         let snapshot_date = Utc::now().date_naive();
         match refresh_listings(&state, &public).await {
@@ -2192,6 +2218,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
         let ann_budget = llm_budget.clone();
         let public = public.clone();
         let binance = binance.clone();
+        let nav_client = nav_client.clone();
         let interval_secs = args.announcement_interval_secs.max(60);
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(interval_secs));
@@ -2216,7 +2243,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 )
                 .await;
                 persist(&ann_state).await;
-                fr_heartbeat(&ann_state).await;
+                fr_heartbeat(&ann_state, &nav_client).await;
             }
         });
     }
@@ -4107,6 +4134,8 @@ mod tests {
             status: Arc::new(RwLock::new(StatusBook::default())),
             listings: Arc::new(RwLock::new(ListingIndex::default())),
             accounts: Arc::new(RwLock::new(Vec::new())),
+            fr_yield: Arc::new(RwLock::new(fr_yield::Report::default())),
+            fr_yield_lock: Arc::new(AsyncMutex::new(())),
             exposure: Arc::new(RwLock::new(exposure::Monitor::new(
                 exposure::Settings::default(),
             ))),

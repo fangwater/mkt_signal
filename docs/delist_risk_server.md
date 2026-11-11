@@ -180,6 +180,19 @@ All page and data endpoints require the `delist_session` cookie. Visit
 `/delist/` to log in; credentials never belong in URLs. Manual flatten retains
 its separate operation token in addition to the login session.
 
+## FR seven-day annualized return
+
+The FR board and the daily announcement-scan heartbeat use NAV's authenticated
+strategy PnL API as the source of the `rolling7d.annualizedReturn` value. The
+active NAV `funding_rate` catalog defines the accounts checked. Values are
+refreshed at startup and hourly, with a two-hour freshness limit; a changed or
+unavailable catalog and failed or missing PnL are shown as unavailable rather
+than healthy. The heartbeat waits for the initial refresh if necessary. Values
+strictly below 10% are listed at the start of the heartbeat and above the FR
+board's summary. When NAV reports less than seven days of coverage the warning
+explicitly says so. This is NAV's linear annualization using the latest account
+equity; it is not a forecast or a trading action.
+
 ## FR exposure checks
 
 Deployment verified 2026-11-04 10:04 UTC on JP: source `b77e5da1`, Delist PID
