@@ -15,6 +15,7 @@ password_env = "YIDA_PASSWORD"
 app_id_env = "YIDA_APP_ID"
 auth_code_env = "YIDA_AUTH_CODE"
 event_capacity = 8192
+preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
 response_timeout_ms = 30000
 idle_sleep_us = 0
 

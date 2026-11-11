@@ -195,3 +195,27 @@ pub(crate) fn validate_fill(f: &Fill, trading_day: &str, scope: &ExecutionScope)
     );
     Ok(())
 }
+
+/// One parsed factual update reused by bootstrap, OMS and persistence.
+#[derive(Debug)]
+pub enum DecodedUpdate {
+    None,
+    Order(OrderUpdate),
+    Trade(Fill),
+}
+impl DecodedUpdate {
+    pub fn order(&self) -> Option<&OrderUpdate> {
+        if let Self::Order(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+    pub fn fill(&self) -> Option<&Fill> {
+        if let Self::Trade(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}

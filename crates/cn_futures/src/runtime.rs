@@ -1,5 +1,6 @@
 //! Operational I/O stays off the business thread. No automatic order cancellation,
 //! cross-account routing, or strategy attribution is performed on startup/recovery.
+use crate::compact::{CancelAudit, SubmitAudit};
 use crate::model::{Intent, OrderKey};
 use anyhow::{Context, Result};
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
@@ -9,13 +10,14 @@ use persist_common::cn_futures::{NativeMutation, NativeTradeRecord, StoreIdentit
 use persist_manager::cn_futures::NativeStore;
 use serde::Deserialize;
 use serde_json::Value;
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 #[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
 use std::io::BufRead;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -60,26 +62,25 @@ struct Record {
     mutation: NativeMutation,
     ack: Option<Sender<std::result::Result<(), String>>>,
 }
-// Keep the queue slot small. Raw callbacks have hundreds of scalar/byte fields;
-// only their owned copy crosses the queue, and the writer builds the JSON tree.
+// Native messages occupy preallocated queue storage. Building JSON and owned
+// persistence records stays on the writer; no Box or String is allocated here.
+#[allow(clippy::large_enum_variant)] // Intentional preallocated inline audit storage.
 enum AuditPayload {
     Json(Value),
     Yida {
-        event: Box<crate::yida::RawEvent>,
+        event: crate::yida::RawEvent,
         received_us: u64,
         shutdown_tail: bool,
     },
     Ctp {
-        event: Box<crate::ctp::RawEvent>,
+        event: crate::ctp::RawEvent,
         received_us: u64,
         shutdown_tail: bool,
     },
-    PreparedSubmit {
-        day: String,
-        order: Box<crate::model::PreparedOrder>,
-        received_us: u64,
-    },
-    PreparedCancel(Box<crate::model::PreparedCancel>),
+    PreparedSubmit(SubmitAudit),
+    PreparedCancel(CancelAudit),
+    OrderProjection,
+    NormalizedTrade,
 }
 impl AuditPayload {
     fn materialize(self, mut mutation: NativeMutation) -> (Value, NativeMutation) {
@@ -108,16 +109,23 @@ impl AuditPayload {
                 }
                 value
             }
-            Self::PreparedSubmit {
-                day,
-                order,
-                received_us,
-            } => {
-                mutation = crate::persistence::prepared_at(&day, &order, received_us);
+            Self::PreparedSubmit(audit) => {
+                let order = audit.owned();
+                mutation = crate::persistence::prepared_at(audit.day(), &order, audit.received_us);
                 serde_json::json!({"type":"prepared_submit","key":order.key,"intent":order.intent,"limit_price":order.limit_price})
             }
-            Self::PreparedCancel(order) => {
+            Self::PreparedCancel(audit) => {
+                let order = audit.owned();
                 serde_json::json!({"type":"prepared_cancel","key":order.key,"venue":order.venue,"symbol":order.symbol,"system_id":order.system_id,"execution_route":order.execution_route})
+            }
+            Self::OrderProjection => serde_json::json!({"type":"order_projection"}),
+            Self::NormalizedTrade => {
+                let trade = mutation
+                    .trades
+                    .last_mut()
+                    .expect("normalized trade payload has one factual trade");
+                trade.commission_currency = trade.commission.map(|_| "CNY".into());
+                serde_json::json!({"type":"normalized_trade","identity":trade.fill.identity})
             }
         };
         (value, mutation)
@@ -145,8 +153,24 @@ pub(crate) fn redact(value: &mut Value, secrets: &[String]) {
         _ => {}
     }
 }
+#[derive(Default)]
+struct WriterStats {
+    records: AtomicU64,
+    batches: AtomicU64,
+    max_batch: AtomicU64,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct JournalStats {
+    pub enqueued: u64,
+    pub durable: u64,
+    pub synced_batches: u64,
+    pub max_batch: u64,
+    pub backlog: u64,
+}
 pub struct Journal {
     sender: Option<Sender<Record>>,
+    enqueued: Cell<u64>, // Enforces the single business-thread producer contract.
+    stats: Arc<WriterStats>,
     pub failed: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
     sync_before_send: bool,
@@ -177,34 +201,78 @@ impl Journal {
         let (sender, receiver) = crossbeam_channel::bounded::<Record>(capacity);
         let failed = Arc::new(AtomicBool::new(false));
         let flag = failed.clone();
+        let stats = Arc::new(WriterStats::default());
+        let writer_stats = stats.clone();
         let worker = std::thread::Builder::new()
             .name("cn-futures-journal".into())
             .spawn(move || {
                 let write = || -> Result<()> {
                     let mut writer = BufWriter::new(file);
                     let mut last_sync = Instant::now();
+                    const MAX_BATCH: usize = 64;
+                    let mut records = Vec::with_capacity(MAX_BATCH);
+                    let mut events = Vec::with_capacity(MAX_BATCH);
+                    let mut output = Vec::with_capacity(MAX_BATCH);
                     loop {
                         match receiver.recv_timeout(Duration::from_millis(100)) {
-                            Ok(record) => {
-                                let (mut value, mutation) =
-                                    record.payload.materialize(record.mutation);
-                                redact(&mut value, &redactions);
-                                let line = serde_json::to_string(&value)?;
-                                // RocksDB is authoritative; stdout acknowledgement follows the synced WAL write.
-                                let result =
-                                    store.append(crate::persistence::now_us(), value, mutation);
-                                if let Some(ack) = record.ack {
-                                    let _ = ack.send(
-                                        result.as_ref().map(|_| ()).map_err(|e| e.to_string()),
-                                    );
+                            Ok(first) => {
+                                records.push(first);
+                                while records.len() < MAX_BATCH {
+                                    match receiver.try_recv() {
+                                        Ok(record) => records.push(record),
+                                        Err(_) => break,
+                                    }
                                 }
-                                result?;
-                                writeln!(writer, "{line}")?;
-                                if record.display {
-                                    let stdout = std::io::stdout();
-                                    let mut out = stdout.lock();
-                                    writeln!(out, "{line}")?;
-                                    out.flush()?;
+                                for record in records.drain(..) {
+                                    let (mut value, mutation) =
+                                        record.payload.materialize(record.mutation);
+                                    redact(&mut value, &redactions);
+                                    let line = serde_json::to_string(&value)?;
+                                    events.push((crate::persistence::now_us(), value, mutation));
+                                    output.push((record.display, record.ack, line));
+                                }
+                                let result = store.append_batch(events.drain(..));
+                                let (committed, failure) = match result {
+                                    Ok(batch) => (batch.committed, batch.projection_error),
+                                    Err(error) => (0, Some(error.to_string())),
+                                };
+                                if committed > 0 {
+                                    writer_stats
+                                        .records
+                                        .fetch_add(committed as u64, Ordering::Release);
+                                    writer_stats.batches.fetch_add(1, Ordering::Relaxed);
+                                    writer_stats
+                                        .max_batch
+                                        .fetch_max(committed as u64, Ordering::Relaxed);
+                                }
+                                let good = if failure.is_some() {
+                                    committed.saturating_sub(1)
+                                } else {
+                                    committed
+                                };
+                                for (index, (display, ack, line)) in output.drain(..).enumerate() {
+                                    if let Some(ack) = ack {
+                                        let result = if index < good {
+                                            Ok(())
+                                        } else {
+                                            Err(failure.clone().unwrap_or_else(|| {
+                                                "native write was not committed".into()
+                                            }))
+                                        };
+                                        let _ = ack.send(result);
+                                    }
+                                    if index < committed {
+                                        writeln!(writer, "{line}")?;
+                                    }
+                                    if display && index < good {
+                                        let stdout = std::io::stdout();
+                                        let mut out = stdout.lock();
+                                        writeln!(out, "{line}")?;
+                                        out.flush()?;
+                                    }
+                                }
+                                if let Some(error) = failure {
+                                    anyhow::bail!(error);
                                 }
                             }
                             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -235,6 +303,8 @@ impl Journal {
             .context("spawn native journal writer")?;
         Ok(Self {
             sender: Some(sender),
+            enqueued: Cell::new(0),
+            stats,
             failed,
             worker: Some(worker),
             sync_before_send,
@@ -284,6 +354,7 @@ impl Journal {
             self.failed.store(true, Ordering::Release);
             anyhow::bail!("reliable native persistence queue full/disconnected");
         }
+        self.enqueued.set(self.enqueued.get().wrapping_add(1));
         if let Some(receiver) = receiver {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
@@ -312,7 +383,7 @@ impl Journal {
     ) -> Result<()> {
         self.enqueue(
             AuditPayload::Yida {
-                event: Box::new(*event),
+                event: *event,
                 received_us,
                 shutdown_tail,
             },
@@ -329,7 +400,7 @@ impl Journal {
     ) -> Result<()> {
         self.enqueue(
             AuditPayload::Ctp {
-                event: Box::new(*event),
+                event: *event,
                 received_us,
                 shutdown_tail,
             },
@@ -340,11 +411,7 @@ impl Journal {
     }
     pub fn prepared_submit(&self, day: &str, p: &crate::model::PreparedOrder) -> Result<()> {
         self.enqueue(
-            AuditPayload::PreparedSubmit {
-                day: day.to_owned(),
-                order: Box::new(p.clone()),
-                received_us: crate::persistence::now_us(),
-            },
+            AuditPayload::PreparedSubmit(SubmitAudit::new(day, p, crate::persistence::now_us())?),
             false,
             NativeMutation::default(),
             self.sync_before_send,
@@ -352,7 +419,7 @@ impl Journal {
     }
     pub fn prepared_cancel(&self, p: &crate::model::PreparedCancel) -> Result<()> {
         self.enqueue(
-            AuditPayload::PreparedCancel(Box::new(p.clone())),
+            AuditPayload::PreparedCancel(CancelAudit::new(p)?),
             false,
             NativeMutation::default(),
             self.sync_before_send,
@@ -381,25 +448,19 @@ impl Journal {
         received_us: u64,
         mut mutation: NativeMutation,
     ) -> Result<()> {
-        let commission_currency = commission.map(|_| "CNY".into());
         mutation.trades.push(NativeTradeRecord {
-            fill: fill.clone(),
+            fill,
             commission,
-            commission_currency,
+            commission_currency: None,
             native_time,
             received_us,
             evidence_seq: 0,
         });
-        self.record_with(
-            serde_json::json!({"type":"normalized_trade","identity":fill.identity}),
-            false,
-            mutation,
-            false,
-        )
+        self.enqueue(AuditPayload::NormalizedTrade, false, mutation, false)
     }
     pub fn state(&self, core: &crate::core::TradingCore, observed: &[OrderKey]) -> Result<()> {
-        self.record_with(
-            serde_json::json!({"type":"order_projection"}),
+        self.enqueue(
+            AuditPayload::OrderProjection,
             false,
             crate::persistence::projection(core, observed, false),
             false,
@@ -414,8 +475,8 @@ impl Journal {
         if keys.is_empty() {
             return Ok(());
         }
-        self.record_with(
-            serde_json::json!({"type":"order_projection"}),
+        self.enqueue(
+            AuditPayload::OrderProjection,
             false,
             crate::persistence::projection_for(core, keys, observed),
             false,
@@ -464,6 +525,17 @@ impl Journal {
             mutation,
             true,
         )
+    }
+    pub fn stats(&self) -> JournalStats {
+        let enqueued = self.enqueued.get();
+        let durable = self.stats.records.load(Ordering::Acquire);
+        JournalStats {
+            enqueued,
+            durable,
+            synced_batches: self.stats.batches.load(Ordering::Relaxed),
+            max_batch: self.stats.max_batch.load(Ordering::Relaxed),
+            backlog: enqueued.saturating_sub(durable),
+        }
     }
     pub fn finish(mut self) -> Result<()> {
         self.record_with(
@@ -577,7 +649,8 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         .context("invalid InvestorID")?
         .to_owned();
     let mut session = Session::new(config.clone(), investor.clone(), Instant::now());
-    let core = TradingCore::new(config.risk.clone(), ctp::scope())?;
+    let mut core = TradingCore::new(config.risk.clone(), ctp::scope())?;
+    core.reserve_orders(config.preallocated_orders)?;
     let mut runtime = SingleLoop {
         core,
         trader,
@@ -620,14 +693,17 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                     event.kind,
                     ctp::ORDER | ctp::TRADE | ctp::QUERY_ORDER | ctp::QUERY_TRADE | ctp::POSITION
                 ) && event.present != 0
-                    && ctp::text(&event.investor)? == investor
-                    && crate::model::Venue::parse(&ctp::text(&event.exchange)?).is_ok();
-                if owns
-                    && (event.kind == ctp::QUERY_TRADE
-                        || (event.kind == ctp::TRADE && !session.ready()))
+                    && ctp::text_ref(&event.investor)? == investor
+                    && crate::model::Venue::parse(ctp::text_ref(&event.exchange)?).is_ok();
+                let decoded = if owns {
+                    ctp::decode_event(&event)
+                } else {
+                    Ok(crate::model::DecodedUpdate::None)
+                };
+                if event.kind == ctp::QUERY_TRADE || (event.kind == ctp::TRADE && !session.ready())
                 {
-                    if let Ok(fill) = event.to_fill() {
-                        journal.trade(fill, None, None, received.received_us)?;
+                    if let Ok(crate::model::DecodedUpdate::Trade(fill)) = &decoded {
+                        journal.trade(fill.clone(), None, None, received.received_us)?;
                     }
                 }
                 if event.kind == ctp::CONNECTED {
@@ -642,12 +718,12 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 }
                 if event.kind == ctp::INSTRUMENT_STATUS {
                     runtime.core.set_trading_status(
-                        crate::model::Venue::parse(&ctp::text(&event.exchange)?)?,
+                        crate::model::Venue::parse(ctp::text_ref(&event.exchange)?)?,
                         &ctp::text(&event.symbol)?,
                         event.status == i32::from(b'2'),
                     );
                 }
-                if let Some(snapshot) = session.on_event(&event, Instant::now())? {
+                if let Some(snapshot) = session.on_event(&event, Instant::now(), &decoded)? {
                     let trades = snapshot.trades.clone();
                     runtime.core.restore(snapshot)?;
                     if !session.settlement_confirmed() {
@@ -668,15 +744,18 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 }
                 if session.ready() {
                     let outcome = match event.kind {
-                        ctp::ORDER | ctp::TRADE if owns => {
-                            if event.kind == ctp::ORDER {
-                                event.to_order().and_then(|o| runtime.core.on_order(o))
-                            } else {
-                                event
-                                    .to_fill()
-                                    .and_then(|f| runtime.core.on_fill(f).map(|_| ()))
-                            }
-                        }
+                        ctp::ORDER | ctp::TRADE if owns => decoded
+                            .as_ref()
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))
+                            .and_then(|parsed| match parsed {
+                                crate::model::DecodedUpdate::Order(order) => {
+                                    runtime.core.on_order(order)
+                                }
+                                crate::model::DecodedUpdate::Trade(fill) => {
+                                    runtime.core.on_fill(fill).map(|_| ())
+                                }
+                                _ => Ok(()),
+                            }),
                         ctp::INSERT_RESPONSE if event.error != 0 => runtime
                             .trader
                             .response_key(&event)
@@ -691,23 +770,23 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                         )),
                         _ => Ok(()),
                     };
-                    if event.kind == ctp::TRADE && owns {
-                        if let Ok(fill) = event.to_fill() {
+                    if event.kind == ctp::TRADE {
+                        if let Ok(crate::model::DecodedUpdate::Trade(fill)) = &decoded {
                             let mutation = if outcome.is_ok() {
                                 crate::persistence::projection_for(
                                     &runtime.core,
-                                    &runtime
+                                    runtime
                                         .core
-                                        .fill_order_key(&fill)
-                                        .into_iter()
-                                        .collect::<Vec<_>>(),
+                                        .fill_order_key(fill)
+                                        .map(std::slice::from_ref)
+                                        .unwrap_or_default(),
                                     &[],
                                 )
                             } else {
                                 NativeMutation::default()
                             };
                             journal.trade_with_projection(
-                                fill,
+                                fill.clone(),
                                 None,
                                 None,
                                 received.received_us,
@@ -722,7 +801,13 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                         )
                     {
                         let observed = if event.kind == ctp::ORDER {
-                            event.key().ok().into_iter().collect::<Vec<_>>()
+                            decoded
+                                .as_ref()
+                                .ok()
+                                .and_then(|p| p.order())
+                                .map(|o| o.key.clone())
+                                .into_iter()
+                                .collect::<Vec<_>>()
                         } else {
                             vec![]
                         };
@@ -782,7 +867,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 for received in tail.try_iter() {
                     journal.ctp_event(&received.event, received.received_us, false)?;
                     if matches!(received.event.kind, ctp::TRADE | ctp::QUERY_TRADE)
-                        && ctp::text(&received.event.investor)? == investor
+                        && ctp::text_ref(&received.event.investor)? == investor
                     {
                         if let Ok(fill) = received.event.to_fill() {
                             journal.trade(fill, None, None, received.received_us)?;
@@ -889,7 +974,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             if matches!(event.kind, ctp::TRADE | ctp::QUERY_TRADE) {
                 if let Ok(fill) = event.to_fill() {
                     journal.trade(fill.clone(), None, None, received.received_us)?;
-                    if event.kind == ctp::TRADE && core.on_fill(fill).is_err() {
+                    if event.kind == ctp::TRADE && core.on_fill(&fill).is_err() {
                         core.block("shutdown fill requires recovery");
                     }
                 }
@@ -897,7 +982,7 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             if event.kind == ctp::ORDER {
                 if let Ok(update) = event.to_order() {
                     let key = update.key.clone();
-                    if core.on_order(update).is_ok() {
+                    if core.on_order(&update).is_ok() {
                         journal.state(&core, &[key])?;
                     } else {
                         core.block("shutdown order requires recovery");
@@ -1069,7 +1154,7 @@ mod persistence_tests {
             store
                 .reference_floors()
                 .get(&("20261110".into(), prepared().key.session)),
-            Some(&102)
+            Some(&109)
         );
         let error = store
             .append(
@@ -1083,6 +1168,13 @@ mod persistence_tests {
             .unwrap_err();
         assert!(error.to_string().contains("absent from complete recovery"));
         drop(store);
+        let store = persist_manager::RocksDbStore::open_read_only(
+            path.join("db").to_str().unwrap(),
+            COLUMN_FAMILIES,
+        )
+        .unwrap();
+        assert_eq!(store.scan(ORDERS, None, false, None).unwrap().len(), 8);
+        drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
@@ -1092,7 +1184,26 @@ mod persistence_tests {
             std::env::var_os("CN_TEST_CRASH_DB").expect("parent crash test sets path"),
         );
         let journal = journal(&path);
-        journal.prepared_submit("20261110", &prepared()).unwrap();
+        for reference in 101..109 {
+            let mut order = prepared();
+            order.key.order_ref = reference.to_string();
+            journal
+                .record_with(
+                    serde_json::json!({"type":"async_crash_intent","reference":reference}),
+                    false,
+                    crate::persistence::prepared("20261110", &order),
+                    false,
+                )
+                .unwrap();
+        }
+        journal
+            .record_with(
+                serde_json::json!({"type":"crash_barrier"}),
+                false,
+                NativeMutation::default(),
+                true,
+            )
+            .unwrap();
         std::process::exit(0);
     }
 }

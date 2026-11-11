@@ -31,46 +31,67 @@ pub const EXCHANGE_MARGIN: i32 = 19;
 pub const SETTLEMENT_STATUS: i32 = 20;
 
 /// Correlate business responses across reconnects. OrderRef alone is not a session identity.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Correlation {
+    kind: i32,
+    front: i32,
+    session: i32,
+    reference: u64,
+}
+impl Correlation {
+    fn key(self) -> OrderKey {
+        OrderKey {
+            session: session_key(self.front, self.session),
+            order_ref: self.reference.to_string(),
+        }
+    }
+}
 #[derive(Default, Clone)]
 pub struct ResponseCorrelation {
-    requests: HashMap<i32, (i32, OrderKey)>,
+    requests: HashMap<i32, Correlation>,
+    // None records the documented ambiguity of OrderRef across native sessions.
+    by_reference: HashMap<(i32, u64), Option<Correlation>>,
 }
 impl ResponseCorrelation {
     pub fn register(&mut self, id: i32, kind: i32, key: OrderKey) -> Result<()> {
         ensure!(
-            self.requests.len() < 200_000,
-            "CTP response correlation capacity exhausted"
-        );
-        ensure!(
             !self.requests.contains_key(&id),
             "duplicate native request ID"
         );
-        self.requests.insert(id, (kind, key));
+        let (front, session) = parse_session(&key.session)?;
+        let correlation = Correlation {
+            kind,
+            front,
+            session,
+            reference: key.order_ref.parse()?,
+        };
+        self.requests.insert(id, correlation);
+        self.by_reference
+            .entry((kind, correlation.reference))
+            .and_modify(|old| {
+                if *old != Some(correlation) {
+                    *old = None;
+                }
+            })
+            .or_insert(Some(correlation));
         Ok(())
     }
     pub fn resolve(&self, e: &RawEvent) -> Result<OrderKey> {
         if e.request > 0 {
-            let (kind, key) = self
+            let c = self
                 .requests
                 .get(&e.request)
                 .context("unknown CTP business response request ID")?;
-            ensure!(*kind == e.kind, "CTP business response kind mismatch");
-            return Ok(key.clone());
+            ensure!(c.kind == e.kind, "CTP business response kind mismatch");
+            return Ok(c.key());
         }
-        let order_ref = text(&e.order_ref)?;
-        let mut keys = self
-            .requests
-            .values()
-            .filter(|(kind, key)| *kind == e.kind && key.order_ref == order_ref)
-            .map(|(_, key)| key);
-        let key = keys
-            .next()
-            .context("unmatched asynchronous CTP rejection")?;
-        ensure!(
-            keys.all(|next| next == key),
-            "OrderRef is ambiguous across sessions"
-        );
-        Ok(key.clone())
+        let reference = text(&e.order_ref)?.parse::<u64>()?;
+        let c = self
+            .by_reference
+            .get(&(e.kind, reference))
+            .context("unmatched asynchronous CTP rejection")?
+            .context("OrderRef is ambiguous across sessions")?;
+        Ok(c.key())
     }
 }
 
@@ -132,13 +153,16 @@ impl Default for RawEvent {
     }
 }
 
-pub fn text(bytes: &[u8]) -> Result<String> {
+pub fn text_ref(bytes: &[u8]) -> Result<&str> {
     let n = bytes
         .iter()
         .position(|b| *b == 0)
-        .ok_or_else(|| anyhow::anyhow!("unterminated CTP text field"))?;
+        .context("unterminated CTP text field")?;
     ensure!(bytes[..n].is_ascii(), "non-ASCII CTP identifier");
-    Ok(std::str::from_utf8(&bytes[..n])?.to_owned())
+    Ok(std::str::from_utf8(&bytes[..n])?)
+}
+pub fn text(bytes: &[u8]) -> Result<String> {
+    text_ref(bytes).map(str::to_owned)
 }
 pub fn error_text(bytes: &[u8]) -> String {
     let n = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
@@ -264,9 +288,12 @@ pub fn session_key(front: i32, session: i32) -> String {
     format!("ctp:{front}:{session}")
 }
 pub fn parse_session(value: &str) -> Result<(i32, i32)> {
-    let parts: Vec<_> = value.split(':').collect();
-    ensure!(parts.len() == 3 && parts[0] == "ctp", "invalid CTP session");
-    Ok((parts[1].parse()?, parts[2].parse()?))
+    let mut parts = value.split(':');
+    ensure!(parts.next() == Some("ctp"), "invalid CTP session");
+    let front = parts.next().context("missing CTP front")?.parse()?;
+    let session = parts.next().context("missing CTP session")?.parse()?;
+    ensure!(parts.next().is_none(), "invalid CTP session");
+    Ok((front, session))
 }
 
 #[cfg(test)]
@@ -314,6 +341,45 @@ mod tests {
         event.order_ref[..2].copy_from_slice(b"17");
         assert!(correlation.resolve(&event).is_err());
     }
+    #[test]
+    fn late_response_still_resolves_after_more_than_two_hundred_thousand_requests() {
+        let mut correlation = ResponseCorrelation::default();
+        for id in 1..=210_000 {
+            correlation
+                .register(
+                    id,
+                    INSERT_RESPONSE,
+                    OrderKey {
+                        session: session_key(7, 11),
+                        order_ref: id.to_string(),
+                    },
+                )
+                .unwrap();
+        }
+        let mut event = RawEvent {
+            kind: INSERT_RESPONSE,
+            request: 1,
+            ..Default::default()
+        };
+        let expected = OrderKey {
+            session: session_key(7, 11),
+            order_ref: "1".into(),
+        };
+        assert_eq!(correlation.resolve(&event).unwrap(), expected);
+        event.request = 0;
+        event.order_ref[0] = b'1';
+        assert_eq!(correlation.resolve(&event).unwrap(), expected);
+        event.kind = CANCEL_RESPONSE;
+        assert!(correlation.resolve(&event).is_err());
+    }
+}
+
+pub fn decode_event(e: &RawEvent) -> Result<DecodedUpdate> {
+    Ok(match e.kind {
+        ORDER | QUERY_ORDER if e.present != 0 => DecodedUpdate::Order(e.to_order()?),
+        TRADE | QUERY_TRADE if e.present != 0 => DecodedUpdate::Trade(e.to_fill()?),
+        _ => DecodedUpdate::None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

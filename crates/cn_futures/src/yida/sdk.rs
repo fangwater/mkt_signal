@@ -2,7 +2,6 @@ use super::*;
 use anyhow::{ensure, Context, Result};
 use crossbeam_channel::{Receiver, Sender};
 use std::{
-    collections::HashMap,
     ffi::{c_char, c_void, CStr, CString},
     marker::PhantomData,
     path::Path,
@@ -122,6 +121,8 @@ pub fn version(path: &Path) -> Result<String> {
 pub struct Received {
     pub event: RawEvent,
     pub received_us: u64,
+    #[cfg(feature = "latency-metrics")]
+    pub received_at: Instant,
 }
 struct ContextData {
     sender: Sender<Received>,
@@ -132,6 +133,8 @@ unsafe extern "C" fn callback(context: *mut c_void, event: *const RawEvent) {
         return;
     }
     let context = unsafe { &*context.cast::<ContextData>() };
+    #[cfg(feature = "latency-metrics")]
+    let received_at = Instant::now();
     let event = unsafe { *event };
     let received_us = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -140,21 +143,58 @@ unsafe extern "C" fn callback(context: *mut c_void, event: *const RawEvent) {
         .min(u128::from(u64::MAX)) as u64;
     if context
         .sender
-        .try_send(Received { event, received_us })
+        .try_send(Received {
+            event,
+            received_us,
+            #[cfg(feature = "latency-metrics")]
+            received_at,
+        })
         .is_err()
     {
         context.fault.store(true, Ordering::Release);
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct PendingIdentity {
+    venue: Venue,
+    day: i32,
+    group: i32,
+    reference: i32,
+    system_id: i64,
+    cancel: bool,
+}
+impl PendingIdentity {
+    fn submit(venue: Venue, day: i32, group: i32, reference: i32) -> Self {
+        Self {
+            venue,
+            day,
+            group,
+            reference,
+            system_id: 0,
+            cancel: false,
+        }
+    }
+    fn cancel(venue: Venue, day: i32, group: i32, reference: i32, system_id: i64) -> Self {
+        Self {
+            venue,
+            day,
+            group,
+            reference: if group == 0 { 0 } else { reference },
+            system_id: if group == 0 { system_id } else { 0 },
+            cancel: true,
+        }
+    }
+}
 pub struct YidaTrader {
     handle: NonNull<c_void>,
+    #[cfg(feature = "latency-metrics")]
+    last_insert_ns: Option<u64>,
     context: Option<Box<ContextData>>,
     pub events: Receiver<Received>,
     pub fault: Arc<AtomicBool>,
     credentials: config::Credentials,
-    references: HashMap<i32, (Venue, OrderKey)>,
-    pending_acks: HashMap<i32, Instant>,
-    pending_cancels: HashMap<OrderKey, Instant>,
+    pending: crate::deadline::DeadlineQueue<PendingIdentity, Option<OrderKey>>,
+    response_timeout: Duration,
     order_group: i32,
     execution_route: ExecutionRoute,
     ack_timeout_reported: bool,
@@ -196,13 +236,14 @@ impl YidaTrader {
         })?;
         let trader = Self {
             handle,
+            #[cfg(feature = "latency-metrics")]
+            last_insert_ns: None,
             context: Some(context),
             events,
             fault,
             credentials,
-            references: HashMap::new(),
-            pending_acks: HashMap::new(),
-            pending_cancels: HashMap::new(),
+            pending: Default::default(),
+            response_timeout: Duration::from_millis(config.response_timeout_ms),
             order_group: i32::from(config.order_group),
             execution_route: config.execution_route,
             ack_timeout_reported: false,
@@ -266,63 +307,106 @@ impl YidaTrader {
         );
         Ok(())
     }
-    pub fn observe_order(&mut self, e: &RawEvent) -> Result<()> {
+    pub fn observe_order(&mut self, e: &RawEvent, order: &OrderUpdate) -> Result<()> {
         if e.kind == ORDER {
-            if let Some((venue, key)) = self.references.get(&e.reference) {
-                if e.order_group == self.order_group
-                    && *venue == e.venue()?
-                    && key.session == group_session_key(e.day, self.order_group)
-                {
-                    self.pending_acks.remove(&e.reference);
-                }
-            }
+            let venue = order.venue;
+            self.pending.remove(&PendingIdentity::submit(
+                venue,
+                e.day,
+                e.order_group,
+                e.reference,
+            ));
             if matches!(e.status, 2..=4) {
-                let key = self.key(e)?;
-                self.pending_cancels.remove(&key);
+                self.pending.remove(&PendingIdentity::cancel(
+                    venue,
+                    e.day,
+                    e.order_group,
+                    e.reference,
+                    e.system_id,
+                ));
             }
         }
         Ok(())
     }
-    pub fn expired_response(&mut self, now: Instant, timeout: Duration) -> Option<ResponseTimeout> {
+    pub fn next_response_deadline(&self) -> Option<Instant> {
+        if self.ack_timeout_reported {
+            None
+        } else {
+            self.pending.next_deadline()
+        }
+    }
+    #[cfg(feature = "latency-metrics")]
+    pub fn take_insert_ns(&mut self) -> Option<u64> {
+        self.last_insert_ns.take()
+    }
+    pub fn pending_response_count(&self) -> usize {
+        self.pending.len()
+    }
+    pub fn expired_response(&mut self, now: Instant) -> Option<ResponseTimeout> {
         if self.ack_timeout_reported {
             return None;
         }
-        let expired = self
-            .pending_acks
-            .iter()
-            .find(|(_, sent)| now.duration_since(**sent) >= timeout)
-            .map(|(reference, _)| ResponseTimeout::Submit {
-                order_ref: *reference,
-            })
-            .or_else(|| {
-                self.pending_cancels
-                    .iter()
-                    .find(|(_, sent)| now.duration_since(**sent) >= timeout)
-                    .map(|(key, _)| ResponseTimeout::Cancel { key: key.clone() })
-            });
-        self.ack_timeout_reported = expired.is_some();
-        expired
+        let (identity, key) = self.pending.pop_due(now)?;
+        self.ack_timeout_reported = true;
+        Some(if identity.cancel {
+            ResponseTimeout::Cancel {
+                key: key.expect("cancel requests retain their native identity"),
+            }
+        } else {
+            ResponseTimeout::Submit {
+                order_ref: identity.reference,
+            }
+        })
     }
     pub fn recovered(&mut self) {
         self.ack_timeout_reported = false;
-        // A complete snapshot restores current working/terminal orders. It never
-        // releases their position/cash reservations or resends a cancellation.
-        self.pending_cancels.clear();
+        // Complete, durably validated recovery has accounted for every unresolved request.
+        self.pending.clear();
     }
     pub fn key(&self, e: &RawEvent) -> Result<OrderKey> {
-        ensure!(
-            (0..=255).contains(&e.order_group),
-            "unsupported native order group; evidence retained"
-        );
-        if let Some((venue, key)) = self.references.get(&e.reference) {
-            if e.order_group == self.order_group
-                && *venue == e.venue()?
-                && key.session == group_session_key(e.day, self.order_group)
-            {
-                return Ok(key.clone());
-            }
-        }
+        // Nonzero groups carry the complete day/group/reference identity. Keeping a
+        // second historical reference table added no correlation information.
         e.recovered_key()
+    }
+    fn register_order(&mut self, o: &PreparedOrder) -> Result<PendingIdentity> {
+        let (day, group, reference) = parse_group_key(&o.key)?;
+        let id = PendingIdentity::submit(o.intent.venue, day, group, reference);
+        ensure!(
+            self.pending
+                .insert(
+                    id,
+                    Instant::now()
+                        .checked_add(self.response_timeout)
+                        .context("native response deadline overflow")?,
+                    None
+                )
+                .is_ok(),
+            "duplicate pending native submission identity"
+        );
+        Ok(id)
+    }
+    fn register_cancel(&mut self, o: &PreparedCancel, r: &NativeCancel) -> Result<PendingIdentity> {
+        let day = o
+            .key
+            .session
+            .split(':')
+            .nth(1)
+            .context("missing native cancel day")?
+            .parse()?;
+        let id = PendingIdentity::cancel(o.venue, day, r.group, r.reference, r.system_id);
+        ensure!(
+            self.pending
+                .insert(
+                    id,
+                    Instant::now()
+                        .checked_add(self.response_timeout)
+                        .context("native response deadline overflow")?,
+                    Some(o.key.clone())
+                )
+                .is_ok(),
+            "duplicate pending native cancellation identity"
+        );
+        Ok(id)
     }
 }
 fn send_result(code: i32) -> Result<i32> {
@@ -353,19 +437,26 @@ impl Trader for YidaTrader {
     }
     fn insert(&mut self, o: &PreparedOrder) -> Result<i32> {
         let request = self.order_request(o)?;
-        self.register_order(o)?;
-        let result = send_result(unsafe { cn_yida_insert(self.handle.as_ptr(), &request) });
+        let pending = self.register_order(o)?;
+        #[cfg(feature = "latency-metrics")]
+        let before = Instant::now();
+        let code = unsafe { cn_yida_insert(self.handle.as_ptr(), &request) };
+        #[cfg(feature = "latency-metrics")]
+        {
+            self.last_insert_ns = Some(before.elapsed().as_nanos() as u64);
+        }
+        let result = send_result(code);
         if matches!(result,Ok(code) if code>0) {
-            self.pending_acks.remove(&request.reference);
+            self.pending.remove(&pending);
         }
         result
     }
     fn cancel(&mut self, o: &PreparedCancel) -> Result<i32> {
         let request = self.cancel_request(o)?;
-        self.pending_cancels.insert(o.key.clone(), Instant::now());
+        let pending = self.register_cancel(o, &request)?;
         let result = send_result(unsafe { cn_yida_cancel(self.handle.as_ptr(), &request) });
         if matches!(result,Ok(code) if code>0) {
-            self.pending_cancels.remove(&o.key);
+            self.pending.remove(&pending);
         }
         result
     }
@@ -374,9 +465,10 @@ impl Trader for YidaTrader {
             .iter()
             .map(|o| self.order_request(o))
             .collect::<Result<Vec<_>>>()?;
-        for o in orders {
-            self.register_order(o)?;
-        }
+        let pending = orders
+            .iter()
+            .map(|o| self.register_order(o))
+            .collect::<Result<Vec<_>>>()?;
         let mut failed = -1;
         let result = batch_result(
             unsafe {
@@ -391,8 +483,8 @@ impl Trader for YidaTrader {
             orders.len(),
         );
         if matches!(result, Ok(BatchSend::RejectedBeforeSend { .. })) {
-            for r in &requests {
-                self.pending_acks.remove(&r.reference);
+            for id in &pending {
+                self.pending.remove(id);
             }
         }
         result
@@ -402,9 +494,11 @@ impl Trader for YidaTrader {
             .iter()
             .map(|o| self.cancel_request(o))
             .collect::<Result<Vec<_>>>()?;
-        for o in orders {
-            self.pending_cancels.insert(o.key.clone(), Instant::now());
-        }
+        let pending = orders
+            .iter()
+            .zip(&requests)
+            .map(|(o, r)| self.register_cancel(o, r))
+            .collect::<Result<Vec<_>>>()?;
         let mut failed = -1;
         let result = batch_result(
             unsafe {
@@ -419,8 +513,8 @@ impl Trader for YidaTrader {
             orders.len(),
         );
         if matches!(result, Ok(BatchSend::RejectedBeforeSend { .. })) {
-            for o in orders {
-                self.pending_cancels.remove(&o.key);
+            for id in &pending {
+                self.pending.remove(id);
             }
         }
         result
@@ -458,17 +552,6 @@ impl YidaTrader {
             connection,
             price: o.limit_price,
         })
-    }
-    fn register_order(&mut self, o: &PreparedOrder) -> Result<()> {
-        let reference = o.key.order_ref.parse::<i32>()?;
-        ensure!(
-            self.references.len() < 200000 && !self.references.contains_key(&reference),
-            "native reference correlation capacity/identity invalid"
-        );
-        self.references
-            .insert(reference, (o.intent.venue, o.key.clone()));
-        self.pending_acks.insert(reference, Instant::now());
-        Ok(())
     }
     fn cancel_request(&self, o: &PreparedCancel) -> Result<NativeCancel> {
         let (group, reference, system_id) =
@@ -533,6 +616,34 @@ impl Drop for YidaTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deadline_identity_is_scoped_by_venue_day_group_and_operation() {
+        let now = Instant::now();
+        let mut pending = crate::deadline::DeadlineQueue::default();
+        let identities = [
+            PendingIdentity::submit(Venue::Shfe, 20261110, 1, 17),
+            PendingIdentity::submit(Venue::Ine, 20261110, 1, 17),
+            PendingIdentity::submit(Venue::Shfe, 20261111, 1, 17),
+            PendingIdentity::submit(Venue::Shfe, 20261110, 2, 17),
+            PendingIdentity::cancel(Venue::Shfe, 20261110, 1, 17, 900),
+            PendingIdentity::cancel(Venue::Shfe, 20261110, 0, 0, 900),
+            PendingIdentity::cancel(Venue::Shfe, 20261110, 0, 0, 901),
+        ];
+        for (n, id) in identities.iter().enumerate() {
+            pending.insert(*id, now, n).unwrap();
+        }
+        // Nonzero groups use the stable reference even when a later report adds a system ID.
+        assert_eq!(
+            pending.remove(&PendingIdentity::cancel(Venue::Shfe, 20261110, 1, 17, 999)),
+            Some(4)
+        );
+        for (n, id) in identities.iter().enumerate() {
+            if n != 4 {
+                assert_eq!(pending.remove(id), Some(n));
+            }
+        }
+        assert!(pending.is_empty());
+    }
     #[test]
     fn callback_overflow_latches_fault() {
         let (sender, receiver) = crossbeam_channel::bounded(1);

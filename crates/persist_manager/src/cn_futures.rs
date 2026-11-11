@@ -23,12 +23,25 @@ pub struct Evidence {
 
 type NativeWrite = (String, Vec<u8>, Vec<u8>);
 type OrderUpdates = HashMap<PersistedOrderKey, NativeOrderRecord>;
-type Projection = (Vec<NativeWrite>, OrderUpdates);
+type TradeUpdates = HashMap<Vec<u8>, NativeTradeRecord>;
+struct Projection {
+    writes: Vec<NativeWrite>,
+    orders: OrderUpdates,
+    trades: TradeUpdates,
+}
+pub type NativeAppend = (u64, Value, NativeMutation);
+/// A projection error commits the good prefix and its own raw error evidence.
+/// Entries after `committed` were not accepted; callers must stop and reconcile.
+pub struct NativeBatchResult {
+    pub committed: usize,
+    pub projection_error: Option<String>,
+}
 
 pub struct NativeStore {
     store: RocksDbStore,
     sequence: u64,
     orders: HashMap<PersistedOrderKey, NativeOrderRecord>,
+    synced_batches: u64,
 }
 fn key<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(value)?)
@@ -83,6 +96,7 @@ impl NativeStore {
             store,
             sequence,
             orders,
+            synced_batches: 0,
         })
     }
 
@@ -104,45 +118,83 @@ impl NativeStore {
         floors
     }
 
-    /// Evidence, dedup facts and current order state commit in one synced WAL batch.
+    pub fn synced_batches(&self) -> u64 {
+        self.synced_batches
+    }
+    /// Single-event entry point retains its original immediate durability guarantee.
     pub fn append(
         &mut self,
         received_us: u64,
         value: Value,
         mutation: NativeMutation,
     ) -> Result<()> {
-        let sequence = self
-            .sequence
-            .checked_add(1)
-            .context("native evidence sequence exhausted")?;
-        let mut evidence = Evidence {
-            sequence,
-            received_us,
-            value,
-            projection_error: None,
-        };
-        let projected = self.project(sequence, mutation);
-        let (mut writes, updates) = match projected {
-            Ok(result) => result,
-            Err(error) => {
-                evidence.projection_error = Some(error.to_string());
-                self.store.put_many_sync(&[
-                    write(EVENTS, sequence.to_be_bytes().to_vec(), &evidence)?,
-                    write(META, b"sequence".to_vec(), &sequence)?,
-                ])?;
-                self.sequence = sequence;
-                return Err(error);
-            }
-        };
-        writes.push(write(EVENTS, sequence.to_be_bytes().to_vec(), &evidence)?);
-        writes.push(write(META, b"sequence".to_vec(), &sequence)?);
-        self.store.put_many_sync(&writes)?;
-        self.sequence = sequence;
-        self.orders.extend(updates);
+        let result = self.append_batch(vec![(received_us, value, mutation)])?;
+        if let Some(error) = result.projection_error {
+            anyhow::bail!(error);
+        }
         Ok(())
     }
+    /// Commits an available microbatch in one synced WAL WriteBatch. All lookups
+    /// see the staged good prefix, so duplicates and recovery barriers stay ordered.
+    pub fn append_batch(
+        &mut self,
+        events: impl IntoIterator<Item = NativeAppend>,
+    ) -> Result<NativeBatchResult> {
+        let events = events.into_iter();
+        let mut writes = Vec::with_capacity(events.size_hint().0 * 3);
+        let mut orders = OrderUpdates::new();
+        let mut trades = TradeUpdates::new();
+        let mut sequence = self.sequence;
+        let mut committed = 0;
+        let mut projection_error = None;
+        for (received_us, value, mutation) in events {
+            sequence = sequence
+                .checked_add(1)
+                .context("native evidence sequence exhausted")?;
+            let mut evidence = Evidence {
+                sequence,
+                received_us,
+                value,
+                projection_error: None,
+            };
+            match self.project(sequence, mutation, &orders, &trades) {
+                Ok(projected) => {
+                    writes.extend(projected.writes);
+                    orders.extend(projected.orders);
+                    trades.extend(projected.trades);
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    evidence.projection_error = Some(error.clone());
+                    projection_error = Some(error);
+                }
+            }
+            writes.push(write(EVENTS, sequence.to_be_bytes().to_vec(), &evidence)?);
+            committed += 1;
+            if projection_error.is_some() {
+                break;
+            }
+        }
+        if committed > 0 {
+            writes.push(write(META, b"sequence".to_vec(), &sequence)?);
+            self.store.put_many_sync(&writes)?;
+            self.synced_batches += 1;
+            self.sequence = sequence;
+            self.orders.extend(orders);
+        }
+        Ok(NativeBatchResult {
+            committed,
+            projection_error,
+        })
+    }
 
-    fn project(&self, seq: u64, mutation: NativeMutation) -> Result<Projection> {
+    fn project(
+        &self,
+        seq: u64,
+        mutation: NativeMutation,
+        staged_orders: &OrderUpdates,
+        staged_trades: &TradeUpdates,
+    ) -> Result<Projection> {
         let mut updates = HashMap::new();
         for mut record in mutation.orders {
             ensure!(
@@ -156,7 +208,11 @@ impl NativeStore {
                     && record.order.filled <= record.order.request.lots,
                 "invalid persisted native order quantity"
             );
-            if let Some(old) = self.orders.get(&record.identity) {
+            if let Some(old) = updates
+                .get(&record.identity)
+                .or_else(|| staged_orders.get(&record.identity))
+                .or_else(|| self.orders.get(&record.identity))
+            {
                 ensure!(
                     old.order.request.symbol == record.order.request.symbol
                         && old.order.request.side == record.order.request.side
@@ -194,7 +250,12 @@ impl NativeStore {
             updates.insert(record.identity.clone(), record);
         }
         if let Some(day) = mutation.reconciliation_day {
-            for (identity, old) in &self.orders {
+            for (identity, old) in self
+                .orders
+                .iter()
+                .filter(|(key, _)| !staged_orders.contains_key(*key))
+                .chain(staged_orders.iter())
+            {
                 let unresolved = old.locally_submitted
                     && (!old.order.status.terminal()
                         || matches!(
@@ -218,7 +279,10 @@ impl NativeStore {
                 "invalid persisted factual fill"
             );
             let identity = key(&trade.fill.identity)?;
-            let old = if let Some(old) = batch_trades.get(&identity) {
+            let old = if let Some(old) = batch_trades
+                .get(&identity)
+                .or_else(|| staged_trades.get(&identity))
+            {
                 Some(old.clone())
             } else {
                 self.store
@@ -264,13 +328,17 @@ impl NativeStore {
             }
             batch_trades.insert(identity, trade);
         }
-        for (key, trade) in batch_trades {
-            writes.push(write(TRADES, key, &trade)?);
+        for (key, trade) in &batch_trades {
+            writes.push(write(TRADES, key.clone(), trade)?);
         }
         for (identity, order) in &updates {
             writes.push(write(ORDERS, key(identity)?, order)?);
         }
-        Ok((writes, updates))
+        Ok(Projection {
+            writes,
+            orders: updates,
+            trades: batch_trades,
+        })
     }
 }
 
@@ -339,7 +407,7 @@ mod tests {
             account_hash: "account-scope-a".into(),
         }
     }
-    fn order() -> NativeOrderRecord {
+    pub(super) fn order() -> NativeOrderRecord {
         let key = OrderKey {
             session: "yida:20261110:group:3".into(),
             order_ref: "17".into(),
@@ -626,5 +694,200 @@ mod tests {
         let mut stale = r;
         stale.order.status = OrderStatus::Working;
         assert!(append(&mut store, update(stale)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod microbatch_tests {
+    use super::*;
+    fn path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "cn-wal-batch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+    fn identity() -> StoreIdentity {
+        StoreIdentity {
+            adapter: "microbatch_test".into(),
+            account_hash: "synthetic".into(),
+        }
+    }
+    fn trade(price: f64) -> NativeTradeRecord {
+        NativeTradeRecord {
+            fill: Fill {
+                identity: TradeIdentity {
+                    venue: Venue::Shfe,
+                    symbol: "cu2612".into(),
+                    trading_day: "20261110".into(),
+                    trade_id: "9007199254740997".into(),
+                    side: Side::Buy,
+                },
+                order_ref: "17".into(),
+                order_key: None,
+                system_id: "9007199254740993".into(),
+                offset: Offset::Open,
+                lots: 1,
+                price,
+            },
+            commission: Some(52.660000000000004),
+            commission_currency: Some("CNY".into()),
+            native_time: Some(16230),
+            received_us: 1,
+            evidence_seq: 0,
+        }
+    }
+    fn event(trade: NativeTradeRecord) -> NativeAppend {
+        (
+            1,
+            serde_json::json!({"type":"batch_fixture"}),
+            NativeMutation {
+                trades: vec![trade],
+                ..Default::default()
+            },
+        )
+    }
+    #[test]
+    fn same_batch_duplicate_facts_are_visible_before_wal_commit() {
+        let path = path();
+        let mut store = NativeStore::open(&path, &identity()).unwrap();
+        let mut duplicate = trade(104820.0);
+        duplicate.received_us = 999;
+        duplicate.commission = None;
+        duplicate.native_time = None;
+        let outcome = store
+            .append_batch(vec![event(trade(104820.0)), event(duplicate)])
+            .unwrap();
+        assert_eq!(outcome.committed, 2);
+        assert!(outcome.projection_error.is_none());
+        assert_eq!(store.synced_batches(), 1);
+        drop(store);
+        let store = NativeStore::open(&path, &identity()).unwrap();
+        let facts = store.store.scan(TRADES, None, false, None).unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact: NativeTradeRecord = serde_json::from_slice(&facts[0].1).unwrap();
+        assert_eq!(fact.evidence_seq, 1);
+        assert_eq!(fact.commission, Some(52.660000000000004));
+        assert_eq!(fact.received_us, 1);
+        assert_eq!(store.sequence, 2);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn projection_failure_commits_good_prefix_and_error_but_not_later_records() {
+        let path = path();
+        let mut store = NativeStore::open(&path, &identity()).unwrap();
+        let outcome = store
+            .append_batch(vec![
+                event(trade(104820.0)),
+                event(trade(104821.0)),
+                (
+                    3,
+                    serde_json::json!({"must_not_commit":true}),
+                    NativeMutation::default(),
+                ),
+            ])
+            .unwrap();
+        assert_eq!(outcome.committed, 2);
+        assert!(outcome
+            .projection_error
+            .unwrap()
+            .contains("conflicting duplicate"));
+        assert_eq!(store.synced_batches(), 1);
+        assert_eq!(store.sequence, 2);
+        let events = store.store.scan(EVENTS, None, false, None).unwrap();
+        assert_eq!(events.len(), 2);
+        let bad: Evidence = serde_json::from_slice(&events[1].1).unwrap();
+        assert!(bad.projection_error.is_some());
+        let facts = store.store.scan(TRADES, None, false, None).unwrap();
+        let fact: NativeTradeRecord = serde_json::from_slice(&facts[0].1).unwrap();
+        assert_eq!(fact.fill.price, 104820.0);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn recovery_barrier_sees_pending_intents_from_the_same_microbatch() {
+        let path = path();
+        let mut store = NativeStore::open(&path, &identity()).unwrap();
+        let prepared = super::tests::order();
+        let outcome = store
+            .append_batch(vec![
+                (
+                    1,
+                    serde_json::json!({"type":"prepared"}),
+                    NativeMutation {
+                        orders: vec![prepared.clone()],
+                        ..Default::default()
+                    },
+                ),
+                (
+                    2,
+                    serde_json::json!({"type":"recovery"}),
+                    NativeMutation {
+                        reconciliation_day: Some("20261110".into()),
+                        ..Default::default()
+                    },
+                ),
+            ])
+            .unwrap();
+        assert_eq!(outcome.committed, 2);
+        assert!(outcome
+            .projection_error
+            .unwrap()
+            .contains("absent from complete recovery"));
+        assert_eq!(
+            store.orders[&prepared.identity].send_state,
+            SendState::Prepared
+        );
+        let mut observed = prepared.clone();
+        observed.order.owned = false;
+        observed.locally_submitted = false;
+        observed.submitted_intent = None;
+        observed.order.status = OrderStatus::Working;
+        observed.order.system_id = "64".into();
+        let result = store
+            .append_batch(vec![(
+                3,
+                serde_json::json!({"type":"recovery"}),
+                NativeMutation {
+                    orders: vec![observed],
+                    observed: vec![prepared.identity.clone()],
+                    reconciliation_day: Some("20261110".into()),
+                    ..Default::default()
+                },
+            )])
+            .unwrap();
+        assert!(result.projection_error.is_none());
+        assert!(store.orders[&prepared.identity].locally_submitted);
+        assert!(!store.orders[&prepared.identity].order.owned);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn wal_failure_does_not_advance_in_memory_sequence_or_orders() {
+        let path = path();
+        drop(NativeStore::open(&path, &identity()).unwrap());
+        let readonly =
+            RocksDbStore::open_read_only(path.to_str().unwrap(), COLUMN_FAMILIES).unwrap();
+        let mut store = NativeStore {
+            store: readonly,
+            sequence: 0,
+            orders: HashMap::new(),
+            synced_batches: 0,
+        };
+        assert!(store.append_batch(vec![event(trade(104820.0))]).is_err());
+        assert_eq!(store.sequence, 0);
+        assert_eq!(store.synced_batches, 0);
+        assert!(store.orders.is_empty());
+        assert!(store
+            .store
+            .scan(EVENTS, None, false, None)
+            .unwrap()
+            .is_empty());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

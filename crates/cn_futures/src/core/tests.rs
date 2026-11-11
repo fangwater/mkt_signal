@@ -320,14 +320,14 @@ fn duplicate_fill_is_idempotent_and_conflicting_identity_fails() {
         .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
         .unwrap();
     let first = fill(&request, "TRADE-A", 1);
-    assert!(core.on_fill(first.clone()).unwrap());
-    assert!(!core.on_fill(first.clone()).unwrap());
+    assert!(core.on_fill(&first.clone()).unwrap());
+    assert!(!core.on_fill(&first.clone()).unwrap());
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).today, 1);
     let mut changed = first;
     changed.lots = 2;
-    assert!(core.on_fill(changed).is_err());
+    assert!(core.on_fill(&changed).is_err());
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).today, 1);
-    core.on_fill(fill(&request, "TRADE-B", 2)).unwrap();
+    core.on_fill(&fill(&request, "TRADE-B", 2)).unwrap();
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).today, 3);
     assert_eq!(core.order(&request.key).unwrap().remaining(), 0);
 }
@@ -337,12 +337,12 @@ fn cumulative_order_report_does_not_invent_a_fill_or_release_pending_fill() {
     let request = core
         .prepare(intent(Side::Buy, Offset::Open, 3), Instant::now())
         .unwrap();
-    core.on_order(update(&request, 3, OrderStatus::Filled))
+    core.on_order(&update(&request, 3, OrderStatus::Filled))
         .unwrap();
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).total(), 0);
     assert_eq!(core.order(&request.key).unwrap().remaining(), 3);
-    core.on_fill(fill(&request, "TRADE-A", 3)).unwrap();
-    core.on_order(update(&request, 0, OrderStatus::Working))
+    core.on_fill(&fill(&request, "TRADE-A", 3)).unwrap();
+    core.on_order(&update(&request, 0, OrderStatus::Working))
         .unwrap();
     assert_eq!(
         core.order(&request.key).unwrap().status,
@@ -374,11 +374,11 @@ fn cancel_confirmation_retains_unseen_reported_fill_reservation() {
         .unwrap();
     core.prepare_cancel(&request.key, Instant::now()).unwrap();
     assert_eq!(core.order(&request.key).unwrap().remaining(), 3);
-    core.on_order(update(&request, 1, OrderStatus::Cancelled))
+    core.on_order(&update(&request, 1, OrderStatus::Cancelled))
         .unwrap();
     assert_eq!(core.order(&request.key).unwrap().remaining(), 1);
     assert_eq!(core.view().available_local_budget, 990_000.0);
-    core.on_fill(fill(&request, "LATE-FILL", 1)).unwrap();
+    core.on_fill(&fill(&request, "LATE-FILL", 1)).unwrap();
     assert_eq!(core.order(&request.key).unwrap().remaining(), 0);
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).today, 1);
 }
@@ -401,11 +401,11 @@ fn close_allocation_reserves_dates_and_releases_only_cancelled_part() {
     assert!(core
         .prepare(intent(Side::Sell, Offset::Close, 1), Instant::now())
         .is_err());
-    core.on_order(update(&request, 1, OrderStatus::Cancelled))
+    core.on_order(&update(&request, 1, OrderStatus::Cancelled))
         .unwrap();
     let p = core.position(Venue::Cffex, "IF2612", Side::Buy);
     assert_eq!((p.frozen_today, p.frozen_yesterday), (1, 0));
-    core.on_fill(fill(&request, "CLOSE-ONE", 1)).unwrap();
+    core.on_fill(&fill(&request, "CLOSE-ONE", 1)).unwrap();
     let p = core.position(Venue::Cffex, "IF2612", Side::Buy);
     assert_eq!((p.today, p.yesterday, p.frozen()), (0, 2, 0));
 }
@@ -511,7 +511,7 @@ fn snapshot_seeds_trade_deduplication_and_existing_open_reservations() {
     });
     s.max_order_ref = 101;
     core.restore(s).unwrap();
-    assert!(!core.on_fill(f).unwrap());
+    assert!(!core.on_fill(&f).unwrap());
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).today, 1);
     assert_eq!(core.order(&request.key).unwrap().remaining(), 2);
     assert_eq!(
@@ -535,7 +535,7 @@ fn unknown_fill_is_an_error_not_silently_dropped_or_attributed() {
         limit_price: 4000.0,
     };
     assert!(core
-        .on_fill(fill(&request, "VENUE-LIQUIDATION", 1))
+        .on_fill(&fill(&request, "VENUE-LIQUIDATION", 1))
         .is_err());
     assert_eq!(core.position(Venue::Cffex, "IF2612", Side::Buy).total(), 0);
 }
@@ -549,7 +549,7 @@ fn cancel_rejection_via_order_stream_allows_retry_without_releasing() {
     core.prepare_cancel(&request.key, Instant::now()).unwrap();
     let mut rejected = update(&request, 0, OrderStatus::Working);
     rejected.cancel_rejected = true;
-    core.on_order(rejected).unwrap();
+    core.on_order(&rejected).unwrap();
     assert_eq!(core.order(&request.key).unwrap().remaining(), 3);
     assert!(core.prepare_cancel(&request.key, Instant::now()).is_ok());
 }
@@ -602,11 +602,11 @@ fn yesterday_first_cancellation_preserves_missing_fill_in_older_inventory() {
     let request = core
         .prepare(intent(Side::Sell, Offset::Close, 3), Instant::now())
         .unwrap();
-    core.on_order(update(&request, 1, OrderStatus::Cancelled))
+    core.on_order(&update(&request, 1, OrderStatus::Cancelled))
         .unwrap();
     let p = core.position(Venue::Cffex, "IF2612", Side::Buy);
     assert_eq!((p.frozen_today, p.frozen_yesterday), (0, 1));
-    core.on_fill(fill(&request, "OLD-CLOSE", 1)).unwrap();
+    core.on_fill(&fill(&request, "OLD-CLOSE", 1)).unwrap();
     let p = core.position(Venue::Cffex, "IF2612", Side::Buy);
     assert_eq!((p.today, p.yesterday, p.frozen()), (2, 0, 0));
 }
@@ -675,9 +675,9 @@ fn shfe_close_requires_exact_date_inventory() {
         ),
         (0, 3)
     );
-    c.on_order(cn_update(&p, 1, OrderStatus::Cancelled))
+    c.on_order(&cn_update(&p, 1, OrderStatus::Cancelled))
         .unwrap();
-    c.on_fill(cn_fill(&p, "YESTERDAY-CLOSE", 1)).unwrap();
+    c.on_fill(&cn_fill(&p, "YESTERDAY-CLOSE", 1)).unwrap();
     let p = c.position(Venue::Shfe, "cu2612", Side::Buy);
     assert_eq!((p.today, p.yesterday, p.frozen()), (2, 2, 0));
 }
@@ -803,7 +803,7 @@ fn native_cancel_before_system_identity_retains_reservations() {
     assert!(r.core.order(&p.key).unwrap().cancel_pending);
     assert_eq!(r.trader.cancels, 1);
     r.core
-        .on_order(cn_update(&p, 0, OrderStatus::Working))
+        .on_order(&cn_update(&p, 0, OrderStatus::Working))
         .unwrap();
     assert!(r.cancel(&p.key, Instant::now()).is_err());
     assert_eq!(r.trader.cancels, 1);
@@ -831,10 +831,10 @@ fn native_system_ids_and_trade_ids_are_venue_scoped() {
     for p in [&a, &b] {
         let mut u = cn_update(p, 0, OrderStatus::Working);
         u.system_id = "123".into();
-        c.on_order(u).unwrap();
+        c.on_order(&u).unwrap();
         let mut f = cn_fill(p, "456", 1);
         f.system_id = "123".into();
-        c.on_fill(f).unwrap();
+        c.on_fill(&f).unwrap();
     }
     assert_eq!(c.position(Venue::Shfe, "cu2612", Side::Sell).today, 1);
     assert_eq!(c.position(Venue::Ine, "sc2612", Side::Sell).today, 1);
@@ -868,7 +868,7 @@ fn recovered_manual_reference_zero_does_not_erase_system_order_identity() {
         });
     }
     c.restore(s).unwrap();
-    c.on_fill(Fill {
+    c.on_fill(&Fill {
         identity: TradeIdentity {
             venue: Venue::Ine,
             symbol: "sc2612".into(),
@@ -894,7 +894,7 @@ fn recovery_cannot_forget_known_fills_or_change_pending_order_identity() {
     let p = c
         .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
         .unwrap();
-    c.on_fill(fill(&p, "FACT", 1)).unwrap();
+    c.on_fill(&fill(&p, "FACT", 1)).unwrap();
     assert!(c.restore(snapshot()).is_err());
     let mut c = core();
     let p = c
@@ -986,7 +986,7 @@ fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
         .prepare(market_intent(Side::Sell, 1), Instant::now())
         .unwrap();
     let u = cn_update(&p, 0, OrderStatus::Working);
-    c.on_order(u.clone()).unwrap();
+    c.on_order(&u.clone()).unwrap();
     let mut s = cn_snapshot();
     s.instruments[0].market_lots = Some(LotLimits {
         minimum: 1,
@@ -1005,7 +1005,7 @@ fn recovery_preserves_zero_price_market_orders_and_self_trade_protection() {
     let mut changed = u;
     changed.price_type = PriceType::Limit;
     changed.limit_price = 4000.0;
-    assert!(c.on_order(changed.clone()).is_err());
+    assert!(c.on_order(&changed.clone()).is_err());
     s.orders[0] = changed;
     assert!(c.restore(s).is_err());
     assert_eq!(
@@ -1233,7 +1233,7 @@ fn fill_reference_from_another_native_group_cannot_match_a_local_order() {
         session: crate::yida::group_session_key(20261109, 7),
         order_ref: order.key.order_ref.clone(),
     });
-    assert!(runtime.on_fill(fill).is_err());
+    assert!(runtime.on_fill(&fill).is_err());
     assert_eq!(runtime.order(&order.key).unwrap().filled, 0);
 }
 
@@ -1299,9 +1299,9 @@ fn option_buy_open_and_buy_close_reserve_premium_and_sells_do_not_credit_cash() 
             .unwrap();
         let held = if offset == Offset::Open { 100.0 } else { 0.0 };
         assert_eq!(c.order(&sell.key).unwrap().local_cash_held, held);
-        c.on_order(cn_update(&sell, 1, OrderStatus::Filled))
+        c.on_order(&cn_update(&sell, 1, OrderStatus::Filled))
             .unwrap();
-        c.on_fill(cn_fill(&sell, "option-sell", 1)).unwrap();
+        c.on_fill(&cn_fill(&sell, "option-sell", 1)).unwrap();
         assert_eq!(c.view().available_local_budget, 1_000_000.0 - held);
     }
 }
@@ -1346,7 +1346,7 @@ fn option_close_partial_cancel_refunds_original_cash_unit_and_retains_unseen_fil
     let mut rules = option_snapshot().instruments;
     rules[0].option.as_mut().unwrap().cash_buffer_per_buy_lot = 500.0;
     c.replace_instruments(rules).unwrap();
-    c.on_order(cn_update(&p, 1, OrderStatus::Cancelled))
+    c.on_order(&cn_update(&p, 1, OrderStatus::Cancelled))
         .unwrap();
     assert_eq!(c.order(&p.key).unwrap().local_cash_held, 1010.0);
     assert_eq!(
@@ -1356,8 +1356,8 @@ fn option_close_partial_cancel_refunds_original_cash_unit_and_retains_unseen_fil
     );
     assert_eq!(c.view().available_local_budget, 1_000_000.0 - 1010.0);
     let fill = cn_fill(&p, "option-close-partial", 1);
-    c.on_fill(fill.clone()).unwrap();
-    assert!(!c.on_fill(fill).unwrap());
+    c.on_fill(&fill.clone()).unwrap();
+    assert!(!c.on_fill(&fill).unwrap());
     assert_eq!(
         c.position(Venue::Shfe, "cu2612C106000", Side::Sell).today,
         1
@@ -1428,7 +1428,29 @@ fn assert_working_index(core: &TradingCore) {
         .filter(|(_, o)| o.remaining() > 0)
         .map(|(k, _)| k)
         .collect();
-    assert_eq!(expected, core.working_orders.iter().collect());
+    let actual: HashSet<_> = core
+        .working_by_symbol
+        .iter()
+        .flatten()
+        .map(|id| &core.orders.slots[id.0].order.key)
+        .collect();
+    assert_eq!(expected, actual);
+    for (symbol, ids) in core.working_by_symbol.iter().enumerate() {
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(core.orders.slots[id.0].working_index, Some(index));
+            assert_eq!(core.orders.slots[id.0].symbol.0, symbol);
+        }
+        for (side, number) in [(Side::Buy, 0), (Side::Sell, 1)] {
+            assert_eq!(
+                core.pending_open[symbol][number],
+                ids.iter()
+                    .map(|id| &core.orders.slots[id.0].order)
+                    .filter(|o| o.request.offset == Offset::Open && o.request.side == side)
+                    .map(|o| i64::from(o.remaining()))
+                    .sum::<i64>()
+            );
+        }
+    }
     assert_eq!(
         core.working_lots,
         core.orders
@@ -1446,7 +1468,7 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
             .prepare(intent(Side::Sell, Offset::Open, lots), Instant::now())
             .unwrap();
         assert_working_index(&c);
-        c.on_order(update(&p, traded, status)).unwrap();
+        c.on_order(&update(&p, traded, status)).unwrap();
         assert_eq!(c.working_lots, i64::from(traded));
         assert_working_index(&c);
         // A terminal report still reserves its missing factual fills for both limits and STP.
@@ -1464,10 +1486,10 @@ fn terminal_reports_and_stale_duplicates_keep_working_risk_until_factual_fills()
             .contains("self-trade"));
         for n in 0..traded {
             let f = fill(&p, &format!("indexed-fill-{n}"), 1);
-            assert!(c.on_fill(f.clone()).unwrap());
-            assert!(!c.on_fill(f).unwrap());
+            assert!(c.on_fill(&f.clone()).unwrap());
+            assert!(!c.on_fill(&f).unwrap());
             assert_working_index(&c);
-            c.on_order(update(&p, 0, OrderStatus::Working)).unwrap();
+            c.on_order(&update(&p, 0, OrderStatus::Working)).unwrap();
             assert_working_index(&c);
         }
         assert_eq!(c.working_lots, 0);
@@ -1526,4 +1548,71 @@ fn working_index_matches_account_snapshot_and_batch_rollback() {
     assert_eq!(r.trader.inserts, 0);
     assert_eq!(r.core.working_lots, 0);
     assert_working_index(&r.core);
+}
+
+#[test]
+fn failed_in_place_updates_leave_orders_positions_cash_and_indexes_unchanged() {
+    let mut c = core();
+    let a = c
+        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
+        .unwrap();
+    let b = c
+        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+        .unwrap();
+    let before = serde_json::to_value(c.view()).unwrap();
+    // A new system ID must not bind before the cumulative quantity is validated.
+    assert!(c.on_order(&update(&a, 1, OrderStatus::Filled)).is_err());
+    assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
+    assert!(c.order(&a.key).unwrap().system_id.is_empty());
+    assert!(c.on_fill(&fill(&a, "overfill", 3)).is_err());
+    assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
+    assert!(c.system_ids[venue_index(Venue::Cffex)].is_empty());
+    c.on_order(&update(&a, 0, OrderStatus::Working)).unwrap();
+    let before = serde_json::to_value(c.view()).unwrap();
+    let mut collision = update(&b, 0, OrderStatus::Working);
+    collision.system_id = c.order(&a.key).unwrap().system_id.clone();
+    assert!(c.on_order(&collision).is_err());
+    assert_eq!(serde_json::to_value(c.view()).unwrap(), before);
+    assert!(c.order(&b.key).unwrap().system_id.is_empty());
+    assert_working_index(&c);
+}
+
+#[test]
+fn numeric_indexes_survive_rule_reordering_omission_and_recovery() {
+    let mut c = core();
+    c.reserve_orders(16_384).unwrap();
+    let p = c
+        .prepare(intent(Side::Buy, Offset::Open, 2), Instant::now())
+        .unwrap();
+    let symbol = c.symbols.id(Venue::Cffex, "IF2612").unwrap();
+    let mut rules = snapshot().instruments;
+    let mut other = rules[0].clone();
+    other.symbol = "IF2701".into();
+    rules.insert(0, other);
+    c.replace_instruments(rules.clone()).unwrap();
+    assert_eq!(c.symbols.id(Venue::Cffex, "IF2612"), Some(symbol));
+    c.replace_instruments(vec![rules[0].clone()]).unwrap();
+    assert!(c
+        .prepare(intent(Side::Buy, Offset::Open, 1), Instant::now())
+        .is_err());
+    // Removing trading permission must still allow factual fills for the old slot.
+    c.on_order(&update(&p, 2, OrderStatus::Filled)).unwrap();
+    c.on_fill(&fill(&p, "old-rule-fact", 2)).unwrap();
+    assert_eq!(c.position(Venue::Cffex, "IF2612", Side::Buy).today, 2);
+    assert_working_index(&c);
+    c.replace_instruments(rules).unwrap();
+    let mut image = snapshot();
+    image.orders = vec![update(&p, 2, OrderStatus::Filled)];
+    image.trades = vec![fill(&p, "old-rule-fact", 2)];
+    image.positions = vec![PositionSnapshot {
+        venue: Venue::Cffex,
+        symbol: "IF2612".into(),
+        side: Side::Buy,
+        today: 2,
+        yesterday: 0,
+    }];
+    c.restore(image).unwrap();
+    assert!(c.orders.slots.capacity() >= 16_384);
+    assert!(!c.on_fill(&fill(&p, "old-rule-fact", 2)).unwrap());
+    assert_working_index(&c);
 }

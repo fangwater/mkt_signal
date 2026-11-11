@@ -27,6 +27,8 @@ pub struct Config {
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     #[serde(default)]
+    pub preallocated_orders: usize,
+    #[serde(default)]
     pub sync_before_send: bool,
     pub user_id_env: String,
     pub password_env: String,

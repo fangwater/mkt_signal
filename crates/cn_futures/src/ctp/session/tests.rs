@@ -5,7 +5,7 @@ fn background_cash_and_complete_rule_queries_keep_business_session_ready() {
     let (mut session, mut now) = begin();
     for id in 1..=20 {
         let (_, event) = dispatch(&mut session, &mut now, id);
-        if session.on_event(&event, now).unwrap().is_some() {
+        if session.on_raw_event(&event, now).unwrap().is_some() {
             break;
         }
     }
@@ -15,7 +15,7 @@ fn background_cash_and_complete_rule_queries_keep_business_session_ready() {
     session.sent(ACCOUNT, 100, 0, now).unwrap();
     let mut account = response(ACCOUNT, 100);
     account.available = 123.0;
-    assert!(session.on_event(&account, now).unwrap().is_none());
+    assert!(session.on_raw_event(&account, now).unwrap().is_none());
     assert_eq!(session.take_cash_update(), Some(123.0));
     assert!(session.ready());
     now += Duration::from_secs(60);
@@ -23,7 +23,7 @@ fn background_cash_and_complete_rule_queries_keep_business_session_ready() {
     session.sent(INSTRUMENT, 101, 0, now).unwrap();
     let mut absent = response(INSTRUMENT, 101);
     absent.present = 0;
-    assert!(session.on_event(&absent, now).unwrap().is_none());
+    assert!(session.on_raw_event(&absent, now).unwrap().is_none());
     assert!(session.take_rule_update().unwrap().is_empty());
     assert!(session.ready());
 }
@@ -102,7 +102,7 @@ fn response(kind: i32, id: i32) -> RawEvent {
 fn begin() -> (Session, Instant) {
     let now = Instant::now();
     let mut s = Session::new(config(), "TEST".into(), now);
-    s.on_event(
+    s.on_raw_event(
         &RawEvent {
             kind: CONNECTED,
             ..RawEvent::default()
@@ -127,7 +127,7 @@ fn bootstrap_requires_two_quiet_matching_passes_and_normalizes_yesterday() {
     for id in 1..=20 {
         let (kind, e) = dispatch(&mut s, &mut now, id);
         *counts.entry(kind).or_insert(0) += 1;
-        output = s.on_event(&e, now).unwrap();
+        output = s.on_raw_event(&e, now).unwrap();
         if output.is_some() {
             break;
         }
@@ -147,10 +147,10 @@ fn late_response_cannot_complete_a_different_request() {
     let (mut s, mut now) = begin();
     let (kind, mut e) = dispatch(&mut s, &mut now, 42);
     e.request = 41;
-    assert!(s.on_event(&e, now).unwrap().is_none());
+    assert!(s.on_raw_event(&e, now).unwrap().is_none());
     assert!(s.request_due(now).unwrap().is_none());
     e.request = 42;
-    s.on_event(&e, now).unwrap();
+    s.on_raw_event(&e, now).unwrap();
     assert_eq!(kind, AUTHENTICATED);
     assert_eq!(
         s.request_due(now + Duration::from_secs(2)).unwrap(),
@@ -173,7 +173,7 @@ fn partial_query_error_and_timeout_do_not_create_ready_state() {
     let (_, mut e) = dispatch(&mut s, &mut now, 1);
     e.error = 7;
     e.last = 0;
-    assert!(s.on_event(&e, now).is_err());
+    assert!(s.on_raw_event(&e, now).is_err());
     assert!(!s.ready());
     assert!(s.request_due(now + Duration::from_secs(60)).is_err());
 }
@@ -184,9 +184,9 @@ fn missing_allowlisted_contract_is_a_complete_snapshot_failure() {
         let (kind, mut e) = dispatch(&mut s, &mut now, id);
         if kind == INSTRUMENT {
             e.present = 0;
-            assert!(s.on_event(&e, now).is_err());
+            assert!(s.on_raw_event(&e, now).is_err());
         } else {
-            s.on_event(&e, now).unwrap();
+            s.on_raw_event(&e, now).unwrap();
         }
     }
     assert!(!s.ready());
@@ -207,10 +207,10 @@ fn concurrent_live_event_invalidates_snapshot_pass() {
                 };
                 set(&mut live.exchange, "CFFEX");
                 set(&mut live.investor, "TEST");
-                s.on_event(&live, now).unwrap();
+                s.on_raw_event(&live, now).unwrap();
             }
         }
-        if s.on_event(&e, now).unwrap().is_some() {
+        if s.on_raw_event(&e, now).unwrap().is_some() {
             ready = true;
             break;
         }
@@ -225,10 +225,10 @@ fn unsupported_hedge_inventory_is_not_ignored() {
         let (kind, mut e) = dispatch(&mut s, &mut now, id);
         if kind == POSITION {
             e.hedge = 51;
-            assert!(s.on_event(&e, now).is_err());
+            assert!(s.on_raw_event(&e, now).is_err());
             break;
         } else {
-            s.on_event(&e, now).unwrap();
+            s.on_raw_event(&e, now).unwrap();
         }
     }
     assert!(!s.ready());
@@ -237,7 +237,7 @@ fn unsupported_hedge_inventory_is_not_ignored() {
 fn disconnect_abandons_old_correlation_and_requires_new_login() {
     let (mut s, mut now) = begin();
     let (_, e) = dispatch(&mut s, &mut now, 1);
-    s.on_event(
+    s.on_raw_event(
         &RawEvent {
             kind: DISCONNECTED,
             ..RawEvent::default()
@@ -245,12 +245,12 @@ fn disconnect_abandons_old_correlation_and_requires_new_login() {
         now,
     )
     .unwrap();
-    assert!(s.on_event(&e, now).unwrap().is_none());
+    assert!(s.on_raw_event(&e, now).unwrap().is_none());
     assert!(s
         .request_due(now + Duration::from_secs(10))
         .unwrap()
         .is_none());
-    s.on_event(
+    s.on_raw_event(
         &RawEvent {
             kind: CONNECTED,
             ..RawEvent::default()
@@ -279,7 +279,7 @@ fn relative_margin_adds_the_exchange_base_and_preserves_full_account_fields() {
             e.account_values[18] = e.available;
             e.account_values[14] = 52.5;
         }
-        if let Some(value) = session.on_event(&e, now).unwrap() {
+        if let Some(value) = session.on_raw_event(&e, now).unwrap() {
             snapshot = Some(value);
             break;
         }
@@ -306,7 +306,7 @@ fn read_only_bootstrap_never_confirms_an_unconfirmed_settlement() {
         if kind == SETTLEMENT_STATUS {
             e.present = 0;
         }
-        if session.on_event(&e, now).unwrap().is_some() {
+        if session.on_raw_event(&e, now).unwrap().is_some() {
             complete = true;
             break;
         }
@@ -323,13 +323,19 @@ fn missing_fee_rows_do_not_release_trading_and_late_rates_cannot_match() {
         if kind == COMMISSION {
             let mut late = e;
             late.request -= 1;
-            assert!(session.on_event(&late, now).unwrap().is_none());
+            assert!(session.on_raw_event(&late, now).unwrap().is_none());
             e.present = 0;
-            assert!(session.on_event(&e, now).is_err());
+            assert!(session.on_raw_event(&e, now).is_err());
             assert!(!session.ready());
             return;
         }
-        session.on_event(&e, now).unwrap();
+        session.on_raw_event(&e, now).unwrap();
     }
     panic!("commission query was not scheduled");
+}
+
+impl Session {
+    fn on_raw_event(&mut self, e: &RawEvent, now: Instant) -> Result<Option<Snapshot>> {
+        self.on_event(e, now, &super::super::decode_event(e))
+    }
 }

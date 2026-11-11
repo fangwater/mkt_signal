@@ -43,9 +43,15 @@ impl Session {
         &mut self,
         e: &RawEvent,
         config: &config::Config,
-        key: Option<OrderKey>,
+        decoded: &Result<DecodedUpdate>,
     ) -> Result<Option<Snapshot>> {
-        let result = self.process(e, config, key);
+        if self.poisoned && !matches!(e.kind, CONNECTED | DISCONNECTED) {
+            return Ok(None);
+        }
+        let result = decoded
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+            .and_then(|parsed| self.process(e, config, parsed));
         if result.is_err() {
             self.ready = false;
             self.snapshot = None;
@@ -57,9 +63,12 @@ impl Session {
         &mut self,
         e: &RawEvent,
         config: &config::Config,
-        key: Option<OrderKey>,
+        decoded: &DecodedUpdate,
     ) -> Result<Option<Snapshot>> {
         if self.poisoned && !matches!(e.kind, CONNECTED | DISCONNECTED) {
+            return Ok(None);
+        }
+        if self.is_pre_snapshot_rejection(e) {
             return Ok(None);
         }
         ensure!(
@@ -296,13 +305,22 @@ impl Session {
             }
             ORDER => {
                 if let Some(s) = &mut self.snapshot {
-                    s.orders
-                        .push(e.to_order(key.context("missing order key")?)?);
+                    s.orders.push(
+                        decoded
+                            .order()
+                            .context("missing decoded native order")?
+                            .clone(),
+                    );
                 }
             }
             TRADE => {
                 if let Some(s) = &mut self.snapshot {
-                    s.trades.push(e.to_fill()?);
+                    s.trades.push(
+                        decoded
+                            .fill()
+                            .context("missing decoded native fill")?
+                            .clone(),
+                    );
                 }
             }
             FATAL => anyhow::bail!("native SDK fatal/missing-order event; stop and recover"),

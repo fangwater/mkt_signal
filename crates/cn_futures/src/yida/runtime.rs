@@ -44,8 +44,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         config.sync_before_send,
     )?;
     let trader = YidaTrader::new(&config, credentials)?;
+    let mut core = TradingCore::new(config.risk.clone(), scope())?;
+    core.reserve_orders(config.preallocated_orders)?;
     let mut runtime = SingleLoop {
-        core: TradingCore::new(config.risk.clone(), scope())?,
+        core,
         trader,
         execute,
     };
@@ -102,33 +104,12 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     runtime.trader.login()?;
                 }
                 let was_ready = session.ready;
+                let historical = session.is_pre_snapshot_rejection(&e);
+                let decoded = decode_event(&e, historical);
                 let outcome = (|| -> Result<()> {
-                    if session.is_pre_snapshot_rejection(&e) {
-                        // Validate and retain the raw login replay without assigning ownership.
-                        // No core reservations are released; unresolved local orders must still
-                        // reconcile against the complete caught-up snapshot.
-                        e.to_order(OrderKey {
-                            session: group_session_key(e.day, e.order_group),
-                            order_ref: e.reference.to_string(),
-                        })?;
-                        return Ok(());
-                    }
-                    let key = if e.kind == ORDER {
-                        Some(runtime.trader.key(&e)?)
-                    } else {
-                        None
-                    };
-                    if e.kind == ORDER {
-                        e.to_order(
-                            key.clone()
-                                .ok_or_else(|| anyhow::anyhow!("missing native order key"))?,
-                        )?;
-                        runtime.trader.observe_order(&e)?;
-                    }
-
-                    if let Some(s) = session.on_event(&e, &config, key.clone())? {
-                        let trades = s.trades.clone();
-                        runtime.core.restore(s)?;
+                    if let Some(snapshot) = session.on_event(&e, &config, &decoded)? {
+                        let trades = snapshot.trades.clone();
+                        runtime.core.restore(snapshot)?;
                         if let Err(error) = journal.reconciled(&mut runtime.core, trades) {
                             runtime.core.block("durable recovery failed");
                             return Err(error);
@@ -136,52 +117,26 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                         runtime.trader.recovered();
                         return Ok(());
                     }
+                    let parsed = decoded
+                        .as_ref()
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    if historical {
+                        return Ok(());
+                    }
                     if session.ready && e.replay == 0 {
-                        match e.kind {
-                            ORDER => runtime.core.on_order(e.to_order(key.unwrap())?)?,
-                            TRADE => {
-                                runtime.core.on_fill(e.to_fill()?)?;
-                            }
-                            // The SDK explicitly does not promise one-to-one cancel-error
-                            // correlation. Preserve this evidence without changing OMS state.
-                            FAILED_CANCEL => {}
-                            ACCOUNT => runtime.core.constrain_cash(e.available)?,
-                            _ => {}
-                        }
+                        apply_live_update(&mut runtime, &e, parsed)?;
                     }
                     Ok(())
                 })();
-                if e.kind == TRADE {
-                    if let Ok(fill) = e.to_fill() {
-                        let mutation = if was_ready && outcome.is_ok() {
-                            crate::persistence::projection_for(
-                                &runtime.core,
-                                &runtime
-                                    .core
-                                    .fill_order_key(&fill)
-                                    .into_iter()
-                                    .collect::<Vec<_>>(),
-                                &[],
-                            )
-                        } else {
-                            Default::default()
-                        };
-                        journal.trade_with_projection(
-                            fill,
-                            Some(e.commission),
-                            Some(e.native_time),
-                            received.received_us,
-                            mutation,
-                        )?;
-                    }
-                }
-                if was_ready && outcome.is_ok() && matches!(e.kind, ORDER | FAILED_CANCEL) {
-                    let observed = if e.kind == ORDER {
-                        runtime.trader.key(&e).ok().into_iter().collect::<Vec<_>>()
-                    } else {
-                        vec![]
-                    };
-                    journal.orders(&runtime.core, &observed, &observed)?;
+                if let Ok(parsed) = &decoded {
+                    journal_update(
+                        &journal,
+                        &runtime.core,
+                        &e,
+                        parsed,
+                        received.received_us,
+                        was_ready && outcome.is_ok(),
+                    )?;
                 }
                 if was_ready && !session.ready {
                     recovery_since = Instant::now();
@@ -201,10 +156,11 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     || recovery_since.elapsed() < Duration::from_millis(config.response_timeout_ms),
                 "Yida login/recovery timed out; existing venue orders not cancelled"
             );
-            if let Some(request) = runtime.trader.expired_response(
-                Instant::now(),
-                Duration::from_millis(config.response_timeout_ms),
-            ) {
+            if let Some(request) = runtime
+                .trader
+                .next_response_deadline()
+                .and_then(|_| runtime.trader.expired_response(Instant::now()))
+            {
                 runtime.core.block("native order/cancel response timed out; retain reservation and reconcile; no automatic retry");
                 journal.record(json!({"type":"trading_blocked","request":request,"error":"native order/cancel response timed out; reservation retained; no automatic retry"}),true)?;
             }
@@ -324,7 +280,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     Some(e.native_time),
                     received.received_us,
                 )?;
-                if core.on_fill(fill).is_err() {
+                if core.on_fill(&fill).is_err() {
                     core.block("shutdown fill requires recovery");
                 }
             }
@@ -332,7 +288,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         if e.kind == ORDER {
             if let Ok(update) = e.recovered_key().and_then(|key| e.to_order(key)) {
                 let key = update.key.clone();
-                if core.on_order(update).is_ok() {
+                if core.on_order(&update).is_ok() {
                     journal.state(&core, &[key])?;
                 } else {
                     core.block("shutdown order requires recovery");
@@ -377,4 +333,62 @@ fn pin_business_thread(core: usize) -> Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn pin_business_thread(_core: usize) -> Result<()> {
     anyhow::bail!("business_core pinning requires Linux")
+}
+
+/// Shared production/benchmark entry for already validated live factual updates.
+pub fn apply_live_update(
+    runtime: &mut SingleLoop<YidaTrader>,
+    e: &RawEvent,
+    parsed: &DecodedUpdate,
+) -> Result<()> {
+    match parsed {
+        DecodedUpdate::Order(order) => {
+            runtime.trader.observe_order(e, order)?;
+            runtime.core.on_order(order)?;
+        }
+        DecodedUpdate::Trade(fill) => {
+            runtime.core.on_fill(fill)?;
+        }
+        _ if e.kind == ACCOUNT => runtime.core.constrain_cash(e.available)?,
+        _ => {}
+    }
+    Ok(())
+}
+pub fn journal_update(
+    journal: &Journal,
+    core: &TradingCore,
+    e: &RawEvent,
+    parsed: &DecodedUpdate,
+    received_us: u64,
+    applied: bool,
+) -> Result<()> {
+    match parsed {
+        DecodedUpdate::Trade(fill) => {
+            let mutation = if applied {
+                crate::persistence::projection_for(
+                    core,
+                    core.fill_order_key(fill)
+                        .map(std::slice::from_ref)
+                        .unwrap_or_default(),
+                    &[],
+                )
+            } else {
+                Default::default()
+            };
+            journal.trade_with_projection(
+                fill.clone(),
+                Some(e.commission),
+                Some(e.native_time),
+                received_us,
+                mutation,
+            )?;
+        }
+        DecodedUpdate::Order(order) if applied => journal.orders(
+            core,
+            std::slice::from_ref(&order.key),
+            std::slice::from_ref(&order.key),
+        )?,
+        _ => {}
+    }
+    Ok(())
 }

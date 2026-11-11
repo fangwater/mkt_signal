@@ -21,6 +21,7 @@ auth_code_env = "CTP_AUTH_CODE"
 require_authentication = true
 # investor_id_env = "CTP_INVESTOR_ID" # Optional when InvestorID is the same as UserID.
 event_capacity = 8192
+preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
 query_interval_ms = 1100
 response_timeout_ms = 30000
 # 0 = busy polling. Choose/pin CPU after measuring on the actual execution machine.

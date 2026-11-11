@@ -68,9 +68,9 @@ fn options_inventory_uses_the_same_ledger_and_still_requires_a_trading_allowlist
         e.lots = 19;
         let mut session = Session::default();
         begin(&mut session, &c);
-        session.on_event(&e, &c, None).unwrap();
+        session.on_raw_event(&e, &c, None).unwrap();
         let snapshot = session
-            .on_event(
+            .on_raw_event(
                 &RawEvent {
                     kind: END,
                     day: 20261109,
@@ -106,7 +106,7 @@ fn options_inventory_uses_the_same_ledger_and_still_requires_a_trading_allowlist
             .is_err());
         begin(&mut session, &c);
         e.lots = -1;
-        assert!(session.on_event(&e, &c, None).is_err());
+        assert!(session.on_raw_event(&e, &c, None).is_err());
         assert_eq!(
             core.position(Venue::Ine, "sc2701C790", Side::Buy).yesterday,
             19
@@ -119,7 +119,7 @@ fn historical_account_notifications_do_not_establish_or_poison_the_recovery_base
     let c = config();
     let mut s = Session::default();
     for kind in [CONNECTED, LOGIN, INIT] {
-        s.on_event(
+        s.on_raw_event(
             &RawEvent {
                 kind,
                 day: 20261109,
@@ -131,7 +131,7 @@ fn historical_account_notifications_do_not_establish_or_poison_the_recovery_base
         .unwrap();
     }
     for login_count in [0, 2, 1] {
-        s.on_event(
+        s.on_raw_event(
             &RawEvent {
                 kind: ACCOUNT,
                 login_count,
@@ -146,7 +146,7 @@ fn historical_account_notifications_do_not_establish_or_poison_the_recovery_base
     }
     begin(&mut s, &c);
     let snapshot = s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -160,7 +160,7 @@ fn historical_account_notifications_do_not_establish_or_poison_the_recovery_base
     assert_eq!(snapshot.available_cash, 1_000_000.0);
     assert!(s.ready);
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: ACCOUNT,
                 login_count: 0,
@@ -468,7 +468,7 @@ fn historical_rejections_are_audit_only_before_the_snapshot_barrier() {
     begin(&mut s, &c);
     assert!(!s.is_pre_snapshot_rejection(&e));
     // A live update inside the snapshot must still invalidate recovery.
-    assert!(s.on_event(&e, &c, None).is_err());
+    assert!(s.on_raw_event(&e, &c, None).is_err());
     assert!(!s.is_pre_snapshot_rejection(&e));
 }
 
@@ -539,7 +539,7 @@ fn restored_core() -> crate::core::TradingCore {
     let mut session = Session::default();
     begin(&mut session, &c);
     let snapshot = session
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -585,7 +585,7 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
             reference: prepared.key.order_ref.parse().unwrap(),
             ..valid_order()
         };
-        core.on_order(e.to_order(prepared.key.clone()).unwrap())
+        core.on_order(&e.to_order(prepared.key.clone()).unwrap())
             .unwrap();
         assert_eq!(core.position(Venue::Shfe, "cu2612", Side::Buy).total(), 0);
         assert_eq!(core.order(&prepared.key).unwrap().filled, 0);
@@ -597,8 +597,8 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
             ..e
         };
         let fill = fill_event.to_fill().unwrap();
-        assert!(core.on_fill(fill.clone()).unwrap());
-        assert!(!core.on_fill(fill).unwrap());
+        assert!(core.on_fill(&fill.clone()).unwrap());
+        assert!(!core.on_fill(&fill).unwrap());
         assert_eq!(
             core.position(Venue::Shfe, "cu2612", Side::Buy).total(),
             i64::from(traded)
@@ -609,7 +609,7 @@ fn native_terminal_reports_before_fills_preserve_factual_positions_and_reservati
         }
         .to_fill()
         .unwrap();
-        assert!(core.on_fill(conflicting).is_err());
+        assert!(core.on_fill(&conflicting).is_err());
         assert_eq!(
             core.position(Venue::Shfe, "cu2612", Side::Buy).total(),
             i64::from(traded)
@@ -623,7 +623,7 @@ fn permission_change_inside_recovery_poisoned_snapshot_cannot_be_committed() {
     let mut s = Session::default();
     begin(&mut s, &c);
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: INVALIDATED,
                 ..RawEvent::default()
@@ -633,7 +633,7 @@ fn permission_change_inside_recovery_poisoned_snapshot_cannot_be_committed() {
         )
         .is_err());
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -668,7 +668,7 @@ fn begin(s: &mut Session, c: &config::Config) {
             ..RawEvent::default()
         },
     ] {
-        assert!(s.on_event(&e, c, None).unwrap().is_none());
+        assert!(s.on_raw_event(&e, c, None).unwrap().is_none());
     }
     let a = RawEvent {
         kind: ACCOUNT,
@@ -678,7 +678,7 @@ fn begin(s: &mut Session, c: &config::Config) {
         replay: 1,
         ..RawEvent::default()
     };
-    s.on_event(&a, c, None).unwrap();
+    s.on_raw_event(&a, c, None).unwrap();
     for (venue, symbol) in [("SHFE", "cu2612"), ("INE", "sc2612")] {
         let mut e = row(INSTRUMENT, venue, symbol);
         e.expiry = 20261220;
@@ -686,7 +686,7 @@ fn begin(s: &mut Session, c: &config::Config) {
         e.tick = 0.2;
         e.minimum = 1;
         e.maximum = 100;
-        s.on_event(&e, c, None).unwrap();
+        s.on_raw_event(&e, c, None).unwrap();
     }
 }
 #[test]
@@ -697,7 +697,7 @@ fn init_and_login_do_not_allow_trading_before_caught_up_end() {
     begin(&mut s, &c);
     assert!(!s.ready);
     let snap = s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -721,10 +721,10 @@ fn replay_keeps_shfe_today_and_ine_yesterday_separate() {
         e.position_direction = 2;
         e.date = date;
         e.lots = 3;
-        s.on_event(&e, &c, None).unwrap();
+        s.on_raw_event(&e, &c, None).unwrap();
     }
     let snap = s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -748,9 +748,9 @@ fn frozen_inventory_without_replayed_close_orders_blocks_snapshot() {
     e.date = 1;
     e.lots = 3;
     e.frozen = 1;
-    s.on_event(&e, &c, None).unwrap();
+    s.on_raw_event(&e, &c, None).unwrap();
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -769,7 +769,7 @@ fn interleaving_live_fills_and_multiple_logins_are_rejected() {
     begin(&mut s, &c);
     let mut e = row(TRADE, "SHFE", "cu2612");
     e.replay = 0;
-    assert!(s.on_event(&e, &c, None).is_err());
+    assert!(s.on_raw_event(&e, &c, None).is_err());
     s = Session::default();
     begin(&mut s, &c);
     e = RawEvent {
@@ -779,7 +779,7 @@ fn interleaving_live_fills_and_multiple_logins_are_rejected() {
         replay: 1,
         ..RawEvent::default()
     };
-    assert!(s.on_event(&e, &c, None).is_err());
+    assert!(s.on_raw_event(&e, &c, None).is_err());
 }
 #[test]
 fn vendor_codes_are_integer_and_shfe_close_dates_are_explicit() {
@@ -815,7 +815,7 @@ fn permission_changes_and_server_faults_require_recovery() {
     let c = config();
     let mut s = Session::default();
     begin(&mut s, &c);
-    s.on_event(
+    s.on_raw_event(
         &RawEvent {
             kind: END,
             day: 20261109,
@@ -826,7 +826,7 @@ fn permission_changes_and_server_faults_require_recovery() {
     )
     .unwrap();
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: INVALIDATED,
                 ..RawEvent::default()
@@ -838,7 +838,7 @@ fn permission_changes_and_server_faults_require_recovery() {
     assert!(!s.ready);
     let mut s = Session::default();
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: FATAL,
                 ..RawEvent::default()
@@ -856,9 +856,9 @@ fn failed_snapshot_cannot_be_reopened_by_late_end() {
     begin(&mut s, &c);
     let mut e = row(TRADE, "SHFE", "cu2612");
     e.replay = 0;
-    assert!(s.on_event(&e, &c, None).is_err());
+    assert!(s.on_raw_event(&e, &c, None).is_err());
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -872,7 +872,7 @@ fn failed_snapshot_cannot_be_reopened_by_late_end() {
     assert!(!s.ready);
     begin(&mut s, &c);
     assert!(s
-        .on_event(
+        .on_raw_event(
             &RawEvent {
                 kind: END,
                 day: 20261109,
@@ -1067,5 +1067,24 @@ fn option_metadata_mismatch_is_rejected_before_order_or_fill_conversion() {
         "SP cu2612&cu2701",
     ] {
         assert!(option_symbol_parts(Venue::Shfe, symbol).is_none());
+    }
+}
+
+impl session::Session {
+    fn on_raw_event(
+        &mut self,
+        e: &RawEvent,
+        config: &config::Config,
+        key: Option<OrderKey>,
+    ) -> anyhow::Result<Option<Snapshot>> {
+        let decoded = if e.kind == ORDER {
+            match key {
+                Some(key) => e.to_order(key).map(DecodedUpdate::Order),
+                None => decode_event(e, self.is_pre_snapshot_rejection(e)),
+            }
+        } else {
+            decode_event(e, self.is_pre_snapshot_rejection(e))
+        };
+        self.on_event(e, config, &decoded)
     }
 }

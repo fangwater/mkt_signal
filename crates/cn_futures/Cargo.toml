@@ -7,6 +7,7 @@ edition.workspace = true
 default = []
 ctp-sdk = ["dep:cc"]
 yida-sdk = ["dep:cc"]
+latency-metrics = []
 
 [dependencies]
 persist_common = { path = "../persist_common" }
@@ -40,3 +41,8 @@ path = "src/bin/yida_trader.rs"
 [[bench]]
 name = "native_hot_path"
 harness = false
+
+[[bench]]
+name = "native_pipeline"
+harness = false
+required-features = ["yida-sdk", "latency-metrics"]

@@ -51,13 +51,24 @@ pub fn group_session_key(day: i32, group: i32) -> String {
     }
 }
 pub fn parse_group_key(key: &OrderKey) -> Result<(i32, i32, i32)> {
-    let parts: Vec<_> = key.session.split(':').collect();
+    let mut parts = key.session.split(':');
     ensure!(
-        parts.len() == 4 && parts[0] == "yida" && parts[2] == "group",
+        parts.next() == Some("yida"),
+        "invalid native group identity"
+    );
+    let day = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing native trading day"))?
+        .parse::<i32>()?;
+    ensure!(
+        parts.next() == Some("group"),
         "order has no native group identity"
     );
-    let day = parts[1].parse::<i32>()?;
-    let group = parts[3].parse::<i32>()?;
+    let group = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing native order group"))?
+        .parse::<i32>()?;
+    ensure!(parts.next().is_none(), "invalid native group identity");
     let reference = key.order_ref.parse::<i32>()?;
     ensure!(
         day.to_string().len() == 8 && (1..=255).contains(&group) && reference > 0,
@@ -146,14 +157,14 @@ pub fn text(bytes: &[u8]) -> Result<String> {
 impl RawEvent {
     pub fn option_contract(&self, cash_buffer: f64) -> Result<Option<OptionContract>> {
         let venue = self.venue()?;
-        let symbol = text(&self.symbol)?;
+        let symbol = crate::ctp::text_ref(&self.symbol)?;
         ensure!(
             matches!(venue, Venue::Shfe | Venue::Ine),
             "native contract outside SHFE/INE scope"
         );
         if self.product_class == 1 {
             ensure!(
-                is_future_symbol(venue, &symbol) && self.options_type == 0,
+                is_future_symbol(venue, symbol) && self.options_type == 0,
                 "native future class/symbol mismatch"
             );
             return Ok(None);
@@ -176,11 +187,11 @@ impl RawEvent {
             upper_limit_price: self.upper_limit_price,
             cash_buffer_per_buy_lot: cash_buffer,
         };
-        option.validate(venue, &symbol)?;
+        option.validate(venue, symbol)?;
         Ok(Some(option))
     }
     pub fn venue(&self) -> Result<Venue> {
-        Venue::parse(&text(&self.exchange)?)
+        Venue::parse(crate::ctp::text_ref(&self.exchange)?)
     }
     pub fn side(&self) -> Result<Side> {
         match self.direction {
@@ -355,3 +366,21 @@ impl RawEvent {
 
 #[cfg(test)]
 mod tests;
+
+pub fn decode_event(e: &RawEvent, historical_rejection: bool) -> Result<DecodedUpdate> {
+    Ok(match e.kind {
+        ORDER => {
+            let key = if historical_rejection {
+                OrderKey {
+                    session: group_session_key(e.day, e.order_group),
+                    order_ref: e.reference.to_string(),
+                }
+            } else {
+                e.recovered_key()?
+            };
+            DecodedUpdate::Order(e.to_order(key)?)
+        }
+        TRADE => DecodedUpdate::Trade(e.to_fill()?),
+        _ => DecodedUpdate::None,
+    })
+}

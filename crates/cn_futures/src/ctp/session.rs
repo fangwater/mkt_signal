@@ -165,14 +165,19 @@ impl Session {
         self.positions.clear();
     }
     fn owns(&self, e: &RawEvent) -> Result<bool> {
-        if text(&e.investor)? != self.investor {
+        if text_ref(&e.investor)? != self.investor {
             return Ok(false);
         }
-        Venue::parse(&text(&e.exchange)?)?;
+        Venue::parse(text_ref(&e.exchange)?)?;
         Ok(true)
     }
 
-    pub fn on_event(&mut self, e: &RawEvent, now: Instant) -> Result<Option<Snapshot>> {
+    pub fn on_event(
+        &mut self,
+        e: &RawEvent,
+        now: Instant,
+        decoded: &Result<DecodedUpdate>,
+    ) -> Result<Option<Snapshot>> {
         if e.kind == CONNECTED {
             self.ready = false;
             self.maintenance = false;
@@ -380,10 +385,24 @@ impl Session {
                 }
             }
             QUERY_ORDER if e.present != 0 && self.owns(e)? => {
-                self.orders.push(e.to_order()?);
+                self.orders.push(
+                    decoded
+                        .as_ref()
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                        .order()
+                        .context("missing decoded CTP order")?
+                        .clone(),
+                );
             }
             QUERY_TRADE if e.present != 0 && self.owns(e)? => {
-                self.trades.push(e.to_fill()?);
+                self.trades.push(
+                    decoded
+                        .as_ref()
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                        .fill()
+                        .context("missing decoded CTP fill")?
+                        .clone(),
+                );
             }
             POSITION if e.present != 0 && self.owns(e)? && e.volume != 0 => {
                 ensure!(
@@ -432,10 +451,8 @@ impl Session {
             _ => {}
         }
         ensure!(
-            self.orders.len() <= 200_000
-                && self.trades.len() <= 400_000
-                && self.positions.len() <= 20_000,
-            "CTP bootstrap snapshot capacity exceeded"
+            self.positions.len() <= 20_000,
+            "CTP bootstrap position snapshot capacity exceeded"
         );
         if e.last == 0 {
             return Ok(None);

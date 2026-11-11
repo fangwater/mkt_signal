@@ -117,7 +117,7 @@ fn report(name: &str, mut times: Vec<u64>, allocs: u64, bytes: u64, extra: serde
     let n = times.len();
     println!(
         "{}",
-        json!({"benchmark":name,"operations":n,"p50_ns":times[n/2],"p95_ns":times[(n-1)*95/100],"p99_ns":times[(n-1)*99/100],"allocations_per_op":allocs as f64/n as f64,"allocated_bytes_per_op":bytes as f64/n as f64,"context":extra})
+        json!({"benchmark":name,"operations":n,"p50_ns":times[n/2],"p95_ns":times[(n-1)*95/100],"p99_ns":times[(n-1)*99/100],"p999_ns":times[(n-1)*999/1000],"allocations_per_op":allocs as f64/n as f64,"allocated_bytes_per_op":bytes as f64/n as f64,"context":extra})
     );
 }
 fn core_bench(samples: usize, ops: usize) -> Result<()> {
