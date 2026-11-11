@@ -1,6 +1,12 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-10 02:29 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-11 02:54 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-11 02:53 UTC，发布 FR 七日年化提示，Delist 二进制来自 `arbmm`
+`958bb8a3`；新 Delist PID2719199 和 SG 隧道 PID2719174 均绑 CPU28。
+发布前备份在 `~/delist_risk_server/backups/fr_yield_958bb8a3/`；
+NAV 目录13项，11个 FR PnL 请求均返回 HTTP 200。
+
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 2026-11-10 02:29 UTC，修复 FR 账户目录偶发超时。NAV `c8cb8fa` 的现有

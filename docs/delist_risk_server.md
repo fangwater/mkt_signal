@@ -1,6 +1,12 @@
 # Delist Risk Server
 
-最后更新：2026-11-10 02:29 UTC（FR目录读取脱离远端凭据SSH；Delist保持CPU28）
+最后更新：2026-11-11 02:54 UTC（上线 FR 七日年化提示；Delist保持CPU28）
+
+2026-11-11 02:53 UTC，发布 `arbmm 958bb8a3` 的 FR 七日年化提示。
+本机构建的 release 二进制和页面上传后 SHA-256 校验并原子安装；
+环境脚本重启 Delist PID2719199 与 SG 隧道 PID2719174，均绑 CPU28。
+NAV 目录13项，11个 FR PnL 请求返回 HTTP 200；受保护接口匿名返回401。
+二进制及页面回退备份在 `~/delist_risk_server/backups/fr_yield_958bb8a3/`。
 
 2026-11-10 02:29 UTC，修复账户目录读取依赖远端凭据SSH的问题。
 01:08:25 NAV目录请求15秒超时触发01:08:28告警；01:09:18已自动恢复。
