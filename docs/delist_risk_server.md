@@ -1,13 +1,35 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 15:03 UTC（补记Binance三盘发布；Delist修订状态见下文）
+最后更新：2026-11-12 15:05 UTC（单币持续报警与独立系数已发布；Bybit页面403权限已修复）
 
-本次单币报警修订（待发布）：持续超出方向 maker 正常区间180秒才确认，跨越交易限仓线
+2026-11-12 15:01 UTC，单币报警修订已发布：持续超出方向 maker 正常区间180秒才确认，跨越交易限仓线
 或严重超限即时线均保留连续越界起点。单币即时线改为交易限仓 × 独立系数（默认1.5），
 同时仍须越出 maker 正常区间；账户总限额保持首次新鲜观察报警。
 Gate02 PLUME 的2500U交易限仓对应3750U即时线；此前40–50秒的2500U附近短时越线
 仅进入持续观察。通知展示实际连续越界秒数、确认要求和独立即时线。
 以下14:30及更早的发布记录描述当时行为；单币原始限仓立即报警由本次修订取代。
+
+代码`645754d4`及缺价诊断补充`68f31629`均从同步origin/arbmm的工作树在本机release构建，
+SCP暂存、SHA-256核验、原子安装后使用环境脚本重启Delist。最终PID3195932，全部线程CPU28；
+二进制SHA-256：`41adcd32eb3a7a514ed2916dd7969591969ccd27cbf3d284731302b97b5e76f8`。
+38项敞口/参数及19项通知测试通过；debug/release的320–1440px模拟Redis/旧格式Viz浏览器验收通过。
+完整Delist套件90通过/4失败：1项备份测试缺少redis-server，3项未修改的CTA配置计数断言失配，
+具体用例和实际值在回执README。未向生产通知机器人发送测试消息。
+15:04:26复核已跨过最终进程的180秒窗口，11账户全部完整/ok，PLUME约+0.36U，通知队列空、发送错误空。
+发布前124个已存在应用进程身份/CPU及22份配置指纹保持；同期Binance三盘独立重发新增19个采样进程，
+记录为并发新增，未把它们归入本次未变化清单。仅更新Delist开机条目、保留其他34条。
+回退：`~/delist_risk_server/run/delist_symbol_alerts_20261112/before/delist_risk_server/`；
+停止前日志在同级`before/final_logs/`和`before/final_diagnostic_logs/`；
+本机回执：`data/ops/delist_symbol_alerts_20261112/`。
+
+2026-11-12 15:04 UTC，修复JP `/fr/bybit_fr_arb01/` 登录后403。
+Nginx日志确认为首页Permission denied：环境目录及www为700，HTML为600。
+只为www-data增加环境目录穿越、www读取/穿越、两份HTML读取ACL；不改页面内容或私有配置。
+真实Nginx用户读取验证通过，临时回环Nginx对真实文件返回200；生产匿名入口仍302跳回Delist。
+生产Nginx master1862269及Bybit全部7个应用进程身份/CPU、5份私有配置指纹保持；
+env.sh和config/viz.toml仍不可由www-data读取。无生产Nginx重载或Bybit进程重启。
+权限回退：`~/bybit_fr_arb01/run/panel_access_20261112/before.acl`（`setfacl --restore`）；
+回执：`data/ops/bybit_fr_panel_access_20261112/`。未持有生产浏览器登录会话，实际登录流程由既有鉴权继续处理。
 
 2026-11-12 15:01 UTC，Binance FR02/03/04完成交易栈重发及非BNB合约taker对齐，
 三盘24服务含signal恢复，Delist现场报告均完整/ok。恢复信号前每币非BNB净差小于5U；

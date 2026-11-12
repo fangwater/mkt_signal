@@ -1,6 +1,12 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 15:03 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 15:05 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12 15:01 UTC，Delist独立发布FR单币180秒持续确认及1.5倍严重超限即时线，
+最终源码`arbmm 68f31629`、PID3195932，全部线程继续CPU28。124个原有采样应用进程
+身份/CPU及22份配置指纹保持；同期Binance重发新增进程单独记录。15:04:26复核11账户完整/ok、
+通知队列为空。15:04仅修复Bybit01静态页面ACL，7个应用进程及生产Nginx身份/CPU保持。
+详情及两组回执见`docs/delist_risk_server.md`。
 
 2026-11-12 15:01 UTC，JP Binance FR02/03/04完成整套重发，构建源码`arbmm b91dffca`。
 7个本地release产物经SCP/SHA-256及原子安装，24服务含signal经环境本地脚本恢复。
@@ -2021,7 +2027,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 24 | crypto_cta_manager / cta_web + crypto_nav_manager | CTA PID3909484；NAV PID483448，MM83777统计接入，交易进程保持 |
 | 25 | binance_exec_spread01 account_monitor | PID3912185；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID3920104 / PID3919575 |
-| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3070247（11-12聚合通知修复），env.sh DELIST_CORE=28；SG隧道于11-11停止 |
+| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3195932（11-12单币持续报警与独立系数），env.sh DELIST_CORE=28；SG隧道于11-11停止 |
 | 29 | okex_mm_83777 account_monitor | PID275138；UID556411065144578537，空仓风险解析已修复，实盘账户监控 |
 | 30 | okex_mm_83777 trade_signal | PID291515；BTC/ETH实盘，vol门限开启、Tlen关闭 |
 | 31 | okex_mm_83777 pre_trade | PID424228；实盘风控/开仓/对冲 |
