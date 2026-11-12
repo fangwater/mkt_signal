@@ -237,14 +237,10 @@ pub struct ArbHedgeStrategy {
     pub(super) net_qty_queue: NetQtyQueue,
     /// 尚需由对冲腿覆盖的 opening-leg 成交队列，到期时间来自成交记录的 close_ts。
     pub(super) pending_hedge_queue: TimedNetQtyQueue,
-    // Paired exits must not be netted away by unrelated/opposite opening demand.
-    paired_close_hedge_queue: TimedNetQtyQueue,
     /// Opening-leg client IDs whose pending hedge must execute as taker + reduce-only.
     force_close_open_ids: FastHashSet<i64>,
     intra_trailing_book: IntraTrailingBook,
     intra_stop_retry_after_us: i64,
-    /// 启动时从账户快照带入的净敞口基线。这部分只作为状态展示，不反推出 hedge work。
-    hedge_work_baseline_qv: f64,
     hedge_request_seq: u64,
     inflight_hedge_query: Option<InflightHedgeQuery>,
     last_hedge_ts_ms: Option<i64>,
@@ -253,8 +249,6 @@ pub struct ArbHedgeStrategy {
     /// 最近一次 ArbHedge maker 单的 price_offset；taker 时为 0。供 dashboard 显示。
     last_hedge_offset: Option<f64>,
     next_query_ts_us: i64,
-    /// direct-taker 因 venue 最小下单约束会扩大量时的重试冷却。
-    direct_taker_minimum_retry_after_us: i64,
     order_seq: u32,
     hedge_order_meta: FastHashMap<i64, ArbHedgeOrderMeta>,
     orphaned_hedge_order_meta: FastHashMap<i64, ArbHedgeOrderMeta>,
@@ -343,7 +337,7 @@ impl ArbHedgeStrategy {
                         self.symbol, trigger.open_id, trigger.reserved_qty, trigger.reason
                     );
                 }
-                return true;
+                continue;
             }
             if trigger.available_qv.abs() <= ARB_HEDGE_QTY_EPS {
                 continue;
@@ -473,20 +467,10 @@ impl ArbHedgeStrategy {
                     lot.open_client_order_id.unwrap_or(0),
                 );
             }
-        } else if self.is_intra() {
-            for lot in lots {
-                self.intra_trailing_book.restore_unsubmitted(
-                    lot.open_client_order_id.unwrap_or(0),
-                    now_ts,
-                    lot.qty,
-                );
-                self.release_borrowed_with_bound_id(
-                    now_ts,
-                    lot.qv,
-                    lot.price,
-                    lot.open_client_order_id.unwrap_or(0),
-                );
-            }
+        } else if let Some(allocations) = self.reserve_intra_allocations(lots) {
+            // Protect the whole borrowed batch while individual lots return to
+            // pending. An intermediate sync must not erase later stop metadata.
+            self.release_intra_allocations(now_ts, &allocations);
         } else {
             self.release_borrowed_with_bound_id(now_ts, qv, price, bound_id);
         }
@@ -743,11 +727,9 @@ impl ArbHedgeStrategy {
             adl_cumulative_fills: fast_hash_map(),
             net_qty_queue: NetQtyQueue::new(),
             pending_hedge_queue: TimedNetQtyQueue::new(),
-            paired_close_hedge_queue: TimedNetQtyQueue::new(),
             force_close_open_ids: fast_hash_set(),
             intra_trailing_book: IntraTrailingBook::new(),
             intra_stop_retry_after_us: 0,
-            hedge_work_baseline_qv: 0.0,
             hedge_request_seq: 0,
             inflight_hedge_query: None,
             last_hedge_ts_ms: None,
@@ -755,7 +737,6 @@ impl ArbHedgeStrategy {
             last_ret_qtl: None,
             last_hedge_offset: None,
             next_query_ts_us: 0,
-            direct_taker_minimum_retry_after_us: 0,
             order_seq: 0,
             hedge_order_meta: fast_hash_map(),
             orphaned_hedge_order_meta: fast_hash_map(),
@@ -946,18 +927,16 @@ impl ArbHedgeStrategy {
         };
         self.net_qty_queue
             .apply_fill(seed_ts, signed_base_qty, seed_price);
-        self.hedge_work_baseline_qv = self.net_qty_queue.net_qty();
         if !suppress_pre_submit_hot_path_logs() {
             info!(
-                "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8} hedge_work_baseline={:.8}",
+                "ArbHedgeSeed: strategy_id={} symbol={} source={} qv={:.8} price={:.8} seed_ts={} net={:.8}",
                 self.strategy_id,
                 self.symbol,
                 source,
                 signed_base_qty,
                 seed_price,
                 seed_ts,
-                self.net_qty_queue.net_qty(),
-                self.hedge_work_baseline_qv
+                self.net_qty_queue.net_qty()
             );
         }
         true
@@ -998,11 +977,11 @@ impl ArbHedgeStrategy {
 
     // pending_hedge_qty 包含尚未借给 live hedge order 的对冲需求，无论是否已到期；
     pub fn pending_hedge_qty(&self) -> f64 {
-        self.pending_hedge_queue.net_qty() + self.paired_close_hedge_queue.net_qty()
+        self.pending_hedge_queue.net_qty()
     }
     // due_hedge_qty 则只计算已到期的部分。
     pub fn due_hedge_qty(&self, now_ts: i64) -> f64 {
-        self.pending_hedge_queue.due_qty(now_ts) + self.paired_close_hedge_queue.due_qty(now_ts)
+        self.pending_hedge_queue.due_qty(now_ts)
     }
 
     pub fn register_force_close_open_id(&mut self, open_client_order_id: i64) -> bool {
@@ -1110,7 +1089,6 @@ impl ArbHedgeStrategy {
     fn clear_resolved_hedge_failure(&self) {
         if !self.adl_spot_hedge
             && self.pending_hedge_queue.is_empty()
-            && self.paired_close_hedge_queue.is_empty()
             && self.hedge_order_meta.is_empty()
             && self.orphaned_hedge_order_meta.is_empty()
             && self.inflight_hedge_query.is_none()
@@ -1211,14 +1189,6 @@ impl ArbHedgeStrategy {
             .chain(self.orphaned_hedge_order_meta.values())
             .map(|meta| meta.borrowed_qv)
             .sum()
-    }
-
-    fn outstanding_hedge_work_qv(&self) -> f64 {
-        self.pending_hedge_qty() + self.borrowed_hedge_qv()
-    }
-
-    fn target_hedge_work_qv(&self) -> f64 {
-        self.net_qty_queue.net_qty() - self.hedge_work_baseline_qv
     }
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
@@ -1413,19 +1383,8 @@ impl ArbHedgeStrategy {
         if qv.abs() <= ARB_HEDGE_QTY_EPS {
             return 0.0;
         }
-        if MonitorChannel::instance().is_paired_close(bound_open_client_order_id) {
-            self.paired_close_hedge_queue.release_with_id(
-                now_ts,
-                qv,
-                price,
-                bound_open_client_order_id,
-            )
-        } else if bound_open_client_order_id != 0 {
-            self.pending_hedge_queue
-                .release_with_id(now_ts, qv, price, bound_open_client_order_id)
-        } else {
-            self.pending_hedge_queue.release(now_ts, qv, price)
-        }
+        self.enqueue_hedge_work(now_ts, 0, qv, price, bound_open_client_order_id);
+        qv
     }
 
     fn trigger_hedge_query_after_pending_release(
@@ -1467,9 +1426,27 @@ impl ArbHedgeStrategy {
         self.send_taker_hedge_direct(now_ts, due_hedge_qty, "force_taker", None)
     }
 
-    fn send_unimmr_force_close_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
-        self.supersede_inflight_query_for_force_close(now_ts, "direct_taker");
-        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "unimmr_force_close", None)
+    fn send_unimmr_force_close_hedge_direct(&mut self, now_ts: i64) -> bool {
+        for lot in self.pending_hedge_queue.due_lots(now_ts) {
+            let id = lot.open_client_order_id.unwrap_or(0);
+            if !self.force_close_open_ids.contains(&id) {
+                continue;
+            }
+            let qty = self.executable_reducing_qty(lot.qv).unwrap_or(0.0);
+            if qty <= ARB_HEDGE_QTY_EPS {
+                continue;
+            }
+            if self.send_targeted_taker_hedge_direct(
+                now_ts,
+                lot.qv.signum() * qty,
+                "unimmr_force_close",
+                None,
+                Some(id),
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
     fn send_lazy_model_taker_hedge_direct(
@@ -1504,10 +1481,8 @@ impl ArbHedgeStrategy {
         ret_qtl: Option<f64>,
         target_open_id: Option<i64>,
     ) -> bool {
-        if self.coalesce_while_hedge_query_inflight(now_ts, source) {
-            return false;
-        }
-        if now_ts < self.direct_taker_minimum_retry_after_us {
+        let force_close = target_open_id.is_some_and(|id| self.force_close_open_ids.contains(&id));
+        if !force_close && self.coalesce_while_hedge_query_inflight(now_ts, source) {
             return false;
         }
         self.last_hedge_ts_ms = Some(now_ts / 1000);
@@ -1538,7 +1513,7 @@ impl ArbHedgeStrategy {
         } else {
             Side::Buy
         };
-        if self.is_binance_position_limit_blocked(hedge_side, now_ts) {
+        if self.is_binance_position_limit_blocked(hedge_side, now_ts) && !force_close {
             self.next_query_ts_us = self.binance_position_limit_block_until_us;
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Binance position-limit block is active hedge_side={} until_us={}",
@@ -1551,6 +1526,7 @@ impl ArbHedgeStrategy {
             return false;
         }
         if self.is_hedge_open_failure_blocked(hedge_side, now_ts)
+            && !force_close
             && !self.hyperliquid_reduce_only_hedge(hedge_side, due_hedge_qty.abs())
         {
             self.next_query_ts_us = self.hedge_open_failure_block_until_us;
@@ -1564,7 +1540,7 @@ impl ArbHedgeStrategy {
             );
             return false;
         }
-        if self.is_bitget_position_tier_limit_blocked(hedge_side, now_ts) {
+        if self.is_bitget_position_tier_limit_blocked(hedge_side, now_ts) && !force_close {
             self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Bitget position-tier block is active hedge_side={} until_us={}",
@@ -1636,24 +1612,20 @@ impl ArbHedgeStrategy {
             return false;
         }
         if Self::direct_taker_alignment_upsizes(due_hedge_qty, aligned_base_qty) {
-            self.direct_taker_minimum_retry_after_us =
-                now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             if !suppress_pre_submit_hot_path_logs() {
                 info!(
-                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because venue minimum would increase hedge qty venue={:?} due_hedge_qty={:.8} aligned_order_qty={:.8} aligned_base_qty={:.8} retry_after_us={}",
+                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because venue minimum would increase hedge qty venue={:?} due_hedge_qty={:.8} aligned_order_qty={:.8} aligned_base_qty={:.8}",
                     self.strategy_id,
                     self.symbol,
                     source,
                     self.hedge_venue,
                     due_hedge_qty,
                     qty,
-                    aligned_base_qty,
-                    self.direct_taker_minimum_retry_after_us
+                    aligned_base_qty
                 );
             }
             return false;
         }
-        self.direct_taker_minimum_retry_after_us = 0;
 
         let qty_tick = MonitorChannel::instance()
             .try_venue_min_qty_table(self.hedge_venue)
@@ -1683,6 +1655,10 @@ impl ArbHedgeStrategy {
             return false;
         }
 
+        // A failed emergency submission must leave an ordinary query intact.
+        // Only a successfully submitted order may supersede it.
+        let previous_query = self.inflight_hedge_query.take();
+        let previous_next_query_ts = self.next_query_ts_us;
         let request_seq = self.next_hedge_request_seq();
         self.begin_inflight_hedge_query(request_seq, now_ts);
         if let Some(inflight) = self.inflight_hedge_query.as_mut() {
@@ -1717,97 +1693,104 @@ impl ArbHedgeStrategy {
             mark_price,
             request_seq
         );
+        let orders_before = self.hedge_order_meta.len();
         self.handle_arb_hedge_ctx(ctx);
-        true
+        let sent = self.hedge_order_meta.len() > orders_before;
+        if !sent {
+            self.inflight_hedge_query = previous_query;
+            self.next_query_ts_us = previous_next_query_ts;
+        }
+        sent
     }
 
-    /// Only queued work can be matched. Never release a live/unresolved order's
-    /// reservation, and never turn a work offset into a factual exchange fill.
-    fn net_unexecutable_paired_close_work(&mut self, now_ts: i64, executable_qty: f64) {
-        if self.inflight_hedge_query.is_some()
-            || !self.hedge_order_meta.is_empty()
-            || !self.orphaned_hedge_order_meta.is_empty()
-            || !executable_qty.is_finite()
-            || executable_qty < 0.0
-        {
-            return;
-        }
-        let close_due = self.paired_close_hedge_queue.due_qty(now_ts);
-        let opening_due = self.pending_hedge_queue.due_qty(now_ts);
-        if close_due * opening_due >= 0.0 {
-            return;
-        }
-        // Do not consume protective-exit identities as ordinary opening work.
-        if self.pending_hedge_queue.due_lots(now_ts).iter().any(|lot| {
-            self.force_close_open_ids
-                .contains(&lot.open_client_order_id.unwrap_or(0))
-        }) {
-            return;
-        }
-        let qty = (close_due.abs() - executable_qty)
-            .max(0.0)
-            .min(opening_due.abs());
-        if qty <= ARB_HEDGE_QTY_EPS {
-            return;
-        }
-        let opening = self
-            .pending_hedge_queue
-            .borrow(now_ts, opening_due.signum() * qty);
-        let closing = self
-            .paired_close_hedge_queue
-            .borrow(now_ts, close_due.signum() * opening.qty);
+    /// One pending work collection. Offsets affect only queued quantities; live
+    /// and unknown orders have already borrowed their work and remain reserved.
+    fn enqueue_hedge_work(&mut self, ts: i64, close_ts: i64, qv: f64, price: f64, id: i64) {
         let monitor = MonitorChannel::instance();
-        let mut netted = 0.0;
-        for lot in closing.lots {
-            let id = lot.open_client_order_id.unwrap_or(0);
-            let matched = monitor.net_unsubmitted_paired_close_hedge(id, lot.qty);
-            netted += matched;
-            if lot.qty - matched > ARB_HEDGE_QTY_EPS {
-                self.paired_close_hedge_queue.release_with_id(
-                    now_ts,
-                    lot.qv.signum() * (lot.qty - matched),
-                    lot.price,
-                    id,
-                );
+        let mut close_credit = BTreeMap::<i64, f64>::new();
+        for lot in self.pending_hedge_queue.lots() {
+            let old_id = lot.open_client_order_id.unwrap_or(0);
+            if monitor.is_paired_close(old_id) {
+                *close_credit.entry(old_id).or_default() += lot.qty;
             }
         }
-        let mut consumed = netted;
-        for lot in opening.lots {
-            let matched = consumed.min(lot.qty);
-            consumed -= matched;
-            if lot.qty - matched > ARB_HEDGE_QTY_EPS {
-                // Restore original timing and identity, including future work.
-                self.pending_hedge_queue.put_with_id(
-                    lot.ts,
-                    lot.close_ts,
-                    lot.qv.signum() * (lot.qty - matched),
-                    lot.price,
-                    lot.open_client_order_id.unwrap_or(0),
-                );
+        if monitor.is_paired_close(id) {
+            *close_credit.entry(id).or_default() += qv.abs();
+        }
+        if id != 0 {
+            self.pending_hedge_queue
+                .upsert_open_lot(ts, close_ts, qv, price, id);
+        } else {
+            self.pending_hedge_queue.put(ts, close_ts, qv, price);
+        }
+        self.intra_trailing_book
+            .sync_pending(&self.pending_hedge_queue);
+        for (close_id, before) in close_credit {
+            let remaining = self
+                .pending_hedge_queue
+                .lots()
+                .iter()
+                .filter(|lot| lot.open_client_order_id == Some(close_id))
+                .map(|lot| lot.qty)
+                .sum::<f64>();
+            if before > remaining + ARB_HEDGE_QTY_EPS {
+                monitor.net_unsubmitted_paired_close_hedge(close_id, before - remaining);
             }
         }
-        if netted > ARB_HEDGE_QTY_EPS {
-            warn!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} netted unsubmitted opposite hedge work qty={:.8} executable_close_qty={:.8} remaining_close={:.8} remaining_open={:.8}; no exchange fill",
-                self.strategy_id, self.symbol, netted, executable_qty,
-                self.paired_close_hedge_queue.net_qty(), self.pending_hedge_queue.net_qty()
-            );
+        for force_id in self
+            .force_close_open_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            self.retire_force_close_open_id_if_unreferenced(force_id);
         }
+    }
+
+    fn paired_close_due_lots(&self, now_ts: i64) -> Vec<TimedNetQtyLot> {
+        self.pending_hedge_queue
+            .due_lots(now_ts)
+            .into_iter()
+            .filter(|lot| {
+                MonitorChannel::instance().is_paired_close(lot.open_client_order_id.unwrap_or(0))
+            })
+            .collect()
+    }
+
+    fn ordinary_due_qty(&self, now_ts: i64) -> f64 {
+        self.pending_hedge_queue
+            .due_lots(now_ts)
+            .iter()
+            .filter(|lot| {
+                let id = lot.open_client_order_id.unwrap_or(0);
+                !MonitorChannel::instance().is_paired_close(id)
+                    && !self.force_close_open_ids.contains(&id)
+            })
+            .map(|lot| lot.qv)
+            .sum()
     }
 
     /// Floor close work to the remaining reducing position and the venue lot.
     /// Unknown rules/prices are distinct from a known zero executable quantity.
     fn executable_paired_close_qty(&self, now_ts: i64) -> Option<f64> {
-        let due = self.paired_close_hedge_queue.due_qty(now_ts);
+        let due = self
+            .paired_close_due_lots(now_ts)
+            .iter()
+            .map(|lot| lot.qv)
+            .sum::<f64>();
+        self.executable_reducing_qty(due)
+    }
+
+    fn executable_reducing_qty(&self, due: f64) -> Option<f64> {
         if due.abs() <= ARB_HEDGE_QTY_EPS {
             return Some(0.0);
         }
         let monitor = MonitorChannel::instance();
-        let position = monitor.get_position_qty(&self.symbol, self.hedge_venue);
-        if !position.is_finite() {
-            return None;
-        }
-        if position * due <= 0.0 {
+        let side = if due > 0.0 { Side::Sell } else { Side::Buy };
+        let available = monitor
+            .available_reducing_base_qty(&self.symbol, self.hedge_venue, side)
+            .ok()?;
+        if available <= ARB_HEDGE_QTY_EPS {
             return Some(0.0);
         }
         let mark = self.mark_price()?;
@@ -1821,11 +1804,20 @@ impl ArbHedgeStrategy {
             .align_close_order_by_venue(
                 self.hedge_venue,
                 &self.symbol,
-                due.abs().min(position.abs()) / multiplier,
+                due.abs().min(available) / multiplier,
                 mark,
             )
             .ok()?;
-        Some(aligned.map_or(0.0, |(qty, _)| qty * multiplier))
+        Some(aligned.map_or(0.0, |(qty, price)| {
+            if monitor
+                .check_min_trading_requirements(self.hedge_venue, &self.symbol, qty, Some(price))
+                .is_ok()
+            {
+                qty * multiplier
+            } else {
+                0.0
+            }
+        }))
     }
 
     fn send_hedge_query(
@@ -1909,15 +1901,24 @@ impl ArbHedgeStrategy {
         pending_qv: f64,
         inflight: &InflightHedgeQuery,
     ) -> crate::strategy::net_qty_queue::TimedNetQtyBorrow {
+        let monitor = MonitorChannel::instance();
         if let Some(id) = inflight.target_open_id {
-            if MonitorChannel::instance().is_paired_close(id) {
-                self.paired_close_hedge_queue.borrow(now_ts, pending_qv)
+            if monitor.is_paired_close(id) {
+                self.pending_hedge_queue
+                    .borrow_matching(now_ts, pending_qv, |lot| {
+                        monitor.is_paired_close(lot.open_client_order_id.unwrap_or(0))
+                    })
             } else {
                 self.pending_hedge_queue
                     .borrow_open_id(now_ts, pending_qv, id)
             }
         } else {
-            self.pending_hedge_queue.borrow(now_ts, pending_qv)
+            let force_ids = &self.force_close_open_ids;
+            self.pending_hedge_queue
+                .borrow_matching(now_ts, pending_qv, |lot| {
+                    let id = lot.open_client_order_id.unwrap_or(0);
+                    !monitor.is_paired_close(id) && !force_ids.contains(&id)
+                })
         }
     }
 
@@ -1947,19 +1948,11 @@ impl ArbHedgeStrategy {
         if !self.is_active() {
             return false;
         }
-        // Let the event/periodic query path finish paired exits before lazy opening work.
-        if !self.paired_close_hedge_queue.is_empty() {
-            return false;
-        }
         if self.coalesce_while_hedge_query_inflight(now_ts, "lazy_model_update") {
             return false;
         }
         self.last_ret_qtl = model_percentile_to_ret_qtl(model_percentile);
-        let pending_hedge_qty = self.pending_hedge_queue.net_qty();
-        if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
-            return false;
-        }
-        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
+        let due_hedge_qty = self.ordinary_due_qty(now_ts);
         if due_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
             return false;
         }
@@ -2064,52 +2057,29 @@ impl ArbHedgeStrategy {
         if self.adl_spot_hedge {
             return self.try_adl_spot_hedge(now_ts);
         }
-        if !self.paired_close_hedge_queue.is_empty()
-            && self.due_force_close_open_id(now_ts).is_none()
-        {
-            if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
-                return false;
+        if self.due_force_close_open_id(now_ts).is_some() {
+            if self.send_unimmr_force_close_hedge_direct(now_ts) {
+                return true;
             }
-            let Some(executable_qty) = self.executable_paired_close_qty(now_ts) else {
-                return false;
-            };
-            self.net_unexecutable_paired_close_work(now_ts, executable_qty);
-            if executable_qty > ARB_HEDGE_QTY_EPS {
-                if let Some(lot) = self.paired_close_hedge_queue.due_lots(now_ts).first() {
-                    let due = self.paired_close_hedge_queue.due_qty(now_ts);
-                    return self.send_hedge_query(
-                        now_ts,
-                        due.signum() * due.abs().min(executable_qty),
-                        lot.open_client_order_id,
-                    );
-                }
-            }
-            // A zero position or sub-lot close must not monopolize the query
-            // path. Opening work still passes the normal live exposure checks.
         }
-        let force_close_due = self.due_force_close_open_id(now_ts).is_some();
-        if force_close_due {
-            self.supersede_inflight_query_for_force_close(now_ts, reason);
-        } else if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
+        if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
             return false;
         }
-        let pending_hedge_qty = self.pending_hedge_queue.net_qty();
+        if let Some(executable_qty) = self.executable_paired_close_qty(now_ts) {
+            if executable_qty > ARB_HEDGE_QTY_EPS {
+                if let Some(lot) = self.paired_close_due_lots(now_ts).first() {
+                    let due = lot.qv.signum() * executable_qty;
+                    if self.send_hedge_query(now_ts, due, lot.open_client_order_id) {
+                        return true;
+                    }
+                }
+            }
+        }
+        let pending_hedge_qty = self.ordinary_due_qty(now_ts);
         if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
             return false;
         }
-        let due_hedge_qty = self.pending_hedge_queue.due_qty(now_ts);
-        if due_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
-            debug!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because pending hedge is not due yet pending_hedge_qty={:.8} due_hedge_qty={:.8} now_ts={}",
-                self.strategy_id,
-                self.symbol,
-                reason,
-                pending_hedge_qty,
-                due_hedge_qty,
-                now_ts
-            );
-            return false;
-        }
+        let due_hedge_qty = pending_hedge_qty;
         let Some(mark_price) = self.mark_price() else {
             if throttle_on_skip {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
@@ -2130,7 +2100,7 @@ impl ArbHedgeStrategy {
         };
         let pending_hedge_usdt =
             Self::pending_hedge_usdt_with_mark_price(pending_hedge_qty, mark_price);
-        if !force_close_due && pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
+        if pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
             if throttle_on_skip {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
@@ -2147,9 +2117,6 @@ impl ArbHedgeStrategy {
                 self.next_query_ts_us
             );
             return false;
-        }
-        if force_close_due {
-            return self.send_unimmr_force_close_hedge_direct(now_ts, due_hedge_qty);
         }
         let force_taker = arb_hedge_force_taker();
         let lazy_taker = arb_hedge_lazy_taker();
@@ -2378,6 +2345,13 @@ impl ArbHedgeStrategy {
             .inflight_hedge_query
             .take()
             .expect("validated in-flight hedge query");
+        if inflight
+            .target_open_id
+            .is_some_and(|id| self.pending_hedge_queue.find_lot_by_open_id(id).is_none())
+        {
+            // Opposite factual work already resolved this query's target.
+            return;
+        }
         self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
 
         let Some(side) = ctx.get_side() else {
@@ -2417,8 +2391,14 @@ impl ArbHedgeStrategy {
             );
             return;
         }
+        let reducing_exit = venue == self.hedge_venue
+            && symbol == self.symbol
+            && inflight.target_open_id.is_some_and(|id| {
+                self.force_close_open_ids.contains(&id)
+                    || MonitorChannel::instance().is_paired_close(id)
+            });
         let now_ts = get_timestamp_us();
-        if self.is_binance_position_limit_blocked(side, now_ts) {
+        if self.is_binance_position_limit_blocked(side, now_ts) && !reducing_exit {
             self.next_query_ts_us = self.binance_position_limit_block_until_us;
             warn!(
                 "ArbHedgeStrategy: strategy_id={} ArbHedge blocked by Binance position-limit throttle symbol={} side={} until_us={} request_seq={}",
@@ -2431,6 +2411,7 @@ impl ArbHedgeStrategy {
             return;
         }
         if self.is_hedge_open_failure_blocked(side, now_ts)
+            && !reducing_exit
             && !(venue == self.hedge_venue
                 && symbol == self.symbol
                 && self.hyperliquid_reduce_only_hedge(side, qty))
@@ -2446,7 +2427,7 @@ impl ArbHedgeStrategy {
             );
             return;
         }
-        if self.is_bitget_position_tier_limit_blocked(side, now_ts) {
+        if self.is_bitget_position_tier_limit_blocked(side, now_ts) && !reducing_exit {
             self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
             warn!(
                 "ArbHedgeStrategy: strategy_id={} ArbHedge blocked by Bitget position-tier throttle symbol={} side={} until_us={} request_seq={}",
@@ -2527,23 +2508,24 @@ impl ArbHedgeStrategy {
 
         let signed_base_qty = signed_qty_from_side(side, order_base_qty);
         let paired_close = MonitorChannel::instance().is_paired_close(bound_open_client_order_id);
-        let exposure_check = if paired_close {
+        let exposure_check = if force_taker_taker {
+            MonitorChannel::instance().check_reducing_order(&symbol, venue, side, order_base_qty)
+        } else if paired_close {
             let monitor = MonitorChannel::instance();
-            let position = monitor.get_position_qty(&symbol, venue);
-            if !position.is_finite() || order_base_qty > position.abs() + ARB_HEDGE_QTY_EPS {
-                Err("paired-close hedge exceeds its live position".into())
-            } else {
-                borrowed.lots.iter().try_for_each(|lot| {
-                    monitor.check_paired_close_hedge(
-                        lot.open_client_order_id.unwrap_or(0),
-                        &symbol,
-                        venue,
-                        side,
-                        lot.qty,
-                    )
+            monitor
+                .check_reducing_order(&symbol, venue, side, order_base_qty)
+                .and_then(|()| {
+                    borrowed.lots.iter().try_for_each(|lot| {
+                        monitor.check_paired_close_hedge(
+                            lot.open_client_order_id.unwrap_or(0),
+                            &symbol,
+                            venue,
+                            side,
+                            lot.qty,
+                        )
+                    })
                 })
-            }
-        } else if !force_taker_taker && !is_direct_taker_from_key(&ctx.from_key) {
+        } else if !is_direct_taker_from_key(&ctx.from_key) {
             MonitorChannel::instance().check_arb_order_exposure_risk(
                 &symbol,
                 venue,
@@ -2553,7 +2535,7 @@ impl ArbHedgeStrategy {
             Ok(())
         };
         let exposure_check = exposure_check.and_then(|()| {
-            if self.adl_spot_hedge {
+            if self.adl_spot_hedge || paired_close || force_taker_taker {
                 Ok(())
             } else {
                 MonitorChannel::instance().check_arb_hedge_progress_risk(&symbol, signed_base_qty)
@@ -4057,7 +4039,17 @@ impl Strategy for ArbHedgeStrategy {
             let reducing_hyperliquid = self.next_query_ts_us
                 == self.hedge_open_failure_block_until_us
                 && self.hyperliquid_reduce_only_hedge(side, due.abs());
-            if !reducing_hyperliquid {
+            let capacity_backoff = [
+                self.hedge_open_failure_block_until_us,
+                self.binance_position_limit_block_until_us,
+                self.bitget_position_tier_limit_block_until_us,
+            ]
+            .contains(&self.next_query_ts_us);
+            let reducing_paired = capacity_backoff
+                && self
+                    .executable_paired_close_qty(now_ts)
+                    .is_some_and(|qty| qty > ARB_HEDGE_QTY_EPS);
+            if !reducing_hyperliquid && !reducing_paired {
                 return;
             }
         }
@@ -4103,43 +4095,28 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
             return false;
         }
 
-        let outstanding_before = self.outstanding_hedge_work_qv();
         let paired_close = MonitorChannel::instance()
             .record_paired_close_first_fill(open_client_order_id, filled_base_qty);
         let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
         self.net_qty_queue
             .apply_fill(terminal_ts, signed_base_qty, price);
 
-        let target_outstanding = self.target_hedge_work_qv();
-        let hedge_work_delta = if paired_close {
-            // Historical opening-work drift must never change a close's factual fill credit.
-            signed_base_qty
-        } else {
-            target_outstanding - outstanding_before
-        };
-        if hedge_work_delta.abs() > TERMINAL_QTY_EPS {
-            if self.is_intra() && !paired_close {
-                self.intra_trailing_book.record_open(
-                    open_client_order_id,
-                    terminal_ts,
-                    close_ts,
-                    hedge_work_delta,
-                    price,
-                );
-            }
-            let queue = if paired_close {
-                &mut self.paired_close_hedge_queue
-            } else {
-                &mut self.pending_hedge_queue
-            };
-            queue.upsert_open_lot(
+        if self.is_intra() && !paired_close {
+            self.intra_trailing_book.record_open(
+                open_client_order_id,
                 terminal_ts,
                 close_ts,
-                hedge_work_delta,
+                signed_base_qty,
                 price,
-                open_client_order_id,
             );
         }
+        self.enqueue_hedge_work(
+            terminal_ts,
+            close_ts,
+            signed_base_qty,
+            price,
+            open_client_order_id,
+        );
         self.retire_force_close_open_id_if_unreferenced(open_client_order_id);
         if log::log_enabled!(log::Level::Debug) {
             let pending_after = self.pending_hedge_queue.net_qty();
@@ -4150,7 +4127,7 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
                 self.symbol,
                 side,
                 filled_base_qty,
-                hedge_work_delta,
+                signed_base_qty,
                 terminal_ts,
                 close_ts,
                 open_client_order_id,
@@ -4323,17 +4300,25 @@ mod tests {
     use order_common::{Order, OrderType, Side, TradeEngineResponseMessage, TradeRequestType};
     use runtime_common::exchange::Exchange;
     use runtime_common::fast_hash::fast_hash_set;
+    use signal_common::common::TradingLeg;
     use signal_common::hedge_signal::ArbHedgeCtx;
+    use signal_common::tick_math::QuantizedValue;
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
 
-    fn stalled_close_fixture(close_qty: f64, opening_qty: f64) -> ArbHedgeStrategy {
+    fn queued_close_fixture(close_qty: f64, opening_qty: f64) -> ArbHedgeStrategy {
         crate::pre_trade::monitor_channel::tests::install_binance_arb_hedge_exposure_fixture(
-            20.0, -40.0, false,
+            1000.0, -1000.0, false,
         );
         let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        // Keep even the ON-sized 18-unit close inside the real 800 USDT budget.
         monitor
+            .price_table()
+            .borrow_mut()
+            .update_mark_price("FILUSDT", 40.0, 1);
+        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(-1000.0, 1.0);
+        let granted = monitor
             .reserve_paired_close_exposure(
                 "FILUSDT",
                 TradingVenue::BinanceMargin,
@@ -4342,6 +4327,7 @@ mod tests {
                 OPEN_ID_B,
             )
             .unwrap();
+        assert_eq!(granted, close_qty);
         monitor.record_paired_close_first_fill(OPEN_ID_B, close_qty);
         monitor.finish_paired_close_first(OPEN_ID_B);
         let mut strategy = ArbHedgeStrategy::new(
@@ -4350,15 +4336,16 @@ mod tests {
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
         );
-        strategy
-            .paired_close_hedge_queue
-            .release_with_id(1, -close_qty, 100.0, OPEN_ID_B);
-        strategy
-            .pending_hedge_queue
-            .release_with_id(1, opening_qty, 100.0, OPEN_ID_A);
+        strategy.enqueue_hedge_work(1, 0, -close_qty, 100.0, OPEN_ID_B);
+        if opening_qty != 0.0 {
+            strategy
+                .intra_trailing_book
+                .record_open(OPEN_ID_A, 2, 0, opening_qty, 100.0);
+            strategy.enqueue_hedge_work(2, 0, opening_qty, 100.0, OPEN_ID_A);
+        }
         strategy
             .net_qty_queue
-            .apply_fill(1, opening_qty - close_qty, 100.0);
+            .apply_fill(2, opening_qty - close_qty, 100.0);
         strategy
     }
 
@@ -4448,260 +4435,367 @@ mod tests {
     }
 
     #[test]
-    fn close_query_caps_to_live_position_and_floors_lot_tails_before_selection() {
-        let mut strategy = stalled_close_fixture(3.5, 2551.0);
-        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(-2.0, 1.0);
-        assert_eq!(strategy.executable_paired_close_qty(2), Some(2.0));
-        strategy.net_unexecutable_paired_close_work(2, 2.0);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.0);
-        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(0.0, 1.0);
-        assert_eq!(strategy.executable_paired_close_qty(3), Some(0.0));
-        strategy.net_unexecutable_paired_close_work(3, 0.0);
-        assert!(strategy.paired_close_hedge_queue.is_empty());
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 2547.5);
-
-        let strategy = stalled_close_fixture(0.6, 1342.0);
-        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(-2.0, 1.0);
-        assert_eq!(strategy.executable_paired_close_qty(2), Some(0.0));
+    fn on_incident_old_close_cannot_block_new_opposite_hedge() {
+        // ON: stale BUY 18, only 10 / zero / fractional contracts left to close,
+        // then a factual spot BUY creates SELL 845. Only SELL 827 remains.
+        for remaining in [-10.0, 0.0, -0.6] {
+            let mut strategy = queued_close_fixture(18.0, 845.0);
+            crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(
+                remaining, 10.0,
+            );
+            assert_eq!(strategy.pending_hedge_qty(), 827.0);
+            assert!(strategy.paired_close_due_lots(3).is_empty());
+            assert_eq!(strategy.ordinary_due_qty(3), 827.0);
+            assert!(
+                !crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                    .is_paired_close(OPEN_ID_B)
+            );
+            strategy.begin_inflight_hedge_query(1, 3);
+            let request = strategy.inflight_hedge_query.clone().unwrap();
+            let borrowed = strategy.borrow_for_hedge_reply(3, 820.0, &request);
+            assert_eq!(borrowed.qv, 820.0);
+            assert_eq!(strategy.pending_hedge_qty(), 7.0);
+            assert!(borrowed
+                .lots
+                .iter()
+                .all(|l| l.open_client_order_id == Some(OPEN_ID_A)));
+        }
     }
 
     #[test]
-    fn flat_position_close_tail_is_netted_without_changing_factual_net_position() {
-        // ON-style state: no short remains, but a small close blocks a much
-        // larger opposite opening hedge. Net only unsubmitted work, not fills.
-        let mut strategy = stalled_close_fixture(0.6, 1342.0);
-        let before_net = strategy.net_qty();
-        let before_work = strategy.outstanding_hedge_work_qv();
-        strategy.net_unexecutable_paired_close_work(2, 0.0);
-        assert!(strategy.paired_close_hedge_queue.is_empty());
-        assert!((strategy.pending_hedge_queue.net_qty() - 1341.4).abs() < 1e-9);
-        assert_eq!(strategy.net_qty(), before_net);
-        assert!((strategy.outstanding_hedge_work_qv() - before_work).abs() < 1e-9);
-        assert!(
-            !crate::pre_trade::monitor_channel::MonitorChannel::instance()
-                .is_paired_close(OPEN_ID_B)
-        );
-        assert!(strategy.hedge_order_meta.is_empty());
-    }
-
-    #[test]
-    fn executable_close_keeps_priority_and_only_excess_work_is_matched() {
-        let mut strategy = stalled_close_fixture(3.5, 2551.0);
-        strategy.net_unexecutable_paired_close_work(2, 3.5);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -3.5);
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 2551.0);
-        strategy.net_unexecutable_paired_close_work(2, 2.0);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.0);
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 2549.5);
-        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
-        assert!(monitor
+    fn opposite_unsubmitted_work_nets_in_either_arrival_order() {
+        let mut strategy = queued_close_fixture(3.5, 0.0);
+        strategy.enqueue_hedge_work(2, 100, 1.0, 100.0, OPEN_ID_A);
+        assert_eq!(strategy.pending_hedge_qty(), -2.5);
+        let mon = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        assert!(mon
             .check_paired_close_hedge(
                 OPEN_ID_B,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
                 Side::Buy,
-                2.0
+                2.5
             )
             .is_ok());
-        assert!(monitor
+        assert!(mon
             .check_paired_close_hedge(
                 OPEN_ID_B,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
                 Side::Buy,
-                2.1
+                2.6
             )
             .is_err());
+        strategy.enqueue_hedge_work(3, 100, 4.0, 100.0, OPEN_ID_A);
+        assert_eq!(strategy.pending_hedge_qty(), 1.5);
+        assert_eq!(strategy.due_hedge_qty(4), 0.0);
+        assert!(!mon.is_paired_close(OPEN_ID_B));
+
+        let mut strategy = queued_close_fixture(2.0, 0.0);
+        let close = strategy.pending_hedge_queue.borrow(2, -2.0);
+        strategy
+            .intra_trailing_book
+            .record_open(OPEN_ID_A, 3, 0, 5.0, 100.0);
+        strategy.enqueue_hedge_work(3, 0, 5.0, 100.0, OPEN_ID_A);
+        strategy.release_borrowed_with_bound_id(4, close.qv, 100.0, OPEN_ID_B);
+        assert_eq!(strategy.pending_hedge_qty(), 3.0);
+        assert!(!mon.is_paired_close(OPEN_ID_B));
+        assert_eq!(
+            strategy.intra_trailing_book.positions[&OPEN_ID_A].signed_qty,
+            3.0
+        );
     }
 
     #[test]
-    fn close_netting_preserves_unmatched_credit_and_future_open_work() {
-        let mut strategy = stalled_close_fixture(3.5, 1.0);
+    fn netted_close_reply_does_not_borrow_new_work_or_report_failure() {
+        let mut strategy = queued_close_fixture(2.0, 0.0);
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        strategy.begin_inflight_hedge_query(1, 3);
         strategy
-            .pending_hedge_queue
-            .put_with_id(2, 100, 10.0, 100.0, 1003);
-        strategy.net_unexecutable_paired_close_work(3, 0.0);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.5);
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 10.0);
-        assert_eq!(strategy.pending_hedge_queue.due_qty(3), 0.0);
+            .inflight_hedge_query
+            .as_mut()
+            .unwrap()
+            .target_open_id = Some(OPEN_ID_B);
+        strategy.enqueue_hedge_work(4, 0, 5.0, 40.0, OPEN_ID_A);
+        assert!(!monitor.is_paired_close(OPEN_ID_B));
+        let mut ctx = ArbHedgeCtx::new();
+        ctx.request_seq = 1;
+        ctx.set_side(Side::Buy);
+        ctx.set_hedging_symbol("FILUSDT");
+        ctx.hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 40.0, 40.0, 3);
+        ctx.amount_qv = QuantizedValue::encode_floor(2.0, 1.0).unwrap();
+        strategy.handle_arb_hedge_ctx(ctx);
+        assert!(strategy.inflight_hedge_query.is_none());
+        assert!(strategy.hedge_order_meta.is_empty());
+        assert!(monitor
+            .order_manager()
+            .borrow()
+            .active_orders()
+            .next()
+            .is_none());
+        assert_eq!(strategy.pending_hedge_qty(), 3.0);
+        assert!(monitor
+            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
+            .is_ok());
+    }
+
+    #[test]
+    fn pending_netting_does_not_release_unknown_exchange_orders() {
+        let mut strategy = queued_close_fixture(2.0, 0.0);
+        let borrowed = strategy.pending_hedge_queue.borrow(2, -2.0);
+        strategy.orphaned_hedge_order_meta.insert(
+            2000,
+            ArbHedgeOrderMeta {
+                paired_close_lots: borrowed.lots,
+                intra_allocations: None,
+                signal_ts: 1,
+                price_offset: 0.0,
+                signal_bbo: None,
+                borrowed_qv: -2.0,
+                order_base_qty: 2.0,
+                filled_base_qty: 0.0,
+                expire_ts: 0,
+                next_expire_check_ts: 0,
+                cancel_requested: false,
+                bound_open_client_order_id: OPEN_ID_B,
+                from_key: Vec::new(),
+            },
+        );
+        strategy.enqueue_hedge_work(3, 0, 10.0, 100.0, OPEN_ID_A);
+        assert_eq!(strategy.pending_hedge_qty(), 10.0);
+        assert_eq!(strategy.borrowed_hedge_qv(), -2.0);
         assert!(
             crate::pre_trade::monitor_channel::MonitorChannel::instance()
                 .is_paired_close(OPEN_ID_B)
         );
+        assert!(strategy.orphaned_hedge_order_meta.contains_key(&2000));
+        // Only a confirmed terminal may return this reservation and net its remainder.
+        let meta = strategy.orphaned_hedge_order_meta.remove(&2000).unwrap();
+        strategy.settle_hedge_meta(4, Side::Buy, 0.5, 100.0, meta);
+        assert_eq!(strategy.pending_hedge_qty(), 8.5);
+        assert_eq!(strategy.borrowed_hedge_qv(), 0.0);
+        assert!(
+            !crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                .is_paired_close(OPEN_ID_B)
+        );
     }
 
     #[test]
-    fn close_netting_waits_for_inflight_and_unresolved_order_outcomes() {
-        let mut strategy = stalled_close_fixture(1.0, 10.0);
-        strategy.begin_inflight_hedge_query(1, 1);
-        strategy.net_unexecutable_paired_close_work(2, 0.0);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -1.0);
-        strategy.inflight_hedge_query = None;
-        let meta = ArbHedgeOrderMeta {
-            paired_close_lots: Vec::new(),
-            intra_allocations: None,
-            signal_ts: 1,
-            price_offset: 0.0,
-            signal_bbo: None,
-            borrowed_qv: 2.0,
-            order_base_qty: 2.0,
-            filled_base_qty: 0.0,
-            expire_ts: 0,
-            next_expire_check_ts: 0,
-            cancel_requested: false,
-            bound_open_client_order_id: OPEN_ID_A,
-            from_key: Vec::new(),
-        };
-        strategy.hedge_order_meta.insert(2000, meta);
-        strategy.net_unexecutable_paired_close_work(2, 0.0);
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 10.0);
-        let meta = strategy.hedge_order_meta.remove(&2000).unwrap();
-        strategy.orphaned_hedge_order_meta.insert(2000, meta);
-        strategy.net_unexecutable_paired_close_work(2, 0.0);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -1.0);
-        assert_eq!(strategy.outstanding_hedge_work_qv(), 11.0);
+    fn unexecutable_close_does_not_block_same_direction_ordinary_work() {
+        let mut strategy = queued_close_fixture(0.6, 0.0);
+        strategy.enqueue_hedge_work(2, 0, -10.0, 100.0, OPEN_ID_A);
+        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(0.0, 1.0);
+        assert_eq!(strategy.executable_paired_close_qty(3), Some(0.0));
+        assert_eq!(strategy.ordinary_due_qty(3), -10.0);
+        strategy.begin_inflight_hedge_query(1, 3);
+        let request = strategy.inflight_hedge_query.clone().unwrap();
+        let borrowed = strategy.borrow_for_hedge_reply(3, -10.0, &request);
+        assert_eq!(borrowed.qv, -10.0);
+        assert_eq!(borrowed.lots[0].open_client_order_id, Some(OPEN_ID_A));
+        assert!((strategy.pending_hedge_qty() + 0.6).abs() < 1e-9);
     }
 
     #[test]
-    fn paired_close_fills_keep_their_identity_and_are_not_netted_against_old_open_demand() {
-        crate::pre_trade::monitor_channel::tests::install_binance_arb_hedge_exposure_fixture(
-            20.0, -40.0, false,
+    fn trailing_metadata_follows_netting_and_keeps_reserved_orders() {
+        let mut strategy = queued_close_fixture(2.0, 0.0);
+        strategy
+            .intra_trailing_book
+            .record_open(OPEN_ID_A, 2, 0, 1.0, 100.0);
+        strategy.enqueue_hedge_work(2, 0, 1.0, 100.0, OPEN_ID_A);
+        assert!(!strategy
+            .intra_trailing_book
+            .positions
+            .contains_key(&OPEN_ID_A));
+
+        strategy
+            .intra_trailing_book
+            .record_open(OPEN_ID_A, 3, 0, 5.0, 100.0);
+        strategy.enqueue_hedge_work(3, 0, 5.0, 100.0, OPEN_ID_A);
+        assert_eq!(
+            strategy.intra_trailing_book.positions[&OPEN_ID_A].signed_qty,
+            4.0
         );
-        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
-        monitor
-            .reserve_paired_close_exposure(
-                "FILUSDT",
-                TradingVenue::BinanceMargin,
-                Side::Sell,
-                2.0,
-                OPEN_ID_B,
-            )
-            .unwrap();
-        let mut strategy = ArbHedgeStrategy::new(
-            1,
-            "FILUSDT",
-            TradingVenue::BinanceMargin,
-            TradingVenue::BinanceFutures,
-        );
-        strategy.begin_inflight_hedge_query(1, 1);
-        strategy.record_open_order_terminal(10, Side::Buy, 5.0, 5.0, 100.0, 0, OPEN_ID_A, b"");
-        // Reproduce a stale opening queue that differs from the strategy's fill ledger.
-        strategy.pending_hedge_queue.release(10, 2.0, 100.0);
-        strategy.record_open_order_terminal(20, Side::Sell, 2.0, 2.0, 100.0, 0, OPEN_ID_B, b"");
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 7.0);
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.0);
-        let mut inflight = strategy.inflight_hedge_query.clone().unwrap();
-        inflight.target_open_id = Some(OPEN_ID_B);
-        let borrowed = strategy.borrow_for_hedge_reply(30, -2.0, &inflight);
-        assert_eq!(borrowed.qv, -2.0);
-        assert!(borrowed
-            .lots
-            .iter()
-            .all(|lot| lot.open_client_order_id == Some(OPEN_ID_B)));
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 7.0);
-        monitor.finish_paired_close_first(OPEN_ID_B);
-        strategy.record_hedge_order_terminal_with_borrowed(
-            40,
-            Side::Buy,
-            2.0,
-            1.0,
-            100.0,
-            -2.0,
-            OPEN_ID_B,
-        );
-        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -1.0);
-        assert!(monitor.is_paired_close(OPEN_ID_B));
-        let borrowed = strategy.borrow_for_hedge_reply(50, -1.0, &inflight);
-        strategy.record_hedge_order_terminal_with_borrowed(
-            60,
-            Side::Buy,
-            1.0,
-            1.0,
-            100.0,
-            borrowed.qv,
-            OPEN_ID_B,
-        );
-        assert!(!monitor.is_paired_close(OPEN_ID_B));
-        assert!(strategy.paired_close_hedge_queue.is_empty());
-        assert_eq!(strategy.pending_hedge_queue.net_qty(), 7.0);
+        let borrowed = strategy.pending_hedge_queue.borrow(4, 3.0);
+        let allocations = strategy.reserve_intra_allocations(&borrowed.lots).unwrap();
+        strategy.enqueue_hedge_work(5, 0, -1.0, 100.0, 1003);
+        let p = &strategy.intra_trailing_book.positions[&OPEN_ID_A];
+        assert_eq!(p.signed_qty, 3.0);
+        assert_eq!(p.reserved_qty, 3.0);
+        assert_eq!(allocations[0].qv, 3.0);
+        assert!(strategy.pending_hedge_queue.is_empty());
     }
 
     #[test]
-    fn paired_close_dust_combines_across_orders_and_partial_hedges_release_exact_credits() {
-        crate::pre_trade::monitor_channel::tests::install_binance_arb_hedge_exposure_fixture(
-            20.0, -40.0, false,
-        );
-        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
-        for (id, qty) in [(OPEN_ID_A, 0.3), (OPEN_ID_B, 0.7)] {
-            monitor
-                .reserve_paired_close_exposure(
-                    "FILUSDT",
-                    TradingVenue::BinanceMargin,
-                    Side::Sell,
-                    qty,
-                    id,
-                )
-                .unwrap();
+    fn rejected_batch_keeps_every_lots_trailing_metadata() {
+        let mut strategy = queued_close_fixture(0.6, 0.0);
+        for (id, qty) in [(OPEN_ID_A, 2.0), (1003, 3.0)] {
+            strategy
+                .intra_trailing_book
+                .record_open(id, 2, 0, -qty, 100.0);
+            strategy
+                .intra_trailing_book
+                .positions
+                .get_mut(&id)
+                .unwrap()
+                .stop_price = Some(101.0);
+            strategy.enqueue_hedge_work(2, 0, -qty, 100.0, id);
         }
-        let mut strategy = ArbHedgeStrategy::new(
-            1,
+        strategy.begin_inflight_hedge_query(1, 3);
+        let query = strategy.inflight_hedge_query.take().unwrap();
+        let borrowed = strategy.borrow_for_hedge_reply(3, -5.0, &query);
+        assert_eq!(borrowed.lots.len(), 2);
+        strategy.release_unsubmitted_borrow(4, &borrowed.lots, borrowed.qv, 100.0, OPEN_ID_A);
+        for (id, qty) in [(OPEN_ID_A, 2.0), (1003, 3.0)] {
+            assert_eq!(
+                strategy
+                    .pending_hedge_queue
+                    .find_lot_by_open_id(id)
+                    .unwrap()
+                    .qty,
+                qty
+            );
+            let position = &strategy.intra_trailing_book.positions[&id];
+            assert_eq!(position.signed_qty, -qty);
+            assert_eq!(position.reserved_qty, 0.0);
+            assert_eq!(position.stop_price, Some(101.0));
+        }
+    }
+
+    #[test]
+    fn unexecutable_force_never_retires_an_ordinary_query() {
+        for remaining in [0.0, -0.6] {
+            let mut strategy = queued_close_fixture(0.6, 0.0);
+            crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(
+                remaining, 1.0,
+            );
+            strategy.register_force_close_open_id(1003);
+            strategy.enqueue_hedge_work(2, 0, -0.6, 100.0, 1003);
+            strategy.begin_inflight_hedge_query(7, 3);
+            assert!(!strategy.send_unimmr_force_close_hedge_direct(4));
+            assert_eq!(
+                strategy.inflight_hedge_query.as_ref().unwrap().request_seq,
+                7
+            );
+            assert!(!strategy.send_unimmr_force_close_hedge_direct(5));
+            assert_eq!(
+                strategy.inflight_hedge_query.as_ref().unwrap().request_seq,
+                7
+            );
+        }
+    }
+
+    #[test]
+    fn failed_force_submission_preserves_an_ordinary_query() {
+        // Empty hub: deterministic publish failure, without opening IPC services.
+        crate::pre_trade::trade_eng_channel::TradeEngHub::initialize(std::iter::empty::<&str>())
+            .unwrap();
+        let mut strategy = queued_close_fixture(0.6, 0.0);
+        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(-10.0, 1.0);
+        strategy.enqueue_hedge_work(2, 0, -10.0, 40.0, OPEN_ID_A);
+        strategy.register_force_close_open_id(1003);
+        strategy.enqueue_hedge_work(3, 0, -2.0, 40.0, 1003);
+        assert_eq!(strategy.executable_reducing_qty(-2.0), Some(2.0));
+        strategy.begin_inflight_hedge_query(7, 3);
+        strategy.next_query_ts_us = 123;
+        // No trade-engine publisher is installed in this fixture.
+        for ts in [4, 5] {
+            assert!(!strategy.send_unimmr_force_close_hedge_direct(ts));
+            assert_eq!(
+                strategy.inflight_hedge_query.as_ref().unwrap().request_seq,
+                7
+            );
+            assert_eq!(
+                strategy.inflight_hedge_query.as_ref().unwrap().sent_ts_us,
+                3
+            );
+            assert_eq!(strategy.next_query_ts_us, 123);
+            assert!(strategy.hedge_order_meta.is_empty());
+            assert_eq!(
+                strategy
+                    .pending_hedge_queue
+                    .find_lot_by_open_id(1003)
+                    .unwrap()
+                    .qty,
+                2.0
+            );
+        }
+    }
+
+    #[test]
+    fn force_work_borrows_its_own_lot_past_older_ordinary_work() {
+        let mut strategy = queued_close_fixture(0.6, 0.0);
+        strategy.enqueue_hedge_work(2, 0, -10.0, 100.0, OPEN_ID_A);
+        strategy.register_force_close_open_id(1003);
+        strategy.enqueue_hedge_work(3, 0, -2.0, 100.0, 1003);
+        strategy.begin_inflight_hedge_query(1, 4);
+        let mut request = strategy.inflight_hedge_query.clone().unwrap();
+        request.target_open_id = Some(1003);
+        let borrowed = strategy.borrow_for_hedge_reply(4, -2.0, &request);
+        assert_eq!(borrowed.qv, -2.0);
+        assert_eq!(borrowed.lots.len(), 1);
+        assert_eq!(borrowed.lots[0].open_client_order_id, Some(1003));
+        assert!((strategy.pending_hedge_qty() + 10.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paired_close_dust_combines_and_partial_fill_preserves_each_credit() {
+        let mut strategy = queued_close_fixture(0.3, 0.0);
+        let mon = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        mon.reserve_paired_close_exposure(
             "FILUSDT",
             TradingVenue::BinanceMargin,
-            TradingVenue::BinanceFutures,
-        );
-        strategy.begin_inflight_hedge_query(1, 1);
-        strategy.record_open_order_terminal(10, Side::Sell, 0.3, 0.3, 100.0, 0, OPEN_ID_A, b"");
-        strategy.record_open_order_terminal(20, Side::Sell, 0.7, 0.7, 100.0, 0, OPEN_ID_B, b"");
-        monitor.finish_paired_close_first(OPEN_ID_A);
-        monitor.finish_paired_close_first(OPEN_ID_B);
-        let mut inflight = strategy.inflight_hedge_query.clone().unwrap();
-        inflight.target_open_id = Some(OPEN_ID_A);
-        let borrowed = strategy.borrow_for_hedge_reply(30, -1.0, &inflight);
+            Side::Sell,
+            0.7,
+            OPEN_ID_A,
+        )
+        .unwrap();
+        mon.record_paired_close_first_fill(OPEN_ID_A, 0.7);
+        mon.finish_paired_close_first(OPEN_ID_A);
+        strategy.enqueue_hedge_work(2, 0, -0.7, 100.0, OPEN_ID_A);
+        strategy.begin_inflight_hedge_query(1, 3);
+        let mut request = strategy.inflight_hedge_query.clone().unwrap();
+        request.target_open_id = Some(OPEN_ID_B);
+        let borrowed = strategy.borrow_for_hedge_reply(3, -1.0, &request);
         assert_eq!(borrowed.lots.len(), 2);
-        let meta = super::ArbHedgeOrderMeta {
-            paired_close_lots: borrowed.lots,
-            intra_allocations: None,
-            signal_ts: 30,
-            price_offset: 0.0,
-            signal_bbo: None,
-            borrowed_qv: -1.0,
-            order_base_qty: 1.0,
-            filled_base_qty: 0.0,
-            expire_ts: 0,
-            next_expire_check_ts: 0,
-            cancel_requested: false,
-            bound_open_client_order_id: OPEN_ID_B,
-            from_key: Vec::new(),
-        };
-        strategy.settle_hedge_meta(40, Side::Buy, 0.4, 100.0, meta);
-        assert!(!monitor.is_paired_close(OPEN_ID_A));
-        assert!(monitor.is_paired_close(OPEN_ID_B));
-        assert!((strategy.paired_close_hedge_queue.net_qty() + 0.6).abs() < 1e-9);
-        monitor
+        strategy.settle_hedge_meta(
+            4,
+            Side::Buy,
+            0.4,
+            100.0,
+            ArbHedgeOrderMeta {
+                paired_close_lots: borrowed.lots,
+                intra_allocations: None,
+                signal_ts: 1,
+                price_offset: 0.0,
+                signal_bbo: None,
+                borrowed_qv: -1.0,
+                order_base_qty: 1.0,
+                filled_base_qty: 0.0,
+                expire_ts: 0,
+                next_expire_check_ts: 0,
+                cancel_requested: false,
+                bound_open_client_order_id: OPEN_ID_A,
+                from_key: Vec::new(),
+            },
+        );
+        assert!(!mon.is_paired_close(OPEN_ID_B));
+        assert!((strategy.pending_hedge_qty() + 0.6).abs() < 1e-9);
+        assert!(mon
             .check_paired_close_hedge(
-                OPEN_ID_B,
+                OPEN_ID_A,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
                 Side::Buy,
-                0.6,
+                0.6
             )
-            .unwrap();
-        assert!(monitor
+            .is_ok());
+        assert!(mon
             .check_paired_close_hedge(
-                OPEN_ID_B,
+                OPEN_ID_A,
                 "FILUSDT",
                 TradingVenue::BinanceFutures,
                 Side::Buy,
                 0.7
-            )
-            .is_err());
-        assert!(monitor
-            .check_paired_close_hedge(
-                OPEN_ID_B,
-                "ETHUSDT",
-                TradingVenue::BinanceFutures,
-                Side::Buy,
-                0.1
             )
             .is_err());
     }
@@ -5506,7 +5600,10 @@ mod tests {
 
         assert_eq!(strategy.pending_hedge_qty(), -10.0);
         assert_eq!(strategy.borrowed_hedge_qv(), -100.0);
-        assert_eq!(strategy.outstanding_hedge_work_qv(), -110.0);
+        assert_eq!(
+            (strategy.pending_hedge_qty() + strategy.borrowed_hedge_qv()),
+            -110.0
+        );
         let lot = strategy
             .pending_hedge_queue
             .find_lot_by_open_id(OPEN_ID_B)

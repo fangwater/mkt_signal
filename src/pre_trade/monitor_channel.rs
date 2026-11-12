@@ -7153,6 +7153,54 @@ impl MonitorChannel {
         })
     }
 
+    /// Available factual inventory for a reducing order. Unknown submissions
+    /// retain their own reservation; unrelated work never locks this inventory.
+    pub(crate) fn available_reducing_base_qty(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+    ) -> Result<f64, String> {
+        Self::with_inner(|inner| {
+            if venue != inner.open_venue && venue != inner.hedge_venue {
+                return Err("reducing venue does not belong to deployment".into());
+            }
+            let position = Self::get_position_qty_inner(inner, symbol, venue);
+            if !position.is_finite() {
+                return Err("invalid reducing position".into());
+            }
+            let sign = if side == Side::Buy { 1.0 } else { -1.0 };
+            if position * sign >= 0.0 {
+                return Ok(0.0);
+            }
+            let normalized = normalize_symbol_for_internal(symbol);
+            let mut reserved = 0.0;
+            for order in inner.order_manager.borrow().active_orders() {
+                if order.venue == venue
+                    && order.side == side
+                    && normalize_symbol_for_internal(&order.symbol) == normalized
+                {
+                    reserved += Self::active_order_base_qty(inner, order)?;
+                }
+            }
+            Ok((position.abs() - reserved).max(0.0))
+        })
+    }
+
+    pub(crate) fn check_reducing_order(
+        &self,
+        symbol: &str,
+        venue: TradingVenue,
+        side: Side,
+        base_qty: f64,
+    ) -> Result<(), String> {
+        let available = self.available_reducing_base_qty(symbol, venue, side)?;
+        if !base_qty.is_finite() || base_qty <= 0.0 || base_qty > available + 1e-9 {
+            return Err(format!("reducing order exceeds available position: symbol={symbol} requested={base_qty} available={available}"));
+        }
+        Ok(())
+    }
+
     /// Arb opening/hedge exposure includes the worst fill of all active orders.
     /// Risk may converge above a limit; additional expansion must fit after execution.
     pub fn check_arb_order_exposure_risk(
@@ -11389,6 +11437,55 @@ pub(crate) mod tests {
         assert!(MonitorChannel::instance()
             .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
             .is_ok());
+    }
+
+    #[test]
+    fn emergency_reduction_survives_hedge_stall_without_spending_unknown_reservations() {
+        install_binance_arb_hedge_exposure_fixture(130.0, -100.0, false);
+        let mon = MonitorChannel::instance();
+        for ts in [1, 10_000_001, 30_000_001] {
+            mon.record_arb_hedge_failure("FILUSDT", ts, "unknown_old_order");
+        }
+        // Closing shorts can temporarily increase net while lowering gross risk.
+        assert!(mon.check_arb_hedge_progress_risk("FILUSDT", 20.0).is_err());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 20.0)
+            .is_ok());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Sell, 1.0)
+            .is_err());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 101.0)
+            .is_err());
+        let manager = mon.order_manager();
+        manager.borrow_mut().create_order(
+            TradingVenue::BinanceFutures,
+            123,
+            order_common::OrderType::Market,
+            "FILUSDT".into(),
+            Side::Buy,
+            90.0,
+            100.0,
+            true,
+            1.0,
+        );
+        assert_eq!(
+            mon.available_reducing_base_qty("FILUSDT", TradingVenue::BinanceFutures, Side::Buy)
+                .unwrap(),
+            10.0
+        );
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 10.0)
+            .is_ok());
+        assert!(mon
+            .check_reducing_order("FILUSDT", TradingVenue::BinanceFutures, Side::Buy, 20.0)
+            .is_err());
+        assert!(manager.borrow().get(123).is_some());
+        assert_eq!(
+            mon.available_reducing_base_qty("FILUSDT", TradingVenue::BinanceMargin, Side::Sell)
+                .unwrap(),
+            130.0
+        );
     }
 
     #[test]

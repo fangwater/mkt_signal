@@ -522,10 +522,6 @@ pub trait OpenStrategyCommon {
         false
     }
 
-    fn skip_open_total_exposure_risk_check(&self) -> bool {
-        false
-    }
-
     fn skip_open_position_risk_checks(&self) -> bool {
         false
     }
@@ -1109,7 +1105,9 @@ pub trait OpenStrategyCommon {
                 .is_some_and(|id| monitor.is_paired_close(id));
         // Paired exits have already reserved bounded unfinished work and both-leg inventory.
         // The current-account opening gate would otherwise disable every exit once over limit.
-        if !skip_position_risk_checks && !paired_close {
+        // ForceArbClose already caps its quantity to factual reducing inventory.
+        // Existing net imbalance must not prohibit this emergency deleveraging.
+        if !skip_position_risk_checks && !paired_close && !self.force_taker_taker_hedge() {
             if let Err(err) = monitor.check_open_exposure(symbol_ref) {
                 match err {
                     OpenExposureRiskError::Symbol(e) => {
@@ -1136,16 +1134,6 @@ pub trait OpenStrategyCommon {
                             e
                         ));
                         return None;
-                    }
-                    OpenExposureRiskError::Total(e)
-                        if self.skip_open_total_exposure_risk_check() =>
-                    {
-                        debug!(
-                            "{}: strategy_id={} Force Close ignores total exposure risk: {}",
-                            self.strategy_name(),
-                            self.strategy_id(),
-                            e
-                        );
                     }
                     OpenExposureRiskError::Total(e) => {
                         self.log_open_deleveraging_risk_reject(

@@ -111,27 +111,7 @@ impl IntraTrailingBook {
         if qv.abs() <= EPS {
             return;
         }
-        let mut remaining = qv.abs();
-        let mut opposite: Vec<_> = self
-            .positions
-            .iter()
-            .filter(|(_, p)| p.signed_qty * qv < 0.0 && p.available() > EPS)
-            .map(|(&id, p)| ((p.close_ts, p.ts, p.pending_seq), id))
-            .collect();
-        opposite.sort_unstable();
-        for (_, other_id) in opposite {
-            let p = self.positions.get_mut(&other_id).unwrap();
-            let matched = remaining.min(p.available());
-            p.signed_qty -= p.signed_qty.signum() * matched;
-            remaining -= matched;
-            if remaining <= EPS {
-                break;
-            }
-        }
-        self.positions.retain(|_, p| p.signed_qty.abs() > EPS);
-        if remaining <= EPS {
-            return;
-        }
+        let remaining = qv.abs();
         self.next_seq = self.next_seq.wrapping_add(1);
         let p = self.positions.entry(id).or_insert(TrailingPosition {
             entry_price: price,
@@ -173,19 +153,6 @@ impl IntraTrailingBook {
         }
     }
 
-    pub fn restore_unsubmitted(&mut self, id: i64, now_ts: i64, qty: f64) {
-        self.next_seq = self.next_seq.wrapping_add(1);
-        if let Some(p) = self.positions.get_mut(&id) {
-            p.ts = if p.available() - qty <= EPS {
-                now_ts
-            } else {
-                p.ts.min(now_ts)
-            };
-            p.close_ts = 0;
-            p.pending_seq = self.next_seq;
-        }
-    }
-
     // Cumulative exchange fills are allocated in reservation order; repeats are idempotent.
     pub fn apply_fills(&mut self, allocations: &mut [HedgeAllocation], cumulative: f64) {
         let mut remaining = cumulative.max(0.0);
@@ -206,7 +173,6 @@ impl IntraTrailingBook {
         if allocation.qv.abs() - allocation.filled_qty <= EPS {
             return;
         }
-        let mut available = 0.0;
         self.next_seq = self.next_seq.wrapping_add(1);
         if let Some(p) = self.positions.get_mut(&allocation.open_id) {
             p.ts = if p.available() <= EPS {
@@ -215,29 +181,24 @@ impl IntraTrailingBook {
                 p.ts.min(now_ts)
             };
             p.pending_seq = self.next_seq;
-            available = (allocation.qv.abs() - allocation.filled_qty).max(0.0);
+            let available = (allocation.qv.abs() - allocation.filled_qty).max(0.0);
             p.reserved_qty = (p.reserved_qty - available).max(0.0);
             p.close_ts = 0;
         }
-        // Opens arriving while a hedge was reserved can leave opposite pending work.
-        let mut opposite: Vec<_> = self
-            .positions
-            .iter()
-            .filter(|(_, p)| p.signed_qty * allocation.qv < 0.0 && p.available() > EPS)
-            .map(|(&id, p)| ((p.close_ts, p.ts, p.pending_seq), id))
-            .collect();
-        opposite.sort_unstable();
-        for (_, id) in opposite {
-            let p = self.positions.get_mut(&id).unwrap();
-            let matched = available.min(p.available());
-            p.signed_qty -= p.signed_qty.signum() * matched;
-            available -= matched;
-            if let Some(own) = self.positions.get_mut(&allocation.open_id) {
-                own.signed_qty -= allocation.qv.signum() * matched;
-            }
-            if available <= EPS {
-                break;
-            }
+        self.positions.retain(|_, p| p.signed_qty.abs() > EPS);
+    }
+
+    /// The pending queue is the sole owner of unsubmitted netting. This book
+    /// keeps stop metadata and reservations, never a second pending-work ledger.
+    pub fn sync_pending(&mut self, queue: &crate::strategy::net_qty_queue::TimedNetQtyQueue) {
+        let lots = queue.lots();
+        for (&id, p) in &mut self.positions {
+            let pending: f64 = lots
+                .iter()
+                .filter(|lot| lot.open_client_order_id == Some(id))
+                .map(|lot| lot.qty)
+                .sum();
+            p.signed_qty = p.signed_qty.signum() * (p.reserved_qty + pending);
         }
         self.positions.retain(|_, p| p.signed_qty.abs() > EPS);
     }
@@ -386,6 +347,7 @@ mod tests {
                     }
                 }
             }
+            book.sync_pending(&queue);
             for (&id, p) in &book.positions {
                 let expected = queue
                     .find_lot_by_open_id(id)

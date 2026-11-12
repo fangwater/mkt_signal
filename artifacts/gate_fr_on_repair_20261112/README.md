@@ -142,3 +142,53 @@ Remote rollback binaries and runtime logs are retained in each environment's
 `backups/gate_fr_recovery_c2419da3_20261112/`. Local build and operation receipts
 are under `data/ops/gate_fr_recovery_20261112/` (Git-ignored). Unrelated local
 worktree changes were not included in the Rust build or this task's commits.
+
+## Scheduler simplification after recovery (not deployed)
+
+The separate paired-close queue was introduced by `bf3f5698` on
+2026-11-09 05:29:24 UTC to allow paired exits when existing account exposure was
+already over its opening limit. The separate queue and unconditional priority
+were unnecessary for that fix. Saved ON logs first directly demonstrate the
+blocking pattern at 2026-11-10 11:55:24 UTC; this is the earliest retained proof,
+not a proven time of first occurrence.
+
+The replacement keeps one pending-work collection. Only factual first-leg fill
+increments enter it. Opposite unsubmitted quantities offset each other and
+release their paired-close work credit without inventing exchange fills.
+Submitted and unknown orders retain their borrowed quantities and reservations
+until reconciliation. The fill-history ledger and trailing-stop metadata do not
+schedule a second copy of pending work.
+
+Scheduling selects executable work rather than enforcing strict FIFO. A close
+with no remaining reducing inventory, insufficient lot size, or unavailable
+rules cannot monopolize the path ahead of ordinary work. Force exits borrow
+their own work and cap quantities to factual reducing inventory minus active
+same-side orders. Validated Force/paired reductions bypass opening-capacity and
+hedge-stall expansion checks; normal expansion remains checked. Failed Force
+submissions preserve any ordinary query already awaiting a reply. Replies for
+targets fully resolved by netting are discarded before borrowing other work.
+Exchange minimums, unavailable prices, query deadlines and unknown-order
+reservations still apply; this is not a promise of execution without market data
+or exchange cooperation.
+
+Regression coverage reconstructs old BUY 18 plus new SELL 845 with 10, zero or
+fractional remaining shorts, leaving only SELL 827. Additional cases cover both
+netting arrival orders, future work, same-direction work behind an unexecutable
+close, aggregated close dust, partial fills, unknown reservations, trailing-stop
+metadata, stale replies, and failed Force submissions. The fixture uses synthetic
+FIL prices and rules to test the shared scheduler, not an exchange replay.
+
+Force second-leg expansion-guard risk was introduced later by `030c37fa` on
+2026-11-12 07:55:39 UTC, so it cannot explain the earlier ON incident. The Force
+first-leg symbol-exposure gate predates this incident. Neither review finding
+proves an actual liquidation or a blocked emergency close occurred online.
+
+The user paused publication pending review of emergency closes. Neither this
+scheduler change nor the separately committed missing-mark REST supplement
+`caac540d` has been published as part of this follow-up.
+
+Validation of the simplified scheduler: root library 1,570 passed, 3 ignored;
+`cargo check --bin pre_trade`, `cargo fmt --check` and `git diff --check` passed.
+The Sol review also identified a multi-lot unsubmitted-return edge case; its
+fix and regression preserve all trailing metadata through intermediate queue
+syncs and leave no temporary reservations behind. No CTP code was executed.

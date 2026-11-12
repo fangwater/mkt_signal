@@ -324,6 +324,12 @@ examples elsewhere in the repository.
 
 ## Coding Conventions
 
+- Hard requirement: directly remove code that no longer serves a purpose. Delete
+  obsolete parameters, fields, functions, branches, and superseded implementations,
+  updating their callers in the same change. Do not retain unused code by renaming
+  it with an underscore, adding `allow(dead_code)` / `allow(unused)`, or leaving
+  empty compatibility wrappers. Preserve only code required by current behavior
+  or an actual interface contract; tests must cover the retained behavior.
 - Keep changes scoped to the touched exchange/path/strategy.
 - Reuse existing parsers, signing helpers, connection wrappers, query mappings, and IPC message types.
 - Add concise context to errors with `anyhow::Context`.

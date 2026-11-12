@@ -251,7 +251,13 @@ impl ArbCloseStrategy {
         };
         let requested_base_qty = ctx.amount_value() * qty_multiplier;
         let raw_order_qty = if self.force_taker_taker {
-            ctx.amount_value()
+            match MonitorChannel::instance().available_reducing_base_qty(&symbol, venue, side) {
+                Ok(available) => requested_base_qty.min(available) / qty_multiplier,
+                Err(reason) => {
+                    self.mark_open_strategy_inactive(reason);
+                    return;
+                }
+            }
         } else {
             let grant = MonitorChannel::instance().reserve_close_inventory_silent(
                 venue,
@@ -318,6 +324,17 @@ impl ArbCloseStrategy {
             }
         };
         let price_hint = Some(order_price);
+        if self.force_taker_taker {
+            if let Err(reason) = MonitorChannel::instance().check_reducing_order(
+                &symbol,
+                venue,
+                side,
+                order_qty * qty_multiplier,
+            ) {
+                self.mark_open_strategy_inactive(reason);
+                return;
+            }
+        }
         if let Err(reason) = MonitorChannel::instance()
             .check_min_trading_requirements(venue, &symbol, order_qty, price_hint)
         {
@@ -520,10 +537,6 @@ impl OpenStrategyCommon for ArbCloseStrategy {
 
     fn hedge_on_incremental_open_fill(&self) -> bool {
         !self.force_taker_taker
-    }
-
-    fn skip_open_total_exposure_risk_check(&self) -> bool {
-        self.force_taker_taker
     }
 
     fn enable_open_order_rate_limit(&self) -> bool {
