@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12（Delist 敞口检查移除额外交易规则轮询，待本次发布验收；既有下架来源保持）
+最后更新：2026-11-12 13:51 UTC（Delist 已移除敞口检查的额外交易规则轮询；既有下架来源保持）
 
 2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底，
 已随 `293f6352` 于 10:13 UTC 发布至 JP `gate_fr_arb01–04`，四盘仍关闭 `trade_signal`。
@@ -504,4 +504,5 @@ The separate delisting catalogs, schedules and announcement fetches still use
 their existing public URLs and Bitget cache. This change adds no endpoint,
 listener or Nginx configuration and never routes private requests through the cache.
 The 12:51 UTC deployment briefly used an extra order-rule cache; it is superseded
-by this revision. Deployment confirmation is recorded in `docs/delist_risk_server.md`.
+by `0128f5f5`, published to JP Delist at 13:51 UTC. Existing cache configuration
+is unchanged; verification is recorded in `docs/delist_risk_server.md`.

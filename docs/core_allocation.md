@@ -1,6 +1,13 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 13:09 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 13:55 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12 13:51 UTC，仅更新JP `~/delist_risk_server` 方向maker正常区间报警规则
+`arbmm 0128f5f5`。本地release构建、SCP/SHA-256及原子安装后，经环境本地脚本
+重启为PID3034380，全部线程继续CPU28。142个其他应用进程身份/CPU及10份配置
+指纹保持，Delist开机条目更新且其他34条保留；11个FR首轮及220秒后数据完整且均无敞口报警。
+交易服务、参数、源IP及网络配置不变。回执 `data/ops/delist_maker_band_20261112/`，
+详见 `docs/delist_risk_server.md`。
 
 2026-11-12 13:08 UTC，仅发布Delist正常尾差/成对平仓报警修复 `arbmm ff83434d`。
 环境本地脚本重启为 PID2945573，继续CPU28；142个其他应用进程身份/CPU及10份配置
@@ -1992,7 +1999,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 24 | crypto_cta_manager / cta_web + crypto_nav_manager | CTA PID3909484；NAV PID483448，MM83777统计接入，交易进程保持 |
 | 25 | binance_exec_spread01 account_monitor | PID3912185；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID3920104 / PID3919575 |
-| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3513519，env.sh DELIST_CORE=28；SG隧道于11-11停止 |
+| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3034380（11-12方向maker报警修复），env.sh DELIST_CORE=28；SG隧道于11-11停止 |
 | 29 | okex_mm_83777 account_monitor | PID275138；UID556411065144578537，空仓风险解析已修复，实盘账户监控 |
 | 30 | okex_mm_83777 trade_signal | PID291515；BTC/ETH实盘，vol门限开启、Tlen关闭 |
 | 31 | okex_mm_83777 pre_trade | PID424228；实盘风控/开仓/对冲 |
