@@ -1480,19 +1480,22 @@ fn assert_working_index(core: &TradingCore) {
         .working_by_symbol
         .iter()
         .flatten()
-        .map(|id| &core.orders.slots[id.0].order.key)
+        .map(|id| &core.orders.identities[id.0].key)
         .collect();
     assert_eq!(expected, actual);
     for (symbol, ids) in core.working_by_symbol.iter().enumerate() {
         for (index, id) in ids.iter().enumerate() {
-            assert_eq!(core.orders.slots[id.0].working_index, Some(index));
+            assert_eq!(
+                core.orders.slots[id.0].working_index.map(|i| i.get() - 1),
+                Some(index)
+            );
             assert_eq!(core.orders.slots[id.0].symbol.0, symbol);
         }
         for (side, number) in [(Side::Buy, 0), (Side::Sell, 1)] {
             assert_eq!(
                 core.pending_open[symbol][number],
                 ids.iter()
-                    .map(|id| &core.orders.slots[id.0].order)
+                    .map(|id| core.orders.view(*id))
                     .filter(|o| o.request.offset == Offset::Open && o.request.side == side)
                     .map(|o| i64::from(o.remaining()))
                     .sum::<i64>()

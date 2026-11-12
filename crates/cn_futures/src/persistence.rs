@@ -24,22 +24,22 @@ pub fn store_identity(adapter: &str, scope: &[&[u8]]) -> StoreIdentity {
         account_hash: format!("{:x}", hash.finalize()),
     }
 }
-pub fn record(
+pub fn record<'a>(
     day: &str,
-    order: &Order,
+    order: impl Into<OrderView<'a>>,
     instrument: Option<Instrument>,
     send_state: SendState,
 ) -> NativeOrderRecord {
     record_at(day, order, instrument, send_state, now_us())
 }
-pub(crate) fn record_at(
+pub(crate) fn record_at<'a>(
     day: &str,
-    order: &Order,
+    order: impl Into<OrderView<'a>>,
     instrument: Option<Instrument>,
     send_state: SendState,
     now: u64,
 ) -> NativeOrderRecord {
-    record_owned_at(day, order.clone(), instrument, send_state, now)
+    record_owned_at(day, order.into().to_order(), instrument, send_state, now)
 }
 pub(crate) fn record_owned_at(
     day: &str,
@@ -93,7 +93,7 @@ pub fn projection(
             .copied()
             .cloned();
         let record = record(view.trading_day, order, instrument, send_state);
-        if observed.contains(&order.key) || reconciliation {
+        if observed.contains(order.key) || reconciliation {
             mutation.observed.push(record.identity.clone());
         }
         mutation.orders.push(record);

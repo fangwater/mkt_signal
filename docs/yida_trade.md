@@ -77,7 +77,9 @@ UDP / XTCP 发单仍由 SDK `insertOrder` / `cancelOrder` 在调用线程完成�
 
 交易运行时关闭所有易达行情连接，联调的盘口与涨跌停价通过独立的只读行情探针取得。`RecalcMode=off` 避免在缺少行情时假装持续重算保证金 / 浮盈亏；因此 SDK 本地 `Available` / `usable()` 不能当作独立、实时的柜台风险模型。需要按实际保证金、手续费和价格风险配置保守 `cash_budget_per_open_lot`，并在仿真中核对。资金事件只收紧本地预算，完整恢复才建立新基准。
 
-`idle_sleep_us=0` 使用忙轮询。可在项目配置里指定 `business_core` 绑定单个业务核；后台输入、审计和 SDK 先启动，再绑定当前业务线程，避免后台工作继承该单核亲和性。使用此选项时，原生配置必须明确给出 `TCPTradingCPUID`、`TimerCPUID`，XTCP 还需给出 `XTCPTradingCPUID`，且都与业务核不同。实际 CPU 编号由部署机器决定，示例没有硬编码。`TradingServerTimeout=-1` 可使 SDK 回报线程忙轮询；这会额外占用一个核，需按机器配置。尚无绑核后的真实柜台延迟指标。
+`idle_sleep_us=0` 使用忙轮询。统一的 `[placement]` 包含 `numa_node`、`business_cpu`、`sdk_cpus`、`background_cpus`，替代原来的 `business_core`。部署时按目标主机拓扑配置；省略 placement 时保留操作系统默认调度，不能声称已隔离或绑定 NUMA。配置后会在创建队列、核心与数据库前绑定线程和后续分配的内存页：业务、SDK、后台三域在同一 NUMA 节点，且不同域不共享 SMT 物理核。SDK 创建、启动、登录、重连和销毁在 SDK CPU 集合中进行，输入与写盘线程继承后台集合；同步报单回调保持业务核，原生工作线程回调强制进入 SDK 域。任一拓扑、亲和性或 `MPOL_BIND` 失败立即返回错误，没有降级。已有内存页不会自动迁移。
+
+原生配置必须明确给出 `TCPTradingCPUID`、`TimerCPUID`，XTCP 还需给出 `XTCPTradingCPUID`，这些 CPU 都必须属于 `placement.sdk_cpus`。配置检查只做字段与 CPUID 校验，不设置线程策略；真正连接时才验证系统拓扑并绑定。SDK 和后台集合可以包含多个同节点物理核，CTP 的固定布局仍单独要求每域一个核。`TradingServerTimeout=-1` 可使 SDK 回报线程忙轮询，会额外占用核。实际编号见 [配置示例](../config/yida_trade.example.toml)，尚无真实柜台延迟指标。
 
 **账户必须专用，且追平后的原生 `LoginCount == 1`。** 不能另起 CTP、YDClient 或其他策略独立使用同一账户的资金 / 持仓。flow 锁只防止相同目录被并发使用，不是跨机器的账户锁。恢复时若有 SHFE / INE 之外的持仓、非投机套保账本、组合或不支持的事实类型，会保留原始事件并阻断交易，不做猜测映射。普通期权持仓与期货使用同一持仓、冻结、委托和事实成交账本；能否新报单仍由显式合约白名单决定。
 

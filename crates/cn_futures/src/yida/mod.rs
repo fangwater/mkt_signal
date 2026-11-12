@@ -386,3 +386,6 @@ pub fn decode_event(e: &RawEvent, historical_rejection: bool) -> Result<DecodedU
         _ => DecodedUpdate::None,
     })
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod placement_tests;

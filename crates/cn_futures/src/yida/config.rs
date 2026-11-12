@@ -21,7 +21,8 @@ pub struct Config {
     /// Endpoint-pinned one-lot test mode for the official SHFE/INE simulator.
     #[serde(default)]
     pub public_simulation: bool,
-    pub business_core: Option<usize>,
+    /// Optional for offline fixtures. Configured placement is strict: no fallback.
+    pub placement: Option<crate::placement::PlacementConfig>,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
@@ -102,12 +103,8 @@ impl Config {
                 "public_simulation requires max_order_lots=1 and max_working_lots<=2"
             );
         }
-        #[cfg(target_os = "linux")]
-        if let Some(core) = self.business_core {
-            ensure!(
-                core < libc::CPU_SETSIZE as usize,
-                "business_core exceeds CPU_SETSIZE"
-            );
+        if let Some(placement) = &self.placement {
+            placement.validate()?;
         }
         for p in [
             &self.sdk_library,
@@ -257,7 +254,7 @@ impl Config {
             ),
             TradingProtocol::Tcp => {}
         }
-        if let Some(core) = self.business_core {
+        if let Some(placement) = &self.placement {
             let mut keys = vec!["TCPTradingCPUID", "TimerCPUID"];
             if self.trading_protocol == TradingProtocol::Xtcp {
                 keys.push("XTCPTradingCPUID");
@@ -266,13 +263,11 @@ impl Config {
                 let sdk_core = values
                     .get(key)
                     .and_then(|v| v.parse::<usize>().ok())
-                    .with_context(|| format!("explicit {key} required with business_core"))?;
-                #[cfg(target_os = "linux")]
+                    .with_context(|| format!("explicit {key} required with placement"))?;
                 ensure!(
-                    sdk_core < libc::CPU_SETSIZE as usize,
-                    "{key} exceeds CPU_SETSIZE"
+                    placement.sdk_cpus.contains(&sdk_core),
+                    "{key} must belong to placement.sdk_cpus"
                 );
-                ensure!(sdk_core != core, "{key} must differ from business_core");
             }
         }
         Ok(())

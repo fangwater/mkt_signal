@@ -3,6 +3,69 @@ pub use persist_common::cn_futures::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Allocation-free read snapshot of an arena order. Serializes as the canonical
+/// `Order`; complete owned records are materialized only for cold-path consumers.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct OrderView<'a> {
+    pub request: &'a Intent,
+    pub key: &'a OrderKey,
+    pub system_id: &'a String,
+    pub limit_price: f64,
+    pub status: OrderStatus,
+    pub filled: i32,
+    pub reported_filled: i32,
+    pub cancelled: i32,
+    pub reserved_today: i32,
+    pub reserved_yesterday: i32,
+    pub local_cash_held: f64,
+    pub cash_reserved_per_lot: f64,
+    pub cancel_pending: bool,
+    pub owned: bool,
+}
+impl OrderView<'_> {
+    pub fn remaining(&self) -> i32 {
+        self.request.lots - self.filled - self.cancelled
+    }
+    pub fn to_order(self) -> Order {
+        Order {
+            request: self.request.clone(),
+            key: self.key.clone(),
+            system_id: self.system_id.clone(),
+            limit_price: self.limit_price,
+            status: self.status,
+            filled: self.filled,
+            reported_filled: self.reported_filled,
+            cancelled: self.cancelled,
+            reserved_today: self.reserved_today,
+            reserved_yesterday: self.reserved_yesterday,
+            local_cash_held: self.local_cash_held,
+            cash_reserved_per_lot: self.cash_reserved_per_lot,
+            cancel_pending: self.cancel_pending,
+            owned: self.owned,
+        }
+    }
+}
+impl<'a> From<&'a Order> for OrderView<'a> {
+    fn from(order: &'a Order) -> Self {
+        Self {
+            request: &order.request,
+            key: &order.key,
+            system_id: &order.system_id,
+            limit_price: order.limit_price,
+            status: order.status,
+            filled: order.filled,
+            reported_filled: order.reported_filled,
+            cancelled: order.cancelled,
+            reserved_today: order.reserved_today,
+            reserved_yesterday: order.reserved_yesterday,
+            local_cash_held: order.local_cash_held,
+            cash_reserved_per_lot: order.cash_reserved_per_lot,
+            cancel_pending: order.cancel_pending,
+            owned: order.owned,
+        }
+    }
+}
+
 /// Account/market capabilities supplied by the native adapter, not inferred from symbols.
 #[derive(Debug, Clone)]
 pub struct ExecutionScope {

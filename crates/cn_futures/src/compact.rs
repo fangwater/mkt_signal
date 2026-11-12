@@ -142,24 +142,25 @@ pub(crate) struct OrderAudit {
     observed: bool,
 }
 impl OrderAudit {
-    pub fn new(
+    pub fn new<'a>(
         day: &str,
-        order: &Order,
+        order: impl Into<OrderView<'a>>,
         instrument: Option<Arc<Instrument>>,
         ready: bool,
         observed: bool,
         received_us: u64,
     ) -> Result<Self> {
+        let order = order.into();
         Ok(Self {
             submitted: SubmitAudit::parts(
                 day,
-                &order.key,
-                &order.request,
+                order.key,
+                order.request,
                 order.limit_price,
                 0.0,
                 received_us,
             )?,
-            system_id: FixedText::new(&order.system_id)?,
+            system_id: FixedText::new(order.system_id)?,
             status: order.status,
             filled: order.filled,
             reported_filled: order.reported_filled,

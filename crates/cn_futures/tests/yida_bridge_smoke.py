@@ -281,8 +281,22 @@ def run_fixture(args,protocol,scenario='normal'):
             config=config.replace('cu2612','cu2612P100000' if swap else 'cu2612C100000').replace('sc2612','sc2612C650' if swap else 'sc2612P650')
             config=config.replace('cash_budget_per_open_lot = 10000.0','cash_budget_per_open_lot = 10000.0\ncash_buffer_per_buy_lot = 25.0')
         if scenario=='affinity':
-            allowed_cpus=sorted(os.sched_getaffinity(0));business_core,sdk_core=allowed_cpus[:2]
-            config=config.replace('# business_core = <isolated CPU>;',f'business_core = {business_core} #')
+            allowed_cpus=set(os.sched_getaffinity(0))
+            # Choose three distinct physical cores on one allowed NUMA node.
+            chosen=None
+            for node in sorted(Path('/sys/devices/system/node').glob('node[0-9]*')):
+                ids=[];physical=set()
+                for cpu in sorted(allowed_cpus):
+                    if not (node/f'cpu{cpu}').exists():continue
+                    topo=Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
+                    key=((topo/'physical_package_id').read_text(),(topo/'core_id').read_text())
+                    if key not in physical:ids.append(cpu);physical.add(key)
+                    if len(ids)==3:break
+                if len(ids)==3:chosen=(int(node.name[4:]),ids);break
+            if chosen is None:
+                print(json.dumps({'scenario':scenario,'skipped':'requires three allowed physical cores on one NUMA node'}));return
+            numa_node,(business_core,sdk_core,background_core)=chosen
+            config+=f'\n[placement]\nnuma_node={numa_node}\nbusiness_cpu={business_core}\nsdk_cpus=[{sdk_core}]\nbackground_cpus=[{background_core}]\n'
             native_text+=f'TCPTradingCPUID={sdk_core}\nTimerCPUID={sdk_core}\nXTCPTradingCPUID={sdk_core}\n'
         if scenario=='public_simulation':
             native_text=native_text.replace('127.0.0.1','118.190.175.212').replace('TradingServerPort=1\n','TradingServerPort=41600\n')
@@ -385,9 +399,17 @@ def run_fixture(args,protocol,scenario='normal'):
                     assert os.sched_getaffinity(process.pid)=={business_core}
                     workers=[task for task in Path(f'/proc/{process.pid}/task').iterdir() if (task/'comm').read_text().strip().startswith('cn-futures-')]
                     assert workers
-                    assert all(os.sched_getaffinity(int(task.name))==set(allowed_cpus) for task in workers)
+                    assert all(os.sched_getaffinity(int(task.name))=={background_core} for task in workers)
+                    # numa_maps labels VMA policies, not the owning thread's default policy.
+                    # Check physical placement of a freshly allocated anonymous region;
+                    # the Rust OS test verifies MPOL_BIND itself with get_mempolicy.
+                    regions=[line.split() for line in Path(f'/proc/{process.pid}/numa_maps').read_text().splitlines() if 'anon=' in line]
+                    assert any(any(field.startswith(f'N{numa_node}=') and int(field.split('=')[1])>=64 for field in fields) for fields in regions)
+                    # Covers a synchronous callback on the business owner after SDK startup.
+                    assert submit()['all_submitted_locally']
+                    assert submit('close_today',1,'fak')['all_submitted_locally']
                     send({'op':'shutdown'});wait('runtime_stopped');assert process.wait(timeout=10)==0
-                    print(json.dumps({'protocol':protocol,'scenario':scenario,'business_thread_pinned':True,'background_threads_keep_original_affinity':True}));return
+                    print(json.dumps({'protocol':protocol,'scenario':scenario,'business_thread_pinned':True,'background_threads_pinned':True,'numa_local_pages':True}));return
                 if scenario in ('no_port','no_xtcp'):
                     before=full_state();assert not before['transport_ready'] and not before['can_trade']
                     send({'op':'submit','intent':{'venue':'SHFE','symbol':'cu2612','side':'sell','offset':'open','lots':1,'price_ticks':20000,'time_in_force':'day'}})
@@ -606,7 +628,7 @@ def main():
     run_fixture(args,'xtcp','public_initial_position')
     for scenario in ('read_only','close_only','multi_login','terminal_first','partial_cancel_first','conflicting_fill','malformed_report','cancel_timeout','cancel_error_timeout'):
         run_fixture(args,'udp',scenario)
-    if hasattr(os,'sched_getaffinity') and len(os.sched_getaffinity(0))>=2:
+    if hasattr(os,'sched_getaffinity') and len(os.sched_getaffinity(0))>=3:
         run_fixture(args,'tcp','affinity')
 
 if __name__=='__main__':main()

@@ -222,9 +222,14 @@ fn native_protocol_must_match_and_udp_sender_cannot_silently_fall_back() {
 }
 
 #[test]
-fn sdk_threads_must_stay_off_the_configured_business_core() {
+fn sdk_threads_must_belong_to_the_configured_sdk_domain() {
     let mut c = config();
-    c.business_core = Some(3);
+    c.placement = Some(crate::placement::PlacementConfig {
+        numa_node: 0,
+        business_cpu: 3,
+        sdk_cpus: vec![4],
+        background_cpus: vec![5],
+    });
     let native = native_config("XTCP");
     assert!(c.validate_sdk_config_text(&native).is_err());
     let native = native + "TCPTradingCPUID=4\nTimerCPUID=4\nXTCPTradingCPUID=4\n";
@@ -1103,4 +1108,32 @@ impl session::Session {
         };
         self.on_event(e, config, &decoded)
     }
+}
+
+#[test]
+fn placement_validates_domains_and_rejects_obsolete_business_core() {
+    let mut c = config();
+    c.placement = Some(crate::placement::PlacementConfig {
+        numa_node: 0,
+        business_cpu: 3,
+        sdk_cpus: vec![4, 6],
+        background_cpus: vec![5, 7],
+    });
+    c.validate().unwrap();
+    let native = native_config("XTCP") + "TCPTradingCPUID=4\nTimerCPUID=6\nXTCPTradingCPUID=6\n";
+    c.validate_sdk_config_text(&native).unwrap();
+    for bad in [3, 5, 8] {
+        assert!(c
+            .validate_sdk_config_text(
+                &native.replace("TCPTradingCPUID=4", &format!("TCPTradingCPUID={bad}"))
+            )
+            .is_err());
+    }
+    c.placement.as_mut().unwrap().background_cpus.push(4);
+    assert!(c.validate().is_err());
+    assert!(toml::from_str::<config::Config>(&format!(
+        "business_core=3\n{}",
+        include_str!("../../../../config/yida_trade.example.toml")
+    ))
+    .is_err());
 }

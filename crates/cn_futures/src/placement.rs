@@ -1,9 +1,9 @@
-//! Strict Linux placement for CTP runtimes. No policy is applied by config checks.
+//! Strict Linux placement for native trading runtimes. No policy is applied by config checks.
 use anyhow::{ensure, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlacementConfig {
     pub numa_node: usize,
@@ -148,12 +148,12 @@ mod linux {
             if let Some(previous) = &self.previous {
                 ensure!(
                     set_affinity(previous),
-                    "restore CTP owner CPU affinity: {}",
+                    "restore native owner CPU affinity: {}",
                     std::io::Error::last_os_error()
                 );
                 ensure!(
                     same_mask(&affinity()?, previous),
-                    "kernel did not restore CTP owner CPU affinity"
+                    "kernel did not restore native owner CPU affinity"
                 );
                 self.previous = None;
             }
@@ -163,7 +163,7 @@ mod linux {
     impl Drop for AffinityScope {
         fn drop(&mut self) {
             if let Err(error) = self.restore() {
-                eprintln!("failed to restore CTP thread affinity: {error}");
+                eprintln!("failed to restore native thread affinity: {error}");
             }
         }
     }
@@ -245,7 +245,7 @@ mod linux {
             Self::enter_inner(config, Some(md))
         }
         fn enter_inner(config: &PlacementConfig, md: Option<&PlacementConfig>) -> Result<Self> {
-            config.validate_fixed()?;
+            config.validate()?;
             let node_cpus = parse_list(
                 &std::fs::read_to_string(format!(
                     "/sys/devices/system/node/node{}/cpulist",
@@ -430,10 +430,10 @@ mod linux {
             if unsafe { libc::syscall(libc::SYS_set_mempolicy, self.original_policy, ptr, bits) }
                 != 0
             {
-                eprintln!("failed to restore CTP NUMA policy");
+                eprintln!("failed to restore native NUMA policy");
             }
             if !set_affinity(&self.original_cpu) {
-                eprintln!("failed to restore CTP CPU policy");
+                eprintln!("failed to restore native CPU policy");
             }
         }
     }
@@ -453,16 +453,16 @@ mod unsupported {
     pub struct Placement;
     impl Placement {
         pub fn enter(_: &PlacementConfig) -> Result<Self> {
-            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+            anyhow::bail!("strict native CPU/NUMA placement requires Linux")
         }
         pub fn enter_combined(_: &PlacementConfig, _: &PlacementConfig) -> Result<Self> {
-            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+            anyhow::bail!("strict native CPU/NUMA placement requires Linux")
         }
         pub fn market_data_callback(&self) -> Result<std::sync::Arc<CallbackPlacement>> {
-            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+            anyhow::bail!("strict native CPU/NUMA placement requires Linux")
         }
         pub fn on_market_data_sdk<T>(&self, _: impl FnOnce() -> Result<T>) -> Result<T> {
-            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+            anyhow::bail!("strict native CPU/NUMA placement requires Linux")
         }
         pub fn callback(&self) -> std::sync::Arc<CallbackPlacement> {
             std::sync::Arc::new(CallbackPlacement)

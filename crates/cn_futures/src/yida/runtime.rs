@@ -11,6 +11,14 @@ use std::{
 };
 
 pub fn run(config: Config, execute: bool) -> Result<()> {
+    config.validate()?;
+    config.validate_sdk_config()?;
+    // Bind before queues, core and database allocations, and before SDK creation.
+    let placement = config
+        .placement
+        .as_ref()
+        .map(crate::placement::Placement::enter)
+        .transpose()?;
     let _lock = lock_flow(&config.flow_directory)?;
     let credentials = config.credentials()?;
     let redactions = [
@@ -35,15 +43,23 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let endpoint = serde_json::to_vec(&endpoint)?;
     let identity =
         crate::persistence::store_identity("yida", &[&endpoint, credentials.user.as_bytes()]);
-    let journal = Journal::start(
-        &config.journal,
-        config.event_capacity,
-        redactions,
-        &database,
-        identity,
-        config.sync_before_send,
-    )?;
-    let trader = YidaTrader::new(&config, credentials)?;
+    let journal = on_background(placement.as_ref(), || {
+        Journal::start(
+            &config.journal,
+            config.event_capacity,
+            redactions,
+            &database,
+            identity,
+            config.sync_before_send,
+        )
+    })?;
+    let trader = on_sdk(placement.as_ref(), || {
+        YidaTrader::new_placed(
+            &config,
+            credentials,
+            placement.as_ref().map(|p| p.callback()),
+        )
+    })?;
     let mut core = TradingCore::new(config.risk.clone(), scope())?;
     core.reserve_orders(config.preallocated_orders)?;
     let mut runtime = SingleLoop {
@@ -52,19 +68,18 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         execute,
     };
     let mut session = Session::default();
-    let input = input_commands()?;
-    journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"business_core":config.business_core,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
-    runtime.trader.start()?;
-    // Create input, journal and SDK workers before pinning this business thread.
-    // SDK workers have their own explicit CPUIDs when business_core is configured.
-    if let Some(core) = config.business_core {
-        pin_business_thread(core)?;
-    }
+    let input = on_background(placement.as_ref(), input_commands)?;
+    journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"placement":config.placement,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
+    on_sdk(placement.as_ref(), || runtime.trader.start())?;
     let mut stopping = false;
     let mut transport_seen_ready = false;
     let mut recovery_since = Instant::now();
     let outcome = (|| -> Result<()> {
         while !stopping {
+            anyhow::ensure!(
+                !runtime.trader.placement_fault.load(Ordering::Acquire),
+                "Yida SDK CPU/NUMA binding failed; no fallback is permitted"
+            );
             anyhow::ensure!(!runtime.trader.fault.load(Ordering::Acquire) && !journal.failed.load(Ordering::Acquire),"reliable Yida ingress/journal failed; stop and reconcile before retry; venue orders not cancelled");
             let mut work = false;
             for _ in 0..256 {
@@ -101,7 +116,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                         e.error == 0,
                         "previous native login failed; no automatic credential retry"
                     );
-                    runtime.trader.login()?;
+                    on_sdk(placement.as_ref(), || runtime.trader.login())?;
                 }
                 let was_ready = session.ready;
                 let historical = session.is_pre_snapshot_rejection(&e);
@@ -189,7 +204,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                                 Command::Reconcile {} => {
                                     runtime.core.disconnect();
                                     session.ready = false;
-                                    runtime.trader.reconnect();
+                                    on_sdk(placement.as_ref(), || {
+                                        runtime.trader.reconnect();
+                                        Ok(())
+                                    })?;
                                     recovery_since = Instant::now();
                                     Ok(json!({"type":"reconciling"}))
                                 }
@@ -268,7 +286,10 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let tail = runtime.trader.events.clone();
     let fault = runtime.trader.fault.clone();
     let mut core = runtime.core;
-    drop(runtime.trader);
+    on_sdk(placement.as_ref(), || {
+        drop(runtime.trader);
+        Ok(())
+    })?;
     for received in tail.try_iter() {
         let e = received.event;
         journal.yida_event(&e, received.received_us, true)?;
@@ -310,29 +331,23 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     outcome
 }
 
-#[cfg(target_os = "linux")]
-fn pin_business_thread(core: usize) -> Result<()> {
-    anyhow::ensure!(
-        core < libc::CPU_SETSIZE as usize,
-        "business_core exceeds CPU_SETSIZE"
-    );
-    unsafe {
-        let mut set: libc::cpu_set_t = std::mem::zeroed();
-        libc::CPU_ZERO(&mut set);
-        libc::CPU_SET(core, &mut set);
-        if libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set) != 0 {
-            anyhow::bail!(
-                "pin Yida business thread to CPU {core}: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+fn on_sdk<T>(
+    placement: Option<&crate::placement::Placement>,
+    call: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match placement {
+        Some(p) => p.on_sdk(call),
+        None => call(),
     }
-    Ok(())
 }
-
-#[cfg(not(target_os = "linux"))]
-fn pin_business_thread(_core: usize) -> Result<()> {
-    anyhow::bail!("business_core pinning requires Linux")
+fn on_background<T>(
+    placement: Option<&crate::placement::Placement>,
+    call: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match placement {
+        Some(p) => p.on_background(call),
+        None => call(),
+    }
 }
 
 /// Shared production/benchmark entry for already validated live factual updates.

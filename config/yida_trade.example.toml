@@ -6,7 +6,7 @@ trading_protocol = "xtcp" # tcp / udp / xtcp; must match native TradingProtocol
 order_group = 1 # account-wide 1..255, dedicated to this runtime; recovered on each login
 execution_route = { mode = "any" } # fixed/preferred also require connection_id=0..63; packed prefers lower IDs
 public_simulation = false # explicit official-simulator-only, one-lot test mode
-# business_core = <isolated CPU>; set SDK thread CPUIDs to other CPUs in sdk_config.
+# Configure the strict [placement] example below for a trading host.
 flow_directory = "/tmp/mkt_yida_sim/flow"
 journal = "/tmp/mkt_yida_sim/events.jsonl"
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
@@ -45,3 +45,12 @@ close_priority = "today_first"
 # symbol = "cu2612C106000"
 # cash_budget_per_open_lot = 100000.0
 # cash_buffer_per_buy_lot = 100.0 # positive fee/risk buffer for every option buy, including closes
+
+# Set all four fields for the target host; CPU domains must use distinct physical
+# cores on this NUMA node. SDK TCPTradingCPUID/TimerCPUID/XTCPTradingCPUID must
+# belong to sdk_cpus. Missing OS permissions or topology mismatches stop startup.
+# [placement]
+# numa_node = 0
+# business_cpu = 2
+# sdk_cpus = [4, 6]
+# background_cpus = [8]

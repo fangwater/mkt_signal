@@ -129,12 +129,19 @@ pub struct Received {
 struct ContextData {
     sender: Sender<Received>,
     fault: Arc<AtomicBool>,
+    placement: Option<Arc<crate::placement::CallbackPlacement>>,
+    placement_fault: Arc<AtomicBool>,
 }
 unsafe extern "C" fn callback(context: *mut c_void, event: *const RawEvent) {
     if context.is_null() || event.is_null() {
         return;
     }
     let context = unsafe { &*context.cast::<ContextData>() };
+    if context.placement.as_ref().is_some_and(|p| !p.enforce()) {
+        context.placement_fault.store(true, Ordering::Release);
+        context.fault.store(true, Ordering::Release);
+        return;
+    }
     #[cfg(feature = "latency-metrics")]
     let received_at = Instant::now();
     let event = unsafe { *event };
@@ -194,6 +201,7 @@ pub struct YidaTrader {
     context: Option<Box<ContextData>>,
     pub events: Receiver<Received>,
     pub fault: Arc<AtomicBool>,
+    pub placement_fault: Arc<AtomicBool>,
     credentials: config::Credentials,
     pending: crate::deadline::DeadlineQueue<PendingIdentity, Option<OrderKey>>,
     response_timeout: Duration,
@@ -204,6 +212,22 @@ pub struct YidaTrader {
 }
 impl YidaTrader {
     pub fn new(config: &config::Config, credentials: config::Credentials) -> Result<Self> {
+        ensure!(
+            config.placement.is_none(),
+            "configured placement requires the placed Yida runtime"
+        );
+        Self::new_placed(config, credentials, None)
+    }
+    pub(crate) fn new_placed(
+        config: &config::Config,
+        credentials: config::Credentials,
+        placement: Option<Arc<crate::placement::CallbackPlacement>>,
+    ) -> Result<Self> {
+        ensure!(
+            config.placement.is_some() == placement.is_some(),
+            "missing Yida callback placement"
+        );
+        config.validate()?;
         config.validate_sdk_config()?;
         ensure!(
             unsafe { cn_yida_event_size() } == std::mem::size_of::<RawEvent>(),
@@ -216,9 +240,12 @@ impl YidaTrader {
         );
         let (sender, events) = crossbeam_channel::bounded(config.event_capacity);
         let fault = Arc::new(AtomicBool::new(false));
+        let placement_fault = Arc::new(AtomicBool::new(false));
         let mut context = Box::new(ContextData {
             sender,
             fault: fault.clone(),
+            placement,
+            placement_fault: placement_fault.clone(),
         });
         let lib = path_string(&config.sdk_library)?;
         let native_config = path_string(&config.sdk_config)?;
@@ -248,6 +275,7 @@ impl YidaTrader {
             context: Some(context),
             events,
             fault,
+            placement_fault,
             credentials,
             pending: Default::default(),
             response_timeout: Duration::from_millis(config.response_timeout_ms),
@@ -667,6 +695,8 @@ mod tests {
         let mut context = ContextData {
             sender,
             fault: fault.clone(),
+            placement: None,
+            placement_fault: Arc::new(AtomicBool::new(false)),
         };
         let e = RawEvent::default();
         unsafe {

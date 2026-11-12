@@ -45,7 +45,7 @@ pub struct CoreView<'a> {
     pub reason: &'a str,
     pub trading_day: &'a str,
     pub available_local_budget: f64,
-    pub orders: Vec<&'a Order>,
+    pub orders: Vec<OrderView<'a>>,
     pub positions: Vec<PositionView<'a>>,
     pub instruments: Vec<&'a Instrument>,
 }
@@ -167,10 +167,10 @@ impl TradingCore {
     pub fn fill_order_key<'a>(&'a self, fill: &'a Fill) -> Option<&'a OrderKey> {
         self.system_ids[venue_index(fill.identity.venue)]
             .get(fill.system_id.as_str())
-            .map(|id| &self.orders.slots[id.0].order.key)
+            .map(|id| &self.orders.identities[id.0].key)
             .or(fill.order_key.as_ref())
     }
-    pub fn order(&self, key: &OrderKey) -> Option<&Order> {
+    pub fn order(&self, key: &OrderKey) -> Option<OrderView<'_>> {
         self.orders.get(key)
     }
     fn ensure_symbol(&mut self, venue: Venue, symbol: &str) -> SymbolId {
@@ -188,25 +188,27 @@ impl TradingCore {
     }
     fn finish_order_change(&mut self, id: OrderId, previous: i32) {
         let slot = &self.orders.slots[id.0];
-        let remaining = slot.order.remaining();
+        let remaining = slot.remaining();
         let symbol = slot.symbol;
         self.working_lots += i64::from(remaining) - i64::from(previous);
-        if slot.order.request.offset == Offset::Open {
-            self.pending_open[symbol.0][side_index(slot.order.request.side)] +=
+        if slot.offset == Offset::Open {
+            self.pending_open[symbol.0][side_index(slot.side)] +=
                 i64::from(remaining) - i64::from(previous);
         }
         if remaining > 0 && previous == 0 {
             let index = self.working_by_symbol[symbol.0].len();
             self.working_by_symbol[symbol.0].push(id);
-            self.orders.slots[id.0].working_index = Some(index);
+            self.orders.slots[id.0].working_index = std::num::NonZeroUsize::new(index + 1);
         } else if remaining == 0 && previous > 0 {
             let index = self.orders.slots[id.0]
                 .working_index
                 .take()
-                .expect("outstanding orders have a dense working index");
+                .expect("outstanding orders have a dense working index")
+                .get()
+                - 1;
             self.working_by_symbol[symbol.0].swap_remove(index);
             if let Some(moved) = self.working_by_symbol[symbol.0].get(index) {
-                self.orders.slots[moved.0].working_index = Some(index);
+                self.orders.slots[moved.0].working_index = std::num::NonZeroUsize::new(index + 1);
             }
         }
     }
@@ -310,7 +312,7 @@ impl TradingCore {
     pub fn restore(&mut self, s: Snapshot) -> Result<()> {
         validate_snapshot(&s, &self.scope)?;
         for old in self.orders.values().filter(|o| o.remaining() > 0) {
-            let recovered=s.orders.iter().find(|o| o.key==old.key || (o.venue==old.request.venue && !old.system_id.is_empty() && o.system_id==old.system_id))
+            let recovered=s.orders.iter().find(|o| &o.key==old.key || (o.venue==old.request.venue && !old.system_id.is_empty() && &o.system_id==old.system_id))
                 .context("snapshot omits unresolved local order; preserve reservations until a factual outcome is available")?;
             ensure!(
                 recovered.venue == old.request.venue
@@ -608,13 +610,11 @@ impl TradingCore {
         ensure!(
             !self.working_by_symbol[symbol.0]
                 .iter()
-                .map(|id| &self.orders.slots[id.0].order)
-                .any(|o| o.request.venue == intent.venue
-                    && o.request.symbol == intent.symbol
-                    && o.request.side != intent.side
+                .map(|id| &self.orders.slots[id.0])
+                .any(|o| o.side != intent.side
                     && o.remaining() > 0
                     && (intent.price_type == PriceType::Market
-                        || o.request.price_type == PriceType::Market
+                        || o.price_type == PriceType::Market
                         || match intent.side {
                             Side::Buy => price + rule.price_tick * 1e-6 >= o.limit_price,
                             Side::Sell => price - rule.price_tick * 1e-6 <= o.limit_price,
@@ -730,7 +730,7 @@ impl TradingCore {
         self.reject_id(id)
     }
     fn reject_id(&mut self, id: OrderId) -> Result<()> {
-        let order = &self.orders.slots[id.0].order;
+        let order = &self.orders.slots[id.0];
         if order.status == OrderStatus::Rejected {
             return Ok(());
         }
@@ -739,9 +739,9 @@ impl TradingCore {
             "rejection conflicts with factual or reported fill"
         );
         let old = order.remaining();
-        let lots = order.request.lots;
+        let lots = order.lots;
         self.release_cancelled(id, lots)?;
-        let order = &mut self.orders.slots[id.0].order;
+        let order = &mut self.orders.slots[id.0];
         order.status = OrderStatus::Rejected;
         order.cancel_pending = false;
         self.finish_order_change(id, old);
@@ -749,15 +749,15 @@ impl TradingCore {
     }
     fn release_cancelled(&mut self, id: OrderId, total: i32) -> Result<()> {
         let slot = &self.orders.slots[id.0];
-        let order = &slot.order;
+        let order = &self.orders.slots[id.0];
         let symbol = slot.symbol;
         ensure!(
-            total >= order.cancelled && total <= order.request.lots - order.filled,
+            total >= order.cancelled && total <= order.lots - order.filled,
             "inconsistent cancelled quantity"
         );
         let release = total - order.cancelled;
         let refund = (f64::from(release) * order.cash_reserved_per_lot).min(order.local_cash_held);
-        let (today, yesterday, position) = if order.request.offset != Offset::Open {
+        let (today, yesterday, position) = if order.offset != Offset::Open {
             let (today, yesterday) = match self.limits.close_priority {
                 ClosePriority::TodayFirst => {
                     let y = release.min(order.reserved_yesterday);
@@ -772,7 +772,7 @@ impl TradingCore {
                 today <= order.reserved_today && yesterday <= order.reserved_yesterday,
                 "close cancellation exceeds frozen inventory"
             );
-            let side = order.request.side.opposite();
+            let side = order.side.opposite();
             let mut p = self.position_id(symbol, side);
             p.frozen_today -= today;
             p.frozen_yesterday -= yesterday;
@@ -785,7 +785,7 @@ impl TradingCore {
             self.positions[symbol.0][side_index(side)] = Some(p);
         }
         self.cash += refund;
-        let order = &mut self.orders.slots[id.0].order;
+        let order = &mut self.orders.slots[id.0];
         order.local_cash_held -= refund;
         order.reserved_today -= today;
         order.reserved_yesterday -= yesterday;
@@ -796,7 +796,7 @@ impl TradingCore {
         if system_id.is_empty() {
             return Ok(());
         }
-        let order = &self.orders.slots[id.0].order;
+        let order = self.orders.view(id);
         ensure!(
             order.system_id.is_empty() || order.system_id == system_id,
             "system identity changed"
@@ -810,7 +810,7 @@ impl TradingCore {
         Ok(())
     }
     fn bind_system_id(&mut self, id: OrderId, system_id: &str) {
-        let order = &mut self.orders.slots[id.0].order;
+        let order = &mut self.orders.identities[id.0];
         if !system_id.is_empty() && order.system_id.is_empty() {
             self.system_ids[venue_index(order.request.venue)].insert(system_id.to_owned(), id);
             order.system_id = system_id.to_owned();
@@ -825,7 +825,7 @@ impl TradingCore {
             .orders
             .id(&update.key)
             .context("untracked account order requires reconciliation")?;
-        let order = &self.orders.slots[id.0].order;
+        let order = self.orders.view(id);
         ensure!(
             order.request.venue == update.venue
                 && order.request.symbol == update.symbol
@@ -865,7 +865,7 @@ impl TradingCore {
             }
         }
         self.bind_system_id(id, &update.system_id);
-        let order = &mut self.orders.slots[id.0].order;
+        let order = &mut self.orders.slots[id.0];
         order.reported_filled = reported;
         if update.cancel_rejected {
             order.cancel_pending = false;
@@ -908,15 +908,15 @@ impl TradingCore {
                 } else {
                     None
                 }?;
-                let order = &self.orders.slots[id.0].order;
-                (order.system_id.is_empty() || order.system_id == fill.system_id).then_some(id)
+                let order = self.orders.view(id);
+                (order.system_id.is_empty() || order.system_id == &fill.system_id).then_some(id)
             })
             .context("untracked factual fill: preserve evidence and reconcile, never discard it")?;
         let slot = &self.orders.slots[id.0];
-        let order = &slot.order;
+        let order = self.orders.view(id);
         let symbol = slot.symbol;
         ensure!(
-            fill.order_key.as_ref().is_none_or(|k| k == &order.key),
+            fill.order_key.as_ref().is_none_or(|k| k == order.key),
             "fill logical order identity conflicts with system identity"
         );
         ensure!(
@@ -971,11 +971,11 @@ impl TradingCore {
         };
         position.validate()?;
         self.bind_system_id(id, &fill.system_id);
-        let order = &mut self.orders.slots[id.0].order;
+        let order = &mut self.orders.slots[id.0];
         order.reserved_today -= today;
         order.reserved_yesterday -= yesterday;
         order.filled += fill.lots;
-        if order.filled == order.request.lots {
+        if order.filled == order.lots {
             order.status = OrderStatus::Filled;
         }
         self.positions[symbol.0][side_index(side)] = Some(position);
@@ -1008,15 +1008,13 @@ impl TradingCore {
             execution_route: order.request.execution_route,
         };
         self.rate_check(now)?;
-        self.orders
-            .get_mut(key)
-            .context("order disappeared")?
-            .cancel_pending = true;
+        let id = self.orders.id(key).context("order disappeared")?;
+        self.orders.slots[id.0].cancel_pending = true;
         Ok(request)
     }
     pub fn cancel_failed(&mut self, key: &OrderKey) {
-        if let Some(order) = self.orders.get_mut(key) {
-            order.cancel_pending = false;
+        if let Some(id) = self.orders.id(key) {
+            self.orders.slots[id.0].cancel_pending = false;
         }
     }
 }
@@ -1257,3 +1255,6 @@ impl<T: Trader> SingleLoop<T> {
 mod batch;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod layout_tests;
