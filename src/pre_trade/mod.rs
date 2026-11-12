@@ -27,7 +27,6 @@ pub mod fr_position_concentration_guard;
 pub mod gate_fr_risk_limit_guard;
 mod gate_mark_price_supplement;
 mod gate_spot_valuation;
-pub(crate) mod hedge_progress_guard;
 pub mod intra_bwd_symbol_list;
 pub mod kalman_filter;
 pub mod lazy_taker_action;

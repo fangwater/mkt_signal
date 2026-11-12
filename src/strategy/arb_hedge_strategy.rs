@@ -144,6 +144,20 @@ struct InflightHedgeQuery {
     target_open_id: Option<i64>,
 }
 
+#[derive(Debug)]
+enum HedgeSendError {
+    Throttled(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for HedgeSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Throttled(message) | Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
 fn decide_due_hedge_route(
     force_taker: bool,
     lazy_taker: bool,
@@ -243,6 +257,8 @@ pub struct ArbHedgeStrategy {
     intra_stop_retry_after_us: i64,
     hedge_request_seq: u64,
     inflight_hedge_query: Option<InflightHedgeQuery>,
+    hedge_plan_unavailable: bool,
+    failed_submission: Option<(i64, Side)>,
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
     last_ret_qtl: Option<f64>,
@@ -278,6 +294,8 @@ struct ArbHedgeOrderMeta {
     expire_ts: i64,
     next_expire_check_ts: i64,
     cancel_requested: bool,
+    /// Placement/cancel reconciliation failed; quantity remains reserved.
+    result_unknown: bool,
     /// 主成分绑定的 open client_order_id —— borrow 时按吃量最大的 open lot 选取。
     /// release/cleanup/失败回写都使用这个 id 把未成交量送回原 open 身份；
     /// 借不到任何带 id 的 lot 时为 0（兜底，按用户约定）。
@@ -524,10 +542,7 @@ impl ArbHedgeStrategy {
                 meta.bound_open_client_order_id
             },
         );
-        if filled_qty <= TERMINAL_QTY_EPS {
-            self.record_hedge_progress_failure(terminal_ts, "hedge_terminal_without_fill");
-        }
-        self.clear_resolved_hedge_failure();
+        self.sync_hedge_execution_block(terminal_ts);
         settled
     }
 
@@ -676,6 +691,7 @@ impl ArbHedgeStrategy {
                 retry_client_order_id,
                 now_ts,
                 order.price,
+                &err,
             );
             self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             warn!(
@@ -732,6 +748,8 @@ impl ArbHedgeStrategy {
             intra_stop_retry_after_us: 0,
             hedge_request_seq: 0,
             inflight_hedge_query: None,
+            hedge_plan_unavailable: false,
+            failed_submission: None,
             last_hedge_ts_ms: None,
             last_hedge_is_taker: None,
             last_ret_qtl: None,
@@ -1044,58 +1062,98 @@ impl ArbHedgeStrategy {
         self.hedge_request_seq
     }
 
-    fn record_hedge_progress_failure(&self, now_ts: i64, reason: &str) {
-        // The monitor's configured ArbMode owns FR admission. Same-exchange
-        // venue pairs alone do not distinguish an FR deployment from intra.
+    fn sync_hedge_execution_block(&mut self, now_ts: i64) {
         if self.adl_spot_hedge {
             return;
         }
-        // Future work and isolated sub-lot dust must not lock opening admission.
-        // Include reserved work, without releasing or resubmitting unknown orders.
-        let qty = (self.due_hedge_qty(now_ts) + self.borrowed_hedge_qv()).abs();
-        let Some(mark) = self.mark_price() else {
-            return;
+        let unknown = !self.orphaned_hedge_order_meta.is_empty()
+            || self
+                .hedge_order_meta
+                .values()
+                .any(|meta| meta.result_unknown);
+        let due = self.due_hedge_qty(now_ts) + self.borrowed_hedge_qv();
+        let actionable = self.mark_price().is_none_or(|mark| {
+            let monitor = MonitorChannel::instance();
+            due.abs() * mark >= ARB_HEDGE_PENDING_QUERY_MIN_USDT
+                && !monitor
+                    .qty_to_base_at_price(self.hedge_venue, &self.symbol, 1.0, mark)
+                    .ok()
+                    .filter(|multiplier| *multiplier > 0.0)
+                    .is_some_and(|multiplier| {
+                        matches!(
+                            monitor.align_close_order_by_venue(
+                                self.hedge_venue,
+                                &self.symbol,
+                                due.abs() / multiplier,
+                                mark,
+                            ),
+                            Ok(None)
+                        )
+                    })
+        });
+        let pending_side = if !actionable {
+            None
+        } else if due > ARB_HEDGE_QTY_EPS {
+            Some(Side::Sell)
+        } else if due < -ARB_HEDGE_QTY_EPS {
+            Some(Side::Buy)
+        } else {
+            None
         };
-        if qty * mark < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
-            return;
-        }
-        let monitor = MonitorChannel::instance();
-        if let Ok(multiplier) =
-            monitor.qty_to_base_at_price(self.hedge_venue, &self.symbol, 1.0, mark)
+        // Netting can retire or reverse the failed work. An unknown exchange
+        // order remains an independent exception even when the net is zero.
+        if pending_side.is_none() {
+            self.hedge_plan_unavailable = false;
+            self.failed_submission = None;
+        } else if self
+            .failed_submission
+            .is_some_and(|(_, side)| Some(side) != pending_side)
         {
-            if multiplier > 0.0
-                && matches!(
-                    monitor.align_close_order_by_venue(
-                        self.hedge_venue,
-                        &self.symbol,
-                        qty / multiplier,
-                        mark
-                    ),
-                    Ok(None)
-                )
-            {
-                return;
+            self.failed_submission = None;
+        }
+        let reason = if unknown {
+            Some("hedge_order_result_unknown")
+        } else if self.failed_submission.is_some() {
+            Some("hedge_submission_failed")
+        } else if self.hedge_plan_unavailable {
+            Some("hedge_plan_unavailable")
+        } else {
+            None
+        };
+        MonitorChannel::instance().set_arb_hedge_execution_block(&self.symbol, reason);
+    }
+
+    fn block_hedge_submission(&mut self, client_order_id: i64, side: Side, now_ts: i64) {
+        // Replies may arrive out of order; retain the newest failed attempt.
+        if self
+            .failed_submission
+            .is_none_or(|(failed_id, _)| client_order_id >= failed_id)
+        {
+            self.failed_submission = Some((client_order_id, side));
+        }
+        self.sync_hedge_execution_block(now_ts);
+    }
+
+    fn confirm_hedge_submission(&mut self, client_order_id: i64, side: Side) {
+        // A late success on an older order cannot undo a newer rejection.
+        if self
+            .failed_submission
+            .is_some_and(|(failed_id, failed_side)| {
+                client_order_id > failed_id && side == failed_side
+            })
+        {
+            self.failed_submission = None;
+        }
+    }
+
+    fn confirm_hedge_order(&mut self, client_order_id: i64, side: Side, now_ts: i64) {
+        self.confirm_hedge_submission(client_order_id, side);
+        if !self.is_cancel_reconciling(client_order_id) {
+            if let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) {
+                meta.result_unknown = false;
             }
         }
-        monitor.record_arb_hedge_failure(&self.symbol, now_ts, reason);
-    }
-
-    fn record_hedge_progress(&self, filled_base_qty: f64) {
-        if filled_base_qty > TERMINAL_QTY_EPS && !self.adl_spot_hedge {
-            MonitorChannel::instance().clear_arb_hedge_failure(&self.symbol, "hedge_fill");
-        }
-    }
-
-    fn clear_resolved_hedge_failure(&self) {
-        if !self.adl_spot_hedge
-            && self.pending_hedge_queue.is_empty()
-            && self.hedge_order_meta.is_empty()
-            && self.orphaned_hedge_order_meta.is_empty()
-            && self.inflight_hedge_query.is_none()
-        {
-            MonitorChannel::instance()
-                .clear_arb_hedge_failure(&self.symbol, "all_hedge_work_resolved");
-        }
+        self.sync_hedge_execution_block(now_ts);
     }
 
     fn begin_inflight_hedge_query(&mut self, request_seq: u64, now_ts: i64) {
@@ -1119,7 +1177,8 @@ impl ArbHedgeStrategy {
             .take()
             .expect("checked in-flight hedge query");
         self.next_query_ts_us = 0;
-        self.record_hedge_progress_failure(now_ts, "hedge_query_timeout");
+        self.hedge_plan_unavailable = true;
+        self.sync_hedge_execution_block(now_ts);
         warn!(
             "ArbHedgeStrategy: strategy_id={} symbol={} hedge query timeout request_seq={} sent_ts_us={} deadline_ts_us={} now_ts={} pending_hedge_qty={:.8}",
             self.strategy_id,
@@ -1361,12 +1420,20 @@ impl ArbHedgeStrategy {
         client_order_id: i64,
         now_ts: i64,
         release_price: f64,
+        error: &HedgeSendError,
     ) {
         if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
             self.release_unsent_meta(now_ts, &meta, release_price);
             self.retire_force_close_open_id_if_unreferenced(meta.bound_open_client_order_id);
         }
-        self.record_hedge_progress_failure(now_ts, "hedge_order_send_failed");
+        if matches!(error, HedgeSendError::Failed(_)) {
+            let side = MonitorChannel::try_order_manager()
+                .and_then(|manager| manager.borrow().get(client_order_id))
+                .map(|order| order.side);
+            if let Some(side) = side {
+                self.block_hedge_submission(client_order_id, side, now_ts);
+            }
+        }
         self.clear_order_query_state(client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
@@ -1876,7 +1943,8 @@ impl ArbHedgeStrategy {
             }
             Ok(false) => {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
-                self.record_hedge_progress_failure(now_ts, "hedge_query_publisher_unavailable");
+                self.hedge_plan_unavailable = true;
+                self.sync_hedge_execution_block(now_ts);
                 warn!(
                     "ArbHedgeStrategy: backward publisher 未配置，无法发送对冲状态查询 strategy_id={} symbol={} request_seq={}",
                     self.strategy_id, self.symbol, request_seq
@@ -1885,7 +1953,8 @@ impl ArbHedgeStrategy {
             }
             Err(err) => {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
-                self.record_hedge_progress_failure(now_ts, "hedge_query_publish_failed");
+                self.hedge_plan_unavailable = true;
+                self.sync_hedge_execution_block(now_ts);
                 warn!(
                     "ArbHedgeStrategy: 发送对冲状态查询失败 strategy_id={} symbol={} request_seq={} err={:#}",
                     self.strategy_id, self.symbol, request_seq, err
@@ -2383,6 +2452,10 @@ impl ArbHedgeStrategy {
             );
             return;
         }
+        if self.hedge_plan_unavailable {
+            self.hedge_plan_unavailable = false;
+            self.sync_hedge_execution_block(get_timestamp_us());
+        }
         let ctx_is_taker = ctx.is_taker();
         if self.adl_spot_hedge && (venue != self.hedge_venue || !ctx_is_taker) {
             warn!(
@@ -2538,7 +2611,7 @@ impl ArbHedgeStrategy {
             if self.adl_spot_hedge || paired_close || force_taker_taker {
                 Ok(())
             } else {
-                MonitorChannel::instance().check_arb_hedge_progress_risk(&symbol, signed_base_qty)
+                MonitorChannel::instance().check_arb_hedge_execution_risk(&symbol, signed_base_qty)
             }
         });
         if let Err(err) = exposure_check {
@@ -2552,7 +2625,6 @@ impl ArbHedgeStrategy {
                 bound_open_client_order_id,
             );
             self.retire_borrowed_force_close_open_ids(&borrowed.lots);
-            self.record_hedge_progress_failure(now_ts, "hedge_exposure_rejected");
             warn!(
                     "ArbHedgeStrategy: strategy_id={} ArbHedge exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
                     self.strategy_id,
@@ -2581,7 +2653,6 @@ impl ArbHedgeStrategy {
                     bound_open_client_order_id,
                 );
                 self.retire_borrowed_force_close_open_ids(&borrowed.lots);
-                self.record_hedge_progress_failure(now_ts, "hedge_work_shortfall");
                 warn!(
                     "ArbHedgeStrategy: strategy_id={} ArbHedge borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} shortfall_qty={:.8} shortfall_usdt={:.8} max_shortfall_usdt={:.8} pending_after={:.8}",
                     self.strategy_id,
@@ -2675,6 +2746,7 @@ impl ArbHedgeStrategy {
                 expire_ts,
                 next_expire_check_ts: expire_ts,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id,
                 from_key: ctx.from_key.clone(),
             },
@@ -2715,6 +2787,7 @@ impl ArbHedgeStrategy {
                 client_order_id,
                 now_ts,
                 price.max(ctx.hedging_leg.bid0),
+                &err,
             );
             warn!(
                 "ArbHedgeStrategy: strategy_id={} send ArbHedge order failed client_order_id={} symbol={} err={}",
@@ -3055,6 +3128,12 @@ impl ArbHedgeStrategy {
         if !updated {
             return false;
         }
+        if matches!(
+            status,
+            OrderStatus::New | OrderStatus::PartiallyFilled | OrderStatus::Filled
+        ) {
+            self.confirm_hedge_order(client_order_id, current_order.side, get_timestamp_us());
+        }
         if status != OrderStatus::New {
             let delta = (effective_cumulative_filled_qty - prev_cumulative_filled_qty).max(0.0);
             let base_delta = MonitorChannel::instance()
@@ -3072,7 +3151,6 @@ impl ArbHedgeStrategy {
                         .apply_fills(allocations, meta.filled_base_qty);
                 }
             }
-            self.record_hedge_progress(base_delta);
         }
         let order_snapshot = MonitorChannel::instance()
             .order_manager()
@@ -3180,6 +3258,7 @@ impl ArbHedgeStrategy {
         drop(order_manager);
         let fill_delta_venue_qty =
             (trade.cumulative_filled_quantity() - prev_cumulative_filled_qty).max(0.0);
+        self.confirm_hedge_order(client_order_id, current_order.side, get_timestamp_us());
         let fill_delta_base_qty = MonitorChannel::instance()
             .qty_to_base_at_price(
                 trade.trading_venue(),
@@ -3189,7 +3268,6 @@ impl ArbHedgeStrategy {
             )
             .unwrap_or(0.0);
         if fill_delta_base_qty > 0.0 {
-            self.record_hedge_progress(fill_delta_base_qty);
             if let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) {
                 meta.filled_base_qty += fill_delta_base_qty;
                 if let Some(allocations) = &mut meta.intra_allocations {
@@ -3724,6 +3802,19 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             warn!("ADL spot repair awaiting factual order outcome: symbol={} client_order_id={} reason={}; quantity remains reserved", self.symbol, client_order_id, reason);
             return false;
         }
+        if let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) {
+            meta.result_unknown = true;
+        }
+        let retry_reason = if self
+            .hedge_order_meta
+            .get(&client_order_id)
+            .is_some_and(|meta| meta.cancel_requested)
+        {
+            PendingOrderQueryReason::CancelWatchdog
+        } else {
+            PendingOrderQueryReason::OrderWatchdog
+        };
+        self.sync_hedge_execution_block(get_timestamp_us());
         warn!(
             "ArbHedgeReconcile: strategy_id={} orphan_handoff_start reason={} {}",
             self.strategy_id,
@@ -3738,6 +3829,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             reason: reason.to_string(),
         };
         let Some(orphan_mgr) = MonitorChannel::try_orphan_strategy_mgr() else {
+            self.schedule_order_query_watchdog(client_order_id, retry_reason);
             warn!(
                 "ArbHedgeStrategy: strategy_id={} arb orphan manager unavailable client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
@@ -3748,6 +3840,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             .borrow_mut()
             .adopt_orphan_order_id(OrphanStrategyRole::Arb, &handoff);
         if !adopted {
+            self.schedule_order_query_watchdog(client_order_id, retry_reason);
             warn!(
                 "ArbHedgeStrategy: strategy_id={} arb orphan handoff rejected client_order_id={} reason={}",
                 self.strategy_id, client_order_id, reason
@@ -3866,7 +3959,13 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             // 保证金已经被打满时，立刻重发等同于扔进死循环；
             // Binance PM/FR 走账户级 open block + 撤全部 ArbOpen，并跳过普通 trigger 重发。
             // 1Hz period_clock 兜底保证 pending 不会永远卡住。
-            self.record_hedge_progress_failure(now_ts, "hedge_exchange_rejected");
+            // Post-only crossing and venue price bands require repricing, not
+            // an exception latch on normal maker execution.
+            if !response.is_aggressive_price_rejected() {
+                if let Some(order) = order_snapshot.as_ref() {
+                    self.block_hedge_submission(client_order_id, order.side, now_ts);
+                }
+            }
             if is_insufficient_margin {
                 if now_ts.saturating_sub(self.last_insufficient_margin_action_ts)
                     >= ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US
@@ -3996,10 +4095,46 @@ impl Strategy for ArbHedgeStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        if response.is_request_success() && response.is_open_request() {
+            let client_order_id = response.client_order_id();
+            if self.hedge_order_meta.contains_key(&client_order_id) {
+                let order = MonitorChannel::instance()
+                    .order_manager()
+                    .borrow()
+                    .get(client_order_id);
+                if let Some(order) = order {
+                    self.confirm_hedge_submission(client_order_id, order.side);
+                    self.sync_hedge_execution_block(get_timestamp_us());
+                }
+            }
+        }
         if self.handle_gate_futures_open_ack_unknown(response) {
             return;
         }
         self.apply_hedge_trade_engine_response_common(response);
+    }
+
+    fn apply_live_order_query(
+        &mut self,
+        update: &dyn OrderUpdate,
+        query_advanced_fill: bool,
+    ) -> bool {
+        let client_order_id = update.client_order_id();
+        if !self.hedge_order_meta.contains_key(&client_order_id) {
+            return false;
+        }
+        // A current query is factual even when its NEW update is a duplicate.
+        self.clear_order_query_state(client_order_id);
+        if !query_advanced_fill {
+            Strategy::apply_order_update(self, update);
+        }
+        self.confirm_hedge_order(client_order_id, update.side(), get_timestamp_us());
+        self.reschedule_expired_hedge_cancel_if_still_live(
+            client_order_id,
+            get_timestamp_us(),
+            "live_order_query",
+        );
+        true
     }
 
     fn handle_period_clock(&mut self, current_tp: i64) {
@@ -4008,17 +4143,12 @@ impl Strategy for ArbHedgeStrategy {
         } else {
             get_timestamp_us()
         };
-        self.clear_resolved_hedge_failure();
+        self.sync_hedge_execution_block(now_ts);
         if !self.is_active() {
             return;
         }
         self.handle_order_query_watchdogs();
         self.handle_expired_hedge_orders(now_ts);
-        if !self.orphaned_hedge_order_meta.is_empty() {
-            // An unknown exchange order remains reserved. Repeated observation
-            // protects admission; it never authorizes a replacement order.
-            self.record_hedge_progress_failure(now_ts, "hedge_order_unresolved");
-        }
         if self.adl_spot_hedge {
             self.try_adl_spot_hedge(now_ts);
             return;
@@ -4158,7 +4288,6 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
                 .orphaned_hedge_order_meta
                 .remove(&hedge_client_order_id)
             {
-                self.record_hedge_progress((filled_base_qty - meta.filled_base_qty).max(0.0));
                 return self.settle_hedge_meta(terminal_ts, side, filled_base_qty, price, meta);
             }
             if self.hedge_order_meta.contains_key(&hedge_client_order_id) {
@@ -4225,7 +4354,7 @@ fn create_and_send_order(
     client_order_id: i64,
     order_type_str: &str,
     symbol: &str,
-) -> Result<(), String> {
+) -> Result<(), HedgeSendError> {
     let order = MonitorChannel::instance()
         .order_manager()
         .borrow_mut()
@@ -4249,7 +4378,10 @@ fn create_and_send_order(
                         symbol,
                         &e,
                     );
-                    return Err(format!("对冲下单频率风控触发: {}", e));
+                    return Err(HedgeSendError::Throttled(format!(
+                        "对冲下单频率风控触发: {}",
+                        e
+                    )));
                 }
                 if let Err(e) =
                     TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
@@ -4258,7 +4390,10 @@ fn create_and_send_order(
                         "ArbHedgeStrategy: strategy_id={} symbol={} exchange={} 推送{}订单失败: {}",
                         strategy_id, symbol, exchange, order_type_str, e
                     );
-                    return Err(format!("推送{}订单失败: {}", order_type_str, e));
+                    return Err(HedgeSendError::Failed(format!(
+                        "推送{}订单失败: {}",
+                        order_type_str, e
+                    )));
                 }
                 let stats =
                     OrderRateLimiter::record(OrderRateBucket::ArbHedge, client_order_id, now_us);
@@ -4273,7 +4408,10 @@ fn create_and_send_order(
                     "ArbHedgeStrategy: strategy_id={} symbol={} 获取{}订单请求字节失败: {}",
                     strategy_id, symbol, order_type_str, e
                 );
-                Err(format!("获取{}订单请求字节失败: {}", order_type_str, e))
+                Err(HedgeSendError::Failed(format!(
+                    "获取{}订单请求字节失败: {}",
+                    order_type_str, e
+                )))
             }
         }
     } else {
@@ -4281,7 +4419,10 @@ fn create_and_send_order(
             "ArbHedgeStrategy: strategy_id={} symbol={} 未找到创建的{}订单 client_order_id={}",
             strategy_id, symbol, order_type_str, client_order_id
         );
-        Err(format!("未找到创建的{}订单", order_type_str))
+        Err(HedgeSendError::Failed(format!(
+            "未找到创建的{}订单",
+            order_type_str
+        )))
     }
 }
 
@@ -4349,17 +4490,10 @@ mod tests {
         strategy
     }
 
-    #[test]
-    fn hedge_stall_ignores_future_and_dust_work_but_retains_unknown_reservations() {
-        use crate::pre_trade::monitor_channel::{
-            tests::{
-                install_binance_arb_hedge_exposure_fixture, update_arb_hedge_exposure_fixture,
-            },
-            MonitorChannel,
-        };
-        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
-        update_arb_hedge_exposure_fixture(0.0, 1.0);
-        let monitor = MonitorChannel::instance();
+    fn execution_guard_fixture() -> ArbHedgeStrategy {
+        crate::pre_trade::monitor_channel::tests::install_binance_arb_hedge_exposure_fixture(
+            2.0, 0.0, false,
+        );
         let mut strategy = ArbHedgeStrategy::new(
             1,
             "FILUSDT",
@@ -4368,70 +4502,312 @@ mod tests {
         );
         strategy
             .pending_hedge_queue
-            .put_with_id(1, 100_000_000, 2.0, 100.0, OPEN_ID_A);
-        for ts in [1, 10_000_001, 30_000_001] {
-            strategy.record_hedge_progress_failure(ts, "test_timeout");
-        }
-        assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
-            .is_ok());
-        strategy.pending_hedge_queue.borrow(100_000_001, 2.0);
+            .put_with_id(1, 0, 2.0, 100.0, OPEN_ID_A);
+        strategy.net_qty_queue.apply_fill(1, 2.0, 100.0);
         strategy
-            .pending_hedge_queue
-            .release_with_id(1, 0.5, 100.0, OPEN_ID_A);
-        for ts in [40_000_001, 50_000_001, 70_000_001] {
-            strategy.record_hedge_progress_failure(ts, "test_timeout");
-        }
-        assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
-            .is_ok());
-        strategy.pending_hedge_queue.borrow(100_000_001, 0.5);
-        strategy.orphaned_hedge_order_meta.insert(
-            123,
+    }
+
+    fn reserved_hedge(strategy: &mut ArbHedgeStrategy, id: i64, qty: f64) {
+        let borrowed = strategy.pending_hedge_queue.borrow(2, qty);
+        assert_eq!(borrowed.qv, qty);
+        crate::pre_trade::monitor_channel::MonitorChannel::instance()
+            .order_manager()
+            .borrow_mut()
+            .create_order(
+                strategy.hedge_venue,
+                id,
+                OrderType::Limit,
+                "FILUSDT".into(),
+                Side::Sell,
+                qty,
+                100.0,
+                false,
+                1.0,
+            );
+        strategy.hedge_order_meta.insert(
+            id,
             ArbHedgeOrderMeta {
                 paired_close_lots: Vec::new(),
                 intra_allocations: None,
                 signal_ts: 1,
                 price_offset: 0.0,
                 signal_bbo: None,
-                borrowed_qv: 2.0,
-                order_base_qty: 2.0,
+                borrowed_qv: borrowed.qv,
+                order_base_qty: qty,
                 filled_base_qty: 0.0,
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: OPEN_ID_A,
                 from_key: Vec::new(),
             },
         );
-        for ts in [100_000_001, 110_000_001, 130_000_001] {
-            strategy.record_hedge_progress_failure(ts, "test_unknown");
+    }
+
+    #[test]
+    fn normal_maker_waiting_and_zero_fill_requotes_never_block_opening() {
+        let mut strategy = execution_guard_fixture();
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        // Reproduce repeated unfilled maker terminals over several minutes.
+        for ts in [1, 10_000_001, 30_000_001, 90_000_001, 600_000_001] {
+            reserved_hedge(&mut strategy, 123, 2.0);
+            strategy.sync_hedge_execution_block(ts);
+            assert!(monitor
+                .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+                .is_ok());
+            let meta = strategy.hedge_order_meta.remove(&123).unwrap();
+            strategy.settle_hedge_meta(ts, Side::Sell, 0.0, 100.0, meta);
+            monitor.order_manager().borrow_mut().remove(123);
+            assert_eq!(strategy.pending_hedge_qty(), 2.0);
+            assert!(monitor
+                .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+                .is_ok());
         }
-        strategy.clear_resolved_hedge_failure();
+        // Removing the extra latch does not bypass the normal exposure cap.
         assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceMargin, 7.0,)
             .is_err());
+    }
+
+    #[test]
+    fn maker_post_only_rejection_is_normal_but_execution_rejection_blocks() {
+        use crate::strategy::hedge_order_reconcile::HedgeOrderReconcileCommon;
+        for (code, blocked) in [(gate::ORDER_POC, false), (gate::INVALID_PARAM_VALUE, true)] {
+            let mut strategy = execution_guard_fixture();
+            reserved_hedge(&mut strategy, 123, 1.0);
+            // Keep a real pending planning request so this test needs no IPC.
+            strategy.begin_inflight_hedge_query(1, runtime_common::time_util::get_timestamp_us());
+            let response = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::GateFuturesNewOrder as u32,
+                Exchange::Gate as u32,
+                123,
+                code,
+            );
+            strategy.handle_hedge_open_failed(&response, "test", 123);
+            assert_eq!(strategy.pending_hedge_qty(), 2.0);
+            assert_eq!(
+                crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                    .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+                    .is_err(),
+                blocked
+            );
+        }
+    }
+
+    #[test]
+    fn local_hedge_rate_limit_does_not_become_an_execution_exception() {
+        let mut strategy = execution_guard_fixture();
+        reserved_hedge(&mut strategy, 123, 1.0);
+        strategy.cleanup_unsent_hedge_order_after_send_failure(
+            123,
+            3,
+            100.0,
+            &super::HedgeSendError::Throttled("rate limit".into()),
+        );
+        assert_eq!(strategy.pending_hedge_qty(), 2.0);
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_ok());
+        reserved_hedge(&mut strategy, 124, 1.0);
+        strategy.cleanup_unsent_hedge_order_after_send_failure(
+            124,
+            4,
+            100.0,
+            &super::HedgeSendError::Failed("IPC unavailable".into()),
+        );
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_err());
+    }
+
+    #[test]
+    fn execution_recovery_uses_a_new_accepted_order_without_waiting_for_fill() {
+        let mut strategy = execution_guard_fixture();
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        let failed_id = ArbHedgeStrategy::compose_order_id(1, 4);
+        strategy.block_hedge_submission(failed_id, Side::Sell, 3);
+        strategy.block_hedge_submission(failed_id - 2, Side::Sell, 4);
+        reserved_hedge(&mut strategy, failed_id - 1, 1.0);
+        let ack = |id| {
+            TradeEngineResponseMessage::new(
+                200,
+                TradeRequestType::BinanceNewUMOrder as u32,
+                Exchange::Binance as u32,
+                id,
+                0,
+            )
+        };
+        strategy.apply_trade_engine_response(&ack(failed_id - 1));
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_err());
+        reserved_hedge(&mut strategy, failed_id + 1, 1.0);
+        strategy.apply_trade_engine_response(&ack(failed_id + 1));
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_ok());
         assert_eq!(strategy.borrowed_hedge_qv(), 2.0);
-        assert!(strategy.pending_hedge_queue.is_empty());
-        strategy.record_hedge_progress(0.0); // An acknowledgement is not a fill.
-        assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
-            .is_err());
-        strategy.record_hedge_progress(0.5);
-        assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
-            .is_ok());
-        for ts in [140_000_001, 150_000_001, 170_000_001] {
-            strategy.record_hedge_progress_failure(ts, "test_unknown");
+        assert!(strategy
+            .hedge_order_meta
+            .values()
+            .all(|m| m.filled_base_qty == 0.0));
+    }
+
+    #[test]
+    fn unknown_orders_block_independently_and_keep_their_reservations() {
+        let mut strategy = execution_guard_fixture();
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        reserved_hedge(&mut strategy, 123, 1.0);
+        reserved_hedge(&mut strategy, 124, 1.0);
+        for meta in strategy.hedge_order_meta.values_mut() {
+            meta.result_unknown = true;
         }
+        strategy.sync_hedge_execution_block(3);
         assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
             .is_err());
-        strategy.orphaned_hedge_order_meta.remove(&123);
-        strategy.clear_resolved_hedge_failure();
+        // Resolving/filling a different order cannot release the unknown one.
+        strategy.confirm_hedge_order(123, Side::Sell, 4);
+        let meta = strategy.hedge_order_meta.remove(&123).unwrap();
+        strategy.settle_hedge_meta(5, Side::Sell, 1.0, 100.0, meta);
+        monitor.order_manager().borrow_mut().remove(123);
         assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_err());
+        assert_eq!(strategy.borrowed_hedge_qv(), 1.0);
+        assert_eq!(strategy.pending_hedge_qty(), 0.0);
+        assert!(monitor.order_manager().borrow().get(124).is_some());
+        // A live zero-fill query resolves this order; no fill is required.
+        monitor.order_manager().borrow_mut().update(124, |order| {
+            order.status = order_common::OrderExecutionStatus::Create;
+            order.set_exchange_order_id(900);
+        });
+        let update = crate::strategy::ws_order_update::WsOrderUpdate::new(
+            6,
+            "FILUSDT".into(),
+            900,
+            124,
+            Side::Sell,
+            OrderType::Limit,
+            order_common::TimeInForce::GTX,
+            100.0,
+            1.0,
+            0.0,
+            order_common::OrderStatus::New,
+            TradingVenue::BinanceFutures,
+        );
+        assert!(strategy.apply_live_order_query(&update, false));
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
             .is_ok());
+        assert_eq!(strategy.borrowed_hedge_qv(), 1.0);
+    }
+
+    #[test]
+    fn timeout_handoff_marks_unknown_even_if_orphan_adoption_fails() {
+        use crate::strategy::hedge_order_reconcile::HedgeOrderReconcileCommon;
+        let mut strategy = execution_guard_fixture();
+        reserved_hedge(&mut strategy, 123, 1.0);
+        // Missing local order makes adoption fail without generating a global
+        // strategy ID. The original quantity must still stay reserved.
+        crate::pre_trade::monitor_channel::MonitorChannel::instance()
+            .order_manager()
+            .borrow_mut()
+            .remove(123);
+        strategy
+            .hedge_order_meta
+            .get_mut(&123)
+            .unwrap()
+            .cancel_requested = true;
+        assert!(!strategy.handoff_hedge_order_after_query_failure(123, "query response timeout"));
+        assert!(
+            crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+                .is_err()
+        );
+        assert_eq!(strategy.borrowed_hedge_qv(), 1.0);
+        assert_eq!(strategy.pending_hedge_qty(), 1.0);
+        assert_eq!(
+            strategy.order_reconcile_state.order_query_watchdogs[&123].1,
+            crate::strategy::order_reconcile::PendingOrderQueryReason::CancelWatchdog
+        );
+    }
+
+    #[test]
+    fn late_ack_does_not_resolve_an_unknown_order_or_clear_plan_failure() {
+        let mut strategy = execution_guard_fixture();
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        let id = ArbHedgeStrategy::compose_order_id(1, 2);
+        reserved_hedge(&mut strategy, id, 1.0);
+        strategy
+            .hedge_order_meta
+            .get_mut(&id)
+            .unwrap()
+            .result_unknown = true;
+        strategy.hedge_plan_unavailable = true;
+        strategy.block_hedge_submission(id - 1, Side::Sell, 3);
+        let ack = TradeEngineResponseMessage::new(
+            200,
+            TradeRequestType::BinanceNewUMOrder as u32,
+            Exchange::Binance as u32,
+            id,
+            0,
+        );
+        strategy.apply_trade_engine_response(&ack);
+        assert!(strategy.failed_submission.is_none());
+        assert!(strategy.hedge_plan_unavailable);
+        assert!(strategy.hedge_order_meta[&id].result_unknown);
+        strategy.confirm_hedge_order(id, Side::Sell, 4);
+        assert!(!strategy.hedge_order_meta[&id].result_unknown);
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_err());
+    }
+
+    #[test]
+    fn failure_on_future_or_sub_lot_work_does_not_block_opening() {
+        for (qty, due_at) in [(2.0, 100_000_000), (0.5, 0)] {
+            let mut strategy = execution_guard_fixture();
+            crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(0.0, 1.0);
+            strategy.pending_hedge_queue.borrow(2, 2.0);
+            strategy
+                .pending_hedge_queue
+                .put_with_id(3, due_at, qty, 100.0, OPEN_ID_A);
+            strategy.block_hedge_submission(123, Side::Sell, 4);
+            assert!(
+                crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                    .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn netting_failed_work_clears_its_exception_but_not_an_unknown_order() {
+        let mut strategy = execution_guard_fixture();
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        strategy.block_hedge_submission(123, Side::Sell, 3);
+        strategy.enqueue_hedge_work(4, 0, -2.0, 100.0, OPEN_ID_B);
+        strategy.sync_hedge_execution_block(4);
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_ok());
+        strategy.enqueue_hedge_work(5, 0, 1.0, 100.0, OPEN_ID_A);
+        reserved_hedge(&mut strategy, 124, 1.0);
+        strategy
+            .hedge_order_meta
+            .get_mut(&124)
+            .unwrap()
+            .result_unknown = true;
+        strategy.enqueue_hedge_work(6, 0, -1.0, 100.0, OPEN_ID_B);
+        strategy.sync_hedge_execution_block(6);
+        assert!(monitor
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
+            .is_err());
+        assert_eq!(strategy.borrowed_hedge_qv(), 1.0);
     }
 
     #[test]
@@ -4535,7 +4911,7 @@ mod tests {
             .is_none());
         assert_eq!(strategy.pending_hedge_qty(), 3.0);
         assert!(monitor
-            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
+            .check_arb_hedge_execution_risk("FILUSDT", 1.0)
             .is_ok());
     }
 
@@ -4557,6 +4933,7 @@ mod tests {
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: OPEN_ID_B,
                 from_key: Vec::new(),
             },
@@ -4774,6 +5151,7 @@ mod tests {
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: OPEN_ID_A,
                 from_key: Vec::new(),
             },
@@ -5020,6 +5398,7 @@ mod tests {
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: 0,
                 from_key: Vec::new(),
             },
@@ -5080,6 +5459,7 @@ mod tests {
             expire_ts: 0,
             next_expire_check_ts: 0,
             cancel_requested: false,
+            result_unknown: false,
             bound_open_client_order_id: OPEN_ID_A,
             from_key: Vec::new(),
         };
@@ -5135,6 +5515,7 @@ mod tests {
             expire_ts: 0,
             next_expire_check_ts: 0,
             cancel_requested: false,
+            result_unknown: false,
             bound_open_client_order_id: OPEN_ID_A,
             from_key: Vec::new(),
         };
@@ -5541,12 +5922,18 @@ mod tests {
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: OPEN_ID_A,
                 from_key: Vec::new(),
             },
         );
 
-        strategy.cleanup_unsent_hedge_order_after_send_failure(client_order_id, 30, 0.1147);
+        strategy.cleanup_unsent_hedge_order_after_send_failure(
+            client_order_id,
+            30,
+            0.1147,
+            &super::HedgeSendError::Failed("IPC unavailable".into()),
+        );
 
         assert_eq!(strategy.pending_hedge_qty(), -5.0);
         assert!(!strategy.hedge_order_meta.contains_key(&client_order_id));
@@ -5584,6 +5971,7 @@ mod tests {
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: OPEN_ID_A,
                 from_key: Vec::new(),
             },
@@ -5636,6 +6024,7 @@ mod tests {
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
+                result_unknown: false,
                 bound_open_client_order_id: OPEN_ID_A,
                 from_key: Vec::new(),
             },

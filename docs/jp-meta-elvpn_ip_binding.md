@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-12 10:16 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-12 11:01 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-12 10:33–10:43 UTC，JP `gate_fr_arb01–04` 信号已按授权恢复；
+`bitget_fr_arb01` 完成 `05425d6e` 发布并恢复全部8服务，02在安装前按用户指令
+终止发布并恢复原版8服务，03未变更。Gate 01/03/04与Bitget系列继续使用`.35.231`，
+Gate 02继续`.35.232/.35.233`；环境配置、源IP、ENI/EIP、路由和监听均保持。
+后续发布暂停；新的异常执行保护仍是本地修改。回执见
+`artifacts/gate_fr_on_repair_20261112/README.md`。
 
 2026-11-12 10:13 UTC，JP `gate_fr_arb01–04` 发布 `293f6352` 并恢复全部7个非signal服务；
 四盘 `trade_signal` 只更新二进制，保持停止。01/03/04继续 `172.31.35.231`，
@@ -1076,9 +1083,9 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_exec_trade01 local_ips[0]`；不同子账户 `okex_mm_83777` 实盘共用 |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_exec_trade01 local_ips[1]`；不同子账户 `okex_mm_83777` 实盘共用 |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（01/03/04于11-12恢复非signal服务，05继续停止）、`bitget_fr_arb01`/`02`/`03`；Bitget 01于2026-11-10入金20,000 USDT后作为新盘建仓运行 |
-| `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02`（11-12恢复非signal服务）、`bybit_fr_arb01` `local_ips[0]` |
-| `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02`（11-12恢复非signal服务）、`bybit_fr_arb01` `local_ips[1]` |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（01/03/04于11-12恢复含signal的全部服务，05继续停止）、`bitget_fr_arb01`/`02`/`03`；Bitget 01于11-12发布，02/03保持原版运行 |
+| `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02`（11-12恢复含signal的全部服务）、`bybit_fr_arb01` `local_ips[0]` |
+| `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02`（11-12恢复含signal的全部服务）、`bybit_fr_arb01` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 已配置 | Exec `trade02`、`trade03`、`trade04` `local_ips[1]` |
 
 ## ens42 映射

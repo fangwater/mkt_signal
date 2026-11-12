@@ -68,7 +68,7 @@ impl ArbOpenStrategy {
         }
     }
 
-    fn stalled_hedge_cancel_input(&self, now_ts: i64) -> Option<OpenCancelInput> {
+    fn blocked_hedge_cancel_input(&self, now_ts: i64) -> Option<OpenCancelInput> {
         let monitor = MonitorChannel::instance();
         let order = monitor.order_manager().borrow().get(self.open_order_id())?;
         if order.status.is_terminal() {
@@ -84,7 +84,7 @@ impl ArbOpenStrategy {
             -base_qty
         };
         if monitor
-            .check_arb_hedge_progress_risk(&order.symbol, signed_qty)
+            .check_arb_hedge_execution_risk(&order.symbol, signed_qty)
             .is_ok()
         {
             return None;
@@ -94,9 +94,9 @@ impl ArbOpenStrategy {
             target_strategy_id: self.strategy_id(),
             target_client_order_id: order.client_order_id,
             cancel_side: order.side,
-            cancel_reason: "hedge_stalled",
+            cancel_reason: "hedge_execution_blocked",
             trigger_ts: now_ts,
-            from_key: b"hedge_stalled".to_vec(),
+            from_key: b"hedge_execution_blocked".to_vec(),
             mkt_ts: 0,
         })
     }
@@ -377,7 +377,7 @@ impl Strategy for ArbOpenStrategy {
         } else {
             get_timestamp_us()
         };
-        if let Some(input) = self.stalled_hedge_cancel_input(now_ts) {
+        if let Some(input) = self.blocked_hedge_cancel_input(now_ts) {
             self.handle_open_cancel_signal_common(input);
         }
         self.handle_open_leg_timeout_common();
@@ -404,7 +404,7 @@ mod tests {
     use crate::strategy::order_reconcile::monotonic_cumulative_fill;
 
     #[test]
-    fn stalled_hedge_targets_only_expanding_live_open_remainders() {
+    fn blocked_hedge_targets_only_expanding_live_open_remainders() {
         use crate::pre_trade::monitor_channel::{
             tests::install_binance_arb_hedge_exposure_fixture, MonitorChannel,
         };
@@ -426,25 +426,23 @@ mod tests {
             false,
             1.0,
         );
-        assert!(strategy.stalled_hedge_cancel_input(1).is_none());
-        for ts in [1, 10_000_001, 30_000_001] {
-            monitor.record_arb_hedge_failure("FILUSDT", ts, "test_rejection");
-        }
-        let input = strategy.stalled_hedge_cancel_input(31_000_001).unwrap();
+        assert!(strategy.blocked_hedge_cancel_input(1).is_none());
+        monitor.set_arb_hedge_execution_block("FILUSDT", Some("test_rejection"));
+        let input = strategy.blocked_hedge_cancel_input(31_000_001).unwrap();
         assert_eq!(input.target_strategy_id, 7);
         assert_eq!(input.target_client_order_id, id);
-        assert_eq!(input.cancel_reason, "hedge_stalled");
+        assert_eq!(input.cancel_reason, "hedge_execution_blocked");
         // Selection does not discard a live order or its reservation.
         assert!(manager.borrow().get(id).is_some());
         manager
             .borrow_mut()
             .update(id, |order| order.side = Side::Sell);
-        assert!(strategy.stalled_hedge_cancel_input(32_000_001).is_none());
+        assert!(strategy.blocked_hedge_cancel_input(32_000_001).is_none());
         manager.borrow_mut().update(id, |order| {
             order.side = Side::Buy;
             order.cumulative_filled_quantity = order.quantity;
         });
-        assert!(strategy.stalled_hedge_cancel_input(33_000_001).is_none());
+        assert!(strategy.blocked_hedge_cancel_input(33_000_001).is_none());
     }
 
     #[test]

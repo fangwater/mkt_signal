@@ -1,6 +1,17 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 10:16 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 11:01 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12 10:33–10:43 UTC，按授权启动 JP `gate_fr_arb01–04` 的 `trade_signal`，
+四盘各8个服务已验收；信号继续housekeeping（`0-5,48-95`），持久化继续CPU15。
+随后仅 `bitget_fr_arb01` 完成 `05425d6e` 全套发布，7个本地release产物经SHA-256
+核验、原子安装，8个服务均恢复，全部继续原housekeeping CPU范围。
+用户要求暂停后，02在替换产物前终止发布，已通过本环境脚本恢复原版交易服务，
+10:43:25 UTC验收原版8服务运行；03未变更。02/03既有CPU分配保持。
+正常maker反复零成交触发旧 `hedge_stalled` 的问题正在本地修正，尚未发布，
+不得据此声称线上拦截已解除。未手工对齐或修改风险参数；配置和源IP保持。
+回执：`artifacts/gate_fr_on_repair_20261112/README.md` 的 signal resume / partial
+Bitget publication 记录。
 
 2026-11-12 10:13 UTC，JP `gate_fr_arb01–04` 按授权发布已推送 `arbmm` 提交
 `293f6352`，包含单队列对冲修复、紧急减仓保护与缺价REST补充。本地隔离源码release构建，
@@ -1966,7 +1977,7 @@ okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `binance_exec_trade08` 的engine、executor、监控、持久化、Viz/Config已于2026-11-02停止；
 原 virtual02/RX02 跟随和 Grid 绑定已移除。
-`gate_fr_arb01/02/03/04` 已于2026-11-12恢复7个非signal服务，`trade_signal`关闭，原 CPU 分配保留。
+`gate_fr_arb01/02/03/04` 已于2026-11-12 10:33 UTC恢复全部8服务（含 `trade_signal`），原 CPU 分配保留。
 `okex_mm_alpha` 已于2026-10-29停止，槽位于2026-11-06由 `okex_mm_83777` 替代。
 `binance-cta-rx01` 的 persist_manager 同样堆叠在 15。
 `bitget_fr_arb03` 已启动；其 persist_manager 绑核 15，其余进程未绑核。

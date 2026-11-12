@@ -2,6 +2,11 @@
 
 All times UTC. This records factual execution, including an operator error.
 
+Latest verified operating state: Gate 01–04 signals resumed at 10:33 UTC;
+Bitget 01 was published, 02 was restored on its original binaries after the user
+stopped publication, and 03 was untouched. The subsequent exception-only guard
+correction is local and unpublished. See the final sections below.
+
 The four JP `gate_fr_arb01–04` environments were stopped through their local
 scripts. Exchange orders were cancelled, and `/proc` plus exchange queries
 confirmed no environment processes or open orders. Source IP assignments,
@@ -202,7 +207,8 @@ worktree and all seven Gate FR binaries built locally in release mode. Uploaded
 artifacts were SHA-256 verified, then atomically installed in `gate_fr_arb01–04`
 (28 binary replacements). All seven non-signal services per environment were
 restored through the env-local wrappers. `trade_signal` was updated only on disk
-and remains stopped. No remote Cargo build or manual alignment trade was run.
+and remained stopped at this checkpoint. No remote Cargo build or manual
+alignment trade was run.
 
 Before stopping, 25 runtime log files per environment were preserved under
 `~/gate_fr_arb0N/backups/gate_fr_publish_293f6352_20261112/`, together with rollback
@@ -235,3 +241,90 @@ Receipts: `scheduler_deployment_manifest.json` and
 and full operation receipts are under
 `data/ops/gate_fr_publish_293f6352_20261112/` (Git-ignored). Unrelated local changes
 were excluded from the build and this publication.
+
+## Signal resume and partial Bitget publication
+
+After the user accepted the reported residuals and explicitly authorized signal
+startup, Gate 01–04 signals were started through their env-local wrappers.
+At 10:33:46–47, all eight services in every environment were verified by process
+identity and binary hash. Signal PIDs were 2608819 / 2610027 / 2611101 / 2612158,
+on CPU mask `0-5,48-95`; existing persistence remained on CPU15. Configuration
+and source IPs were preserved. No manual alignment order was submitted.
+See `signal_resume_verification.json`.
+
+The authorized Bitget rollout used synchronized `arbmm` source
+`05425d6e4284f2347e047a304f3e773b2e84eb65`, exported and release-built in the
+active local worktree. Seven binary artifacts were uploaded to explicit staging
+paths, SHA-256 verified and atomically installed in `bitget_fr_arb01`. At
+10:38:09, all eight services, including signal, were running the published
+artifacts; original CPU masks, configuration and `.35.231` source IPs remained.
+
+The user stopped further publication when normal passive hedges were found to
+trigger the old guard. The rollout controller was stopped before any Bitget 02
+binary replacement. Its stopped account monitor, engine, pre-trade and signal
+were restored through env-local scripts using the original artifacts. At
+10:43:25, all eight original services were verified running with fresh Viz risk
+and exposure snapshots. Bitget 03 was untouched: its process identities,
+artifacts and configuration matched the pre-rollout audit. Logs were preserved
+before stopping either touched environment. No risk setting, leverage, source
+IP, ENI/EIP or route was changed, and no manual alignment trade was submitted.
+See `bitget_partial_publication_verification.json`; full receipts remain under
+`data/ops/bitget_fr_publish_05425d6e_20261112/`. Remote backups are under each
+touched env's `backups/bitget_fr_publish_05425d6e_20261112/`.
+
+Gate and Bitget 01 still run the old guard. This operation does not establish
+zero exposure: after signals resumed, an exchange audit around 10:36 found
+absolute per-asset Gate exposure totals of approximately 238.61 / 239.83 /
+12.07 / 1393.35 USDT. These are historical snapshots during active trading,
+not current-position claims or proof of queue deadlock.
+
+The Gate 04 `FactorValueHub` LABUSDT warning at startup (10:32:17) reported no
+first IPC snapshot. By 10:34:05 valid LAB opening decisions used volatility
+0.00080707. The displayed `selected: []` came from the diagnostic log filter,
+not an application exception.
+
+## Exception-only guard correction (unpublished)
+
+The removed guard counted each zero-fill hedge terminal as a failure, then
+latched after three failures spanning 30 seconds until a fill or all work was
+resolved. Normal accepted maker orders that repeatedly expire or reprice can
+therefore lock building despite a working hedge path. This was a guard error;
+the observed passive orders do not prove the earlier ON scheduler deadlock.
+
+The replacement removes the counter/window/latch module. It retains one pending
+work collection and the existing order records, with only explicit execution
+exceptions controlling the extra same-symbol exposure restriction:
+
+- Failed order encoding/publication or an actual exchange submission rejection.
+  Local rate limiting and post-only/price-band repricing do not set this block.
+  A newer accepted order in the failed direction clears the submission exception
+  without waiting for a fill; older acknowledgements cannot clear newer errors,
+  and late older rejections cannot replace the newest failure record.
+- Failure or timeout of the hedge-plan request. A valid correlated reply clears
+  this cause; ordinary waiting on an accepted maker order does not create it.
+- An order remains unknown after placement/cancel reconciliation fails. Its
+  original reservation stays intact, and same-symbol expansion is prohibited
+  per the user's explicit choice. Another order's fill or a late ACK cannot
+  resolve it. A factual current query/terminal resolves the relevant order;
+  failed orphan adoption rearms reconciliation instead of losing the watchdog.
+
+Netting or retirement of actionable failed work clears obsolete submission/plan
+exceptions. Unknown exchange orders remain protected independently, including
+when pending net quantity is zero. Future and known sub-lot work do not create
+submission/plan blocks. Existing symbol/global exposure caps remain in force.
+The guard cancels expanding resting opens through normal reconciliation, while
+hedge retry, unrelated symbols and validated emergency reductions continue.
+
+Regression coverage includes repeated zero-fill maker terminals over ten
+minutes, post-only versus actual rejection, local rate limiting, accepted-order
+recovery without fills, independent unknown reservations, failed orphan adoption,
+stale acknowledgements, netting, future/dust work and the prior ON reversal and
+emergency-reduction cases. Final shared-worktree library run: 1,575 passed,
+3 ignored; `cargo check --bin pre_trade`, formatting and diff whitespace checks
+passed. No CTP code was executed. This correction
+has not been published; subsequent publication remains paused by user request.
+
+The broader `cargo test -p mkt_signal` run stopped at eight unrelated
+`cme_tas_census` tests: the current TAS column-rule input has eight record types
+where that binary expects four. Its source and catalog were not changed by this
+fix. Do not describe the full binary test suite as passing.
