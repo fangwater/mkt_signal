@@ -2,6 +2,13 @@
 
 最后更新：2026-11-12 14:30 UTC（多账户风险聚合推送已发布；Bitget三盘已恢复新版）
 
+本次单币报警修订（待发布）：持续超出方向 maker 正常区间180秒才确认，跨越交易限仓线
+或严重超限即时线均保留连续越界起点。单币即时线改为交易限仓 × 独立系数（默认1.5），
+同时仍须越出 maker 正常区间；账户总限额保持首次新鲜观察报警。
+Gate02 PLUME 的2500U交易限仓对应3750U即时线；此前40–50秒的2500U附近短时越线
+仅进入持续观察。通知展示实际连续越界秒数、确认要求和独立即时线。
+以下14:30及更早的发布记录描述当时行为；单币原始限仓立即报警由本次修订取代。
+
 2026-11-12，发布`arbmm 2136a80d`的多账户风险聚合推送。一次发送收拢同轮已就绪
 的新增报警和恢复，分别分组，超过3600 UTF-8字节才拆分；不增加延迟窗口或第二队列。
 逐项状态、持久化去重、失败退避和发送中的恢复/再发状态保持；整批发送成功后逐项确认。
@@ -604,11 +611,18 @@ Current exposure policy (directional maker band, 2026-11-12 revision):
   strategy exposure cap smaller than the band. Gate's 100U hand and 10 orders
   give a 1500U normal band; O/TRUST maker waits and BGSC/XDC tiny tails stay quiet.
   This classification is not evidence that an order is stuck or filled.
-- Outside the normal band, reaching the strategy single-symbol cap
-  (`max_pos_u_for_symbol × max_symbol_exposure_ratio`) alerts on the first
-  fresh observation. Otherwise excess over the band must persist **180 seconds**.
-  A nonpositive exposure ratio disables that cap. An unlimited directional
-  maker capacity supplies no finite band; its configured symbol cap still applies.
+- Outside the normal band, exposure must persist **180 seconds** before alerting.
+  Crossing the raw trading cap (`max_pos_u_for_symbol × max_symbol_exposure_ratio`)
+  does not restart confirmation or bypass the wait. The separate immediate line is
+  the trading cap × `hard_limit_factor` (default **1.5**), bounded below by the
+  normal band; reaching it while outside the band alerts on the first fresh poll.
+  Escalation and de-escalation retain the continuous excess start time. Falling
+  below the immediate line only confirms a timed incident if the full persistence
+  window has elapsed. Missing observations still interrupt pending confirmation.
+  A nonpositive exposure ratio disables the cap. An unlimited directional maker
+  capacity uses the raw symbol cap as its timed boundary and the factored cap as
+  its immediate line. For Gate02 PLUME: band 1500U, trading cap 2500U, immediate
+  line 3750U. Notifications include elapsed and required persistence seconds.
 - The account limit (`equity × max_total_exposure_ratio`) remains independent:
   the sum of absolute actual net exposures reaching that limit alerts immediately,
   even when individual assets remain inside their maker bands. Immediate means
@@ -659,7 +673,10 @@ excluded tails are retired as a policy change, not sent as price-data recoveries
 
 The wrapper accepts `DELIST_EXPOSURE_INTERVAL_SECS`,
 `DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS` (default `180`)
-and `DELIST_EXPOSURE_MAKER_BUFFER_FACTOR` (default `1.5`).
+and `DELIST_EXPOSURE_MAKER_BUFFER_FACTOR` (default `1.5`). The independent
+`DELIST_EXPOSURE_HARD_LIMIT_FACTOR` (default `1.5`) scales only single-symbol
+immediate alerts. Nonfinite factors, factors below one and overflowing computed
+limits cannot become valid assessments or false recoveries.
 `DELIST_DATA_PERSISTENCE_SECS` (default `60`) requires continuously incomplete
 FR position data before alerting; complete data recovers immediately.
 The identical report is atomically saved beside the risk book as

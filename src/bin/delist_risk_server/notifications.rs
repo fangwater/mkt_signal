@@ -833,7 +833,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
             observations.push(Observation {
                 key: format!("exposure_limit/{}/{}", account.slug, row.asset),
                 title: format!(
-                    "{} {} 超出方向 maker 区间并达到限仓线",
+                    "{} {} 严重超限，达到即时报警线",
                     account.slug, row.asset
                 ),
                 problem: if !fresh || !row.assessable() {
@@ -842,7 +842,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                     Some(hard)
                 },
                 detail: format!(
-                    "实际净敞口 {} USDT；交易限仓线 {} USDT；方向 maker 正常区间 {} USDT；{}",
+                    "实际净敞口 {} USDT；交易限仓线 {} USDT；即时报警线 {} USDT（限仓 × {}，不低于正常区间；且须越出正常区间）；方向 maker 正常区间 {} USDT；{}",
                     row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
                         .unwrap_or_else(|| "未知".into()),
@@ -850,11 +850,15 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                         .as_ref()
                         .map(|l| format!("{:.2}", l.symbol_limit_usdt))
                         .unwrap_or_else(|| "未知".into()),
+                    row.hard_limit_usdt
+                        .map(|v| format!("{v:.2}"))
+                        .unwrap_or_else(|| "未启用或未知".into()),
+                    report.settings.hard_limit_factor,
                     row.normal_buffer_usdt
                         .map(|v| format!("{v:.2}"))
                         .unwrap_or_else(|| "未设有限区间".into()),
                     if hard {
-                        "超出正常区间并达到限仓线，首次观察即报警"
+                        "严重超限，首次观察即报警"
                     } else {
                         "未触发单币立即报警条件"
                     },
@@ -865,13 +869,15 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                 title: format!("{} {} 实际净敞口", account.slug, row.asset),
                 problem,
                 detail: format!(
-                    "{}；实际净敞口 {} USDT；交易限仓线 {}，正常 maker 区间 {} USDT；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）",
+                    "{}；实际净敞口 {} USDT；交易限仓线 {}，正常 maker 区间 {} USDT；连续越界 {} 秒，持续确认要求 {} 秒；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）",
                     breach.map(|b| b.kind.label()).unwrap_or("未触发异常条件"),
                     row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
                         .unwrap_or_else(|| "未知".into()),
                     row.limits.as_ref().map(|l| if l.symbol_limit_usdt > 0.0 { format!("{:.2} USDT", l.symbol_limit_usdt) } else { "未启用".into() }).unwrap_or_else(|| "未知".into()),
                     row.normal_buffer_usdt.map(|v| format!("{v:.2}")).unwrap_or_else(|| "未知".into()),
+                    breach.map(|b| b.last_observed_ms.saturating_sub(b.since_ms) / 1000).unwrap_or(0),
+                    report.settings.persistence_secs,
                     row.net_qty,
                     row.hedge_plan_qty
                         .map(|v| format!("{v:.8}"))

@@ -383,12 +383,15 @@ def main():
                 page.locator('#exposure-panel > summary').click()
                 page.wait_for_selector('[data-exposure-account="bitget_fr_arb01"]')
                 assert page.locator('[data-exposure-account]').count() == 4
+                assert '交易限仓线 × 1.5' in page.locator('#exposures').inner_text()
+                assert '跨越交易限仓线继续累计越界时间' in page.locator('#exposures').inner_text()
                 assert '敞口异常' in page.locator('#exposures').inner_text()
                 assert page.locator('#exposures img').count() == 0
                 assert page.locator('#exposures a[href*="bitget_fr_arb02"]').count() == 1
                 details = page.locator('details[data-env="bitget_fr_arb01"]')
                 details.locator('summary').click()
                 assert '160.00 U' in details.inner_text()
+                assert '即时线 1,500.00 U' in details.inner_text()
                 if args.screenshot_dir:
                     args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(args.screenshot_dir/'exposure-desktop.png'), full_page=True)

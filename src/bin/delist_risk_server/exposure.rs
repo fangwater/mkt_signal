@@ -18,6 +18,7 @@ pub struct Settings {
     pub persistence_secs: u64,
     pub data_persistence_secs: u64,
     pub maker_buffer_factor: f64,
+    pub hard_limit_factor: f64,
     pub catalog_max_age_secs: u64,
     pub ignored_spot_tails: BTreeMap<String, BTreeMap<String, SpotTailRule>>,
 }
@@ -47,6 +48,7 @@ impl Default for Settings {
             persistence_secs: 180,
             data_persistence_secs: 60,
             maker_buffer_factor: 1.5,
+            hard_limit_factor: 1.5,
             catalog_max_age_secs: 180,
             ignored_spot_tails: BTreeMap::new(),
         }
@@ -74,6 +76,10 @@ impl Settings {
         ensure!(
             self.maker_buffer_factor.is_finite() && self.maker_buffer_factor >= 1.0,
             "maker buffer factor must be finite and at least one"
+        );
+        ensure!(
+            self.hard_limit_factor.is_finite() && self.hard_limit_factor >= 1.0,
+            "hard limit factor must be finite and at least one"
         );
         for rules in self.ignored_spot_tails.values() {
             for rule in rules.values() {
@@ -111,6 +117,7 @@ pub struct Row {
     pub asset: String,
     pub limits: Option<Limits>,
     pub normal_buffer_usdt: Option<f64>,
+    pub hard_limit_usdt: Option<f64>,
     pub open_qty: f64,
     pub hedge_qty: f64,
     pub net_qty: f64,
@@ -134,8 +141,8 @@ pub enum BreachKind {
 impl BreachKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::HardLimit => "达到报警限额",
-            Self::MakerBuffer => "持续超过正常 maker 缓冲",
+            Self::HardLimit => "达到即时报警线",
+            Self::MakerBuffer => "持续超出单币正常区间",
         }
     }
 }
@@ -145,13 +152,14 @@ impl Row {
         self.uncovered_usdt.is_some()
             && (self.net_qty.abs() <= 1e-12
                 || self.limits.as_ref().is_some_and(|l| {
-                    (if self.net_qty >= 0.0 {
-                        l.maker_buy_orders
-                    } else {
-                        l.maker_sell_orders
-                    })
-                    .is_none()
-                        || self.normal_buffer_usdt.is_some()
+                    (l.symbol_limit_usdt == 0.0 || self.hard_limit_usdt.is_some())
+                        && ((if self.net_qty >= 0.0 {
+                            l.maker_buy_orders
+                        } else {
+                            l.maker_sell_orders
+                        })
+                        .is_none()
+                            || self.normal_buffer_usdt.is_some())
                 }))
     }
 }
@@ -358,17 +366,20 @@ impl Monitor {
                         {
                             continue;
                         }
-                        let violation = if limits.symbol_limit_usdt > 0.0
-                            && value.abs() >= limits.symbol_limit_usdt
+                        let violation = if row
+                            .hard_limit_usdt
+                            .is_some_and(|limit| value.abs() >= limit)
                         {
-                            Some((
-                                BreachKind::HardLimit,
-                                limits
-                                    .symbol_limit_usdt
-                                    .max(row.normal_buffer_usdt.unwrap_or(0.0)),
-                            ))
+                            Some((BreachKind::HardLimit, row.hard_limit_usdt.unwrap()))
                         } else {
                             row.normal_buffer_usdt
+                                // Unlimited maker capacity has no finite band;
+                                // retain the raw symbol cap as its timed boundary.
+                                .or_else(|| {
+                                    (limits.symbol_limit_usdt > 0.0)
+                                        .then_some(limits.symbol_limit_usdt)
+                                })
+                                .filter(|limit| value.abs() >= *limit)
                                 .map(|buffer| (BreachKind::MakerBuffer, buffer))
                         };
                         if let Some((kind, limit)) = violation {
@@ -427,12 +438,13 @@ impl Monitor {
                             value_usdt: value,
                             observation_interrupted: false,
                         });
-                        // A gap in observations cannot prove continuous excess.
-                        if breach.kind != kind
-                            || !breach.confirmed
-                                && (breach.observation_interrupted
-                                    || now.saturating_sub(breach.last_observed_ms)
-                                        > (self.settings.interval_secs * 3) as i64 * 1000)
+                        // Crossing either symbol cap does not interrupt continuous
+                        // excess. A gap still restarts an unconfirmed window (or a
+                        // window returning from an immediate-limit escalation).
+                        if (!breach.confirmed || breach.kind != kind)
+                            && (breach.observation_interrupted
+                                || now.saturating_sub(breach.last_observed_ms)
+                                    > (self.settings.interval_secs * 3) as i64 * 1000)
                         {
                             breach.since_ms = now;
                             breach.confirmed = false;
@@ -442,7 +454,7 @@ impl Monitor {
                         breach.last_observed_ms = now;
                         breach.observation_interrupted = false;
                         breach.value_usdt = value;
-                        breach.confirmed |= kind != BreachKind::MakerBuffer
+                        breach.confirmed = kind == BreachKind::HardLimit
                             || now.saturating_sub(breach.since_ms)
                                 >= self.settings.persistence_secs as i64 * 1000;
                     }
@@ -604,6 +616,7 @@ fn parse_row(value: &Value) -> Result<Row> {
         asset,
         limits: None,
         normal_buffer_usdt: None,
+        hard_limit_usdt: None,
         open_qty,
         hedge_qty,
         net_qty,
@@ -730,21 +743,18 @@ fn assess_limits(sample: &mut Sample, settings: &Settings) {
             let value = count as f64 * l.order_amount_usdt * settings.maker_buffer_factor;
             value.is_finite().then_some(value)
         });
-        if !row.ignored_spot_tail
-            && row.net_qty.abs() > 1e-12
-            && (row.limits.is_none()
-                || row.limits.as_ref().is_some_and(|l| {
-                    (if row.net_qty >= 0.0 {
-                        l.maker_buy_orders
-                    } else {
-                        l.maker_sell_orders
-                    })
-                    .is_some()
-                        && row.normal_buffer_usdt.is_none()
-                }))
-        {
+        row.hard_limit_usdt = row.limits.as_ref().and_then(|l| {
+            if l.symbol_limit_usdt <= 0.0 {
+                return None;
+            }
+            let value = l.symbol_limit_usdt * settings.hard_limit_factor;
+            value
+                .is_finite()
+                .then_some(value.max(row.normal_buffer_usdt.unwrap_or(0.0)))
+        });
+        if !row.ignored_spot_tail && row.net_qty.abs() > 1e-12 && !row.assessable() {
             sample.errors.push(format!(
-                "{} 缺少有效 Redis 单手金额或方向 maker 参数",
+                "{} 缺少有效 Redis 限额、单手金额、方向 maker 参数或报警系数计算溢出",
                 row.asset
             ));
         }
@@ -953,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn exceeding_band_waits_three_minutes_but_hard_limit_and_total_escalate_immediately() {
+    fn exceeding_band_waits_three_minutes_but_factored_limit_and_total_escalate_immediately() {
         let mut m = Monitor::new(Settings::default());
         assert_eq!(m.settings.persistence_secs, 180);
         for t in (0..=180_000).step_by(10_000) {
@@ -964,7 +974,7 @@ mod tests {
             );
         }
         let mut hard = row("OVER", 400.0);
-        hard["limits"]["symbol_limit_usdt"] = json!(400.0);
+        hard["limits"]["symbol_limit_usdt"] = json!(250.0);
         apply(&mut m, vec![hard], NOW + 190_000);
         let a = account(&m, NOW + 190_000);
         assert_eq!(a.breaches["asset:OVER"].kind, BreachKind::HardLimit);
@@ -977,6 +987,133 @@ mod tests {
         let a = account(&m, NOW + 200_000);
         assert_eq!(a.breaches.len(), 1);
         assert!(a.breaches["total"].confirmed);
+    }
+
+    #[test]
+    fn plume_transient_raw_cap_crossings_do_not_alert_or_restart_confirmation() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=180_000).step_by(10_000) {
+            let net = if t < 50_000 { -2502.34 } else { -2416.55 };
+            let mut value = building_row("PLUME", net);
+            value["limits"]["symbol_limit_usdt"] = json!(2500.0);
+            value["limits"]["maker_sell_orders"] = json!(10);
+            let mut sample = parse(&snapshot(vec![value], NOW + t), NOW + t, &m.settings).unwrap();
+            sample.limit_usdt = Some(15000.0);
+            m.apply(
+                &[spec("gate_fr_arb04", RedisSite::Jp)],
+                vec![("gate_fr_arb04".into(), Ok(sample))],
+                NOW + t,
+                true,
+            );
+            let a = account(&m, NOW + t);
+            let b = &a.breaches["asset:PLUME"];
+            assert_eq!(a.rows[0].hard_limit_usdt, Some(3750.0));
+            assert_eq!(b.kind, BreachKind::MakerBuffer);
+            assert_eq!(b.since_ms, NOW);
+            assert_eq!(b.confirmed, t >= 180_000);
+            let observations =
+                super::super::notifications::exposure_observations(&m.report(NOW + t, true));
+            let hard = observations
+                .iter()
+                .find(|o| o.key == "exposure_limit/gate_fr_arb04/PLUME")
+                .unwrap();
+            assert_eq!(hard.problem, Some(false));
+            assert!(hard.detail.contains("3750.00"));
+            let timed = observations
+                .iter()
+                .find(|o| o.key == "exposure/gate_fr_arb04/PLUME")
+                .unwrap();
+            assert_eq!(timed.problem, (t >= 180_000).then_some(true));
+            if t == 180_000 {
+                assert!(timed.detail.contains("连续越界 180 秒"));
+            }
+        }
+        apply(&mut m, vec![building_row("PLUME", 0.36)], NOW + 190_000);
+        assert!(account(&m, NOW + 190_000).breaches.is_empty());
+    }
+
+    #[test]
+    fn severity_changes_keep_continuous_duration_without_confirming_a_short_maker_excess() {
+        for sign in [-1.0, 1.0] {
+            let mut m = Monitor::new(Settings::default());
+            for t in (0..=200_000).step_by(10_000) {
+                let net = if matches!(t, 20_000 | 190_000) {
+                    375.0
+                } else {
+                    250.0
+                };
+                let mut value = row("COIN", sign * net);
+                value["limits"]["symbol_limit_usdt"] = json!(250.0);
+                apply(&mut m, vec![value], NOW + t);
+                let a = account(&m, NOW + t);
+                let b = &a.breaches["asset:COIN"];
+                assert_eq!(b.since_ms, NOW);
+                let hard = matches!(t, 20_000 | 190_000);
+                assert_eq!(
+                    b.kind,
+                    if hard {
+                        BreachKind::HardLimit
+                    } else {
+                        BreachKind::MakerBuffer
+                    }
+                );
+                assert_eq!(b.confirmed, hard || t >= 180_000);
+                let observations =
+                    super::super::notifications::exposure_observations(&m.report(NOW + t, true));
+                assert_eq!(
+                    observations
+                        .iter()
+                        .find(|o| o.key == "exposure_limit/gate_fr_arb04/COIN")
+                        .unwrap()
+                        .problem,
+                    Some(hard)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hard_limit_factor_is_independent_and_overflow_cannot_prove_recovery() {
+        let mut m = Monitor::new(Settings {
+            hard_limit_factor: 2.0,
+            ..Settings::default()
+        });
+        let mut value = row("COIN", 400.0);
+        value["limits"]["symbol_limit_usdt"] = json!(200.0);
+        apply(&mut m, vec![value.clone()], NOW);
+        let a = account(&m, NOW);
+        assert_eq!(a.rows[0].normal_buffer_usdt, Some(100.0));
+        assert_eq!(a.rows[0].hard_limit_usdt, Some(400.0));
+        assert!(a.breaches["asset:COIN"].confirmed);
+        value["limits"]["symbol_limit_usdt"] = json!(f64::MAX);
+        apply(&mut m, vec![value], NOW + 10_000);
+        let a = account(&m, NOW + 10_000);
+        assert!(!a.complete && !a.rows[0].assessable());
+        assert!(a.breaches["asset:COIN"].confirmed);
+        assert_eq!(
+            super::super::notifications::exposure_observations(&m.report(NOW + 10_000, true))
+                .iter()
+                .find(|o| o.key == "exposure_limit/gate_fr_arb04/COIN")
+                .unwrap()
+                .problem,
+            None
+        );
+    }
+
+    #[test]
+    fn gap_after_severe_excess_does_not_count_toward_maker_confirmation() {
+        let mut m = Monitor::new(Settings::default());
+        let mut value = row("COIN", 375.0);
+        value["limits"]["symbol_limit_usdt"] = json!(250.0);
+        apply(&mut m, vec![value.clone()], NOW);
+        value["net_qty"] = json!(250.0);
+        value["net_usdt"] = json!(250.0);
+        value["open_qty"] = json!(1250.0);
+        value["open_usdt"] = json!(1250.0);
+        apply(&mut m, vec![value], NOW + 200_000);
+        let a = account(&m, NOW + 200_000);
+        assert_eq!(a.breaches["asset:COIN"].since_ms, NOW + 200_000);
+        assert!(!a.breaches["asset:COIN"].confirmed);
     }
 
     #[test]
@@ -1043,10 +1180,20 @@ mod tests {
 
     #[test]
     fn unlimited_maker_capacity_keeps_symbol_cap_and_disabled_cap_keeps_band() {
+        let mut timed = Monitor::new(Settings::default());
+        let mut at_raw_cap = row("UNLIMITED", 250.0);
+        at_raw_cap["limits"]["maker_buy_orders"] = Value::Null;
+        at_raw_cap["limits"]["symbol_limit_usdt"] = json!(250.0);
+        for t in (0..=180_000).step_by(10_000) {
+            apply(&mut timed, vec![at_raw_cap.clone()], NOW + t);
+            let a = account(&timed, NOW + t);
+            assert_eq!(a.breaches["asset:UNLIMITED"].kind, BreachKind::MakerBuffer);
+            assert_eq!(a.breaches["asset:UNLIMITED"].confirmed, t >= 180_000);
+        }
         let mut m = Monitor::new(Settings::default());
         let mut unlimited = building_row("UNLIMITED", 400.0);
         unlimited["limits"]["maker_buy_orders"] = Value::Null;
-        unlimited["limits"]["symbol_limit_usdt"] = json!(400.0);
+        unlimited["limits"]["symbol_limit_usdt"] = json!(250.0);
         apply(&mut m, vec![unlimited], NOW);
         let a = account(&m, NOW);
         assert!(a.complete);
@@ -1628,6 +1775,14 @@ mod tests {
             },
             Settings {
                 maker_buffer_factor: f64::NAN,
+                ..settings()
+            },
+            Settings {
+                hard_limit_factor: f64::INFINITY,
+                ..settings()
+            },
+            Settings {
+                hard_limit_factor: 0.99,
                 ..settings()
             },
             Settings {

@@ -114,6 +114,7 @@ ARGS=(
   --exposure-persistence-secs "${DELIST_EXPOSURE_PERSISTENCE_SECS:-180}"
   --data-persistence-secs "${DELIST_DATA_PERSISTENCE_SECS:-60}"
   --exposure-maker-buffer-factor "${DELIST_EXPOSURE_MAKER_BUFFER_FACTOR:-1.5}"
+  --exposure-hard-limit-factor "${DELIST_EXPOSURE_HARD_LIMIT_FACTOR:-1.5}"
   --nav-strategies-url "${DELIST_NAV_STRATEGIES_URL:-http://127.0.0.1:4191/nav-api/strategies}"
   --nav-strategy-interval-secs "${DELIST_NAV_STRATEGY_INTERVAL_SECS:-60}"
   --flatten-window-hours "${DELIST_FLATTEN_WINDOW_HOURS:-24}"
