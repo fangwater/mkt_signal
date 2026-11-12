@@ -279,6 +279,10 @@ Before live-impact commands, state the target env, exchange, symbol scope, and w
 
 Never revert user or operator changes in environment directories unless explicitly asked. If repo and env copies differ, inspect both and explain which one you are modifying.
 
+For FR exposure alignment, exclude BNB by default, including BNB fee and interest
+liabilities. Do not submit a BNB hedge or trade unless the user explicitly asks
+for that BNB action; a general request to clear exposure does not include it.
+
 For FR exposure alignment (平敞口 / 补敞口 / 仓位对齐), preserve spot inventory
 and prefer adjusting the futures leg. A factual net long normally requires a
 futures SELL; a factual net short normally requires a futures BUY, sized from

@@ -21,6 +21,7 @@ const BUY_BUFFER: f64 = 1.001;
 #[derive(Clone, Copy)]
 struct Snapshot {
     cash: f64,
+    locked: f64,
     borrow: f64,
     started_us: i64,
 }
@@ -33,7 +34,7 @@ struct State {
     rules_id: Option<i64>,
     min_borrow: Option<(f64, i64)>,
     last_buy_notional: Option<f64>,
-    cash: Option<f64>,
+    cash: Option<(f64, f64)>,
     borrow: Option<f64>,
     snapshot: Option<Snapshot>,
     // Do not reuse the same REST buying power for a burst of submissions.
@@ -79,7 +80,7 @@ impl State {
         }
         let snapshot = self.fresh(now).ok_or("binance_usdt_capacity_not_ready")?;
         let cash_after_pending = (snapshot.cash - self.reserved()).max(0.0);
-        if required.is_finite() && required > cash_after_pending + 1e-8 {
+        if required.is_finite() && required * BUY_BUFFER > cash_after_pending + 1e-8 {
             if now < self.borrow_retry_us && self.borrow_error_code == binance::BORROW_BELOW_MINIMUM
             {
                 return Err("binance_usdt_borrow_below_minimum");
@@ -89,10 +90,12 @@ impl State {
                 .filter(|(_, ts)| now >= *ts && now - *ts <= MAX_AGE_US)
                 .map(|(value, _)| value)
                 .ok_or("binance_usdt_borrow_rules_not_ready")?;
-            // Pending orders may not have spent their reserved cash yet. Never
-            // subtract reservations to pretend this order will borrow more.
-            // Reject an uncertain cash/borrowing split until a new snapshot.
-            if required - snapshot.cash + 1e-8 < minimum {
+            // A previous BUY may borrow and then be cancelled before this BUY
+            // reaches the venue. Locked funds and recent submissions can become
+            // cash, making its loan smaller than the minimum. Use the upper cash
+            // bound instead of spending the same snapshot on a ladder of orders.
+            let possible_cash = snapshot.cash + snapshot.locked + self.reserved();
+            if required - possible_cash + 1e-8 < minimum {
                 return Err("binance_usdt_borrow_below_minimum");
             }
         }
@@ -153,13 +156,18 @@ impl State {
         if expected != Some(query_id) {
             return;
         }
-        let value = parse_value(req_type, body);
-        match req_type {
-            QueryRequestType::BinancePmUsdtCash => self.cash = value,
-            QueryRequestType::BinancePmUsdtMaxBorrowable => self.borrow = value,
+        let valid = match req_type {
+            QueryRequestType::BinancePmUsdtCash => {
+                self.cash = parse_cash(body);
+                self.cash.is_some()
+            }
+            QueryRequestType::BinancePmUsdtMaxBorrowable => {
+                self.borrow = parse_value(req_type, body);
+                self.borrow.is_some()
+            }
             _ => return,
-        }
-        if value.is_none() {
+        };
+        if !valid {
             // An exchange error is unknown capacity, never a fabricated zero or
             // permission to keep spending a previous successful snapshot.
             self.snapshot = None;
@@ -169,9 +177,10 @@ impl State {
             );
             return;
         }
-        if let (Some(cash), Some(borrow)) = (self.cash, self.borrow) {
+        if let (Some((cash, locked)), Some(borrow)) = (self.cash, self.borrow) {
             self.snapshot = Some(Snapshot {
                 cash,
+                locked,
                 borrow,
                 started_us: self.poll_us,
             });
@@ -184,7 +193,7 @@ impl State {
             {
                 self.submitted.pop_front();
             }
-            info!("BinancePmBuyCapacity: cash={:.8} max_borrowable={:.8} reserved={:.8} snapshot_us={}", cash, borrow, self.reserved(), self.poll_us);
+            info!("BinancePmBuyCapacity: cash={:.8} locked={:.8} max_borrowable={:.8} reserved={:.8} min_borrow={:?} snapshot_us={}", cash, locked, borrow, self.reserved(), self.min_borrow.map(|v| v.0), self.poll_us);
         }
     }
 }
@@ -260,22 +269,37 @@ pub fn handle_query_response(kind: QueryRequestType, id: i64, body: &[u8]) -> bo
     true
 }
 
+fn parse_cash(body: &[u8]) -> Option<(f64, f64)> {
+    let end = body.iter().position(|b| *b == 0).unwrap_or(body.len());
+    let json: Value = serde_json::from_slice(&body[..end]).ok()?;
+    let row = if let Some(rows) = json.as_array() {
+        let mut usdt = rows.iter().filter(|r| r["asset"] == "USDT");
+        let row = usdt.next()?;
+        if usdt.next().is_some() {
+            return None;
+        }
+        row
+    } else {
+        &json
+    };
+    if row["asset"] != "USDT" {
+        return None;
+    }
+    let amount = |field: &str| {
+        let value = row.get(field)?;
+        let n = value
+            .as_f64()
+            .or_else(|| value.as_str()?.parse::<f64>().ok())?;
+        (n.is_finite() && n >= 0.0).then_some(n)
+    };
+    Some((amount("crossMarginFree")?, amount("crossMarginLocked")?))
+}
+
 fn parse_value(kind: QueryRequestType, body: &[u8]) -> Option<f64> {
     let end = body.iter().position(|b| *b == 0).unwrap_or(body.len());
     let json: Value = serde_json::from_slice(&body[..end]).ok()?;
     let value = match kind {
-        QueryRequestType::BinancePmUsdtCash => {
-            let row = if let Some(rows) = json.as_array() {
-                rows.iter()
-                    .find(|row| row.get("asset").and_then(Value::as_str) == Some("USDT"))?
-            } else {
-                &json
-            };
-            if row.get("asset").and_then(Value::as_str) != Some("USDT") {
-                return None;
-            }
-            row.get("crossMarginFree")?
-        }
+        QueryRequestType::BinancePmUsdtCash => return parse_cash(body).map(|v| v.0),
         QueryRequestType::BinancePmUsdtMaxBorrowable => json.get("amount")?,
         QueryRequestType::BinanceUsdtBorrowRules => {
             if json.get("assetName").and_then(Value::as_str) != Some("USDT") {
@@ -381,6 +405,7 @@ mod tests {
             min_borrow: Some((5.0, NOW)),
             snapshot: Some(Snapshot {
                 cash,
+                locked: 0.0,
                 borrow,
                 started_us: NOW,
             }),
@@ -413,6 +438,45 @@ mod tests {
             Err("binance_usdt_borrow_below_minimum")
         );
         assert!(uncertain.check(Side::Buy, true, 40.0, NOW).is_ok());
+    }
+
+    #[test]
+    fn borrowed_or_locked_cash_cannot_be_reused_for_a_buy_ladder() {
+        let mut s = ready(0.0, 948_221.68);
+        assert!(s.check(Side::Buy, true, 99.994752, NOW).is_ok());
+        s.submitted.push_back((NOW, 99.994752 * BUY_BUFFER));
+        assert_eq!(
+            s.check(Side::Buy, true, 99.9999, NOW),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        s.submitted.clear();
+        s.snapshot.as_mut().unwrap().locked = 99.99738;
+        assert_eq!(
+            s.check(Side::Buy, true, 99.9999, NOW),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        assert!(s.check(Side::Buy, true, 110.0, NOW).is_ok());
+        let almost_cash_funded = ready(99.99738, 948_000.0);
+        assert_eq!(
+            almost_cash_funded.check(Side::Buy, true, 99.99, NOW),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        assert!(almost_cash_funded.check(Side::Buy, true, 90.0, NOW).is_ok());
+    }
+
+    #[test]
+    fn cash_requires_a_valid_locked_balance_to_bound_borrowing() {
+        assert_eq!(
+            parse_cash(br#"{"asset":"USDT","crossMarginFree":"0","crossMarginLocked":"99.99738"}"#),
+            Some((0.0, 99.99738))
+        );
+        for body in [
+            br#"{"asset":"USDT","crossMarginFree":"0"}"#.as_slice(),
+            br#"{"asset":"USDT","crossMarginFree":"0","crossMarginLocked":"NaN"}"#,
+            br#"{"asset":"USDT","crossMarginFree":"0","crossMarginLocked":"-1"}"#,
+        ] {
+            assert!(parse_cash(body).is_none());
+        }
     }
 
     #[test]
@@ -518,7 +582,7 @@ mod tests {
             borrow_id: Some(-2),
             ..State::default()
         };
-        let cash = br#"{"asset":"USDT","crossMarginFree":"10"}"#;
+        let cash = br#"{"asset":"USDT","crossMarginFree":"10","crossMarginLocked":"0"}"#;
         s.accept(QueryRequestType::BinancePmUsdtCash, -3, cash);
         assert!(s.cash.is_none());
         s.accept(QueryRequestType::BinancePmUsdtCash, -1, cash);
@@ -541,7 +605,7 @@ mod tests {
         assert_eq!(
             parse_value(
                 QueryRequestType::BinancePmUsdtCash,
-                br#"[{"asset":"USDT","crossMarginFree":"0"}]"#
+                br#"[{"asset":"USDT","crossMarginFree":"0","crossMarginLocked":"0"}]"#
             ),
             Some(0.0)
         );
