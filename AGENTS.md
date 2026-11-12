@@ -290,6 +290,12 @@ to spot. Follow the user's taker chunk size and interval, verify each order's
 actual fill and refreshed net position before the next order, and never submit
 a replacement while an earlier order's outcome is unknown.
 
+Before stopping an incident environment, preserve its relevant runtime logs.
+Env-local stop wrappers may delete supervisor registrations and their log files;
+persisted order records do not retain every local pre-trade rejection or queue
+decision. Continue to use the required env-local wrappers after preserving the
+evidence.
+
 ## CTP Execution Location Restriction
 
 CTP must not run on the current development machine or on any intranet machine.

@@ -1,0 +1,1072 @@
+{
+  "scope": "Four Gate FR environments; remaining symbols futures-only; spot inventory unchanged",
+  "orders": 301,
+  "symbol_count": 109,
+  "first_order_time_unix": "1794470217.665",
+  "last_order_time_unix": "1794471935.746",
+  "min_exchange_order_interval_seconds": "5.136",
+  "maximum_order_notional_usdt": "99.700080",
+  "notional_usdt": "20778.8409330",
+  "fee_usdt": "4.1557681866",
+  "fills_by_env": {
+    "gate_fr_arb02": {
+      "orders": 175,
+      "notional_usdt": "14389.3866950",
+      "fee_usdt": "2.877877339",
+      "symbol_count": 36
+    },
+    "gate_fr_arb04": {
+      "orders": 52,
+      "notional_usdt": "3602.7542890",
+      "fee_usdt": "0.7205508578",
+      "symbol_count": 21
+    },
+    "gate_fr_arb01": {
+      "orders": 63,
+      "notional_usdt": "2777.0181750",
+      "fee_usdt": "0.5554036350",
+      "symbol_count": 41
+    },
+    "gate_fr_arb03": {
+      "orders": 11,
+      "notional_usdt": "9.6817740",
+      "fee_usdt": "0.0019363548",
+      "symbol_count": 11
+    }
+  },
+  "fills_by_asset": [
+    {
+      "env": "gate_fr_arb01",
+      "asset": "ACH",
+      "orders": 1,
+      "signed_base": "-15268",
+      "notional_usdt": "62.943496",
+      "fee_usdt": "0.0125886992"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "AIN",
+      "orders": 8,
+      "signed_base": "-6700",
+      "notional_usdt": "725.66000",
+      "fee_usdt": "0.1451320"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "AIXBT",
+      "orders": 1,
+      "signed_base": "-20",
+      "notional_usdt": "0.28540",
+      "fee_usdt": "0.00005708"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "ALPINE",
+      "orders": 1,
+      "signed_base": "17",
+      "notional_usdt": "4.6614",
+      "fee_usdt": "0.00093228"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BAND",
+      "orders": 1,
+      "signed_base": "10.7",
+      "notional_usdt": "1.819",
+      "fee_usdt": "0.0003638"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BANK",
+      "orders": 1,
+      "signed_base": "100",
+      "notional_usdt": "2.1900",
+      "fee_usdt": "0.000438"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BEAT",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "0.7670",
+      "fee_usdt": "0.0001534"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BICO",
+      "orders": 1,
+      "signed_base": "-0.3",
+      "notional_usdt": "0.003939",
+      "fee_usdt": "7.878E-7"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BLUAI",
+      "orders": 1,
+      "signed_base": "-100",
+      "notional_usdt": "0.748500",
+      "fee_usdt": "0.0001497"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BR",
+      "orders": 1,
+      "signed_base": "-210",
+      "notional_usdt": "93.02790",
+      "fee_usdt": "0.01860558"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "BTR",
+      "orders": 2,
+      "signed_base": "-3620",
+      "notional_usdt": "156.80510",
+      "fee_usdt": "0.03136102"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "COMP",
+      "orders": 1,
+      "signed_base": "-0.02",
+      "notional_usdt": "0.4006",
+      "fee_usdt": "0.00008012"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "DOOD",
+      "orders": 1,
+      "signed_base": "-42000",
+      "notional_usdt": "64.68000",
+      "fee_usdt": "0.012936"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "GUA",
+      "orders": 1,
+      "signed_base": "10",
+      "notional_usdt": "0.28560",
+      "fee_usdt": "0.00005712"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "GWEI",
+      "orders": 1,
+      "signed_base": "-800",
+      "notional_usdt": "13.930400",
+      "fee_usdt": "0.00278608"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "HANA",
+      "orders": 4,
+      "signed_base": "-18300",
+      "notional_usdt": "317.00800",
+      "fee_usdt": "0.0634016"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "HNT",
+      "orders": 1,
+      "signed_base": "3.8",
+      "notional_usdt": "0.95988",
+      "fee_usdt": "0.000191976"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "IDOL",
+      "orders": 2,
+      "signed_base": "-4200",
+      "notional_usdt": "112.92800",
+      "fee_usdt": "0.0225856"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "INIT",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "1.21310",
+      "fee_usdt": "0.00024262"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "JELLYJELLY",
+      "orders": 4,
+      "signed_base": "-7790",
+      "notional_usdt": "317.52630",
+      "fee_usdt": "0.06350526"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "JOE",
+      "orders": 1,
+      "signed_base": "98",
+      "notional_usdt": "2.61758",
+      "fee_usdt": "0.000523516"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "KOMA",
+      "orders": 1,
+      "signed_base": "320",
+      "notional_usdt": "4.072960",
+      "fee_usdt": "0.000814592"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "LAB",
+      "orders": 8,
+      "signed_base": "-19150.0",
+      "notional_usdt": "742.413300",
+      "fee_usdt": "0.14848266"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "MTL",
+      "orders": 1,
+      "signed_base": "-1.2",
+      "notional_usdt": "0.28248",
+      "fee_usdt": "0.000056496"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "MUBARAK",
+      "orders": 1,
+      "signed_base": "50",
+      "notional_usdt": "1.76400",
+      "fee_usdt": "0.0003528"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "MYX",
+      "orders": 1,
+      "signed_base": "-25",
+      "notional_usdt": "1.1550",
+      "fee_usdt": "0.000231"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "OG",
+      "orders": 1,
+      "signed_base": "1.5",
+      "notional_usdt": "3.1860",
+      "fee_usdt": "0.0006372"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "OPEN",
+      "orders": 1,
+      "signed_base": "-40",
+      "notional_usdt": "3.7040",
+      "fee_usdt": "0.0007408"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "PLUME",
+      "orders": 1,
+      "signed_base": "-200",
+      "notional_usdt": "2.584200",
+      "fee_usdt": "0.00051684"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "PRL",
+      "orders": 1,
+      "signed_base": "-1030",
+      "notional_usdt": "78.04830",
+      "fee_usdt": "0.01560966"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "PTB",
+      "orders": 1,
+      "signed_base": "-23800",
+      "notional_usdt": "1.785000",
+      "fee_usdt": "0.000357"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "SAHARA",
+      "orders": 1,
+      "signed_base": "-1000",
+      "notional_usdt": "5.98000",
+      "fee_usdt": "0.001196"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "SIGN",
+      "orders": 1,
+      "signed_base": "-1000",
+      "notional_usdt": "9.44000",
+      "fee_usdt": "0.001888"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "SUPER",
+      "orders": 1,
+      "signed_base": "-1",
+      "notional_usdt": "0.1561",
+      "fee_usdt": "0.00003122"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "TAG",
+      "orders": 1,
+      "signed_base": "-50000",
+      "notional_usdt": "32.7220000",
+      "fee_usdt": "0.0065444"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "TRUST",
+      "orders": 1,
+      "signed_base": "-60",
+      "notional_usdt": "3.01920",
+      "fee_usdt": "0.00060384"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "TURTLE",
+      "orders": 1,
+      "signed_base": "20",
+      "notional_usdt": "0.66940",
+      "fee_usdt": "0.00013388"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "US",
+      "orders": 1,
+      "signed_base": "-400",
+      "notional_usdt": "1.578000",
+      "fee_usdt": "0.0003156"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "XDC",
+      "orders": 1,
+      "signed_base": "100",
+      "notional_usdt": "3.0700",
+      "fee_usdt": "0.000614"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "XPIN",
+      "orders": 1,
+      "signed_base": "-1000",
+      "notional_usdt": "0.694000",
+      "fee_usdt": "0.0001388"
+    },
+    {
+      "env": "gate_fr_arb01",
+      "asset": "ZEREBRO",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "0.233040",
+      "fee_usdt": "0.000046608"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "AIXBT",
+      "orders": 1,
+      "signed_base": "-110",
+      "notional_usdt": "1.57080",
+      "fee_usdt": "0.00031416"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "ALPINE",
+      "orders": 1,
+      "signed_base": "-12",
+      "notional_usdt": "3.2844",
+      "fee_usdt": "0.00065688"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "AVAAI",
+      "orders": 1,
+      "signed_base": "-580",
+      "notional_usdt": "3.441140",
+      "fee_usdt": "0.000688228"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "BAND",
+      "orders": 1,
+      "signed_base": "8.5",
+      "notional_usdt": "1.445",
+      "fee_usdt": "0.000289"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "BANK",
+      "orders": 15,
+      "signed_base": "-66900",
+      "notional_usdt": "1461.09900",
+      "fee_usdt": "0.2922198"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "BEAT",
+      "orders": 21,
+      "signed_base": "-26380",
+      "notional_usdt": "2016.0070",
+      "fee_usdt": "0.4032014"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "BICO",
+      "orders": 1,
+      "signed_base": "500.5",
+      "notional_usdt": "6.581575",
+      "fee_usdt": "0.001316315"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "BLUAI",
+      "orders": 1,
+      "signed_base": "-9000",
+      "notional_usdt": "66.411000",
+      "fee_usdt": "0.0132822"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "BR",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "4.43260",
+      "fee_usdt": "0.00088652"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "COMP",
+      "orders": 1,
+      "signed_base": "-0.37",
+      "notional_usdt": "7.4111",
+      "fee_usdt": "0.00148222"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "CTR",
+      "orders": 1,
+      "signed_base": "-400",
+      "notional_usdt": "5.77600",
+      "fee_usdt": "0.0011552"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "CVX",
+      "orders": 1,
+      "signed_base": "1.9",
+      "notional_usdt": "3.2091",
+      "fee_usdt": "0.00064182"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "ESPORTS",
+      "orders": 1,
+      "signed_base": "-500",
+      "notional_usdt": "4.500",
+      "fee_usdt": "0.0009"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "FLOW",
+      "orders": 1,
+      "signed_base": "-347.0",
+      "notional_usdt": "6.724860",
+      "fee_usdt": "0.001344972"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "GPS",
+      "orders": 16,
+      "signed_base": "-196100",
+      "notional_usdt": "1564.612800",
+      "fee_usdt": "0.31292256"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "GRIFFAIN",
+      "orders": 1,
+      "signed_base": "-30",
+      "notional_usdt": "0.29430",
+      "fee_usdt": "0.00005886"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "GWEI",
+      "orders": 4,
+      "signed_base": "-20600",
+      "notional_usdt": "358.839500",
+      "fee_usdt": "0.07176790"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "HNT",
+      "orders": 17,
+      "signed_base": "-6310.2",
+      "notional_usdt": "1581.56322",
+      "fee_usdt": "0.316312644"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "INIT",
+      "orders": 1,
+      "signed_base": "-20",
+      "notional_usdt": "2.41820",
+      "fee_usdt": "0.00048364"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "INX",
+      "orders": 11,
+      "signed_base": "-258600",
+      "notional_usdt": "1007.767900",
+      "fee_usdt": "0.20155358"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "JELLYJELLY",
+      "orders": 1,
+      "signed_base": "150",
+      "notional_usdt": "6.11990",
+      "fee_usdt": "0.00122398"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "KOMA",
+      "orders": 1,
+      "signed_base": "-350",
+      "notional_usdt": "4.443950",
+      "fee_usdt": "0.00088879"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "LAB",
+      "orders": 1,
+      "signed_base": "110.0",
+      "notional_usdt": "4.284800",
+      "fee_usdt": "0.00085696"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "MUBARAK",
+      "orders": 1,
+      "signed_base": "-40",
+      "notional_usdt": "1.41000",
+      "fee_usdt": "0.000282"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "MYX",
+      "orders": 1,
+      "signed_base": "-6",
+      "notional_usdt": "0.2772",
+      "fee_usdt": "0.00005544"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "O",
+      "orders": 20,
+      "signed_base": "-3970",
+      "notional_usdt": "1935.8220",
+      "fee_usdt": "0.3871644"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "OPEN",
+      "orders": 6,
+      "signed_base": "-5630",
+      "notional_usdt": "522.4640",
+      "fee_usdt": "0.1044928"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "PIPPIN",
+      "orders": 1,
+      "signed_base": "-120",
+      "notional_usdt": "1.45680",
+      "fee_usdt": "0.00029136"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "PLUME",
+      "orders": 22,
+      "signed_base": "161780",
+      "notional_usdt": "2095.935590",
+      "fee_usdt": "0.419187118"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "PRL",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "0.76050",
+      "fee_usdt": "0.0001521"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "SAHARA",
+      "orders": 1,
+      "signed_base": "-1600",
+      "notional_usdt": "9.56800",
+      "fee_usdt": "0.0019136"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "SUPER",
+      "orders": 1,
+      "signed_base": "-6",
+      "notional_usdt": "0.9366",
+      "fee_usdt": "0.00018732"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "US",
+      "orders": 17,
+      "signed_base": "-424800",
+      "notional_usdt": "1679.568300",
+      "fee_usdt": "0.33591366"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "WET",
+      "orders": 1,
+      "signed_base": "-200",
+      "notional_usdt": "9.16500",
+      "fee_usdt": "0.0018330"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "XPIN",
+      "orders": 1,
+      "signed_base": "-6000",
+      "notional_usdt": "4.1748000",
+      "fee_usdt": "0.00083496"
+    },
+    {
+      "env": "gate_fr_arb02",
+      "asset": "ZEREBRO",
+      "orders": 1,
+      "signed_base": "240",
+      "notional_usdt": "5.609760",
+      "fee_usdt": "0.001121952"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "ACH",
+      "orders": 1,
+      "signed_base": "-22",
+      "notional_usdt": "0.090684",
+      "fee_usdt": "0.0000181368"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "BEAT",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "0.7670",
+      "fee_usdt": "0.0001534"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "GWEI",
+      "orders": 1,
+      "signed_base": "-100",
+      "notional_usdt": "1.740300",
+      "fee_usdt": "0.00034806"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "INX",
+      "orders": 1,
+      "signed_base": "-100",
+      "notional_usdt": "0.390600",
+      "fee_usdt": "0.00007812"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "LAB",
+      "orders": 1,
+      "signed_base": "-30.0",
+      "notional_usdt": "1.168200",
+      "fee_usdt": "0.00023364"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "OPEN",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "0.9250",
+      "fee_usdt": "0.000185"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "PIPPIN",
+      "orders": 1,
+      "signed_base": "-20",
+      "notional_usdt": "0.24220",
+      "fee_usdt": "0.00004844"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "PLUME",
+      "orders": 1,
+      "signed_base": "-20",
+      "notional_usdt": "0.258340",
+      "fee_usdt": "0.000051668"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "PTB",
+      "orders": 1,
+      "signed_base": "-20600",
+      "notional_usdt": "1.545000",
+      "fee_usdt": "0.000309"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "XPIN",
+      "orders": 1,
+      "signed_base": "-2000",
+      "notional_usdt": "1.3902000",
+      "fee_usdt": "0.00027804"
+    },
+    {
+      "env": "gate_fr_arb03",
+      "asset": "ZEREBRO",
+      "orders": 1,
+      "signed_base": "-50",
+      "notional_usdt": "1.164250",
+      "fee_usdt": "0.00023285"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "AVAAI",
+      "orders": 1,
+      "signed_base": "90",
+      "notional_usdt": "0.534780",
+      "fee_usdt": "0.000106956"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "BANK",
+      "orders": 2,
+      "signed_base": "-8600",
+      "notional_usdt": "187.87600",
+      "fee_usdt": "0.0375752"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "BEAT",
+      "orders": 8,
+      "signed_base": "-9350",
+      "notional_usdt": "712.8910",
+      "fee_usdt": "0.1425782"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "BICO",
+      "orders": 1,
+      "signed_base": "-1.5",
+      "notional_usdt": "0.019695",
+      "fee_usdt": "0.000003939"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "CTR",
+      "orders": 1,
+      "signed_base": "100",
+      "notional_usdt": "1.44600",
+      "fee_usdt": "0.0002892"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "FLOW",
+      "orders": 1,
+      "signed_base": "-234.3",
+      "notional_usdt": "4.540734",
+      "fee_usdt": "0.0009081468"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "GPS",
+      "orders": 1,
+      "signed_base": "-100",
+      "notional_usdt": "0.797600",
+      "fee_usdt": "0.00015952"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "GWEI",
+      "orders": 2,
+      "signed_base": "-10700",
+      "notional_usdt": "186.278800",
+      "fee_usdt": "0.03725576"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "HNT",
+      "orders": 9,
+      "signed_base": "-3290.1",
+      "notional_usdt": "824.11200",
+      "fee_usdt": "0.164822400"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "INIT",
+      "orders": 1,
+      "signed_base": "-10",
+      "notional_usdt": "1.21220",
+      "fee_usdt": "0.00024244"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "INX",
+      "orders": 4,
+      "signed_base": "-101100",
+      "notional_usdt": "393.929200",
+      "fee_usdt": "0.07878584"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "JELLYJELLY",
+      "orders": 1,
+      "signed_base": "20",
+      "notional_usdt": "0.81420",
+      "fee_usdt": "0.00016284"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "KOMA",
+      "orders": 1,
+      "signed_base": "-170",
+      "notional_usdt": "2.157640",
+      "fee_usdt": "0.000431528"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "MYX",
+      "orders": 1,
+      "signed_base": "-12",
+      "notional_usdt": "0.5544",
+      "fee_usdt": "0.00011088"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "OPEN",
+      "orders": 11,
+      "signed_base": "-11610",
+      "notional_usdt": "1077.3860",
+      "fee_usdt": "0.2154772"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "PIPPIN",
+      "orders": 1,
+      "signed_base": "140",
+      "notional_usdt": "1.70100",
+      "fee_usdt": "0.0003402"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "PLUME",
+      "orders": 1,
+      "signed_base": "-7260",
+      "notional_usdt": "93.755640",
+      "fee_usdt": "0.018751128"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "PRL",
+      "orders": 1,
+      "signed_base": "-20",
+      "notional_usdt": "1.51660",
+      "fee_usdt": "0.00030332"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "SIGN",
+      "orders": 1,
+      "signed_base": "100",
+      "notional_usdt": "0.94700",
+      "fee_usdt": "0.0001894"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "US",
+      "orders": 2,
+      "signed_base": "-26200",
+      "notional_usdt": "103.332800",
+      "fee_usdt": "0.02066656"
+    },
+    {
+      "env": "gate_fr_arb04",
+      "asset": "XPIN",
+      "orders": 1,
+      "signed_base": "-10000",
+      "notional_usdt": "6.9510000",
+      "fee_usdt": "0.0013902"
+    }
+  ],
+  "final_audit": [
+    {
+      "env": "gate_fr_arb01",
+      "time": "2026-11-12T08:26:07Z",
+      "abs_net_usdt": "39.4544671383950",
+      "signed_net_usdt": "23.2299128783650",
+      "below_minimum_abs_net_usdt": "36.9900604388450",
+      "remaining_above_minimum": [
+        {
+          "asset": "BGSC",
+          "pair": "BGSC_USDT",
+          "spot": "9349250.9021",
+          "available": "9349250.9021",
+          "futures_contracts": "-9353",
+          "futures_base": "-9353000",
+          "net": "-3749.0979",
+          "price": "0.0004914",
+          "net_usdt": "-1.84643071575",
+          "spot_status": "tradable",
+          "contract_exists": true,
+          "price_source": "futures_mark",
+          "mark": "0.0004925",
+          "abs_net_usdt": "1.84643071575",
+          "multiplier": "1000",
+          "minimum_base": "1000",
+          "minimum_contracts": "1",
+          "contract_step": "1",
+          "hedge_contracts": "3",
+          "hedge_base": "3000",
+          "alignment": "executable_futures_net"
+        }
+      ],
+      "inventory_changes": {}
+    },
+    {
+      "env": "gate_fr_arb02",
+      "time": "2026-11-12T08:26:08Z",
+      "abs_net_usdt": "41.075068507757159178284",
+      "signed_net_usdt": "35.551426669815159178284",
+      "below_minimum_abs_net_usdt": "19.011350785507159178284",
+      "remaining_above_minimum": [
+        {
+          "asset": "BGSC",
+          "pair": "BGSC_USDT",
+          "spot": "40905576.9682",
+          "available": "40905576.9682",
+          "futures_contracts": "-40903",
+          "futures_base": "-40903000",
+          "net": "2576.9682",
+          "price": "0.0004914",
+          "net_usdt": "1.26915683850",
+          "spot_status": "tradable",
+          "contract_exists": true,
+          "price_source": "futures_mark",
+          "mark": "0.0004925",
+          "abs_net_usdt": "1.26915683850",
+          "multiplier": "1000",
+          "minimum_base": "1000",
+          "minimum_contracts": "1",
+          "contract_step": "1",
+          "hedge_contracts": "2",
+          "hedge_base": "2000",
+          "alignment": "executable_futures_net"
+        },
+        {
+          "asset": "HANA",
+          "pair": "HANA_USDT",
+          "spot": "6685920.7022",
+          "available": "6685920.7022",
+          "futures_contracts": "-66854",
+          "futures_base": "-6685400",
+          "net": "520.7022",
+          "price": "0.017289",
+          "net_usdt": "9.002941038",
+          "spot_status": "tradable",
+          "contract_exists": true,
+          "price_source": "futures_mark",
+          "mark": "0.01729",
+          "abs_net_usdt": "9.002941038",
+          "multiplier": "100",
+          "minimum_base": "100",
+          "minimum_contracts": "1",
+          "contract_step": "1",
+          "hedge_contracts": "5",
+          "hedge_base": "500",
+          "alignment": "executable_futures_net"
+        },
+        {
+          "asset": "IDOL",
+          "pair": "IDOL_USDT",
+          "spot": "5715201.179775",
+          "available": "5715201.179775",
+          "futures_contracts": "-57150",
+          "futures_base": "-5715000",
+          "net": "201.179775",
+          "price": "0.028419",
+          "net_usdt": "5.720345722350",
+          "spot_status": "tradable",
+          "contract_exists": true,
+          "price_source": "futures_mark",
+          "mark": "0.028434",
+          "abs_net_usdt": "5.720345722350",
+          "multiplier": "100",
+          "minimum_base": "100",
+          "minimum_contracts": "1",
+          "contract_step": "1",
+          "hedge_contracts": "2",
+          "hedge_base": "200",
+          "alignment": "executable_futures_net"
+        },
+        {
+          "asset": "NAORIS",
+          "pair": "NAORIS_USDT",
+          "spot": "3623791.521425",
+          "available": "3623791.521425",
+          "futures_contracts": "-36236",
+          "futures_base": "-3623600",
+          "net": "191.521425",
+          "price": "0.02845",
+          "net_usdt": "5.45453018400",
+          "spot_status": "tradable",
+          "contract_exists": true,
+          "price_source": "futures_mark",
+          "mark": "0.02848",
+          "abs_net_usdt": "5.45453018400",
+          "multiplier": "100",
+          "minimum_base": "100",
+          "minimum_contracts": "1",
+          "contract_step": "1",
+          "hedge_contracts": "1",
+          "hedge_base": "100",
+          "alignment": "executable_futures_net"
+        }
+      ],
+      "inventory_changes": {}
+    },
+    {
+      "env": "gate_fr_arb03",
+      "time": "2026-11-12T08:26:09Z",
+      "abs_net_usdt": "12.08527176805025",
+      "signed_net_usdt": "-4.28749901273025",
+      "below_minimum_abs_net_usdt": "12.08527176805025",
+      "remaining_above_minimum": [],
+      "inventory_changes": {}
+    },
+    {
+      "env": "gate_fr_arb04",
+      "time": "2026-11-12T08:26:10Z",
+      "abs_net_usdt": "13.4262703332900283",
+      "signed_net_usdt": "6.7077581977202283",
+      "below_minimum_abs_net_usdt": "13.4262654531400283",
+      "remaining_above_minimum": [],
+      "inventory_changes": {}
+    }
+  ],
+  "resolved_query_delay": {
+    "order_id": "290763654548179714",
+    "evidence": "/tmp/gate_all_futures_order36_reconcile_20261112.jsonl",
+    "post_was_not_retried": true
+  },
+  "runtime_and_manual_execution_processes_absent_at": "2026-11-12T08:26:20Z"
+}

@@ -1,0 +1,5 @@
+{"event": "restore_audit", "time": "2026-11-12T08:30:58Z", "env": "gate_fr_arb01", "spot_inventory_changes": {}, "futures_position_changes": {}, "futures_open_orders": [], "spot_open_order_groups": [], "spot_symbol_count": 66, "futures_position_count": 57}
+{"event": "restore_audit", "time": "2026-11-12T08:30:59Z", "env": "gate_fr_arb02", "spot_inventory_changes": {}, "futures_position_changes": {}, "futures_open_orders": [], "spot_open_order_groups": [], "spot_symbol_count": 78, "futures_position_count": 50}
+{"event": "restore_audit", "time": "2026-11-12T08:31:02Z", "env": "gate_fr_arb03", "spot_inventory_changes": {}, "futures_position_changes": {}, "futures_open_orders": [], "spot_open_order_groups": [], "spot_symbol_count": 41, "futures_position_count": 33}
+{"event": "restore_audit", "time": "2026-11-12T08:31:03Z", "env": "gate_fr_arb04", "spot_inventory_changes": {}, "futures_position_changes": {}, "futures_open_orders": [], "spot_open_order_groups": [], "spot_symbol_count": 249, "futures_position_count": 42}
+{"event": "manual_executor_processes", "time": "2026-11-12T08:31:03Z", "processes": []}

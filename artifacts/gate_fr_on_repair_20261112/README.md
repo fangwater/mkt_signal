@@ -6,7 +6,8 @@ The four JP `gate_fr_arb01–04` environments were stopped through their local
 scripts. Exchange orders were cancelled, and `/proc` plus exchange queries
 confirmed no environment processes or open orders. Source IP assignments,
 leverage and Redis risk settings were preserved. The deployed Rust binaries
-were not replaced or restarted.
+were not replaced or restarted during alignment. The subsequently authorized
+publication and recovery are recorded below.
 
 ## Initial alignment error
 
@@ -59,7 +60,8 @@ and venue minimums: `residual_before_futures_alignment.csv`.
 
 Only ON has a proven scheduler cause: old paired-close BUY work exceeding the
 remaining short repeatedly took priority over due SELL work after spot reopened.
-Saved logs show the close rejection and queued SELL quantities; no liquidation
+Saved logs show the close rejection and queued SELL quantities
+(`on_scheduler_evidence.log`); no liquidation
 or ADL record was found for the ON episode. See `docs/delist_risk_server.md`.
 Other assets' current differences do not prove the same cause. The env-local
 stop wrappers use supervisor deletion, and the original runtime logs were no
@@ -80,4 +82,63 @@ uses the configured FundingArb deployment, not same-exchange venue identity.
 
 Validation: root library 1,552 passed, 3 ignored; `cargo check --bin pre_trade`,
 formatting and diff whitespace checks passed. No CTP code was executed.
-Both Rust corrections remain undeployed during this operation.
+Both Rust corrections were subsequently published in the recovery below.
+
+## Remaining-symbol futures alignment and recovery
+
+The user then authorized all remaining symbols, futures only. Completed at
+08:25:38: 301 taker orders across 109 environment/symbol pairs, notional
+20,778.840933 USDT and fees 4.1557681866 USDT. Maximum order 99.700080 USDT;
+minimum exchange creation interval 5.136 seconds. These totals exclude the
+preceding 38 ON orders and the erroneous initial spot-first run.
+
+Order 36 (02 BEAT) initially returned an exchange ID but its immediate GET
+returned 404. Execution stopped globally. Subsequent order, two taker fills and
+actual position agreed on the full 130-contract fill; the order was never
+resubmitted. Execution resumed from fresh account state after reconciliation.
+
+At 08:26:07–10, all four accounts had zero open orders, and every non-settlement
+spot balance exactly matched the baseline for the corrected futures-only run.
+Remaining absolute per-asset exposure was 39.45 / 41.08 / 12.09 / 13.43 USDT.
+Five otherwise quantity-eligible differences were retained: 01 BGSC -1.846 USDT,
+02 BGSC +1.269 USDT (about 3.12% futures spread); 02 HANA +9.003, IDOL +5.720,
+NAORIS +5.455 USDT (adding shorts would exceed current exchange risk limits).
+Other residuals were below contract minimums or tiny assets without a contract.
+01 AIN retained 91.0555475 units, about 10.05 USDT, below its 100-unit minimum.
+Leverage/risk limits were not changed to force execution. See
+`all_futures_result.json`, `all_futures_fills.csv`, and `final_positions.csv`.
+
+After explicit user authorization, committed `arbmm` source `c2419da3` was
+archived inside the active local worktree and all FR runtime binaries built
+locally in release mode. Eight uploaded binary artifacts and the Delist page
+were SHA-256 verified. Seven differing binaries per Gate environment were
+atomically installed with remote backups; `trade_signal` was updated on disk
+but never started. The restored services in each account are account monitor,
+trade engine, pre-trade, persistence, Viz, Config and dashboard. Delist was
+updated/restarted, retaining the live CTA configuration links. No environment
+private configuration, CPU pin, source IP, ENI/EIP or route was changed.
+
+All runtime process hashes matched the publication manifest. Persistence stays
+on CPU15, other Gate services on housekeeping 0-5,48-95, and Delist on CPU28.
+01's persistence sync listener initially encountered a transient occupied port;
+after confirming 50040 was free, its env-local stop/start wrappers restored the
+listener. Logs were preserved before this retry. The configured 50040/50050/50080
+listeners were verified; 04 has no configured sync listener. No new listener
+configuration was introduced.
+
+At 08:30:58–08:31:03, an independent exchange audit confirmed all spot inventory
+unchanged, all futures positions identical to the completed alignment snapshot,
+and zero orders after recovery. Runtime verification at 08:33 confirmed seven
+services per environment and no `trade_signal`. See `restored_exchange_audit.jsonl`,
+`deployment_manifest.json`, and `deployment_verification.json`.
+
+Delist's factual exposure and opening-state browser regressions passed using
+the release candidate. The live exposure snapshots are fresh; 01/02 still flag
+BICO/PUNDIX missing prices, and 04 flags BICO (EIGEN was also briefly unpriced
+during startup). Their completeness remains unknown, not falsely healthy.
+03 is complete. These pricing limitations are separate from alignment.
+
+Remote rollback binaries and runtime logs are retained in each environment's
+`backups/gate_fr_recovery_c2419da3_20261112/`. Local build and operation receipts
+are under `data/ops/gate_fr_recovery_20261112/` (Git-ignored). Unrelated local
+worktree changes were not included in the Rust build or this task's commits.

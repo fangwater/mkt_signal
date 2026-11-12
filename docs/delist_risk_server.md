@@ -325,8 +325,8 @@ PM USDT现金95.0175808U，自动借款差额4.9523792U低于交易所当时最�
 2026-11-12 ON incident: the deployed monitor subtracted stale strategy plans and
 reported only 0.06–0.14 USDT of risk per Gate account despite 535–2,024 USDT of
 actual ON exposure. The corrected code below uses factual net positions and
-the existing persistence window. This correction is pending deployment; the
-historical deployment observations below describe the earlier implementation.
+the existing persistence window. This correction was deployed on JP at
+2026-11-12 08:28 UTC; the older observations below describe earlier releases.
 
 The trading-side failure was separate: paired-close work had unconditional
 priority over opening hedges, including quantities larger than the remaining
@@ -335,8 +335,8 @@ close queries to the live reducing quantity and venue step. Only unsubmitted,
 unexecutable close work can be matched against opposite due opening work;
 live orders and unresolved outcomes retain their reservations. Matching work
 never changes factual fills or account net positions. This trading correction
-is also pending deployment and does not itself reconcile the current live ON
-inventory.
+was deployed to all four Gate FR environments during the 2026-11-12 recovery.
+The live inventory was separately aligned through user-authorized futures orders.
 
 The ON fill timeline distinguishes the completed exit from the failed reopening.
 Gate FR 03 had 0.551875 ON spot and zero futures by 2026-11-10 11:38 UTC;
@@ -366,8 +366,11 @@ cannot hide risk. Each ArbOpen cancels its expanding resting remainder through
 the existing cancellation/reconciliation path. New factual hedge fills or fully
 resolved work reset the guard; acknowledgements, query replies and elapsed time
 do not. Live/unknown reservations are never discarded or blindly resubmitted.
-The guard is an additional local change after `ffe3e563`; neither correction
-has been deployed as part of the 2026-11-12 stop/alignment operation.
+The guard was committed as `030c37fa`. Both it and `ffe3e563` were deployed
+to all four Gate FR environments from committed `arbmm` source `c2419da3`;
+all non-signal services were restored and `trade_signal` remains stopped.
+Delist was also rebuilt/published, preserving its existing CTA links. The
+Binance trading processes were not restarted by this Gate operation.
 
 All four JP Gate FR environments were stopped. ON was subsequently aligned
 using futures-only taker SELL orders, preserving the spot inventory left after

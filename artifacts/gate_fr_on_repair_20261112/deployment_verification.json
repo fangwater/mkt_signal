@@ -1,0 +1,262 @@
+{
+  "verified_at": 1794472394.7054715,
+  "source_commit": "c2419da3d794fa039764de6b0a2850ddb4fb33eb",
+  "environments": [
+    {
+      "env": "gate_fr_arb01",
+      "processes": [
+        {
+          "pid": 2317598,
+          "kind": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b"
+        },
+        {
+          "pid": 2320128,
+          "kind": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec"
+        },
+        {
+          "pid": 2320692,
+          "kind": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c"
+        },
+        {
+          "pid": 2323277,
+          "kind": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e"
+        },
+        {
+          "pid": 2323656,
+          "kind": "fr_config_server.py",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2323883,
+          "kind": "fr_signal_dashboard",
+          "cpus": "0-5,48-95",
+          "sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6"
+        },
+        {
+          "pid": 2328845,
+          "kind": "persist_manager",
+          "cpus": "15",
+          "sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false
+    },
+    {
+      "env": "gate_fr_arb02",
+      "processes": [
+        {
+          "pid": 2316628,
+          "kind": "persist_manager",
+          "cpus": "15",
+          "sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88"
+        },
+        {
+          "pid": 2317923,
+          "kind": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b"
+        },
+        {
+          "pid": 2320242,
+          "kind": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec"
+        },
+        {
+          "pid": 2320826,
+          "kind": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c"
+        },
+        {
+          "pid": 2323372,
+          "kind": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e"
+        },
+        {
+          "pid": 2323722,
+          "kind": "fr_config_server.py",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2323938,
+          "kind": "fr_signal_dashboard",
+          "cpus": "0-5,48-95",
+          "sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false
+    },
+    {
+      "env": "gate_fr_arb03",
+      "processes": [
+        {
+          "pid": 2316962,
+          "kind": "persist_manager",
+          "cpus": "15",
+          "sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88"
+        },
+        {
+          "pid": 2318894,
+          "kind": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b"
+        },
+        {
+          "pid": 2320352,
+          "kind": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec"
+        },
+        {
+          "pid": 2320946,
+          "kind": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c"
+        },
+        {
+          "pid": 2323475,
+          "kind": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e"
+        },
+        {
+          "pid": 2323780,
+          "kind": "fr_config_server.py",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2324003,
+          "kind": "fr_signal_dashboard",
+          "cpus": "0-5,48-95",
+          "sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false
+    },
+    {
+      "env": "gate_fr_arb04",
+      "processes": [
+        {
+          "pid": 2317296,
+          "kind": "persist_manager",
+          "cpus": "15",
+          "sha256": "34b89982c74d713ca30068a4e5f0463b850a2bd2764b56e348c2f34cd5220c88"
+        },
+        {
+          "pid": 2319825,
+          "kind": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "53455636cb7dac4dd92fcc1758d4d73c8c56fb0f77132d8aa0ed0acd79745d3b"
+        },
+        {
+          "pid": 2320471,
+          "kind": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "98f3133a0107cd2fd0fa0d04bbadd5540b40e7bc339eaa058ff41c6d5b626eec"
+        },
+        {
+          "pid": 2323196,
+          "kind": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "431d35ad227282c1a84879b03d503cbb0ee693d4cc14788b81cf0987b845346c"
+        },
+        {
+          "pid": 2323586,
+          "kind": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e"
+        },
+        {
+          "pid": 2323836,
+          "kind": "fr_config_server.py",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2324052,
+          "kind": "fr_signal_dashboard",
+          "cpus": "0-5,48-95",
+          "sha256": "d76f07cdd78c94bd20fe89f7e6c923ac904fc3e399ed63ef590e9d63dae399b6"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false
+    },
+    {
+      "env": "delist_risk_server",
+      "processes": [
+        {
+          "pid": 2320719,
+          "kind": "delist_risk_server",
+          "cpus": "28",
+          "sha256": "d1620eff4ae9aa1e92ee3886c773e0521d559c96c81d88df1c98f5b722520f02"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false
+    }
+  ],
+  "persist_sync_listeners": [
+    "LISTEN 0      128        127.0.0.1:50040      0.0.0.0:*    users:((\"persist_manager\",pid=2328845,fd=529)) ",
+    "LISTEN 0      128        127.0.0.1:50050      0.0.0.0:*    users:((\"persist_manager\",pid=2316628,fd=1695))",
+    "LISTEN 0      128        127.0.0.1:50080      0.0.0.0:*    users:((\"persist_manager\",pid=2316962,fd=135)) "
+  ],
+  "delist_gate_exposures": [
+    {
+      "slug": "gate_fr_arb01",
+      "complete": false,
+      "data_status": "partial",
+      "risk_status": "unknown",
+      "risk_abs_usdt": 34.768795706363555,
+      "errors": [
+        "BICO \u6709\u6301\u4ed3\u4f46\u7f3a\u5c11\u6709\u6548\u4ef7\u683c",
+        "PUNDIX \u6709\u6301\u4ed3\u4f46\u7f3a\u5c11\u6709\u6548\u4ef7\u683c"
+      ]
+    },
+    {
+      "slug": "gate_fr_arb02",
+      "complete": false,
+      "data_status": "partial",
+      "risk_status": "unknown",
+      "risk_abs_usdt": 37.92641904810026,
+      "errors": [
+        "BICO \u6709\u6301\u4ed3\u4f46\u7f3a\u5c11\u6709\u6548\u4ef7\u683c",
+        "PUNDIX \u6709\u6301\u4ed3\u4f46\u7f3a\u5c11\u6709\u6548\u4ef7\u683c"
+      ]
+    },
+    {
+      "slug": "gate_fr_arb04",
+      "complete": false,
+      "data_status": "partial",
+      "risk_status": "unknown",
+      "risk_abs_usdt": 12.558488463259927,
+      "errors": [
+        "BICO \u6709\u6301\u4ed3\u4f46\u7f3a\u5c11\u6709\u6548\u4ef7\u683c"
+      ]
+    },
+    {
+      "slug": "gate_fr_arb03",
+      "complete": true,
+      "data_status": "fresh",
+      "risk_status": "ok",
+      "risk_abs_usdt": 8.60271955796513,
+      "errors": []
+    }
+  ]
+}

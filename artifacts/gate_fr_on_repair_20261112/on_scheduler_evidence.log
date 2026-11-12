@@ -1,0 +1,11 @@
+Saved incident excerpts; original remote runtime logs are no longer available.
+These lines establish ON behavior only; they do not establish other symbols' causes.
+Source: /tmp/gate_on_reopen_evidence.log (extracted before stop).
+[2026-11-10T11:55:24Z INFO  mkt_signal::strategy::arb_hedge_strategy] ArbHedgeStrategy: strategy_id=470173990 symbol=ONUSDT send hedge state query ok request_seq=1311 net_qty=839.80502500 due_hedge_qty=-18.00000000 pending_hedge_qty=845.00000000 next_query_ts_us=1794311725177715
+[2026-11-10T11:55:24Z WARN  mkt_signal::strategy::arb_hedge_strategy] ArbHedgeStrategy: strategy_id=470173990 ArbHedge exposure risk reject symbol=ONUSDT venue=GateFutures side=Buy base_qty=10.00000000 err=paired-close hedge exceeds its live position
+[2026-11-10T11:55:24Z INFO  mkt_signal::strategy::arb_hedge_strategy] ArbHedgeStrategy: strategy_id=470173990 symbol=ONUSDT send hedge state query ok request_seq=1312 net_qty=1679.80502500 due_hedge_qty=-18.00000000 pending_hedge_qty=1685.00000000 next_query_ts_us=1794311725669000
+[2026-11-10T11:55:24Z WARN  mkt_signal::strategy::arb_hedge_strategy] ArbHedgeStrategy: strategy_id=470173990 ArbHedge exposure risk reject symbol=ONUSDT venue=GateFutures side=Buy base_qty=10.00000000 err=paired-close hedge exceeds its live position
+Source: /tmp/gate_on_exposure_limits.log (extracted before stop).
+[2026-11-09T16:24:17Z WARN  mkt_signal::pre_trade::log_throttle] ArbOpen: symbol=- 未激活 summary: suppressed=40 last_strategy_id=Some(83831021) reason_class=other reason=projected exposure risk failed: symbol=ONUSDT Arb 单币敞口扩大后超限: current=2443.2745USDT next=2543.8585USDT limit=2500.0000USDT
+[2026-11-10T11:57:42Z WARN  mkt_signal::pre_trade::log_throttle] ArbOpen: symbol=- 未激活 summary: suppressed=3 last_strategy_id=Some(470377774) reason_class=other reason=projected exposure risk failed: symbol=ONUSDT Arb 单币敞口扩大后超限: current=901.4163USDT next=1002.3675USDT limit=1000.0000USDT
+LAST [2026-11-10T11:57:42Z WARN  mkt_signal::pre_trade::log_throttle] ArbOpen: symbol=- 未激活 summary: suppressed=3 last_strategy_id=Some(470377774) reason_class=other reason=projected exposure risk failed: symbol=ONUSDT Arb 单币敞口扩大后超限: current=901.4163USDT next=1002.3675USDT limit=1000.0000USDT
