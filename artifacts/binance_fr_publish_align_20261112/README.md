@@ -51,13 +51,27 @@ At 15:02:52 UTC, further fills left 1826.39404 AWE (111.37351U) net long,
 with two live futures SELLs totaling 1827 units (841 + 986). This was not
 zero live exposure; the remaining quantity had corresponding maker orders.
 
-The rollout audit is not a clean-bill-of-health claim for every existing order
-path: 03's margin BUYs still produced venue 51015 (minimum borrowing amount)
-and 51042 (operation too frequent) rejects. The 15:01 verification captures
-14/40 occurrences in each of the engine and pre-trade logs, representing the
-same propagated events, not twice as many failed orders. These were not fixed
-or hidden in this operational rollout. FR04's sampled ERROR records were
-local position-limit rejections of new opening orders; processes stayed alive.
+Rejection cooldowns were already implemented in the published binary and are
+active. A 51015 rejection starts a 60-second account-wide USDT-borrow cooldown:
+BUYs needing borrowed USDT are blocked, while buys covered by free cash remain
+eligible. Retrying borrowing also requires a newer complete capacity snapshot.
+A 51042 rejection starts a cross-symbol margin-opening cooldown for both sides,
+backing off 1, 2, 4, 8, then at most 15 minutes. In-flight rejects from the same
+burst do not repeatedly multiply that frequency delay. These checks apply to
+margin opening and do not impose this cooldown on futures hedges.
+
+Live logs confirm 51042 at 15:01:23 with retry after 15:02:23, at 15:02:24 with
+retry after 15:04:24, and at 15:09:03 with retry after 15:13:03. The sampled
+interiors of the first two cooldown windows contain no new margin-opening
+order creation. Multiple rejects from orders already submitted before the
+first response, and a new rejection after cooldown expiry, do not by themselves
+show failed cooldown behavior. The earlier description of these observed
+rejects as an unfixed cooldown problem was inaccurate.
+
+The 15:01 verification counts 14/40 occurrences of 51015/51042 in each of the
+engine and pre-trade logs; these represent propagated events, not twice as
+many failed orders. FR04's sampled ERROR records were local position-limit
+rejections of new opening orders; processes stayed alive.
 
 Machine-readable build hashes, runtime identities, residuals and checks are in
 `verification.json`. Full read-only exchange snapshots, per-order requests,

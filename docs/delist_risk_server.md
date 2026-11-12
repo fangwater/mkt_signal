@@ -34,7 +34,8 @@ env.sh和config/viz.toml仍不可由www-data读取。无生产Nginx重载或Bybi
 2026-11-12 15:01 UTC，Binance FR02/03/04完成交易栈重发及非BNB合约taker对齐，
 三盘24服务含signal恢复，Delist现场报告均完整/ok。恢复信号前每币非BNB净差小于5U；
 恢复后有正常新成交与maker对冲，不能把ok解释为零敞口。03另有margin开仓51015/51042
-拒单记录。详见`artifacts/binance_fr_publish_align_20261112/`。本条只记录Binance交易栈
+拒单及既有冷却生效记录，不能据拒单本身判断冷却失效。详见
+`artifacts/binance_fr_publish_align_20261112/`。本条只记录Binance交易栈
 操作，不改变上方Delist修订的发布状态。
 
 2026-11-12，发布`arbmm 2136a80d`的多账户风险聚合推送。一次发送收拢同轮已就绪

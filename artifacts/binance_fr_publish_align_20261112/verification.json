@@ -493,5 +493,37 @@
       "margin": [],
       "conditional": []
     }
+  },
+  "cooldown_followup": {
+    "code_matches_published_commit": true,
+    "borrow_rejection_cooldown_seconds": 60,
+    "frequency_backoff_seconds": [
+      60,
+      120,
+      240,
+      480,
+      900
+    ],
+    "frequency_scope": "cross-symbol Binance margin opening BUY and SELL",
+    "futures_hedges_affected": false,
+    "observed_frequency_windows_utc": [
+      [
+        "2026-11-12T15:01:23",
+        "2026-11-12T15:02:23.217571"
+      ],
+      [
+        "2026-11-12T15:02:24",
+        "2026-11-12T15:04:24.083175"
+      ],
+      [
+        "2026-11-12T15:09:03",
+        "2026-11-12T15:13:03.675260"
+      ]
+    ],
+    "sampled_first_two_window_interiors_new_margin_open_orders": [
+      0,
+      0
+    ],
+    "correction": "Observed rejects are not evidence that rejection cooldown is missing or ineffective."
   }
 }
