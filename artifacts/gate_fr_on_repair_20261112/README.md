@@ -324,7 +324,18 @@ emergency-reduction cases. Final shared-worktree library run: 1,575 passed,
 passed. No CTP code was executed. This correction
 has not been published; subsequent publication remains paused by user request.
 
-The broader `cargo test -p mkt_signal` run stopped at eight unrelated
+The initial broader `cargo test -p mkt_signal` run stopped at eight unrelated
 `cme_tas_census` tests: the current TAS column-rule input has eight record types
-where that binary expects four. Its source and catalog were not changed by this
-fix. Do not describe the full binary test suite as passing.
+where that binary expects four. The user subsequently confirmed the old census
+tool is no longer used and requested its removal. Its source, embedded tests,
+Cargo binary entry, dedicated config and documentation were removed together.
+The maintained `crates/cme_tas_replay` implementation and shared column catalog
+remain intact.
+
+After cleanup, Cargo metadata confirmed the census target is absent and all
+maintained replay targets remain registered. The full root-package run
+(`cargo test -p mkt_signal --no-fail-fast`) completed with 1,855 passed, 4 failed
+and 8 ignored. The remaining failures are in unrelated Delist tests: one MM
+backup test encounters a missing file, and three CTA catalog/mapping tests have
+configuration-expectation mismatches. These files and other concurrent worktree
+changes are excluded from the hedge and census-cleanup commits.
