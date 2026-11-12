@@ -752,7 +752,11 @@ fn assess_limits(sample: &mut Sample, settings: &Settings) {
                 .is_finite()
                 .then_some(value.max(row.normal_buffer_usdt.unwrap_or(0.0)))
         });
-        if !row.ignored_spot_tail && row.net_qty.abs() > 1e-12 && !row.assessable() {
+        if !row.ignored_spot_tail
+            && row.net_qty.abs() > 1e-12
+            && row.uncovered_usdt.is_some()
+            && !row.assessable()
+        {
             sample.errors.push(format!(
                 "{} 缺少有效 Redis 限额、单手金额、方向 maker 参数或报警系数计算溢出",
                 row.asset
@@ -1571,6 +1575,7 @@ mod tests {
         assert_eq!(a.risk_status, "unknown");
         assert_eq!(a.rows[0].net_usdt, None);
         assert!(a.errors[0].contains("UNPRICED"));
+        assert!(a.errors.iter().all(|e| !e.contains("报警系数")));
     }
 
     #[test]
