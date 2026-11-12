@@ -100,17 +100,6 @@ pub struct PreTradeAccountRiskView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BinancePmUsdtCapacity {
-    pub cash_available: Option<f64>,
-    pub max_borrowable: Option<f64>,
-    pub buy_capacity: Option<f64>,
-    pub reserved_usdt: f64,
-    pub snapshot_ts_ms: Option<i64>,
-    pub state: String,
-    pub retry_after_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeRiskResampleEntry {
     pub ts_ms: i64,
     pub signal_counts: HashMap<String, u64>,
@@ -124,7 +113,6 @@ pub struct PreTradeRiskResampleEntry {
     pub leverage: f64,
     pub max_leverage: f64,
     pub usdt_max_available_margin: Option<f64>,
-    pub binance_pm_usdt: Option<BinancePmUsdtCapacity>,
     pub open_leg: PreTradeVenueRiskResampleEntry,
     pub hedge_leg: PreTradeVenueRiskResampleEntry,
     pub unimmr_force_close_line: f64,

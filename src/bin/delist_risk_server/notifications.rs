@@ -721,14 +721,6 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
     }];
     for account in &report.accounts {
         let fresh = matches!(account.data_status, "fresh" | "partial") && report.catalog_current;
-        if let Some(status) = &account.trading_status {
-            observations.push(Observation {
-                key: format!("trading_status/{}", account.slug),
-                title: format!("{} Binance PM 开仓状态", account.slug),
-                problem: status.problem.filter(|_| fresh),
-                detail: status.detail.clone(),
-            });
-        }
         observations.push(Observation {
             key: format!("data/{}", account.slug),
             title: format!("{} 持仓数据", account.slug),
@@ -992,50 +984,6 @@ mod tests {
         drop(book);
         drop(notifier);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn opening_gate_notification_deduplicates_across_restart_and_requires_valid_recovery() {
-        let observation = |state: Option<&str>| {
-            let risk = state.map(super::super::trading_status::tests::risk);
-            let status = super::super::trading_status::binance_pm_usdt(
-                risk.as_ref(),
-                1_790_000_000_000,
-                true,
-            )
-            .unwrap();
-            Observation {
-                key: "trading_status/binance_fr_arb03".into(),
-                title: "Binance PM 开仓状态".into(),
-                problem: status.problem,
-                detail: status.detail,
-            }
-        };
-        let mut book = Book::default();
-        book.observe(
-            vec![observation(Some("binance_margin_frequency_cooldown"))],
-            1,
-        )
-        .unwrap();
-        assert!(!deliver(&mut book, 1).recovery);
-        let mut book: Book = serde_json::from_slice(&serde_json::to_vec(&book).unwrap()).unwrap();
-        for state in [
-            Some("binance_margin_frequency_cooldown"),
-            Some("binance_usdt_capacity_not_ready"),
-            None,
-            Some("unknown"),
-        ] {
-            book.observe(vec![observation(state)], 2).unwrap();
-            assert!(book.outbox.is_empty());
-        }
-        book.observe(vec![observation(Some("ready"))], 3).unwrap();
-        assert!(deliver(&mut book, 3).recovery);
-        book.observe(
-            vec![observation(Some("binance_usdt_buy_capacity_insufficient"))],
-            4,
-        )
-        .unwrap();
-        assert!(!deliver(&mut book, 4).recovery);
     }
 
     #[test]
@@ -1425,7 +1373,6 @@ mod tests {
             rows: vec![],
             errors: vec!["unpriced".into()],
             breaches: BTreeMap::new(),
-            trading_status: None,
         };
         let mut report = super::super::exposure::Report {
             as_of_ms: now_ms(),

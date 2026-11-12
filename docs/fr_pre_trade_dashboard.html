@@ -499,19 +499,6 @@
               <h3 title="组合账户的保证金余量；不是可直接支付现货买单的 USDT 现金">账户可用保证金</h3>
               <div class="value" id="risk-usdt-max-margin">--</div>
             </div>
-            <div class="metric-card" id="metric-usdt-cash" hidden>
-              <h3>USDT 现金可用</h3>
-              <div class="value" id="risk-usdt-cash">--</div>
-            </div>
-            <div class="metric-card" id="metric-usdt-borrow" hidden>
-              <h3>USDT 可借额度</h3>
-              <div class="value" id="risk-usdt-borrow">--</div>
-            </div>
-            <div class="metric-card" id="metric-usdt-buy" hidden>
-              <h3 title="现金加可借额度，仍受最低借款额、订单预留和交易所频控限制">现货买入可用 USDT</h3>
-              <div class="value" id="risk-usdt-buy">--</div>
-              <div id="risk-usdt-state" class="muted"></div>
-            </div>
           </div>
           <div class="account-risks-grid" id="account-risks"></div>
           <div class="chips">
@@ -784,23 +771,6 @@
           el.riskLeverage.textContent = fmt(lev, fmtLev);
           el.riskMaxLeverage.textContent = e ? fmt(e.max_leverage, fmtLev) : "--";
           el.riskUsdtMaxMargin.textContent = e ? fmt(e.usdt_max_available_margin, fmtUsd) : "--";
-          const cashCapacity = e && e.binance_pm_usdt;
-          for (const [name, field] of [["cash", "cash_available"], ["borrow", "max_borrowable"], ["buy", "buy_capacity"]]) {
-            $("metric-usdt-" + name).hidden = !cashCapacity;
-            $("risk-usdt-" + name).textContent = cashCapacity ? fmt(cashCapacity[field], fmtUsd) : "--";
-          }
-          const capacityStates = {
-            ready: "现金与可借额度已就绪",
-            binance_usdt_capacity_not_ready: "资金数据缺失或已过期，暂停新买单",
-            binance_usdt_buy_capacity_insufficient: "USDT 购买能力不足，暂停新买单",
-            binance_usdt_borrow_below_minimum: "借款差额低于最低借款额或仍在拒单冷却，买单已本地拦截",
-            binance_usdt_borrow_rules_not_ready: "最低借款规则缺失或过期，暂停需要借款的新买单",
-            binance_margin_frequency_cooldown: "交易所频控冷却，暂停新开仓"
-          };
-          $("risk-usdt-state").textContent = cashCapacity
-            ? (capacityStates[cashCapacity.state] || "资金状态未知") + (cashCapacity.retry_after_ms > 0 ? ` · 冷却 ${Math.ceil(cashCapacity.retry_after_ms / 1000)} 秒` : "")
-            : "";
-          $("metric-usdt-buy").classList.toggle("warn", !!cashCapacity && cashCapacity.state !== "ready");
           if (e && isNum(lev) && isNum(e.max_leverage) && e.max_leverage > 0 && lev > e.max_leverage) {
             el.metricLeverage.classList.add("warn");
           } else {

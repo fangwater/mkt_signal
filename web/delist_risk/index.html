@@ -346,7 +346,7 @@
         return (exposurePayload?.accounts || []).map(account => {
           const stale = now - Number(account.checked_ms || 0) > Number(settings.interval_secs || 10) * 3000
             || [account.snapshot_ms, account.account_ms].some(ts => ts && now - ts > Number(settings.max_age_secs || 90) * 1000);
-          return stale || exposureError ? { ...account, complete: false, data_status: 'stale', risk_status: account.risk_status === 'alert' ? 'alert' : 'unknown', trading_status: account.trading_status ? { ...account.trading_status, problem: null, detail: '开仓状态数据过期，等待新快照确认；不确认恢复' } : null } : account;
+          return stale || exposureError ? { ...account, complete: false, data_status: 'stale', risk_status: account.risk_status === 'alert' ? 'alert' : 'unknown' } : account;
         });
       }
       function updateSystem() {
@@ -355,15 +355,13 @@
         const delistRiskN = PAGE === 'cta' ? summary.risk : selectedAccounts().filter(a => a.risk_n > 0).length;
         const accounts = exposureAccounts();
         const alerts = accounts.filter(a => a.risk_status === 'alert').length;
-        const blocked = accounts.filter(a => a.trading_status?.problem === true).length;
-        const tradingUnknown = accounts.filter(a => a.trading_status && a.trading_status.problem === null).length;
         const unknown = accounts.filter(a => !a.complete).length;
         const exposureFailed = exposureError || (exposurePayload?.errors || []).length;
         const flattenErrors = (flattenPayload?.snapshot_errors || []).length;
         const dumpErrors = (flattenPayload?.dump_errors || []).length;
-        const errors = summary.error || flattenErrors || dumpErrors || unknown || exposureFailed || tradingUnknown;
-        const text = [blocked ? `${blocked} 个 FR 开仓受限` : '', tradingUnknown ? `${tradingUnknown} 个开仓状态待确认` : '', alerts ? `${alerts} 个 FR 敞口超限` : '', unknown ? `${unknown} 个 FR 敞口数据不完整` : exposureFailed ? '敞口检查读取失败' : '', summary.error ? `${summary.error} 个数据源或策略状态异常` : '', flattenErrors ? `${flattenErrors} 个持仓快照异常` : '', dumpErrors ? `${dumpErrors} 个 dump 状态异常` : '', delistRiskN ? `${delistRiskN} 个盘子有下架风险` : ''].filter(Boolean).join(' · ');
-        setSystem(errors ? 'error' : blocked || alerts || summary.risk ? 'risk' : 'ok', text || '数据已同步');
+        const errors = summary.error || flattenErrors || dumpErrors || unknown || exposureFailed;
+        const text = [alerts ? `${alerts} 个 FR 敞口超限` : '', unknown ? `${unknown} 个 FR 敞口数据不完整` : exposureFailed ? '敞口检查读取失败' : '', summary.error ? `${summary.error} 个数据源或策略状态异常` : '', flattenErrors ? `${flattenErrors} 个持仓快照异常` : '', dumpErrors ? `${dumpErrors} 个 dump 状态异常` : '', delistRiskN ? `${delistRiskN} 个盘子有下架风险` : ''].filter(Boolean).join(' · ');
+        setSystem(errors ? 'error' : alerts || summary.risk ? 'risk' : 'ok', text || '数据已同步');
       }
       function renderExposures() {
         const root = document.getElementById('exposures');
@@ -378,12 +376,10 @@
         const accounts = exposureAccounts();
         const alerts = accounts.filter(a => a.risk_status === 'alert').length;
         const pending = accounts.filter(a => a.risk_status === 'pending').length;
-        const blocked = accounts.filter(a => a.trading_status?.problem === true).length;
-        const tradingUnknown = accounts.filter(a => a.trading_status && a.trading_status.problem === null).length;
         const unknown = accounts.filter(a => !a.complete).length;
         const failed = exposureError || (exposurePayload.errors || []).length;
-        document.getElementById('exposure-panel').dataset.tone = alerts || blocked ? 'risk' : unknown || failed || pending || tradingUnknown ? 'error' : 'ok';
-        summary.textContent = [`${accounts.length} 个 FR`, blocked ? `${blocked} 个开仓受限` : '', tradingUnknown ? `${tradingUnknown} 个开仓状态待确认` : '', alerts ? `${alerts} 个超限告警` : '', pending ? `${pending} 个超限观察` : '', unknown ? `${unknown} 个数据不完整` : '', failed ? '读取异常' : '', accounts.length && !alerts && !pending && !unknown && !failed ? '未发现敞口超限' : '', '账户明细'].filter(Boolean).join(' · ');
+        document.getElementById('exposure-panel').dataset.tone = alerts ? 'risk' : unknown || failed || pending ? 'error' : 'ok';
+        summary.textContent = [`${accounts.length} 个 FR`, alerts ? `${alerts} 个超限告警` : '', pending ? `${pending} 个超限观察` : '', unknown ? `${unknown} 个数据不完整` : '', failed ? '读取异常' : '', accounts.length && !alerts && !pending && !unknown && !failed ? '未发现敞口超限' : '', '账户明细'].filter(Boolean).join(' · ');
         const settings = exposurePayload.settings;
         const money = value => Number.isFinite(value) ? `${(Math.abs(value) < .005 ? 0 : value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} U` : '未知';
         const qty = value => Number.isFinite(value) ? value.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '未知';
@@ -395,7 +391,6 @@
           <p class="exposure__note">单币实际净敞口绝对值 &gt; ${money(settings.asset_limit_usdt)}，或单账户实际净敞口逐币绝对值合计 &gt; ${money(settings.account_limit_usdt)}，持续 ${settings.persistence_secs} 秒提示；每 ${settings.interval_secs} 秒检查。</p>
           <p class="exposure__note">告警按实际持仓计算；对冲计划、待下单数量和未成交委托均不抵扣敞口。短暂建仓由持续超限观察窗口过滤。依据账户监控持仓与价格快照；现金稳定币及快照已过滤的小额非交易持仓不计入。缺价、过期和读取失败均无法确认；合计仅含已定价持仓；已确认且在界限内的特殊现货尾差不参与告警和完整性计数，明细仍保留。敞口提示不会触发交易。</p>
           <p class="exposure__note">${escapeHtml(formatTime(exposurePayload.checked_ms))} · 账户监控或敞口快照超过 ${settings.max_age_secs} 秒视为过期</p>
-          <p class="exposure__note">Binance PM 开仓频控、资金或最低借款规则不可用、购买能力不足及低于最低借款额会单独提示；首次异常与确认恢复推送钉钉。开仓状态恢复只表示该项门禁解除。</p>
           <p class="exposure__note" id="fr-notification-status">${notificationPayload?.enabled ? `钉钉已开启 · 风险仅首次和恢复推送 · 待发送 ${Number(notificationPayload.queued || 0)} 条 · ${escapeHtml(notificationPayload.last_sent_ms ? formatTime(notificationPayload.last_sent_ms).replace('更新于 ', '最近送达 ') : '等待首次送达')}${notificationPayload.last_luna_ms ? ` · Luna ${escapeHtml(formatTime(notificationPayload.last_luna_ms).replace('更新于 ', '最近处理 '))}` : ''}${notificationPayload.last_error ? ` · ${escapeHtml(notificationPayload.last_error)}` : ''}` : '独立 FR 钉钉尚未开启'}</p>
           ${issues.map(e => `<p class="exposure__issues">${escapeHtml(e)}</p>`).join('')}
           <div class="exposure__summary"><span>覆盖 <strong>${accounts.length}</strong> 个 FR</span><span>超限告警 <strong class="account-value--risk">${accounts.filter(a => a.risk_status === 'alert').length}</strong></span><span>超限观察 <strong>${accounts.filter(a => a.risk_status === 'pending').length}</strong></span><span>数据不完整 <strong>${accounts.filter(a => !a.complete).length}</strong></span><span>已忽略现货尾差 <strong>${accounts.reduce((sum, a) => sum + Number(a.ignored_spot_tail_n || 0), 0)}</strong> 项</span></div></div>
@@ -408,7 +403,7 @@
             return `<tr data-exposure-account="${escapeHtml(a.slug)}"><td><span class="account-name">${escapeHtml(a.alias || a.slug)}</span><span class="account-slug">${escapeHtml(a.slug)}</span><small><a href="/delist/open?env=${encodeURIComponent(a.slug)}&panel=viz">查看盘子 ↗</a></small></td>
               <td data-label="净敞口绝对值合计">${money(a.risk_abs_usdt)}<small>已定价净头寸差额合计 ${money(a.abs_usdt)}</small><small>${old ? '上次有效值' : a.complete ? '逐币绝对值相加' : '已定价部分，下界'}</small></td>
               <td data-label="最大单币"><span class="symbol">${escapeHtml(a.largest_asset || '—')}</span> ${money(a.largest_usdt)}<small>${a.largest_usdt > 0 ? '净多' : a.largest_usdt < 0 ? '净空' : ''}</small></td>
-              <td data-label="状态"><span class="chip chip--${tone}">${retained ? '上次超限待确认' : riskNames[a.risk_status] || '无法确认'}</span><small>${dataNames[a.data_status] || '未知'}${a.ignored_spot_tail_n ? ` · 已忽略 ${a.ignored_spot_tail_n} 项现货尾差` : ''}</small>${a.trading_status ? `<small class="${a.trading_status.problem === true ? 'account-value--risk' : ''}">${escapeHtml(a.trading_status.detail)}</small>` : ''}</td>
+              <td data-label="状态"><span class="chip chip--${tone}">${retained ? '上次超限待确认' : riskNames[a.risk_status] || '无法确认'}</span><small>${dataNames[a.data_status] || '未知'}${a.ignored_spot_tail_n ? ` · 已忽略 ${a.ignored_spot_tail_n} 项现货尾差` : ''}</small></td>
               <td data-label="持仓更新">${age(a.account_ms)}<small>敞口快照 ${age(a.snapshot_ms)}</small></td></tr>
               <tr><td class="exposure__detail" colspan="5">${breaches.map(b => `<p class="exposure__breach">${escapeHtml(b.asset || '账户合计')}：${money(b.value_usdt)} · ${b.confirmed ? old || b.last_observed_ms !== a.checked_ms ? '上次确认超限，等待数据确认恢复' : '已确认持续超限' : '等待持续超限确认'} · 始于 ${escapeHtml(formatTime(b.since_ms).replace('更新于 ', ''))}${!a.complete ? '（数据不完整，保留异常记录）' : ''}</p>`).join('')}
               ${(a.errors || []).map(e => `<p class="exposure__issues">${escapeHtml(e)}</p>`).join('')}
@@ -437,11 +432,8 @@
       function combinedSummary() {
         if (PAGE === 'fr') {
           const accounts = selectedAccounts();
-          const states = new Map(exposureAccounts().map(a => [a.slug, a.trading_status]));
-          const blocked = a => states.get(a.slug)?.problem === true;
-          const unknown = a => states.get(a.slug)?.problem === null;
-          return { accounts: accounts.length, risk: accounts.filter(a => a.tone === 'risk' || a.risk_n > 0 || a.unimmr_empty || blocked(a)).length,
-            error: accounts.filter(a => a.tone === 'error' || unknown(a)).length, ok: accounts.filter(a => a.tone === 'ok' && !a.risk_n && !a.unimmr_empty && !blocked(a) && !unknown(a)).length };
+          return { accounts: accounts.length, risk: accounts.filter(a => a.tone === 'risk' || a.risk_n > 0 || a.unimmr_empty).length,
+            error: accounts.filter(a => a.tone === 'error').length, ok: accounts.filter(a => a.tone === 'ok' && !a.risk_n && !a.unimmr_empty).length };
         }
         const summary = {};
         const strategies = ctaPayload?.strategies || [];
@@ -596,8 +588,6 @@
         const unimmrN = account.kind === 'funding_rate' && account.unimmr_close_n != null ? account.unimmr_close_n : null;
         const unimmrCell = unimmrN != null ? `<div class="account-venues">UniMMR <span class="${unimmrN ? '' : 'account-value--risk'}">${unimmrN}</span> 候选</div>` : '';
         const unimmrChip = account.unimmr_empty ? ' <span class="chip chip--risk">UniMMR为空</span>' : '';
-        const trading = exposureAccounts().find(a => a.slug === account.slug)?.trading_status;
-        const tradingChip = trading && trading.problem !== false ? ` <span class="chip chip--${trading.problem === true ? 'risk' : 'error'}" title="${escapeHtml(trading.detail)}">${trading.problem === true ? '开仓受限' : '开仓状态待确认'}</span>` : '';
         const vizLink = account.viz_url
           ? `<a class="config-link viz-link" href="${escapeHtml(account.viz_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的 Viz 看板">进入看板 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无看板</span>';
@@ -605,7 +595,7 @@
           ? `<a class="config-link" href="${escapeHtml(account.config_url)}" target="_blank" rel="noopener" referrerpolicy="same-origin" aria-label="进入 ${escapeHtml(account.alias || account.slug)} 的配置">进入配置 <span aria-hidden="true">↗</span></a>`
           : '<span class="account-venues">暂无配置入口</span>';
         const backupButton = ['funding_rate','market_making'].includes(account.kind) ? `<button class="refresh backup-action" type="button" data-kind="${escapeHtml(account.kind)}" data-env="${escapeHtml(account.slug)}">立即备份</button>${backupState(account.kind, account.slug)}` : '';
-        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}${tradingChip}</td><td><span class="account-nav">${vizLink}${configLink}${backupButton}</span></td></tr>`;
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td><td><span class="account-nav">${vizLink}${configLink}${backupButton}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
@@ -629,11 +619,8 @@
         const riskN = accounts.reduce((sum, account) => sum + (account.risk_n || 0), 0);
         const errorN = accounts.filter((account) => account.tone === 'error').length;
         const unimmrN = accounts.filter((account) => account.unimmr_empty).length;
-        const states = new Map(exposureAccounts().map(a => [a.slug, a.trading_status]));
-        const blockedN = accounts.filter(a => states.get(a.slug)?.problem === true).length;
-        const unknownN = accounts.filter(a => states.get(a.slug)?.problem === null).length;
-        const tone = riskN || unimmrN || blockedN ? 'risk' : errorN || unknownN ? 'error' : accounts.some((account) => account.tone === 'uncovered') ? 'uncovered' : 'ok';
-        const label = [riskN ? `${riskN} 个风险标的` : '', unimmrN ? `${unimmrN} 个 UniMMR 为空` : '', blockedN ? `${blockedN} 个开仓受限` : '', unknownN ? `${unknownN} 个开仓状态待确认` : '', errorN ? `${errorN} 个连接异常` : ''].filter(Boolean).join(' · ') || TONES[tone];
+        const tone = riskN || unimmrN ? 'risk' : errorN ? 'error' : accounts.some((account) => account.tone === 'uncovered') ? 'uncovered' : 'ok';
+        const label = [riskN ? `${riskN} 个风险标的` : '', unimmrN ? `${unimmrN} 个 UniMMR 为空` : '', errorN ? `${errorN} 个连接异常` : ''].filter(Boolean).join(' · ') || TONES[tone];
         const source = [...new Set(accounts.map((account) => account.host.toUpperCase()))].join(' / ');
         const mark = { binance: 'BN', gate: 'GT', bitget: 'BG', bybit: 'BB', okex: 'OK' }[exchange] || 'EX';
         const notice = payload.latest_announcements?.[exchange];

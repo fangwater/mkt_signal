@@ -890,7 +890,6 @@ impl ResampleChannel {
                 leverage,
                 max_leverage,
                 usdt_max_available_margin,
-                binance_pm_usdt: crate::pre_trade::binance_pm_buy_capacity::snapshot(),
                 open_leg,
                 hedge_leg,
                 unimmr_force_close_line,

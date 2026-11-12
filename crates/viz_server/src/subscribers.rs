@@ -325,7 +325,6 @@ fn spawn_pre_trade_risk_listener(
                     "leverage": entry.leverage,
                     "max_leverage": entry.max_leverage,
                     "usdt_max_available_margin": entry.usdt_max_available_margin,
-                    "binance_pm_usdt": entry.binance_pm_usdt,
                     "open_leg": entry.open_leg,
                     "hedge_leg": entry.hedge_leg,
                     "unimmr_force_close_line": entry.unimmr_force_close_line,

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 09:08 UTC（Binance arb03 最低借款拦截发布验收）
+最后更新：2026-11-12 11:05 UTC（本地改为借款错误码冷却并移除开仓状态展示，尚未发布）
 
 2026-11-11 09:04 UTC，SG 已无运行交易策略，JP Delist 停用 SG Redis、远程平仓、
 备份 SSH 主机及三路端口隧道；Bybit FR 使用 JP 本地快照。通过环境本地脚本重启
@@ -305,28 +305,28 @@ annualizations using the latest account equity; they are not forecasts or tradin
 
 ## FR exposure checks
 
-2026-11-12，Binance PM FR 开仓状态接入相同的10秒快照检查、页面和独立FR钉钉。
-频控冷却、购买能力不足、资金数据不可用、最低借款规则不可用和低于最低借款额
-均独立于敞口/UniMMR告警，按账户首次异常与确认恢复发送，持续重复和重启不重发。
-过期、失败、缺字段或未知状态不得确认恢复；`ready`还要求资金查询本身有效且新鲜。
-折叠摘要、账户卡片和明细均显示开仓受限，金额仍按实际持仓计算，不扣对冲计划。
+Binance PM FR 保留 USDT 现金与可借额度检查及已提交买单的资金预留。
+`GET /papi/v1/margin/maxBorrowable?asset=USDT` 返回的 `amount` 已是 USDT 数量，
+不乘价格或杠杆；账户可用保证金仍来自 `/papi/v1/account.totalAvailableBalance`，
+不能当作现货现金。币安官方 SDK 的
+[响应定义](https://github.com/binance/binance-connector-python/blob/master/clients/derivatives_trading_portfolio_margin/src/binance_sdk_derivatives_trading_portfolio_margin/rest_api/models/margin_max_borrow_response.py)
+将 `amount` 定义为当前可借数量，`borrowLimit` 是账户级借款上限。
 
-Binance `binance_fr_arb03` 的07:34 UTC拒单链为：每笔CATI买单99.96996U，
-PM USDT现金95.0175808U，自动借款差额4.9523792U低于交易所当时最低额5U；
-30次51015拒单后出现51042频控。可用保证金来自`/papi/v1/account.totalAvailableBalance`，
-不是`/papi/v1/balance.crossMarginFree`现金，也不豁免最低借款约束。
-本地开仓检查读取交易所最低额，先拦截不满足条件的BUY，不自动增加订单或借款金额；
-预留金额不能被当作已经花掉的现金来放大预计借款。规则不可用时仅拦截需借款买单，
-51015另设60秒借款冷却并要求后续有效余额快照，现金支持的买单仍按原检查处理。
-开仓状态针对最近一次待检查买单；恢复只表示本地门禁解除，不保证交易所接受下一单。
-新增查询类型6112需要配套更新`trade_engine`和`pre_trade`，现有Viz IPC结构不变。
-2026-11-12，`binance_fr_arb03` 已按标准流程发布上述程序与页面。初次恢复发现
-多档买单共用零现金快照，随后发布`163916fa`，补充冻结资金及近期买单可能返还的
-现金上界检查；现金缓冲不足的买单同样需满足最低借款额。任务实际每60秒查询。
-修正版恢复跨两个查询周期未再出现51015/51042；Delist现场`trading_status`新鲜且
-显示本地最低借款拦截。该状态可能是资金返还尚未确认的保守拦截，不代表额度耗尽。
-手工对齐的BNB误操作、过细尾差清理及用户后续指示，见
-`artifacts/binance_fr_arb03_publish_20261112/README.md`。
+2026-11-12 后续本地修正（尚未发布）：不再根据最低借款额、挂单冻结或潜在撤单
+返款预测拒单，也不再查询最低借款规则。实际收到51015、51014、51006或51061
+的 USDT 买单借款拒绝后，暂停需借款买单60秒；冷却到期且取得拒单后的有效资金
+快照后，后续信号可再次检查下单。纯现金足够的买单不受借款冷却限制。
+51042触发账户开仓频控冷却，从60秒指数退避到最长15分钟，同批在途拒单不重复
+放大延迟。已提交金额继续从预算扣除，不用同一份余额重复支付多笔买单。
+资金任务实际每60秒调度，快照过期或查询失败时继续拦截资金无法确认的买单。
+以上检查和错误码保留日志，不再通过Viz IPC、FR页面、Delist或FR通知发布开仓状态；
+前端不再展示新增的USDT现金、可借额度和购买能力卡片。
+
+历史背景：07:34 UTC 的CATI买单需要99.96996U，当时现金95.0175808U，
+实际自动借款4.9523792U低于最低5U，51015连续拒单后触发51042。
+早间曾发布最低借款预测与冻结/返款上界保护，但该保护会保守阻止本可提交的买单，
+本次按要求删除。早间发布与手工对齐记录保留在
+`artifacts/binance_fr_arb03_publish_20261112/README.md`，不代表本次修改已上线。
 
 2026-11-12 ON incident: the deployed monitor subtracted stale strategy plans and
 reported only 0.06–0.14 USDT of risk per Gate account despite 535–2,024 USDT of

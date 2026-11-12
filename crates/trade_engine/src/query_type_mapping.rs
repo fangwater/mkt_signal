@@ -18,7 +18,6 @@ impl QueryTypeMapping {
                 | QueryRequestType::BinancePmAccountSnapshot
                 | QueryRequestType::BinancePmUsdtCash
                 | QueryRequestType::BinancePmUsdtMaxBorrowable
-                | QueryRequestType::BinanceUsdtBorrowRules
                 | QueryRequestType::BinanceCmQuery
                 | QueryRequestType::BinanceCmBalanceSnapshotStd
                 | QueryRequestType::BinanceCmAccountSnapshotStd
@@ -99,7 +98,6 @@ impl QueryTypeMapping {
             QueryRequestType::BinancePmAccountSnapshot => "/papi/v1/account",
             QueryRequestType::BinancePmUsdtCash => "/papi/v1/balance",
             QueryRequestType::BinancePmUsdtMaxBorrowable => "/papi/v1/margin/maxBorrowable",
-            QueryRequestType::BinanceUsdtBorrowRules => "/sapi/v1/margin/allAssets",
             QueryRequestType::BinanceCmQuery => "/dapi/v1/order",
             QueryRequestType::BinanceCmBalanceSnapshotStd => "/dapi/v1/balance",
             QueryRequestType::BinanceCmAccountSnapshotStd => "/dapi/v1/account",
@@ -154,7 +152,6 @@ impl QueryTypeMapping {
             | QueryRequestType::BinancePmAccountSnapshot
             | QueryRequestType::BinancePmUsdtCash
             | QueryRequestType::BinancePmUsdtMaxBorrowable
-            | QueryRequestType::BinanceUsdtBorrowRules
             | QueryRequestType::BinanceCmQuery
             | QueryRequestType::BinanceCmBalanceSnapshotStd
             | QueryRequestType::BinanceCmAccountSnapshotStd
@@ -213,7 +210,6 @@ impl QueryTypeMapping {
             QueryRequestType::BinancePmAccountSnapshot => 20,
             QueryRequestType::BinancePmUsdtCash => 20,
             QueryRequestType::BinancePmUsdtMaxBorrowable => 100,
-            QueryRequestType::BinanceUsdtBorrowRules => 1,
             QueryRequestType::BinanceCmQuery => 1,
             QueryRequestType::BinanceCmBalanceSnapshotStd
             | QueryRequestType::BinanceCmAccountSnapshotStd => 5,
@@ -280,10 +276,6 @@ mod tests {
         use super::*;
         for (kind, path) in [
             (QueryRequestType::BinancePmUsdtCash, "/papi/v1/balance"),
-            (
-                QueryRequestType::BinanceUsdtBorrowRules,
-                "/sapi/v1/margin/allAssets",
-            ),
             (
                 QueryRequestType::BinancePmUsdtMaxBorrowable,
                 "/papi/v1/margin/maxBorrowable",

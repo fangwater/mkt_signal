@@ -95,8 +95,6 @@ mod fr_yield;
 mod notifications;
 #[path = "delist_risk_server/parameter_changes.rs"]
 mod parameter_changes;
-#[path = "delist_risk_server/trading_status.rs"]
-mod trading_status;
 #[path = "delist_risk_server/upload.rs"]
 mod upload;
 
