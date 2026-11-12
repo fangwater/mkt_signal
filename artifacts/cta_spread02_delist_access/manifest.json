@@ -1,0 +1,10 @@
+{
+  "before": {
+    "web": "f60d6ebfcfc46700073ed9b1416f5cff629bba9dc1ddc1abe5bd9425372bf543",
+    "nginx": "a00a7084dcb5ce2774623989bd300d37cc6012f760306c1255f62061f104e615"
+  },
+  "after": {
+    "web": "884332684e371c700b2ad94ec7d8feb0ee5c9b841f880903e3f1a3db342cf0c0",
+    "nginx": "4cf08afa670fd6e82591f3a69a5371401eaba360af04c00e83e400dd17560e75"
+  }
+}

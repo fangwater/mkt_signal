@@ -274,6 +274,7 @@
       <nav class="page-nav" aria-label="主要页面">
         <a href="/delist/" data-page="fr">FR 日常检查</a>
         <a href="/delist/?view=cta" data-page="cta">CTA 策略与因子</a>
+        <a href="/delist/transfers/">资金划转</a>
       </nav>
       <section class="overview" aria-labelledby="page-title">
         <div><a href="/delist/parameter-changes">参数变更记录</a><h1 id="page-title">FR 日常检查</h1><p class="page-description" id="page-description">账户风险、敞口与备份状态</p><p class="as-of" id="as-of">正在同步</p></div>
@@ -282,8 +283,9 @@
       <section id="fr-yield" data-view="fr" aria-live="polite"></section>
       <section class="metrics" id="metrics" aria-label="风险摘要"></section>
       <nav class="cta-config-entries" id="cta-config-entries" data-view="cta" aria-label="CTA 统一配置入口">
-        <a class="config-link" href="/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures">CTA Prep 统一配置 ↗</a>
-        <a class="config-link" href="/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread">CTA Spread 统一配置 ↗</a>
+        <a class="config-link" href="/delist/cta/config/?worker=cta-prep-binance-futures">CTA Prep 统一配置 ↗</a>
+        <a class="config-link" href="/delist/cta/config/?worker=cta-factor-spread">CTA Spread 统一配置 ↗</a>
+        <a class="config-link" href="/delist/cta/config/?worker=cta-factor-spread#spread02_okex-futures_binance-futures_1min">Spread02 配置 ↗</a>
       </nav>
       <div id="error"></div>
       <details class="exposure-panel" id="exposure-panel" data-view="fr">
@@ -640,6 +642,13 @@
         root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
         root.querySelectorAll('.backup-action').forEach((button) => button.addEventListener('click', () => executeBackup(button)));
       }
+      function ctaConfigUrl(value) {
+        const url = new URL(value, location.origin);
+        if (url.origin === location.origin && ['/cta/cta-prep-binance-futures/config', '/cta/cta-prep-binance-futures/config/'].includes(url.pathname)) {
+          return '/delist/cta/config/' + url.search + url.hash;
+        }
+        return value;
+      }
       function renderCta() {
         const root = document.getElementById('cta-strategies');
         if (!ctaPayload) { root.innerHTML = ''; return; }
@@ -647,10 +656,10 @@
         const errors = [...(ctaPayload.errors || []), ...(ctaPayload.managers || []).filter(m => !m.ok).map(m => `${m.site.toUpperCase()} Manager：${m.error || '读取失败'}`)];
         const factorBlock = (ctaPayload.factor_processes || []).map(factor => {
         const factorState = !factor?.configured ? '配置不可用' : factor.stale ? '运行状态不可用或过期' : factor.warming ? '正在回放新计划' : !factor.plan_matches_config ? '计划待同步' : '状态已更新';
-        const factorCombinations = (factor?.combinations || []).map(c => `<div class="account-nav"><a class="config-link" href="${escapeHtml(c.config_url)}"><code>${escapeHtml(c.name)}</code></a><span>${c.factor_count} 项因子 · ${c.symbols.length} 个标的 · ${c.position_strategies.length ? `仓位策略 ${c.position_strategies.map(escapeHtml).join('、')}` : '未配置仓位策略'}</span></div>`).join('');
+        const factorCombinations = (factor?.combinations || []).map(c => `<div class="account-nav"><a class="config-link" href="${escapeHtml(ctaConfigUrl(c.config_url))}"><code>${escapeHtml(c.name)}</code></a><span>${c.factor_count} 项因子 · ${c.symbols.length} 个标的 · ${c.position_strategies.length ? `仓位策略 ${c.position_strategies.map(escapeHtml).join('、')}` : '未配置仓位策略'}</span></div>`).join('');
         const backupKind = factor.name === 'cta-factor-spread' ? 'cta_spread' : 'cta_perp';
         const workerBackup = `<button class="refresh backup-action" type="button" data-kind="${backupKind}" data-env="${escapeHtml(factor.name)}">立即备份</button>${backupState(backupKind, factor.name)}`;
-        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · ${workerBackup} · <a class="config-link" href="${escapeHtml(factor.config_url)}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="factor-combinations">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
+        return `<div class="exchange__account-heading">${factor.name === 'cta-factor-spread' ? 'CTA Spread' : 'CTA Prep'} · ${workerBackup} · <a class="config-link" href="${escapeHtml(ctaConfigUrl(factor.config_url))}">统一配置 ↗</a> · 合并计算 ${factor.unique_factor_count} 项 · ${escapeHtml(factorState)}</div><div class="factor-combinations">${factorCombinations}</div>${(factor.errors || []).map(e => `<div class="error-state">${escapeHtml(e)}</div>`).join('')}`;
         }).join('');
         const rows = (ctaPayload.strategies || []).map(s => {
           const title = s.name;
@@ -665,7 +674,7 @@
           const warnings = (s.errors || []).map(e => `<div class="account-value--risk">${escapeHtml(e)}</div>`).join('');
           const hits = (s.risk?.hits || []).map(hit => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
           const signalLink = s.risk?.viz_url ? `<a class="config-link" href="${escapeHtml(s.risk.viz_url)}" target="_blank" rel="noopener">信号面板 ↗</a>` : '';
-          const configLink = s.risk?.config_url ? `<a class="config-link" href="${escapeHtml(s.risk.config_url)}" target="_blank" rel="noopener">策略配置 ↗</a>` : '';
+          const configLink = s.risk?.config_url ? `<a class="config-link" href="${escapeHtml(ctaConfigUrl(s.risk.config_url))}" target="_blank" rel="noopener">策略配置 ↗</a>` : '';
           const riskLabel = s.risk?.tone === 'uncovered' ? '风险源未就绪' : String(s.risk?.risk_n || 0);
           return `<tr data-strategy="${escapeHtml(s.slug)}"><td><span class="account-name">${escapeHtml(title)}</span><code class="account-slug">${escapeHtml(s.slug)}</code><span class="account-venues">${escapeHtml(factorCount)}</span>${signalLink} ${configLink}</td><td>${escapeHtml(status)}${warnings}</td><td>${s.risk?.universe_n || 0}</td><td>${escapeHtml(riskLabel)}</td><td>${execs}</td></tr>${hits ? `<tr class="hit-row"><td colspan="5"><div class="hit-list">${hits}</div></td></tr>` : ''}`;
         }).join('');

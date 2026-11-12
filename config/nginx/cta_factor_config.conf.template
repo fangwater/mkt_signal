@@ -34,6 +34,38 @@ location = /manager-auth/cta-factor-config {
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
 }
+
+# Delist navigation uses its existing login, independently of Manager pages.
+location = /delist/cta/config { return 303 /delist/cta/config/; }
+location ^~ /delist/cta/config/ {
+    set $delist_cta_expected_origin "$scheme://$http_host";
+    set $delist_cta_request_origin $http_origin;
+    set $delist_cta_original_method $request_method;
+    if ($request_method ~ ^(GET|HEAD)$) {
+        set $delist_cta_request_origin $delist_cta_expected_origin;
+    }
+    if ($delist_cta_request_origin != $delist_cta_expected_origin) {
+        return 403;
+    }
+    auth_request /delist-auth/cta-factor-config;
+    auth_request_set $delist_cta_actor $upstream_http_x_parameter_actor;
+    proxy_set_header X-Parameter-Actor $delist_cta_actor;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_pass http://127.0.0.1:__CTA_CONFIG_PORT__/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    add_header Cache-Control "no-store" always;
+}
+location = /delist-auth/cta-factor-config {
+    internal;
+    proxy_pass http://127.0.0.1:8787/auth/verify-login;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header Origin $http_origin;
+    proxy_set_header X-Original-Method $delist_cta_original_method;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}
 # Retire the old editable configuration locations.
 location = /cta/binance-cta-perp-rx01/config { return 410; }
 location ^~ /cta/binance-cta-perp-rx01/config/ { return 410; }

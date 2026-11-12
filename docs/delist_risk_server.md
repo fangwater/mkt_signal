@@ -2,6 +2,31 @@
 
 最后更新：2026-11-12 11:45 UTC（本地敞口报警分离硬限额、maker 缓冲和 3 分钟停滞；发布继续暂停）
 
+2026-11-12 11:02 UTC，Delist新增“资金划转”导航 `/delist/transfers/`，接入独立Rust服务
+`~/ltp_transfer_server/ltp_transfer_server`（包 `crates/ltp_transfer_server`）。
+React18/Ant Design5静态资源本地打包；LTP专用凭据只存独立环境的600私有文件，
+Delist不持有密钥或划转逻辑。网关内置子请求和后端均验证现有Delist登录，写入要求
+明确同源Origin；操作人来自Delist验证响应。预览、单次提交、审计持久化、
+未知结果查询/阻止重复划转及实际到账/费用展示已接入。
+服务PID见部署回执，CPU0-5、回环8788、控制网卡源172.31.35.228；Delist未重启，
+Nginx master1862269保持，既有交易/行情进程身份和绑核保持。只更新独立服务的
+开机恢复条目。真实只读验收2个DMA账户和6种钱包、USDT三条网络，审计记录0。
+8项服务端测试、桌面/手机模拟浏览器流程通过；未持有现有Delist密码/会话，
+真实登录后的生产页面未通过浏览器验收，未执行真实划转。
+回执 `artifacts/ltp_transfer_server/`；详细运行、部署及接口说明见
+[`docs/ltp_transfer_server.md`](ltp_transfer_server.md)。
+
+2026-11-12，Delist CTA 页新增“Spread02 配置”直达入口，四频段规则数48/79/64/128。
+Delist页面上的统一配置、组合和策略链接改走`/delist/cta/config/`，复用当前Delist登录；
+原Manager入口及逐账户configure权限保持。新网关覆盖HTML/API，写入继续要求明确同源Origin，
+actor由Delist验证响应提供并覆盖浏览器输入，内部鉴权端点不可公开访问。
+只热更新页面和`cta_factor_config.conf`并平滑重载Nginx；master PID1862269保持，
+178个应用进程身份/绑核、29份计算配置保持，Delist会话无需重建，Spread02四张表仍关闭。
+隔离Nginx验证登录隔离、匿名拒绝、内部端点隐藏、来源校验及actor覆盖；浏览器只读打开四张
+真实配置表且零JS错误。回执`artifacts/cta_spread02_delist_access/`，远端回退在
+`~/delist_risk_server/run/spread02_config_access_20261112T064604Z/before/`。
+
+
 2026-11-11 09:04 UTC，SG 已无运行交易策略，JP Delist 停用 SG Redis、远程平仓、
 备份 SSH 主机及三路端口隧道；Bybit FR 使用 JP 本地快照。通过环境本地脚本重启
 Delist PID3513519 / CPU28，11个 JP Viz 快照目标验证通过。备份配置在
@@ -1575,7 +1600,9 @@ The FR per-environment Delist grants remain in place. MM configuration requires
 a Delist login. Since 2026-11-10, the shared CTA editor gateway uses the account
 workspace's Manager session and requires Manager `configure` permission for
 every explicit source ID in its shared catalog. It does not require an additional
-Delist session. Nginx requires an explicit matching Origin for non-GET/HEAD
+Delist session. Since 2026-11-12, links within Delist use the separate
+`/delist/cta/config/` gateway with its existing Delist session; Manager links
+keep their current Manager-only boundary. Nginx requires an explicit matching Origin for non-GET/HEAD
 requests and overwrites actor/IP headers; internal verification endpoints
 are blocked externally. The status-only Manager verifier supplies no username:
 CTA journals use the truthful `manager_session` actor marker and retain a hashed
@@ -1710,8 +1737,8 @@ an explicit worker selection:
 
 | Entry | URL |
 |---|---|
-| CTA Prep | `/cta/cta-prep-binance-futures/config/?worker=cta-prep-binance-futures` |
-| CTA Spread | `/cta/cta-prep-binance-futures/config/?worker=cta-factor-spread` |
+| CTA Prep | `/delist/cta/config/?worker=cta-prep-binance-futures` |
+| CTA Spread | `/delist/cta/config/?worker=cta-factor-spread` |
 
 The editor reads that selection on initial navigation and includes a return
 link to `/delist/`. `/cta/cta-factor-spread/config/` is a gateway redirect to
@@ -1727,7 +1754,7 @@ directories; defaults are the corresponding names beneath
 `/cta-strategies` exposes one current `factor_processes` array, with worker and
 combination configuration URLs. A missing Spread catalog does not discard the
 Prep inventory or either navigation link. The shared editor must be configured
-with both catalogs and the gateway's configure-permission scope must cover all
+with both catalogs and the Manager gateway's configure-permission scope must cover all
 affected Prep and Spread accounts.
 
 The current page reads six Prep combinations (Prep01/Prep02 at 1min, 5min and
@@ -1736,8 +1763,10 @@ verification, Prep had 404 unique jobs and Spread had 50. These are observations
 not hard-coded inventories.
 The authoritative combination format keeps the four columns `标的`, `nq`,
 `符号`, `因子`, with top-level `venue`, `interval` and signal controls. NQ
-dependencies are derived from those rows. Every CTA configuration link points
-to `/cta/cta-prep-binance-futures/config/?worker=<worker>#<combination>`; no per-signal factor
+dependencies are derived from those rows. The catalog retains canonical Manager configuration URLs at
+`/cta/cta-prep-binance-futures/config/?worker=<worker>#<combination>`;
+Delist maps same-origin shared-editor links to `/delist/cta/config/`, preserving
+worker selection and the combination hash. No external or other-panel link is rewritten; no per-signal factor
 Redis key or old editable Config URL is used by the new configuration flow.
 Counts come from the deployed nonzero references, rather than hard-coded RX
 lists. Deleting a combination or its last reference changes the next read.

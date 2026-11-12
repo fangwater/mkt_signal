@@ -1,0 +1,26 @@
+{
+  "process": [
+    [
+      "1969486",
+      {
+        "exe": "/home/ubuntu/delist_risk_server/delist_risk_server",
+        "starttime": "215244559",
+        "cpus": "28"
+      }
+    ]
+  ],
+  "protected_service_processes": 166,
+  "changed": {},
+  "completed_nav_batch_processes": {
+    "1964275": {
+      "exe": "/home/ubuntu/crypto_nav_manager/target/release/sync_history",
+      "starttime": "215230056",
+      "cpus": "24"
+    },
+    "1967321": {
+      "exe": "/home/ubuntu/crypto_nav_manager/target/release/sync_history",
+      "starttime": "215239616",
+      "cpus": "24"
+    }
+  }
+}

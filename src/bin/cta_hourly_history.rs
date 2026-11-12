@@ -34,6 +34,15 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Extend a native archive with a contiguous archive from the same market.
+    Extend {
+        #[arg(long)]
+        history: PathBuf,
+        #[arg(long)]
+        append: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Read-only validation: seed native history, replay retained Kafka, stop at its captured head.
     Replay {
         #[arg(long)]
@@ -396,9 +405,80 @@ fn build_one(
     );
     Ok(completed)
 }
+fn extend_archives(history: &Path, append: &Path, output: &Path) -> Result<Manifest> {
+    let mut base = HourlyHistory::load(history)?;
+    let next = HourlyHistory::load(append)?;
+    ensure!(
+        base.manifest.market == next.manifest.market
+            && base.manifest.end_ms == next.manifest.start_ms
+            && base.rows.keys().eq(next.rows.keys()),
+        "hourly extension requires the same market, symbols and contiguous bounds"
+    );
+    for (symbol, rows) in &next.rows {
+        ensure!(
+            base.manifest.symbols[symbol].last_end_ms == base.manifest.end_ms
+                && rows
+                    .first()
+                    .is_some_and(|r| r.bar.start_ms == next.manifest.start_ms)
+                && rows
+                    .last()
+                    .is_some_and(|r| r.bar.start_ms + HOUR_MS == next.manifest.end_ms)
+                && rows
+                    .windows(2)
+                    .all(|r| r[1].bar.start_ms - r[0].bar.start_ms == HOUR_MS),
+            "incomplete hourly extension for {symbol}"
+        );
+        for (month, values) in &next.manifest.symbols[symbol].thresholds {
+            ensure!(
+                base.manifest.symbols[symbol]
+                    .thresholds
+                    .get(month)
+                    .is_none_or(|old| old == values),
+                "hourly extension changes classified thresholds for {symbol} {month}"
+            );
+        }
+    }
+    ensure!(!output.exists(), "hourly extension output already exists");
+    fs::create_dir_all(output)?;
+    let mut symbols = BTreeMap::new();
+    for (symbol, rows) in &next.rows {
+        let combined = base.rows.get_mut(symbol).unwrap();
+        combined.extend_from_slice(rows);
+        let mut meta = hourly_history::write_symbol(output, symbol, combined)?;
+        let old = &base.manifest.symbols[symbol];
+        let added = &next.manifest.symbols[symbol];
+        meta.source_book_events = old.source_book_events + added.source_book_events;
+        meta.source_trades = old.source_trades + added.source_trades;
+        meta.thresholds = old.thresholds.clone();
+        meta.thresholds.extend(added.thresholds.clone());
+        symbols.insert(symbol.clone(), meta);
+    }
+    let manifest = Manifest {
+        market: base.manifest.market,
+        interval: Interval::Hour,
+        start_ms: base.manifest.start_ms,
+        end_ms: next.manifest.end_ms,
+        source: format!(
+            "{}; contiguous extension: {}",
+            base.manifest.source, next.manifest.source
+        ),
+        symbols,
+    };
+    atomic_json(&output.join("manifest.json"), &manifest)?;
+    Ok(manifest)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::Extend {
+            history,
+            append,
+            output,
+        } => {
+            let manifest = extend_archives(&history, &append, &output)?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+        }
         Action::Replay {
             history,
             rules,
@@ -640,6 +720,52 @@ mod tests {
     use super::*;
     use flate2::{write::GzEncoder, Compression};
     use std::io::Write;
+
+    #[test]
+    fn hourly_extension_keeps_factual_rows_and_rejects_gaps_or_overwrite() {
+        let root = std::env::temp_dir().join(format!("cta-extend-{}", uuid::Uuid::new_v4()));
+        let archive = |name: &str, start: i64| {
+            let path = root.join(name);
+            fs::create_dir_all(&path).unwrap();
+            let rows = (0..2)
+                .map(|i| {
+                    let ts = start + i * HOUR_MS;
+                    let mut aggregator = mkt_signal::factor_pub::trade_flow_feature_pub::local_baseline::LocalBaselineAggregator::for_completed_periods(HOUR_MS);
+                    aggregator.on_trade(ts * 1000, true, 100.0, 1.0);
+                    HourlyInput {
+                        bar: aggregator.close_completed_period(ts + HOUR_MS).remove(0),
+                        nq_price: Some(100.0 + i as f64),
+                        classified: false,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let meta = hourly_history::write_symbol(&path, "ETHUSDT", &rows).unwrap();
+            let manifest = Manifest {
+                market: Market::BinanceFutures,
+                interval: Interval::Hour,
+                start_ms: start,
+                end_ms: start + 2 * HOUR_MS,
+                source: "fixture".into(),
+                symbols: BTreeMap::from([("ETHUSDT".into(), meta)]),
+            };
+            atomic_json(&path.join("manifest.json"), &manifest).unwrap();
+            path
+        };
+        let base = archive("base", HOUR_MS);
+        let next = archive("next", 3 * HOUR_MS);
+        let output = root.join("combined");
+        extend_archives(&base, &next, &output).unwrap();
+        let result = HourlyHistory::load(&output).unwrap();
+        assert_eq!(result.rows["ETHUSDT"].len(), 4);
+        assert_eq!(result.manifest.start_ms, HOUR_MS);
+        assert_eq!(result.manifest.end_ms, 5 * HOUR_MS);
+        assert_eq!(result.rows["ETHUSDT"][2].nq_price, Some(100.0));
+        assert!(extend_archives(&base, &next, &output).is_err());
+        let gap = archive("gap", 4 * HOUR_MS);
+        assert!(extend_archives(&base, &gap, &root.join("invalid")).is_err());
+        assert!(!root.join("invalid").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn gzip(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();

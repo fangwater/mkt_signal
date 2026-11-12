@@ -88,7 +88,17 @@ fn parse(
         market.name()
     );
     let mut out = BTreeMap::new();
-    for (symbol, raw) in values {
+    for (source_symbol, raw) in values {
+        // The shared OKX hash uses venue-native instrument IDs. Formula IDs
+        // use base-asset symbols, while price * contracts remains unchanged.
+        let symbol = if market == Market::OkexFutures {
+            let base = source_symbol
+                .strip_suffix("-USDT-SWAP")
+                .with_context(|| format!("invalid OKX threshold instrument {source_symbol}"))?;
+            format!("{base}USDT")
+        } else {
+            source_symbol.clone()
+        };
         ensure!(
             symbol.len() > 4
                 && symbol.len() <= 32
@@ -143,7 +153,22 @@ mod tests {
         assert!(parse(Market::BinanceFutures, &values, &meta, "2026-12").is_err());
         assert!(parse(Market::OkexFutures, &values, &meta, "2026-11").is_err());
         meta.insert("unit".into(), "price_x_contracts".into());
-        assert!(parse(Market::OkexFutures, &values, &meta, "2026-11").is_ok());
+        let okx_values = BTreeMap::from([("BTC-USDT-SWAP".into(), values["BTCUSDT"].clone())]);
+        assert_eq!(
+            parse(Market::OkexFutures, &okx_values, &meta, "2026-11").unwrap()
+                ["okex-futures:BTCUSDT"],
+            [10.0, 100.0]
+        );
+        assert!(parse(Market::OkexFutures, &values, &meta, "2026-11").is_err());
+        for invalid in ["BTC-USD-SWAP", "BTC-USDT", "-USDT-SWAP", "btc-USDT-SWAP"] {
+            assert!(parse(
+                Market::OkexFutures,
+                &BTreeMap::from([(invalid.into(), values["BTCUSDT"].clone())]),
+                &meta,
+                "2026-11"
+            )
+            .is_err());
+        }
         meta.insert("source_month".into(), "2026-09".into());
         assert!(parse(Market::OkexFutures, &values, &meta, "2026-11").is_err());
     }

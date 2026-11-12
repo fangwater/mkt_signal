@@ -85,6 +85,10 @@ async function api(path,options={}){
 function factorRows(doc){
   return doc.factor_rules.map(row=>({'标的':row['标的'].replace(/USDT$/i,''),nq:row.nq,'符号':row['符号'],'因子':row['因子']}));
 }
+function factorSourceMarket(doc){
+  const ordinary=doc.factor_rules.find(row=>!['spread','nq'].includes(row['因子'].toLowerCase()));
+  return ordinary?.venue||doc.venue;
+}
 function parseRules(){
   let rows;try{rows=JSON.parse($('factor-json').value);}catch(error){throw Error('JSON 格式错误：'+error.message);}
   if(!Array.isArray(rows)||(!rows.length&&!((draft?.symbol_group||draft?.interval==='1h')&&draft?.signal)))throw Error('因子配置必须是 JSON 数组；未限定券池的配置至少需要一条规则');
@@ -101,7 +105,7 @@ function parseRules(){
     const next={'标的':base+'USDT',nq:row.nq.trim(),'符号':row['符号'],'因子':row['因子'].trim()},key=JSON.stringify([next['标的'],next.nq,next['符号'],next['因子'].toLowerCase()]);
     if(draft.symbol_group&&!catalog.plan.symbol_groups?.[draft.symbol_group]?.includes(next['标的']))throw Error(label+next['标的']+' 不属于券池 '+draft.symbol_group);
     if(seen.has(key))continue;seen.add(key);
-    if(draft.reference_venue&&next['因子'].toLowerCase()!=='spread')next.venue=draft.reference_venue;
+    if(draft.reference_venue&&next['因子'].toLowerCase()!=='spread')next.venue=factorSourceMarket(draft);
     result.push(next);
   }
   return result;
@@ -128,7 +132,7 @@ function show(doc){
   const signal=doc.signal;$('strategy-settings').hidden=!signal;
   if(signal){$('enabled').value=String(signal.enabled);$('max-pos').value=signal.max_pos_u;$('entry-long').value=signal.entry.factor_long_quantile;$('entry-short').value=signal.entry.factor_short_quantile;$('exit-long').value=signal.execution.factor_exit_quantile_long;$('exit-short').value=signal.execution.factor_exit_quantile_short;$('spread-long').value=signal.spread?.long_quantile??.3;$('spread-short').value=signal.spread?.short_quantile??.7;}
   $('spread-settings').hidden=!doc.reference_venue;$('factor-json').value=JSON.stringify(factorRows(doc),null,2);updateCount(doc.factor_rules);
-  $('factor-hint').textContent='每项只填「标的、nq、符号、因子」，标的为字符串。频率统一使用上方选择的 '+doc.interval+'。nq 填「0.50」「0.2/0.8」或「关闭」。';
+  $('factor-hint').textContent='每项只填「标的、nq、符号、因子」，标的为字符串。频率统一使用上方选择的 '+doc.interval+'。nq 填「0.50」「0.2/0.8」或「关闭」。'+(doc.reference_venue?' 因子与 NQ 来源：'+({'okex-futures':'OKX 永续','binance-futures':'Binance 永续'}[factorSourceMarket(doc)]||factorSourceMarket(doc))+'。':'');
   $('symbol-members').textContent=doc.symbol_group?'券池 '+doc.symbol_group+'：'+(catalog.plan.symbol_groups[doc.symbol_group]||[]).join(', '):'all：当前配置未限定券池。';
   renderTabs();const url=new URL(location.href);url.searchParams.set('worker',selectedWorker);url.hash=doc.name;history.replaceState(null,'',url);
 }

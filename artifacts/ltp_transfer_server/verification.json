@@ -1,0 +1,129 @@
+{
+  "pid": 2677702,
+  "thread_cpus": {
+    "2677702": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "nginx_master": "1862269",
+  "nginx_master_preserved": true,
+  "credential_registry_absent": true,
+  "reboot_registered": true,
+  "other_boot_entries": 34,
+  "audit_records": 0,
+  "files_verified": 10,
+  "http_checks": [
+    {
+      "method": "GET",
+      "path": "/delist/transfers/",
+      "status": 401
+    },
+    {
+      "method": "GET",
+      "path": "/delist/transfers/api/catalog",
+      "status": 401
+    },
+    {
+      "method": "GET",
+      "path": "/delist/transfers/app.js",
+      "status": 401
+    },
+    {
+      "method": "GET",
+      "path": "/delist-transfer-auth",
+      "status": 404
+    },
+    {
+      "method": "POST",
+      "path": "/delist/transfers/api/transfers",
+      "status": 403
+    },
+    {
+      "method": "POST",
+      "path": "/delist/transfers/api/transfers",
+      "status": 401
+    }
+  ],
+  "readiness": {
+    "accounts": [
+      {
+        "account_types": [
+          "SPOT",
+          "MARGIN_CROSS",
+          "U_MARGINED_FUTURES",
+          "C_MARGINED_FUTURES"
+        ],
+        "id": "81857",
+        "kind": "dma",
+        "name": "ltpbn30288",
+        "venue": "BINANCE"
+      },
+      {
+        "account_types": [
+          "FUNDING",
+          "TRADING"
+        ],
+        "id": "84219",
+        "kind": "dma",
+        "name": "OKX 84219",
+        "venue": "OKX"
+      }
+    ],
+    "read_only": true,
+    "routes": [
+      {
+        "currencies": [
+          {
+            "currency": "USDT",
+            "networks": [
+              "AVAXC",
+              "ERC20",
+              "TRC20"
+            ]
+          }
+        ],
+        "from_account_id": "81857",
+        "to_account_id": "84219"
+      }
+    ],
+    "wallets": [
+      {
+        "account_id": "81857",
+        "account_type": "SPOT",
+        "asset_count": 0
+      },
+      {
+        "account_id": "81857",
+        "account_type": "MARGIN_CROSS",
+        "asset_count": 0
+      },
+      {
+        "account_id": "81857",
+        "account_type": "U_MARGINED_FUTURES",
+        "asset_count": 1
+      },
+      {
+        "account_id": "81857",
+        "account_type": "C_MARGINED_FUTURES",
+        "asset_count": 0
+      },
+      {
+        "account_id": "84219",
+        "account_type": "FUNDING",
+        "asset_count": 0
+      },
+      {
+        "account_id": "84219",
+        "account_type": "TRADING",
+        "asset_count": 0
+      }
+    ],
+    "warnings": []
+  },
+  "authenticated_production_browser": "not run; existing Delist password/session unavailable"
+}

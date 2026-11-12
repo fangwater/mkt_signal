@@ -1,0 +1,58 @@
+[
+  {
+    "group": "spread01",
+    "frequency": "1min",
+    "rows": 28,
+    "round_trip": true,
+    "new_row_market": "binance-futures"
+  },
+  {
+    "group": "spread01",
+    "frequency": "5min",
+    "rows": 56,
+    "round_trip": true,
+    "new_row_market": "binance-futures"
+  },
+  {
+    "group": "spread01",
+    "frequency": "15min",
+    "rows": 18,
+    "round_trip": true,
+    "new_row_market": "binance-futures"
+  },
+  {
+    "group": "spread01",
+    "frequency": "1h",
+    "rows": 107,
+    "round_trip": true,
+    "new_row_market": "binance-futures"
+  },
+  {
+    "group": "spread02",
+    "frequency": "1min",
+    "rows": 48,
+    "round_trip": true,
+    "new_row_market": "okex-futures"
+  },
+  {
+    "group": "spread02",
+    "frequency": "5min",
+    "rows": 79,
+    "round_trip": true,
+    "new_row_market": "okex-futures"
+  },
+  {
+    "group": "spread02",
+    "frequency": "15min",
+    "rows": 64,
+    "round_trip": true,
+    "new_row_market": "okex-futures"
+  },
+  {
+    "group": "spread02",
+    "frequency": "1h",
+    "rows": 128,
+    "round_trip": true,
+    "new_row_market": "okex-futures"
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "source_commit": "05425d6e4284f2347e047a304f3e773b2e84eb65",
+  "files": {
+    "ltp_transfer_server": "e544ac67f01b6ecd4444081074308ba772f060e7826e544e3bfdcb7ed4026845",
+    "nginx_ltp_transfer.conf": "99f4d32479df67613ff49c93682f6094bfd6ba2b71533149a5ce524c526d9e4b",
+    "config/ltp_transfer_server.toml": "74f7e2538c2685e6b8ee230b6ad9b18f33a397e1d4aa831af4d7cb459ca087c6",
+    "scripts/start_ltp_transfer_server.sh": "6a312311517631b40280511eeb1920935eee8da58a244b00ea6faa053fd8c383",
+    "scripts/stop_ltp_transfer_server.sh": "5974aaad89cba3ad43f83039f30d732ec0d0884278d9974e9d45c797a8107b9e",
+    "scripts/run_ltp_transfer_server.sh": "c7c329e2c4955bca5a320184489fe2f7a247209bab29822089bda153c2def29d",
+    "scripts/update_ltp_transfer_boot.py": "d2f8ee17279253878f7bd177ec6c1d48565adb5b793a683fcebd0da9960ee644",
+    "web/index.html": "d46586522f30b713042864462e07c650b4b4165824ec55fb16a82bdfe2a2d4b0",
+    "web/app.js": "8b20973bb83eebb9e58295ecce33ccbcd31e727594814c7d89d79132932108a2",
+    "web/app.css": "9075ef6d8b95c93267e8385788a4618c7578879702a0788d44527b909283c96c"
+  },
+  "service_sources": {
+    "crates/ltp_transfer_server/Cargo.toml": "1533b9117ddd7f030366be60bfe1cff07f320e3ab9b1c69847758a0039d9c2e7",
+    "crates/ltp_transfer_server/src/main.rs": "dd1d030212229bc44257c0ebfcec7b82c58849b9166928871253951e5dadcd0f",
+    "crates/ltp_transfer_server/src/model.rs": "0b2eca37ec5e15a3b075b4d8b8fa6038e70fe547267a8498e06699a15bab4eaa",
+    "crates/ltp_transfer_server/src/ltp.rs": "de48d84ecde319eb84334b169e1e0d1b26ab79d0e486fb41b58a34cd912a3e9c",
+    "crates/ltp_transfer_server/src/store.rs": "d1e4c5a4a22a6a86becab250226fb68963dc997ed536c2302fe2c9d293ee94f1",
+    "crates/ltp_transfer_server/src/tests.rs": "1aeb9704fb9ecf8dbc58029595b08b8462d3d13ee4c036ce6aade229dd8b03ec"
+  }
+}

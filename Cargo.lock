@@ -3034,6 +3034,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "ltp_transfer_server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "env_logger 0.10.2",
+ "libc",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+ "trade_engine",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "lz4"
 version = "1.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

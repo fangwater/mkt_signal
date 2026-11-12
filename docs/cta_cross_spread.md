@@ -1,6 +1,27 @@
 # OKX / Binance CTA Spread
 
-最后更新：2026-11-10 04:01 UTC
+最后更新：2026-11-12 06:51 UTC
+
+Spread02配置入口现已加入Delist CTA页：登录Delist后点击“Spread02配置”，
+四个频段直接使用当前Delist会话。入口为`/delist/cta/config/?worker=cta-factor-spread`，
+组合hash仍以`spread02_`开头。原Manager页面的配置入口保持Manager鉴权。
+该调整只更新页面与Nginx，不重启计算/交易，Spread02发布仍关闭。
+
+
+2026-11-12，新增独立Spread02：18币、319条OKX永续因子规则，
+1min/5min/15min/1h分别48/79/64/128条。用户确认复用现有双Exec，
+每规则100U，四张表全部`enabled=false`，只部署预热、不新增执行绑定。
+因子与NQ使用OKX，方向腿仍为OKX、退出对冲腿为Binance；Spread01继续取Binance因子。
+两组共享`~/cta-factor-spread`/CPU18，计算合并为532项，仓位账本与策略名称分别维护。
+配置页的Spread分组选择器已可选择Spread02，四份文件以`spread02_`开头。
+OKX月度大小单阈值只补10个缺项，保留9项，使用2026-10完整逐笔及原始张数口径。
+Spread01旧小时包因Kafka留存已后移而拒绝首次启动，已用真实11-09/10输入衔接为
+12币×816根、截止11-11的新包；88/88小时普通因子就绪，原配置及仓位账本完整保留。
+配套Delist解析器已同步更新；Spread02的OKX小时因子由保留Kafka和实时数据自然预热，
+没有把Binance历史当作OKX输入。06:25 UTC完成185,633条回放并切换实时，
+Spread01新分钟决策和Manager投递确认正常；Spread02仍零仓位、未启用，237/341项计算就绪，
+其余继续自然预热。完整回执见`artifacts/cta_spread02_deployment/`。
+
 
 Spread01已按用户209条清单整体替换，12币、不分券池，1min/5min/15min/1h分别
 28/56/18/107条规则。仍是公共账户`okex_binace_cross`（内部`cta_cross_spread_rx01`）

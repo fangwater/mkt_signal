@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-12 11:01 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-12 11:02 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-12 11:02 UTC，JP 新增独立 `~/ltp_transfer_server`，LTP私有HTTPS请求显式绑定现有控制网卡
+`ens41` 的 `172.31.35.228`（公网 `13.115.227.29`）；不经公共API缓存。
+服务仅监听 `127.0.0.1:8788`，浏览器复用4191网关 `/delist/transfers/` 与Delist登录。
+未改交易环境 `trade_engine.toml local_ips`、ENI/EIP、路由或IRQ；未新增公开端口。
+主用户/子用户LTP账户权限由专用密钥决定；当前只读可见Binance和OKX两个DMA账户。
+回执 `artifacts/ltp_transfer_server/`，运行说明 `docs/ltp_transfer_server.md`。
 
 2026-11-12 10:33–10:43 UTC，JP `gate_fr_arb01–04` 信号已按授权恢复；
 `bitget_fr_arb01` 完成 `05425d6e` 发布并恢复全部8服务，02在安装前按用户指令
@@ -28,6 +35,22 @@ Gate 02继续`.35.232/.35.233`；环境配置、源IP、ENI/EIP、路由和监�
 与其他环境共享的地址仍在使用，不能当作空闲 IP。未修改 `local_ips`、ENI/EIP、
 路由、杠杆或 Redis 风控。执行及初始现货操作错误记录见
 `artifacts/gate_fr_on_repair_20261112/README.md`。
+
+2026-11-12 06:50 UTC，Delist CTA配置接入自身登录，新增Spread02直达入口；
+只更新现有4191网关的路径与静态页，没有新增监听、网卡、源IP、ENI/EIP或路由。
+原Manager配置入口授权保持，全部计算/交易进程及Spread02关闭状态保持。
+回执`artifacts/cta_spread02_delist_access/`。
+
+
+2026-11-12，Spread02作为独立策略组加入现有`~/cta-factor-spread`，18币319规则、
+每规则100U、四频段发布均关闭，不新增执行绑定或账户；Spread01四份配置和账本保留。
+复用`okex_exec_trade01`与`binance_exec_spread01`，交易出口仍为
+OKX `172.31.35.229/172.31.35.230`、Binance `172.31.35.228/172.31.35.228`。
+只发布共享计算/配置与配套Delist解析产物；CPU18/housekeeping/CPU28保持，
+本地小时历史包更新及OKX月度阈值补数不新增交换机/ENI出口。
+未改`trade_engine.toml`、ENI/EIP、策略路由、网关监听或其他账户凭据。
+详情与回执见核心分配登记及`artifacts/cta_spread02_deployment/`。
+
 
 2026-11-11 09:04 UTC，Delist 的 SG 连接及隧道已停用，JP 本地 Bybit 快照保持可用；
 交易 source IP 与网络配置未变。

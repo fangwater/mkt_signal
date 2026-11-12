@@ -313,8 +313,9 @@ Spread01 当前为12币、209条普通因子规则：1min 28条、5min 56条、1
 在同一页面切换两个独立计算进程；环境脚本使用 `CTA_SPREAD_FACTOR_CONFIG`。
 两份目录、回放状态和并发保存摘要保持独立。Prep 仓位表仅支持 Binance 永续；
 Spread 仓位表支持 OKX–Binance 永续 1min / 5min / 15min / 1h、v0，并要求显式填写
-`signal.spread.long_quantile` 与 `short_quantile`。普通因子行的 `venue` 指向
-`binance-futures`，组合的 `venue` / `reference_venue` 分别为 OKX / Binance；
+`signal.spread.long_quantile` 与 `short_quantile`。普通因子行的 `venue` 可指向 `binance-futures` 或 `okex-futures`，
+同一仓位表的普通因子必须使用同一来源市场，NQ 也读取该市场。组合的
+`venue` / `reference_venue` 分别为 OKX / Binance，执行腿不随因子来源改变；
 程序自动补齐每个标的的 spread 依赖，无需手工重复添加计算行。
 
 `signal` 可省略，表示只维护因子计算。
@@ -573,6 +574,10 @@ Prep 与 Spread 都通过 `--hourly-history /path/to/history`，或
 导入包的完整截止小时，重叠 Kafka 只重建盘口，不重复计算已导入小时；
 超过截止边界后再推进小时因子。缺少首个保留 Kafka 小时以前的衔接数据时明确报错，
 不跳过中间缺口。包是有明确截止时间的快照，Kafka 留存移过该截止点之前需要刷新。
+可用同一工具先合成缺少日期的独立输入包，再执行
+`cta-hourly-history extend --history /path/to/current --append /path/to/additional --output /path/to/new`。
+扩展要求市场、币种集合一致、起止时间衔接，新增小时逐根连续，重叠月份分类阈值一致；
+输出必须是新目录。安装前执行 `check`，并核对新截止时间覆盖实际最早 Kafka 小时。
 `state.json.hourly_history_warmup` 和 `generations/<代次>/hourly_history_seed.json`
 记录各币实际种子根数、因子就绪状态与衔接边界。
 

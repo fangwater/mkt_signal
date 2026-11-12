@@ -4,7 +4,7 @@ use super::factors::{
 };
 use crate::cta_factor_calc::{
     client::FactorFeed,
-    config::{Combination, Worker},
+    config::{Combination, Market, Worker},
     engine::FactorPoint,
 };
 use anyhow::Result;
@@ -95,7 +95,14 @@ impl WeightedFactorChannel {
                     .factors
                     .iter()
                     .map(|factor| {
-                        shared_input(feed.latest(), symbol, factor, &effective, now / 1000)
+                        shared_input(
+                            feed.latest(),
+                            Market::BinanceFutures,
+                            symbol,
+                            factor,
+                            &effective,
+                            now / 1000,
+                        )
                     })
                     .collect::<Option<Vec<_>>>();
                 if let Some(inputs) = inputs {
@@ -116,6 +123,7 @@ impl WeightedFactorChannel {
                     let effective = config.for_strategy(symbol, &binding.strategy);
                     let Some(input) = shared_input(
                         feed.latest(),
+                        Market::BinanceFutures,
                         symbol,
                         &binding.factor,
                         &effective,
@@ -155,6 +163,7 @@ impl WeightedFactorChannel {
 
 pub(crate) fn shared_input(
     points: &BTreeMap<String, FactorPoint>,
+    market: Market,
     symbol: &str,
     factor: &str,
     config: &CtaPerpConfig,
@@ -162,7 +171,8 @@ pub(crate) fn shared_input(
 ) -> Option<ModelOutputScoreLookupResult> {
     let id = |name: &str| {
         format!(
-            "binance-futures-{}-{}-{}",
+            "{}-{}-{}-{}",
+            market.name(),
             symbol.to_ascii_lowercase(),
             config.bar_interval.as_str().replace('m', "min"),
             name.to_ascii_lowercase()
@@ -295,7 +305,15 @@ mod tests {
             )]),
         };
         let mut points = BTreeMap::from([(factor.factor_id.clone(), factor)]);
-        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).is_none());
+        assert!(shared_input(
+            &points,
+            Market::BinanceFutures,
+            "ETHUSDT",
+            "factor_036",
+            &config,
+            601_000
+        )
+        .is_none());
         let mut nq = FactorPoint {
             factor_id: "binance-futures-ethusdt-5min-nq".into(),
             ts_ms: 300_000,
@@ -323,10 +341,26 @@ mod tests {
             ]),
         };
         points.insert(nq.factor_id.clone(), nq.clone());
-        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).is_none());
+        assert!(shared_input(
+            &points,
+            Market::BinanceFutures,
+            "ETHUSDT",
+            "factor_036",
+            &config,
+            601_000
+        )
+        .is_none());
         nq.ts_ms = 600_000;
         points.insert(nq.factor_id.clone(), nq);
-        let input = shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).unwrap();
+        let input = shared_input(
+            &points,
+            Market::BinanceFutures,
+            "ETHUSDT",
+            "factor_036",
+            &config,
+            601_000,
+        )
+        .unwrap();
         assert_eq!(input.filter_long_threshold, Some(0.1));
         let row = SymbolFactors {
             factors: vec!["factor_036".into()],
@@ -343,8 +377,24 @@ mod tests {
         );
         config.entry.nq_change_enabled = false;
         points.remove("binance-futures-ethusdt-5min-nq");
-        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 601_000).is_some());
-        assert!(shared_input(&points, "ETHUSDT", "factor_036", &config, 599_999).is_none());
+        assert!(shared_input(
+            &points,
+            Market::BinanceFutures,
+            "ETHUSDT",
+            "factor_036",
+            &config,
+            601_000
+        )
+        .is_some());
+        assert!(shared_input(
+            &points,
+            Market::BinanceFutures,
+            "ETHUSDT",
+            "factor_036",
+            &config,
+            599_999
+        )
+        .is_none());
     }
     fn input(ts: i64) -> ModelOutputScoreLookupResult {
         ModelOutputScoreLookupResult {

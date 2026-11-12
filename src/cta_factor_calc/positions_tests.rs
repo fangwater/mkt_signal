@@ -389,6 +389,96 @@ fn nq_point(id: &str, ts: i64, ready: bool) -> FactorPoint {
 }
 
 #[test]
+fn spread_reads_factor_and_nq_from_its_own_market_at_every_frequency() {
+    use super::super::config::{Interval, Market};
+    for market in [Market::BinanceFutures, Market::OkexFutures] {
+        for interval in [
+            Interval::Minute,
+            Interval::FiveMinutes,
+            Interval::FifteenMinutes,
+            Interval::Hour,
+        ] {
+            let mut combination = spread();
+            combination.interval = interval;
+            combination.factor_rules[0].venue = Some(market);
+            combination.factor_rules[0].nq = "0.50".into();
+            combination.validate().unwrap();
+            let factor = format!("{}-ethusdt-{}-factor_036", market.name(), interval.name());
+            let nq = format!("{}-ethusdt-{}-nq", market.name(), interval.name());
+            let other = if market == Market::OkexFutures {
+                Market::BinanceFutures
+            } else {
+                Market::OkexFutures
+            };
+            let other_factor = format!("{}-ethusdt-{}-factor_036", other.name(), interval.name());
+            let other_nq = format!("{}-ethusdt-{}-nq", other.name(), interval.name());
+            let spread_id = format!(
+                "okex-futures-binance-futures-ethusdt-{}-spread",
+                interval.name()
+            );
+            let previous = BTreeMap::from([(
+                spread_id.clone(),
+                point(&spread_id, TS - interval.millis(), 0.2),
+            )]);
+            let mut points = BTreeMap::from([
+                (factor.clone(), point(&factor, TS, 0.99)),
+                (other_factor.clone(), point(&other_factor, TS, 0.01)),
+                (other_nq.clone(), nq_point(&other_nq, TS, true)),
+            ]);
+            // Another market's ready NQ must never unlock this market's entry.
+            let mut blocked = Table::new(combination.clone(), (TS - 60000) * 1000);
+            blocked
+                .observe(&points, &previous, (TS + 6000) * 1000, &book)
+                .unwrap();
+            assert_eq!(
+                blocked.targets().unwrap()["okex-futures:ETHUSDT"]["qty"],
+                0.0
+            );
+            points.insert(nq.clone(), nq_point(&nq, TS, true));
+            let mut table = Table::new(combination, (TS - 60000) * 1000);
+            table
+                .observe(&points, &previous, (TS + 6000) * 1000, &book)
+                .unwrap();
+            assert_eq!(table.targets().unwrap()["okex-futures:ETHUSDT"]["qty"], 2.0);
+            assert_eq!(
+                table.targets().unwrap()["binance-futures:ETHUSDT"]["qty"],
+                0.0
+            );
+            // The factor exit remains available when this market's NQ disappears.
+            let next = TS + interval.millis();
+            points.insert(factor.clone(), point(&factor, next, 0.1));
+            points.remove(&nq);
+            table
+                .observe(&points, &BTreeMap::new(), (next + 6000) * 1000, &|_, _| {
+                    None
+                })
+                .unwrap();
+            assert_eq!(table.targets().unwrap()["okex-futures:ETHUSDT"]["qty"], 2.0);
+            assert_eq!(
+                table.targets().unwrap()["binance-futures:ETHUSDT"]["qty"],
+                -2.0
+            );
+        }
+    }
+}
+
+#[test]
+fn position_tables_reject_mixed_factor_sources_and_okx_prep() {
+    let mut combination = spread();
+    let mut other = combination.factor_rules[0].clone();
+    other.venue = Some(super::super::config::Market::OkexFutures);
+    combination.factor_rules.push(other);
+    assert!(combination
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("one source market"));
+    let mut combination = prep("1min");
+    combination.factor_rules[0].venue = Some(super::super::config::Market::OkexFutures);
+    assert!(combination.validate().is_err());
+}
+
+#[test]
 fn prep_missing_stale_or_unready_nq_never_blocks_factor_exits() {
     for frequency in ["1min", "5min", "15min", "1h"] {
         for algorithm in [PositionAlgorithm::V0, PositionAlgorithm::V1] {

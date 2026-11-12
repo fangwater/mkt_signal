@@ -1121,7 +1121,8 @@ fn ltp_sym_to_internal(sym: &str, logical_exchange: Exchange) -> Option<String> 
     }
 }
 
-fn sign_params(secret: &str, params: &BTreeMap<String, String>, nonce: &str) -> Result<String> {
+/// Sign LTP asset or trading parameters before URL encoding their values.
+pub fn sign_params(secret: &str, params: &BTreeMap<String, String>, nonce: &str) -> Result<String> {
     let mut message = String::new();
     for (idx, (key, value)) in params.iter().enumerate() {
         if idx > 0 {

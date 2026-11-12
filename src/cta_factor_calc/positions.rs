@@ -297,6 +297,7 @@ impl Table {
         }
         self.ever_enabled = true;
         let config = self.combination.signal_config()?;
+        let source_market = self.combination.signal_source_market()?;
         for (symbol, row) in self.combination.signal_table()? {
             if config.position_algorithm == PositionAlgorithm::V1 {
                 let effective = config.for_symbol(&symbol);
@@ -305,7 +306,16 @@ impl Table {
                 let inputs = row
                     .factors
                     .iter()
-                    .map(|f| shared_input(points, &symbol, f, &factor_input, now_us / 1000))
+                    .map(|f| {
+                        shared_input(
+                            points,
+                            source_market,
+                            &symbol,
+                            f,
+                            &factor_input,
+                            now_us / 1000,
+                        )
+                    })
                     .collect::<Option<Vec<_>>>();
                 if let Some(inputs) = inputs {
                     if let Some(first) = inputs.first() {
@@ -333,6 +343,7 @@ impl Table {
                 factor_input.entry.nq_change_enabled = false;
                 let Some(input) = shared_input(
                     points,
+                    source_market,
                     &symbol,
                     &binding.factor,
                     &factor_input,
@@ -366,7 +377,8 @@ impl Table {
                                 .filter(|p| p.ts_ms == ts - interval.millis())
                         });
                     let nq_id = format!(
-                        "binance-futures-{}-{}-nq",
+                        "{}-{}-{}-nq",
+                        source_market.name(),
                         symbol.to_ascii_lowercase(),
                         interval.name()
                     );

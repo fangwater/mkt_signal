@@ -1,0 +1,6 @@
+frontend/node_modules/
+.screenshots/
+!dist/
+!dist/index.html
+!dist/app.js
+!dist/app.css

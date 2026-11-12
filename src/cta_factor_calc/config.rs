@@ -536,6 +536,23 @@ impl Combination {
         );
         Ok(combination)
     }
+    /// One market owns the factor/NQ inputs of a table; execution legs retain
+    /// the combination's market pair independently of that input market.
+    pub fn signal_source_market(&self) -> Result<Market> {
+        let mut source = None;
+        for rule in self.factor_rules.iter().filter(|r| r.weight != 0.0) {
+            let id = self.rule_id(rule)?;
+            if !id.is_formula() {
+                continue;
+            }
+            ensure!(
+                source.is_none_or(|market| market == id.market),
+                "position table factor rules must use one source market"
+            );
+            source = Some(id.market);
+        }
+        Ok(source.unwrap_or(self.reference_venue.unwrap_or(self.venue)))
+    }
     pub fn signal_config(&self) -> Result<crate::cta_perp::config::CtaPerpConfig> {
         use crate::cta_perp::{
             config::{CtaPerpConfig, FactorNqRule, PositionAlgorithm},
@@ -545,17 +562,20 @@ impl Combination {
             .signal
             .as_ref()
             .context("combination has no signal parameters")?;
-        let source_venue = self.reference_venue.unwrap_or(self.venue);
+        let source_venue = self.signal_source_market()?;
         if self.reference_venue.is_some() {
             ensure!(
                 self.venue == Market::OkexFutures
                     && self.reference_venue == Some(Market::BinanceFutures)
+                    && matches!(source_venue, Market::OkexFutures | Market::BinanceFutures)
                     && p.position_algorithm == PositionAlgorithm::V0,
                 "Spread positions require OKX/Binance futures and independent factor rules"
             );
         } else {
             ensure!(
-                self.venue == Market::BinanceFutures && p.spread.is_none(),
+                self.venue == Market::BinanceFutures
+                    && source_venue == Market::BinanceFutures
+                    && p.spread.is_none(),
                 "Prep positions require Binance futures without spread filters"
             );
         }
@@ -570,7 +590,7 @@ impl Combination {
                     && id.interval == self.interval
                     && id.reference_market.is_none()
                     && id.factor != "nq",
-                "signal rows require ordinary factors at the combination venue/frequency"
+                "signal rows require ordinary factors at one source market and the combination frequency"
             );
             rules.push(FactorNqRule {
                 symbol: id.symbol,

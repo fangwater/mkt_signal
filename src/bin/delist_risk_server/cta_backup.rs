@@ -1015,30 +1015,35 @@ mod tests {
             fs::remove_file(entry.unwrap().path()).unwrap();
         }
         let mut expected = Vec::new();
-        for interval in ["1min", "5min", "15min", "1h"] {
-            let name = format!("spread_{interval}");
-            let combination = json!({
-                "name": name,
-                "strategy_group": "spread01",
-                "venue": "okex-futures",
-                "reference_venue": "binance-futures",
-                "interval": interval,
-                "factor_rules": [{
-                    "venue": "binance-futures", "标的": "ETHUSDT",
-                    "nq": "关闭", "符号": 1, "因子": "factor_036"
-                }],
-                "signal": {
-                    "enabled": true, "max_pos_u": 200,
-                    "entry": {"nq_change_enabled": false}, "execution": {},
-                    "spread": {"long_quantile": 0.3, "short_quantile": 0.7}
-                }
-            });
-            fs::write(
-                directory.join(format!("{name}.json")),
-                serde_json::to_vec(&combination).unwrap(),
-            )
-            .unwrap();
-            expected.push(name);
+        for (group, market) in [
+            ("spread01", "binance-futures"),
+            ("spread02", "okex-futures"),
+        ] {
+            for interval in ["1min", "5min", "15min", "1h"] {
+                let name = format!("{group}_{interval}");
+                let combination = json!({
+                    "name": name,
+                    "strategy_group": group,
+                    "venue": "okex-futures",
+                    "reference_venue": "binance-futures",
+                    "interval": interval,
+                    "factor_rules": [{
+                        "venue": market, "标的": "ETHUSDT",
+                        "nq": "关闭", "符号": 1, "因子": "factor_036"
+                    }],
+                    "signal": {
+                        "enabled": true, "max_pos_u": 200,
+                        "entry": {"nq_change_enabled": false}, "execution": {},
+                        "spread": {"long_quantile": 0.3, "short_quantile": 0.7}
+                    }
+                });
+                fs::write(
+                    directory.join(format!("{name}.json")),
+                    serde_json::to_vec(&combination).unwrap(),
+                )
+                .unwrap();
+                expected.push(name);
+            }
         }
         expected.sort();
         let snapshot = cta_factors::snapshot(&env.0, worker).unwrap();

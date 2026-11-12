@@ -1,6 +1,16 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 11:01 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 11:02 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12 11:02 UTC，JP 新增独立 `~/ltp_transfer_server`，PM2 `ltp-transfer-server`，全部线程运行于
+housekeeping `0-5`，回环监听 `127.0.0.1:8788`，经已有4191网关 `/delist/transfers/`
+接入Delist登录。仅启动新服务、热更新Delist导航并平滑重载Nginx；Delist及已有
+交易/行情/Redis进程身份与CPU保持，Nginx master1862269保持。仅更新此服务的
+PM2开机条目，保留其他34项。控制网卡源 `172.31.35.228`，未新增独占核或IP。
+本机构建并SCP/SHA-256核验后原子安装，二进制SHA-256
+`e544ac67f01b6ecd4444081074308ba772f060e7826e544e3bfdcb7ed4026845`。
+真实只读验收2个DMA账户、6种钱包，Binance→OKX USDT网络AVAXC/ERC20/TRC20；
+未执行资金划转。回执 `artifacts/ltp_transfer_server/`，说明 `docs/ltp_transfer_server.md`。
 
 2026-11-12 10:33–10:43 UTC，按授权启动 JP `gate_fr_arb01–04` 的 `trade_signal`，
 四盘各8个服务已验收；信号继续housekeeping（`0-5,48-95`），持久化继续CPU15。
@@ -55,6 +65,30 @@ persist_manager继续CPU15，其余Gate进程保持`0-5,48-95`；Delist PID23207
 各户只余不足 10 ON 的尾差；后续全币合约对齐按用户授权单独执行，策略保持停盘。
 最初错误使用现货优先的成交、修正及审计见
 `artifacts/gate_fr_on_repair_20261112/README.md`。
+
+2026-11-12 06:50 UTC，Delist新增Spread02配置直达按钮，CTA链接走自身登录网关。
+仅原子更新Delist静态页与Nginx片段并平滑重载，Nginx master PID1862269保持；
+178个采样应用进程身份/CPU和29份计算配置保持，无服务重启或CPU/IP变更。
+四张Spread02表仍关闭，回执`artifacts/cta_spread02_delist_access/`。
+
+
+2026-11-12，JP新增Spread02：18币、319条OKX因子规则，四频段48/79/64/128条，
+每规则100U、四张表发布关闭，复用Spread01的OKX/Binance双Exec，未新增执行绑定。
+共享`cta-factor-spread` PID1965122继续CPU18，合并532项计算；配置服务PID1954474
+继续housekeeping（`0-5,48-95`）、回环19220；Delist配套解析更新PID1969486仍CPU28。
+通过环境本地脚本启停，仅上述三个服务更换进程；两侧Exec、Prep及其他常驻服务保持。
+原Spread01四份配置、仓位账本逐项保留；首次启动因小时包落后于Kafka保留边界而拒绝，
+已以11-09/10真实Tardis输入扩展到12币×816小时、截止11-11，88/88项普通因子就绪。
+新包位于`~/cta-hourly-history/spread01_20261111/data`，只修改该环境历史包路径；
+旧包、私有配置和停机时完整仓位均保留。OKX阈值仅补10个缺项，原9项及Binance表保持。
+Spread02的OKX小时输入由Kafka及实时数据自然预热；不混用Binance历史。
+没有新增独占核，未改交易IP、ENI/EIP、路由或执行配置。
+06:25 UTC完成185,633条回放并切换实时，四份Spread01目标已获Manager确认，
+后续实时分钟决策与发布均已核验。Spread02保持零仓位、未启用，237/341项计算就绪，
+其余继续自然预热；Delist目录/生效计划一致且错误为空。
+候选、恢复与校验回执：`artifacts/cta_spread02_deployment/`；远端私有回退：
+`~/cta-factor-spread/run/spread02_20261112T055433Z/before/`。
+
 
 2026-11-11 09:04 UTC，JP Delist 移除 SG Redis、远程平仓及备份主机配置，
 经环境本地脚本停止 SG SSH 隧道并重启 Delist PID3513519，保持 CPU28。

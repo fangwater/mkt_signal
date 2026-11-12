@@ -1,0 +1,14 @@
+{
+  "checked_at_ms": 1794464828757,
+  "spread01_latest_1min_decision_ms": 1794464820000,
+  "manager_publications": [
+    {
+      "error": null,
+      "last_success_ts_us": 1794464825109937,
+      "manager_url": "http://127.0.0.1:18201/api",
+      "pending_strategies": []
+    }
+  ],
+  "positions_error": null,
+  "error": null
+}

@@ -1,0 +1,583 @@
+{
+  "strategy_group": "spread02",
+  "name": "spread02_okex-futures_binance-futures_5min",
+  "venue": "okex-futures",
+  "interval": "5min",
+  "reference_venue": "binance-futures",
+  "factor_rules": [
+    {
+      "标的": "ADAUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_MT_040",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "ADAUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "ADAUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TP_VPI_001",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "ATOMUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_094",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "CRVUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_TI_002",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "CRVUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_TI_033",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "CRVUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_TI_033",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_PT_004",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOGEUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_PT_004",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_MT_040",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_MT_040",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "factor_049",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "factor_049",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "DOTUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "factor_049",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "baseline_079",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "ETCUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "sell_avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "FILUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_TI_008",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "FILUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_TI_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "FILUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_TI_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "LINKUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "factor_049",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_PT_004",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_TI_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_068",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_031",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "NEARUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_051",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_007",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_021",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_MT_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_028",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_MT_029",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_MT_042",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_MT_042",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_PT_004",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_PT_009",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "TD_TI_002",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_TI_024",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_TI_027",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "TD_VI_025",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TD_VI_025",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TD_VI_025",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "TP_VPI_005",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "TP_VPI_005",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_007",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_009",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_019",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "baseline_019",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_046",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "baseline_046",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_116",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "baseline_163",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "depth_far_share_ask",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "depth_imb_bps10",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "factor_009",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "factor_009",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "factor_031",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "factor_122",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "factor_122",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "factor_122",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_125",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.50",
+      "符号": -1,
+      "因子": "factor_125",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRBUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "factor_trades_045",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRXUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "buy_avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRXUSDT",
+      "nq": "0.50",
+      "符号": 1,
+      "因子": "buy_avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "TRXUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "buy_avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "UNIUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "buy_avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "UNIUSDT",
+      "nq": "关闭",
+      "符号": -1,
+      "因子": "buy_avg_price",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "TD_TI_002",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "TD_TI_002",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "0.2/0.8",
+      "符号": -1,
+      "因子": "baseline_035",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_104",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "baseline_141",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "关闭",
+      "符号": 1,
+      "因子": "factor_049",
+      "venue": "okex-futures"
+    },
+    {
+      "标的": "XRPUSDT",
+      "nq": "0.2/0.8",
+      "符号": 1,
+      "因子": "factor_052",
+      "venue": "okex-futures"
+    }
+  ],
+  "signal": {
+    "enabled": false,
+    "max_pos_u": 100,
+    "position_algorithm": "v0",
+    "entry": {
+      "factor_long_quantile": 0.9,
+      "factor_short_quantile": 0.1,
+      "nq_change_enabled": true,
+      "nq_long_quantile": 0.5,
+      "nq_short_quantile": 0.5
+    },
+    "execution": {
+      "factor_exit_quantile_long": 0.3,
+      "factor_exit_quantile_short": 0.7
+    },
+    "spread": {
+      "long_quantile": 0.3,
+      "short_quantile": 0.7
+    },
+    "symbol_overrides": {}
+  }
+}

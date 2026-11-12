@@ -1,6 +1,16 @@
 # Binance / OKX 月度大小单阈值发布
 
-最后更新：2026-11-03 08:38 UTC（Binance Futures 51币，2026-10→2026-11；CTA共享阈值已加载）
+最后更新：2026-11-12 06:26 UTC（Binance Futures 51币、OKX 19币，2026-10→2026-11）
+
+2026-11-12，为Spread02补齐AAVE、AVAX、BCH、ETH、FIL、LINK、LTC、TRX、UNI、XRP
+十个OKX USDT永续的2026-11阈值。2026-10每币31日/744小时均完整，
+共195,325,193笔成交，仍以`price * 原始张数`计算小时KLL P50/P90。
+原9项逐项保持，backfill后19项；两个公共因子计划保持为空，Binance表未改。
+CSV SHA-256：`0bf7e53c93f8e9918ce8767ab70e80959d842bac1462052bb88486c25fcf10ef`。
+CTA按市场将共享表原生OKX键`BASE-USDT-SWAP`转换为内部`BASEUSDT`，数值与单位不变。
+本机输入及回执见`artifacts/cta_spread02_deployment/order_size_202610/`，
+远端写前备份和原子发布回读在`~/cta-factor-spread/run/spread02_20261112T055433Z/`。
+
 
 2026-11-03 08:33 UTC，为当前Prep01 / Prep02补齐51个Binance Futures USDT标的，
 ICX已移除。完整2026-10自然月31日、每币744小时，共1581文件/934404516笔成交，

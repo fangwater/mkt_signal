@@ -19,6 +19,7 @@ members = [
     "crates/fr_monitor",
     "crates/inpos_engine",
     "crates/ipc_common",
+    "crates/ltp_transfer_server",
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
     "crates/notification_server",
