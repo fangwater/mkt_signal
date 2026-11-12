@@ -685,8 +685,8 @@ one explicit setup test and exits. No extra scheduler or GPT model is introduced
   actual net exposure, incomplete data, provider failures and empty UniMMR close lists send
   once on first detection and once on confirmed recovery. There is no periodic
   repeat. Hard single-symbol exposure limits have separate incident identities
-  (`exposure_limit/<env>/<asset>`) so an earlier maker/stall notice cannot suppress
-  immediate escalation; ordinary maker/stall incidents retain their existing
+  (`exposure_limit/<env>/<asset>`) so an earlier maker-buffer notice cannot suppress
+  immediate escalation; ordinary maker-buffer incidents retain their existing
   `exposure/<env>/<asset>` identity. Unknown/missing/stale data never recover a
   prior issue. A fully closed asset requires complete fresh coverage to recover.
   Provider/FR backup source notices are scoped to FR and the current FR catalog;
@@ -715,6 +715,24 @@ tests passed, including stage/worker isolation, failure retry across restart,
 first-alert/recovery deduplication and credential exclusion using local fixtures.
 Evidence: `../artifacts/cta_backup_alerts_20261106/`; rollback and verification:
 `~/delist_risk_server/run/cta-backup-alerts-20261106/`.
+
+Ready risk transitions across accounts are sent as one summary, with separate
+new-alert and recovery lists. There is no per-account send and no extra waiting
+window before a hard-limit notice. A summary includes all ready items that fit
+within 3600 UTF-8 bytes; larger bursts split into bounded messages, leaving
+unsent items in the same durable outbox. Recovery rows show account/symbol and
+issue, while alert rows also show concise measurements; full details remain on
+Delist. Announcements, parameter-change audits and actual-operation events keep
+their existing event format and priority.
+
+Each issue still has its own deduplication and recovery state. All members of an
+in-flight summary are reserved until its send result is known. Only successful
+DingTalk acknowledgement marks its members delivered; failure backs off every
+member and preserves it across restart. Concurrent recovery/recurrence is then
+reconciled per issue. No second queue or new persisted format is introduced.
+The `delivered` counter counts acknowledged messages, and the journal/heartbeat
+continues counting individual risk transitions. The existing four-second send
+interval applies between summary messages.
 
 `data/fr_notifications.json` holds the private atomic outbox, acknowledged issue
 states, product baseline and a bounded processing/operation journal. Pending sends

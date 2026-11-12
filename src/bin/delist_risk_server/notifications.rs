@@ -1,5 +1,6 @@
 //! Independent FR DingTalk outbox. Successful alerts are never repeated; only
 //! confirmed recovery rearms an issue. State and pending deliveries survive restart.
+//! Ready risk changes across accounts share one bounded message and acknowledgement.
 
 use anyhow::{ensure, Context, Result};
 use base64::Engine;
@@ -228,6 +229,54 @@ struct Delivery {
     next_attempt_ms: i64,
 }
 
+struct DeliveryBatch {
+    deliveries: Vec<Delivery>,
+    body: String,
+}
+
+fn batch_message(deliveries: &[Delivery]) -> String {
+    if deliveries.len() == 1 && deliveries[0].issue.is_none() {
+        return deliveries[0].body.clone();
+    }
+    let recoveries = deliveries.iter().filter(|d| d.recovery).count();
+    let mut message = format!(
+        "[风险汇总] 新增 {} 项 · 恢复 {} 项",
+        deliveries.len() - recoveries,
+        recoveries
+    );
+    for (recovery, label) in [(false, "新增报警"), (true, "恢复")] {
+        let rows: Vec<_> = deliveries
+            .iter()
+            .filter(|d| d.recovery == recovery)
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        message.push_str(&format!("\n\n{label}："));
+        for delivery in rows {
+            let mut lines = delivery.body.lines();
+            let title = lines
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches("[告警] ")
+                .trim_start_matches("[恢复] ");
+            message.push_str(&format!("\n• {}", clip(title, 240)));
+            if !recovery {
+                message.push_str(&format!(
+                    "\n  {}",
+                    clip(lines.next().unwrap_or_default(), 180)
+                ));
+            }
+        }
+    }
+    let observed = deliveries.iter().map(|d| d.created_ms).max().unwrap_or(0);
+    message.push_str(&format!(
+        "\n\n检查时间：{}\n详情：http://13.115.227.29:4191/delist/",
+        utc(observed)
+    ));
+    message
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct JournalEntry {
     ts_ms: i64,
@@ -250,7 +299,7 @@ struct Book {
     #[serde(default)]
     parameters: super::parameter_changes::State,
     #[serde(skip)]
-    sending: Option<u64>,
+    sending: BTreeSet<u64>,
     #[serde(skip)]
     needs_save: bool,
 }
@@ -336,7 +385,7 @@ impl Book {
             // Cancel an unsent recovery if the issue recurs. An in-flight
             // recovery is acknowledged first, then the recurrence gets an alert.
             if issue.observed == Some(true)
-                && self.sending != Some(id)
+                && !self.sending.contains(&id)
                 && self.outbox.get(&id).is_some_and(|d| d.recovery)
             {
                 self.outbox.remove(&id);
@@ -383,41 +432,65 @@ impl Book {
         Ok(())
     }
 
-    fn claim(&mut self, now: i64) -> Option<Delivery> {
-        if self.sending.is_some() {
+    fn claim(&mut self, now: i64) -> Option<DeliveryBatch> {
+        if !self.sending.is_empty() {
             return None;
         }
-        let delivery = self
+        let mut ready: Vec<_> = self
             .outbox
             .values()
             .filter(|d| d.next_attempt_ms <= now)
-            .min_by_key(|d| (d.priority, d.id))
-            .cloned()?;
-        self.sending = Some(delivery.id);
-        Some(delivery)
+            .collect();
+        ready.sort_by_key(|d| (d.priority, d.id));
+        let first = *ready.first()?;
+        let mut deliveries = vec![first.clone()];
+        let mut body = batch_message(&deliveries);
+        if first.issue.is_some() {
+            for next in ready
+                .into_iter()
+                .skip(1)
+                .filter(|d| d.issue.is_some() && d.priority == first.priority)
+            {
+                deliveries.push(next.clone());
+                let candidate = batch_message(&deliveries);
+                if candidate.len() > 3600 {
+                    deliveries.pop();
+                    break;
+                }
+                body = candidate;
+            }
+        }
+        self.sending.extend(deliveries.iter().map(|d| d.id));
+        Some(DeliveryBatch { deliveries, body })
     }
 
-    fn finish(&mut self, delivery: &Delivery, success: bool, now: i64) -> Result<()> {
-        self.sending = None;
+    fn finish(&mut self, batch: &DeliveryBatch, success: bool, now: i64) -> Result<()> {
+        self.sending.clear();
         self.needs_save = true;
         if success {
-            self.outbox.remove(&delivery.id);
             self.delivered += 1;
             self.last_sent_ms = Some(now);
             self.last_error = None;
-            if let Some(key) = &delivery.issue {
-                if let Some(issue) = self.issues.get_mut(key) {
-                    issue.notified = !delivery.recovery;
-                    issue.pending = None;
+            for delivery in &batch.deliveries {
+                self.outbox.remove(&delivery.id);
+                if let Some(key) = &delivery.issue {
+                    if let Some(issue) = self.issues.get_mut(key) {
+                        issue.notified = !delivery.recovery;
+                        issue.pending = None;
+                    }
+                    self.reconcile(key, now)?;
                 }
-                self.reconcile(key, now)?;
             }
-        } else if let Some(pending) = self.outbox.get_mut(&delivery.id) {
-            pending.attempts = pending.attempts.saturating_add(1);
-            let backoff = 5_000_i64
-                .saturating_mul(1_i64 << pending.attempts.min(6))
-                .min(300_000);
-            pending.next_attempt_ms = now.saturating_add(backoff);
+        } else {
+            for delivery in &batch.deliveries {
+                if let Some(pending) = self.outbox.get_mut(&delivery.id) {
+                    pending.attempts = pending.attempts.saturating_add(1);
+                    let backoff = 5_000_i64
+                        .saturating_mul(1_i64 << pending.attempts.min(6))
+                        .min(300_000);
+                    pending.next_attempt_ms = now.saturating_add(backoff);
+                }
+            }
             self.last_error = Some("钉钉发送失败，待重试；尚未确认送达".into());
         }
         Ok(())
@@ -971,9 +1044,167 @@ mod tests {
         }]
     }
     fn deliver(book: &mut Book, now: i64) -> Delivery {
-        let d = book.claim(now).unwrap();
+        let mut d = book.claim(now).unwrap();
         book.finish(&d, true, now).unwrap();
-        d
+        assert_eq!(d.deliveries.len(), 1);
+        d.deliveries.remove(0)
+    }
+
+    fn account_observations(bad: Option<bool>) -> Vec<Observation> {
+        (1..=11)
+            .map(|i| Observation {
+                key: format!("exposure/test_fr_arb{i:02}/ON"),
+                title: format!("test_fr_arb{i:02} ON 实际净敞口"),
+                problem: bad,
+                detail: "实际净敞口 1600 USDT；正常区间 1500 USDT".into(),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn eleven_accounts_send_one_alert_and_one_recovery_message() {
+        use axum::{routing::post, Json, Router};
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/notify",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let tx = tx.clone();
+                async move {
+                    tx.send(payload["text"]["content"].as_str().unwrap().to_owned())
+                        .unwrap();
+                    Json(serde_json::json!({"errcode":0}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("fr-batch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let notifier = Notifications::open(
+            dir.join("state.json"),
+            DingTalk::test_sender(
+                reqwest::Url::parse(&format!("http://{address}/notify")).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        notifier
+            .observe(account_observations(Some(true)))
+            .await
+            .unwrap();
+        let worker = tokio::spawn(notifier.clone().run());
+        for (count, expected) in [(1, "新增 11 项 · 恢复 0 项"), (2, "新增 0 项 · 恢复 11 项")]
+        {
+            let message = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(message.contains(expected), "{message}");
+            assert!(message.len() <= 3610);
+            for i in 1..=11 {
+                assert!(message.contains(&format!("test_fr_arb{i:02}")));
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if notifier.status().await["delivered"] == count {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(notifier.status().await["queued"], 0);
+            if count == 1 {
+                notifier
+                    .observe(account_observations(Some(false)))
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(rx.try_recv().is_err());
+        worker.abort();
+        server.abort();
+        let restored: Book =
+            serde_json::from_slice(&std::fs::read(dir.join("state.json")).unwrap()).unwrap();
+        assert_eq!(restored.delivered, 2);
+        assert!(restored.outbox.is_empty());
+        assert!(restored
+            .issues
+            .values()
+            .all(|i| !i.notified && i.pending.is_none()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_batch_survives_restart_and_mixed_changes_reconcile_individually() {
+        let mut book = Book::default();
+        book.observe(account_observations(Some(true)), 100).unwrap();
+        let batch = book.claim(100).unwrap();
+        assert_eq!(batch.deliveries.len(), 11);
+        assert!(book.claim(100).is_none());
+        book.finish(&batch, false, 100).unwrap();
+        assert!(book.issues.values().all(|i| !i.notified));
+        let mut book: Book = serde_json::from_slice(&serde_json::to_vec(&book).unwrap()).unwrap();
+        assert!(book.claim(101).is_none());
+        let batch = book.claim(20_000).unwrap();
+        let mut changes = account_observations(None);
+        changes[0].problem = Some(false);
+        book.observe(changes, 20_001).unwrap();
+        book.finish(&batch, true, 20_002).unwrap();
+        assert_eq!(book.outbox.len(), 1); // Only the known recovery can clear.
+        let mut new = obs(Some(true));
+        new[0].title = "new_fr_arb01 风险".into();
+        book.observe(new, 20_003).unwrap();
+        let mixed = book.claim(20_003).unwrap();
+        assert_eq!(mixed.deliveries.len(), 2);
+        assert!(mixed.body.contains("新增 1 项 · 恢复 1 项"));
+        // An in-flight recovery is not cancelled when its issue recurs.
+        book.observe(account_observations(Some(true)), 20_004)
+            .unwrap();
+        assert_eq!(book.outbox.len(), 2);
+        book.finish(&mixed, true, 20_005).unwrap();
+        let recurrence = book.claim(20_006).unwrap();
+        assert_eq!(recurrence.deliveries.len(), 1);
+        assert!(!recurrence.deliveries[0].recovery);
+        assert_eq!(
+            recurrence.deliveries[0].issue.as_deref(),
+            Some("exposure/test_fr_arb01/ON")
+        );
+    }
+
+    #[test]
+    fn oversized_batches_split_by_bytes_without_losing_or_acknowledging_unsent_items() {
+        let mut book = Book::default();
+        let changes = (0..100)
+            .map(|i| Observation {
+                key: format!("exposure/env{i}/TEST"),
+                title: format!("env{i} TEST {}", "风险".repeat(100)),
+                problem: Some(true),
+                detail: "实际净敞口超过正常区间；".repeat(100),
+            })
+            .collect();
+        book.observe(changes, 100).unwrap();
+        let mut sent = BTreeSet::new();
+        while let Some(batch) = book.claim(100) {
+            assert!(batch.body.len() <= 3600);
+            assert!(batch.deliveries.len() > 1);
+            for d in &batch.deliveries {
+                assert!(sent.insert(d.id));
+            }
+            book.finish(&batch, true, 101).unwrap();
+            assert!(book
+                .outbox
+                .values()
+                .all(|d| !book.issues[d.issue.as_ref().unwrap()].notified));
+        }
+        assert_eq!(sent.len(), 100);
+        assert!(book.delivered > 1 && book.delivered < 100);
+        assert!(book
+            .issues
+            .values()
+            .all(|i| i.notified && i.pending.is_none()));
     }
 
     #[tokio::test]
@@ -1071,7 +1302,7 @@ mod tests {
         book.observe(obs(Some(false)), 101).unwrap();
         book.finish(&alarm, true, 102).unwrap();
         let recovery = book.claim(103).unwrap();
-        assert!(recovery.recovery);
+        assert!(recovery.deliveries[0].recovery);
         book.observe(obs(Some(true)), 104).unwrap();
         book.finish(&recovery, true, 105).unwrap();
         assert!(!deliver(&mut book, 106).recovery);
