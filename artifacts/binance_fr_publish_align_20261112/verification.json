@@ -1,0 +1,497 @@
+{
+  "build": {
+    "commit": "b91dffca975c3c144da52e05b7575682e4104b59",
+    "binaries": {
+      "pre_trade": "7e968e178b0c8c2d3202cf499c0b4aa147d9f85df1d8b520198e925d853cc262",
+      "trade_engine": "84094c9dcaf8b18d7678d29635f5a1983bcbe4c5429a7ce07f2002dfa684223b",
+      "trade_signal": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1",
+      "binance_account_monitor": "94e5b8604a0a41496147e66d7c5546894c976517187cf02a9a8b7ddc99211c2d",
+      "persist_manager": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf",
+      "viz_server": "52c23245e10a8b058d3cf2e1ca0ebff8d60349d2af7afe4df58bb54198b87609",
+      "fr_signal_dashboard": "0a9c62cdaff65ee903734415c6b23b43317dcb4593a726d274973412b45b8114"
+    }
+  },
+  "verified_utc": "2026-11-12T15:01:25.282806+00:00",
+  "publication": "all 3 environments and trade signals running",
+  "excluded_asset": "BNB",
+  "alignment_market": "Binance Portfolio Margin UM futures",
+  "scheduled_interval_seconds": 5,
+  "largest_filled_order_usdt": "98.9321800",
+  "total_orders": 10,
+  "total_filled_usdt": "615.30837600",
+  "commission_usdt": "0.09608783",
+  "accounts": [
+    {
+      "env": "binance_fr_arb02",
+      "processes": [
+        {
+          "pid": 3182128,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 3182458,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "94e5b8604a0a41496147e66d7c5546894c976517187cf02a9a8b7ddc99211c2d"
+        },
+        {
+          "pid": 3182572,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "84094c9dcaf8b18d7678d29635f5a1983bcbe4c5429a7ce07f2002dfa684223b"
+        },
+        {
+          "pid": 3182682,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "7e968e178b0c8c2d3202cf499c0b4aa147d9f85df1d8b520198e925d853cc262"
+        },
+        {
+          "pid": 3183004,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "52c23245e10a8b058d3cf2e1ca0ebff8d60349d2af7afe4df58bb54198b87609"
+        },
+        {
+          "pid": 3183908,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5",
+          "sha256": null
+        },
+        {
+          "pid": 3184203,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "0a9c62cdaff65ee903734415c6b23b43317dcb4593a726d274973412b45b8114"
+        },
+        {
+          "pid": 3188228,
+          "kind": "trade_signal",
+          "comm": "trade_signal",
+          "cpus": "0-5,48-95",
+          "sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1"
+        }
+      ],
+      "config_preserved": true,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "snapshot_ages": {
+        "pre_trade_exposure": 2.6662204265594482,
+        "pre_trade_risk": 2.666222095489502
+      },
+      "manual_order_count": 6,
+      "manual_filled_usdt": "494.8540900",
+      "aligned_symbols": [
+        "FFUSDT",
+        "MUBARAKUSDT"
+      ],
+      "pre_resume_abs_net_excluding_bnb": "18.67568215238445",
+      "pre_resume_max_abs_asset_net_excluding_bnb": "4.178112000",
+      "pre_resume_open_orders": {
+        "um": 0,
+        "margin": 0,
+        "conditional": 0
+      },
+      "log_counts": {
+        "account_monitor": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "trade_engine": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "pre_trade": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "trade_signal": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        }
+      }
+    },
+    {
+      "env": "binance_fr_arb03",
+      "processes": [
+        {
+          "pid": 3185224,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 3185563,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "94e5b8604a0a41496147e66d7c5546894c976517187cf02a9a8b7ddc99211c2d"
+        },
+        {
+          "pid": 3185679,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "84094c9dcaf8b18d7678d29635f5a1983bcbe4c5429a7ce07f2002dfa684223b"
+        },
+        {
+          "pid": 3185801,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "7e968e178b0c8c2d3202cf499c0b4aa147d9f85df1d8b520198e925d853cc262"
+        },
+        {
+          "pid": 3185916,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "52c23245e10a8b058d3cf2e1ca0ebff8d60349d2af7afe4df58bb54198b87609"
+        },
+        {
+          "pid": 3185975,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 3186031,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "0a9c62cdaff65ee903734415c6b23b43317dcb4593a726d274973412b45b8114"
+        },
+        {
+          "pid": 3188355,
+          "kind": "trade_signal",
+          "comm": "trade_signal",
+          "cpus": "0-5,48-95",
+          "sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1"
+        }
+      ],
+      "config_preserved": true,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "snapshot_ages": {
+        "pre_trade_exposure": 2.1276180744171143,
+        "pre_trade_risk": 2.127619743347168
+      },
+      "manual_order_count": 1,
+      "manual_filled_usdt": "7.3810000",
+      "aligned_symbols": [
+        "AWEUSDT"
+      ],
+      "pre_resume_abs_net_excluding_bnb": "8.3191729623506416",
+      "pre_resume_max_abs_asset_net_excluding_bnb": "3.94685991545216",
+      "pre_resume_open_orders": {
+        "um": 0,
+        "margin": 0,
+        "conditional": 0
+      },
+      "log_counts": {
+        "account_monitor": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "trade_engine": {
+          "panic": 0,
+          "51015": 14,
+          "51042": 40,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "pre_trade": {
+          "panic": 0,
+          "51015": 14,
+          "51042": 40,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 10
+        },
+        "trade_signal": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        }
+      }
+    },
+    {
+      "env": "binance_fr_arb04",
+      "processes": [
+        {
+          "pid": 3178959,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 3179507,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "94e5b8604a0a41496147e66d7c5546894c976517187cf02a9a8b7ddc99211c2d"
+        },
+        {
+          "pid": 3179619,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "84094c9dcaf8b18d7678d29635f5a1983bcbe4c5429a7ce07f2002dfa684223b"
+        },
+        {
+          "pid": 3179716,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "7e968e178b0c8c2d3202cf499c0b4aa147d9f85df1d8b520198e925d853cc262"
+        },
+        {
+          "pid": 3179844,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "52c23245e10a8b058d3cf2e1ca0ebff8d60349d2af7afe4df58bb54198b87609"
+        },
+        {
+          "pid": 3179925,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5",
+          "sha256": null
+        },
+        {
+          "pid": 3180187,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "0a9c62cdaff65ee903734415c6b23b43317dcb4593a726d274973412b45b8114"
+        },
+        {
+          "pid": 3188670,
+          "kind": "trade_signal",
+          "comm": "trade_signal",
+          "cpus": "0-5,48-95",
+          "sha256": "cc9e5bbcdc3b5ca2b0fac97d09649a7125d1e6e923c4ad930988a4ac47e3f8b1"
+        }
+      ],
+      "config_preserved": true,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ],
+      "snapshot_ages": {
+        "pre_trade_exposure": 2.963510036468506,
+        "pre_trade_risk": 2.9635114669799805
+      },
+      "manual_order_count": 3,
+      "manual_filled_usdt": "113.07328600",
+      "aligned_symbols": [
+        "CVXUSDT",
+        "MANTAUSDT",
+        "PARTIUSDT"
+      ],
+      "pre_resume_abs_net_excluding_bnb": "39.4345835502842000",
+      "pre_resume_max_abs_asset_net_excluding_bnb": "4.93539995684000",
+      "pre_resume_open_orders": {
+        "um": 0,
+        "margin": 0,
+        "conditional": 0
+      },
+      "log_counts": {
+        "account_monitor": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "trade_engine": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        },
+        "pre_trade": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 300
+        },
+        "trade_signal": {
+          "panic": 0,
+          "51015": 0,
+          "51042": 0,
+          "factor_unavailable": 0,
+          "hedge_stalled": 0,
+          "error": 0
+        }
+      }
+    }
+  ],
+  "protected_checks": [
+    {
+      "env": "/home/ubuntu/gate_fr_arb04",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb03",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb02",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb01",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/gate_fr_arb05",
+      "unchanged": true,
+      "count": 0
+    },
+    {
+      "env": "/home/ubuntu/bitget_fr_arb02",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/bitget_fr_arb03",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/bitget_fr_arb01",
+      "unchanged": true,
+      "count": 8
+    },
+    {
+      "env": "/home/ubuntu/delist_risk_server",
+      "unchanged": false,
+      "count": 1
+    }
+  ],
+  "delist_process_observed": [
+    {
+      "pid": 3195932,
+      "kind": "delist_risk_server",
+      "comm": "delist_risk_ser",
+      "cpus": "28",
+      "sha256": null
+    },
+    {
+      "pid": 3196204,
+      "kind": "rclone",
+      "comm": "rclone",
+      "cpus": "28",
+      "sha256": null
+    }
+  ],
+  "delist": [
+    {
+      "slug": "binance_fr_arb02",
+      "checked_ms": 1794495686417,
+      "complete": true,
+      "risk_status": "ok",
+      "risk_abs_usdt": 11.62017702541008,
+      "limit_usdt": 2368.839443353
+    },
+    {
+      "slug": "binance_fr_arb03",
+      "checked_ms": 1794495686417,
+      "complete": true,
+      "risk_status": "ok",
+      "risk_abs_usdt": 66.81501592868813,
+      "limit_usdt": 11406.9327602877
+    },
+    {
+      "slug": "binance_fr_arb04",
+      "checked_ms": 1794495686417,
+      "complete": true,
+      "risk_status": "ok",
+      "risk_abs_usdt": 253.27706163138714,
+      "limit_usdt": 17969.7149942049
+    }
+  ],
+  "awe_followup": {
+    "ts_ms": 1794495772650,
+    "position": {
+      "asset": "AWE",
+      "symbol": "AWEUSDT",
+      "spot_equity": "945100.39404",
+      "futures_qty": "-943274.0",
+      "net_qty": "1826.39404",
+      "mark": "0.06098000",
+      "net_usdt": "111.3735085592000"
+    },
+    "orders": {
+      "um": [
+        {
+          "symbol": "AWEUSDT",
+          "side": "SELL",
+          "status": "NEW",
+          "origQty": "986",
+          "executedQty": "0"
+        },
+        {
+          "symbol": "AWEUSDT",
+          "side": "SELL",
+          "status": "NEW",
+          "origQty": "841",
+          "executedQty": "0"
+        }
+      ],
+      "margin": [],
+      "conditional": []
+    }
+  }
+}
