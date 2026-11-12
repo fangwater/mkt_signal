@@ -1,6 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 13:55 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 14:30 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12 14:27 UTC，完成JP Bitget FR 01/02/03整套重发，源码`arbmm 2136a80d`。
+7个二进制本地release构建、SCP/SHA-256核验及原子安装；24个服务（含3路signal）
+通过环境本地脚本恢复，快照及运行哈希验收通过。02/03 persist_manager继续CPU15，
+config_server原绑核0-5在启动后恢复；其余服务保持原housekeeping范围，01各服务为
+0-5,48-95。环境配置和`.35.231`源IP不变，98个已记录其他交易/行情进程身份/CPU保持。
+发布前逐盘核验零挂单；02停机间隙新增的10笔AUSDT margin单经撤回复核，03等自然清零
+再更新。无手工对齐或杠杆改动。回执`data/ops/bitget_fr_resume_20261112/`及
+`artifacts/gate_fr_on_repair_20261112/bitget_exception_guard_publication_verification.json`。
+
+此前同版本Delist聚合通知已独立发布，PID3070247，继续CPU28；该次重启前后的142个
+其他已记录应用进程及10份配置指纹保持。页面`46fe3434`热更新“待处理项目”字样，无重启。
+Gate四盘本次没有发布交易进程。详情见`docs/delist_risk_server.md`。
 
 2026-11-12 13:51 UTC，仅更新JP `~/delist_risk_server` 方向maker正常区间报警规则
 `arbmm 0128f5f5`。本地release构建、SCP/SHA-256及原子安装后，经环境本地脚本
@@ -1999,7 +2012,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 24 | crypto_cta_manager / cta_web + crypto_nav_manager | CTA PID3909484；NAV PID483448，MM83777统计接入，交易进程保持 |
 | 25 | binance_exec_spread01 account_monitor | PID3912185；81857独立执行环境 |
 | 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID3920104 / PID3919575 |
-| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3034380（11-12方向maker报警修复），env.sh DELIST_CORE=28；SG隧道于11-11停止 |
+| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3070247（11-12聚合通知修复），env.sh DELIST_CORE=28；SG隧道于11-11停止 |
 | 29 | okex_mm_83777 account_monitor | PID275138；UID556411065144578537，空仓风险解析已修复，实盘账户监控 |
 | 30 | okex_mm_83777 trade_signal | PID291515；BTC/ETH实盘，vol门限开启、Tlen关闭 |
 | 31 | okex_mm_83777 pre_trade | PID424228；实盘风控/开仓/对冲 |

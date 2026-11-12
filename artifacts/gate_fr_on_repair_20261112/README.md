@@ -2,10 +2,11 @@
 
 All times UTC. This records factual execution, including an operator error.
 
-Latest verified operating state: Gate 01–04 signals resumed at 10:33 UTC;
-Bitget 01 was published, 02 was restored on its original binaries after the user
-stopped publication, and 03 was untouched. The subsequent exception-only guard
-correction is local and unpublished. See the final sections below.
+Latest verified operating state: Gate 01–04 signals resumed at 10:33 UTC.
+Bitget 01–03 were all republished from `arbmm 2136a80d` and their signals restored
+by 14:27 UTC. This includes the exception-only guard correction. Gate's four
+trading deployments were not updated in this later rollout and still run their
+earlier guard version. See the final publication record below.
 
 The four JP `gate_fr_arb01–04` environments were stopped through their local
 scripts. Exchange orders were cancelled, and `/proc` plus exchange queries
@@ -283,7 +284,7 @@ first IPC snapshot. By 10:34:05 valid LAB opening decisions used volatility
 0.00080707. The displayed `selected: []` came from the diagnostic log filter,
 not an application exception.
 
-## Exception-only guard correction (unpublished)
+## Exception-only guard correction (initially unpublished)
 
 The removed guard counted each zero-fill hedge terminal as a failure, then
 latched after three failures spanning 30 seconds until a fill or all work was
@@ -322,7 +323,8 @@ stale acknowledgements, netting, future/dust work and the prior ON reversal and
 emergency-reduction cases. Final shared-worktree library run: 1,575 passed,
 3 ignored; `cargo check --bin pre_trade`, formatting and diff whitespace checks
 passed. No CTP code was executed. This correction
-has not been published; subsequent publication remains paused by user request.
+had not been published at that checkpoint; the later authorized Bitget rollout
+is recorded below.
 
 The initial broader `cargo test -p mkt_signal` run stopped at eight unrelated
 `cme_tas_census` tests: the current TAS column-rule input has eight record types
@@ -339,3 +341,45 @@ and 8 ignored. The remaining failures are in unrelated Delist tests: one MM
 backup test encounters a missing file, and three CTA catalog/mapping tests have
 configuration-expectation mismatches. These files and other concurrent worktree
 changes are excluded from the hedge and census-cleanup commits.
+
+
+## Bitget exception-only guard publication completed
+
+On 2026-11-12 the user resumed Bitget publication, conditional on no open orders.
+The initial direct exchange audit found zero futures, spot and margin orders in
+all three environments. Seven runtime binaries were release-built locally from
+synchronized `arbmm 2136a80d`, uploaded to explicit staging paths, SHA-256 checked,
+and atomically installed. All starts and stops used environment-local wrappers.
+Each environment's logs and old binaries were preserved before stopping.
+
+01 completed without resting orders. 02 passed its zero-order preflight, then
+10 unfilled AUSDT margin BUY orders appeared while the signal and execution
+processes were stopping. Installation halted at the second order check. The
+existing cancel script was dry-run and then executed for margin AUSDT only;
+exchange reads confirmed all categories empty, with non-USDT assets and futures
+quantities unchanged across cancellation. Publication then resumed.
+
+03 had 30 margin maker BUY orders (NMR/YB/ASTR) before its attempted update,
+so no process was stopped or binary replaced. After about one minute of read-only
+polling, orders naturally reached zero and another preflight confirmed it;
+03 was then updated. Its stopping sequence froze execution before the signal.
+No discretionary alignment orders, leverage changes or manual spot trades ran.
+
+At 14:27 UTC all 24 services, including all three trade signals, were verified
+against the release manifest, with fresh exposure/risk snapshots. Futures
+quantities matched the stopped snapshot before signal startup in each env.
+Original configuration/source IP `.35.231` remained. 02/03 persistence stays
+on CPU15; their config servers were restored to CPU0-5 because the existing
+wrapper inherited the broader housekeeping mask. Other original masks remained.
+98 recorded non-target trading/market-data process identities and CPU masks
+were unchanged. A post-resume exchange read found one futures order each in
+01/02 and none in03; these are new live-trading observations, not retained orders.
+All three Delist exposure reports were complete/ok at 14:28 UTC.
+
+See `bitget_exception_guard_publication_verification.json`. Full local receipts:
+`data/ops/bitget_fr_resume_20261112/`. Remote stage:
+`/tmp/bitget_fr_resume_550ebc26_20261112/` (the tag names the initial baseline,
+not the final source). Rollback files and logs are under each env's
+`backups/bitget_fr_resume_550ebc26_20261112/`. The simultaneously updated Delist
+now aggregates ready risk alerts/recoveries across accounts; its record is in
+`docs/delist_risk_server.md`.
