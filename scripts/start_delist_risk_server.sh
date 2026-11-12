@@ -125,7 +125,7 @@ ARGS=(
   --redis-backup-dir "${DELIST_REDIS_BACKUP_DIR:-${BASE_DIR}/data/redis_backups}"
   --redis-backup-keep "${DELIST_REDIS_BACKUP_KEEP:-30}"
   --redis-backup-env-root "${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}"
-  --redis-backup-sg-ssh-host "${DELIST_SG_REDIS_SSH_HOST:-sg}"
+  --redis-backup-sg-ssh-host "${DELIST_SG_REDIS_SSH_HOST-sg}"
   --cta-backup-dir "${DELIST_CTA_BACKUP_DIR:-${BASE_DIR}/data/cta_backups}"
   --mm-backup-dir "${DELIST_MM_BACKUP_DIR:-${BASE_DIR}/data/mm_backups}"
   --cta-factor-env "${DELIST_CTA_FACTOR_ENV:-${DELIST_REDIS_BACKUP_ENV_ROOT:-${BASE_DIR}/..}/cta-prep-binance-futures}"

@@ -477,12 +477,7 @@ async fn load_online_symbols(config: &BboSpreadConfig) -> Result<HashSet<String>
     let mut client = RedisClient::connect(config.redis.clone()).await?;
     let mut symbols = HashSet::new();
 
-    for list_name in [
-        "dump_symbols",
-        "fwd_trade_symbols",
-        "bwd_trade_symbols",
-        "unimmr_close_symbols",
-    ] {
+    for list_name in online_symbol_list_names(&config.namespace) {
         let key = symbol_list_redis_key(
             config.key_prefix.as_deref(),
             &config.namespace,
@@ -501,6 +496,19 @@ async fn load_online_symbols(config: &BboSpreadConfig) -> Result<HashSet<String>
     }
 
     Ok(symbols)
+}
+
+fn online_symbol_list_names(namespace: &str) -> &'static [&'static str] {
+    if namespace == "mm" {
+        &["trade_symbols"]
+    } else {
+        &[
+            "dump_symbols",
+            "fwd_trade_symbols",
+            "bwd_trade_symbols",
+            "unimmr_close_symbols",
+        ]
+    }
 }
 
 fn decode_bbo_payload(payload: &[u8]) -> Option<(String, BboSample)> {
@@ -773,6 +781,16 @@ fn env_usize(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mm_bbo_reads_the_shared_market_making_symbol_list() {
+        let keys: Vec<_> = online_symbol_list_names("mm")
+            .iter()
+            .map(|name| symbol_list_redis_key(None, "mm", name, "okex-futures"))
+            .collect();
+        assert_eq!(keys, ["mm_trade_symbols:okex-futures"]);
+        assert_eq!(online_symbol_list_names("intra").len(), 4);
+    }
 
     #[test]
     fn combined_coin_bbo_retains_native_market_and_target_key() {

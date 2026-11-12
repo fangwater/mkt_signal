@@ -192,3 +192,11 @@ local_binance_ed25519_test/
 /artifacts/**/payload/
 /artifacts/**/prior_scripts/
 /artifacts/**/source_before_current_mapping/
+
+# Local account operations and raw CTA replay/audit snapshots.
+# Keep reviewed deployment receipts and configuration sources tracked.
+/artifacts/binance_fr_arb02_withdraw_20261110/
+/artifacts/cta_1h_kline_audit/
+/artifacts/cta_rx03_1h_audit/
+/artifacts/cta_history_continuation_audit/
+/artifacts/cta_spread01_replacement/*.png

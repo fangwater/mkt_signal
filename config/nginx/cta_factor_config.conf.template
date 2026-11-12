@@ -3,10 +3,21 @@ location = /cta/cta-prep-binance-futures/config {
     return 303 /cta/cta-prep-binance-futures/config/;
 }
 location /cta/cta-prep-binance-futures/config/ {
-    set $delist_original_method $request_method;
+    # Use the account workspace's Manager session. Writes still require an
+    # explicit same-origin header, including requests without Sec-Fetch-Site.
+    set $cta_config_expected_origin "$scheme://$http_host";
+    set $cta_config_request_origin $http_origin;
+    if ($request_method ~ ^(GET|HEAD)$) {
+        set $cta_config_request_origin $cta_config_expected_origin;
+    }
+    if ($cta_config_request_origin != $cta_config_expected_origin) {
+        return 403;
+    }
     auth_request /manager-auth/cta-factor-config;
-    auth_request_set $parameter_actor $upstream_http_x_parameter_actor;
-    proxy_set_header X-Parameter-Actor $parameter_actor;
+    # Manager's existing verifier returns status only. Keep a truthful auth
+    # source marker and the audit journal's hashed session; never trust an
+    # actor supplied by the browser or put its session token in this header.
+    proxy_set_header X-Parameter-Actor "manager_session";
     proxy_set_header X-Real-IP $remote_addr;
     proxy_pass http://127.0.0.1:__CTA_CONFIG_PORT__/;
     proxy_http_version 1.1;
@@ -16,16 +27,14 @@ location /cta/cta-prep-binance-futures/config/ {
 }
 location = /manager-auth/cta-factor-config {
     internal;
-    proxy_pass http://127.0.0.1:8787/auth/verify-cta;
+    proxy_pass http://127.0.0.1:18201/api/auth/verify;
     proxy_set_header Cookie $http_cookie;
-    proxy_set_header Origin $http_origin;
-    proxy_set_header X-Original-Method $delist_original_method;
     proxy_set_header X-CTA-Source-ID "__CTA_CONFIG_SOURCE_IDS__";
     proxy_set_header X-CTA-Access configure;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
 }
-# Retire the old editable configuration locations. Delist owns navigation.
+# Retire the old editable configuration locations.
 location = /cta/binance-cta-perp-rx01/config { return 410; }
 location ^~ /cta/binance-cta-perp-rx01/config/ { return 410; }
 location = /cta/binance-cta-perp-rx03/config { return 410; }

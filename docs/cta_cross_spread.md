@@ -1,5 +1,18 @@
 # OKX / Binance CTA Spread
 
+最后更新：2026-11-10 04:01 UTC
+
+Spread01已按用户209条清单整体替换，12币、不分券池，1min/5min/15min/1h分别
+28/56/18/107条规则。仍是公共账户`okex_binace_cross`（内部`cta_cross_spread_rx01`）
+下的OKX/Binance两套Exec；四张策略表均已开启，两侧8条绑定各1份，每规则100U，ctaker执行。
+旧仓及IOTA尾仓已全部成交平掉，旧订单、分仓、因子账本和目标历史已归档后清理。
+1h预热实际使用本地Tardis原始trades及incremental_book_L2合成输入：11币带L2，
+DOGE小时规则仅需成交；12币各768根，共9216根，保留原公式、20档盘口和盘口变化统计。
+价差窗口由两所保留Kafka回放建立；实测OKX最早可读消息为2026-11-08 00:10:09 UTC。
+线上1h109/109项就绪，1min35/35、5min46/49、15min21/22；其余分钟项继续自然预热。
+启用未改变计算代次，不追开历史仓位；从启用后的新封闭bar决策。
+清单、数据来源、SHA-256及最终回执见`artifacts/cta_spread01_replacement/`。
+
 2026-11-03 10:35 UTC，OKX 现货规则刷新误覆盖永续乘数的问题及 TRB 错误账本已修复；
 两侧 Spread pre-trade 恢复，策略继续按 `ctaker` 执行。刷新观察确认 TRB 持仓口径
 稳定，交易所确认 Binance 的 DOT、TRB 和 ETC 对冲仓已成交。详细记录见

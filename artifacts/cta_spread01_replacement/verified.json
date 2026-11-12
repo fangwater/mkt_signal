@@ -1,0 +1,276 @@
+{
+  "verified_at_ms": 1794283304670,
+  "generation": "2e0557ae-8abe-4e81-acc4-e2159f0aac23",
+  "worker_pid": 3923566,
+  "rules": {
+    "1min": 28,
+    "5min": 56,
+    "15min": 18,
+    "1h": 107
+  },
+  "symbol_count": 12,
+  "symbol_pools": 0,
+  "factor_readiness": {
+    "1h": {
+      "ready": 109,
+      "total": 109
+    },
+    "15min": {
+      "ready": 21,
+      "total": 22
+    },
+    "1min": {
+      "ready": 35,
+      "total": 35
+    },
+    "5min": {
+      "ready": 46,
+      "total": 49
+    }
+  },
+  "tables": [
+    {
+      "strategy_name": "cta-spread01-okx-bn-15min-pos",
+      "interval": "15min",
+      "enabled": true,
+      "max_pos_u": 100.0
+    },
+    {
+      "strategy_name": "cta-spread01-okx-bn-1h-pos",
+      "interval": "1h",
+      "enabled": true,
+      "max_pos_u": 100.0
+    },
+    {
+      "strategy_name": "cta-spread01-okx-bn-1min-pos",
+      "interval": "1min",
+      "enabled": true,
+      "max_pos_u": 100.0
+    },
+    {
+      "strategy_name": "cta-spread01-okx-bn-5min-pos",
+      "interval": "5min",
+      "enabled": true,
+      "max_pos_u": 100.0
+    }
+  ],
+  "publication": {
+    "manager_publications": [
+      {
+        "error": null,
+        "last_success_ts_us": 1794283224922607,
+        "manager_url": "http://127.0.0.1:18201/api",
+        "pending_strategies": []
+      }
+    ],
+    "publication_error": null
+  },
+  "bindings": [
+    {
+      "shares": 1,
+      "source_id": "okex_exec_trade01",
+      "binding_name": "cta-spread01-okx-bn-1min-pos",
+      "updated_at_us": 1794282375077320,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-1min-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "okex_exec_trade01",
+      "binding_name": "cta-spread01-okx-bn-5min-pos",
+      "updated_at_us": 1794282375247328,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-5min-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "okex_exec_trade01",
+      "binding_name": "cta-spread01-okx-bn-15min-pos",
+      "updated_at_us": 1794282375429952,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-15min-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "okex_exec_trade01",
+      "binding_name": "cta-spread01-okx-bn-1h-pos",
+      "updated_at_us": 1794282375441447,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-1h-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "binance_exec_spread01",
+      "binding_name": "cta-spread01-okx-bn-1min-pos",
+      "updated_at_us": 1794282375456189,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-1min-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "binance_exec_spread01",
+      "binding_name": "cta-spread01-okx-bn-5min-pos",
+      "updated_at_us": 1794282375471129,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-5min-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "binance_exec_spread01",
+      "binding_name": "cta-spread01-okx-bn-15min-pos",
+      "updated_at_us": 1794282375486284,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-15min-pos"
+    },
+    {
+      "shares": 1,
+      "source_id": "binance_exec_spread01",
+      "binding_name": "cta-spread01-okx-bn-1h-pos",
+      "updated_at_us": 1794282375501545,
+      "order_strategy_name": "lgq_grid_spread",
+      "position_strategy_name": "cta-spread01-okx-bn-1h-pos"
+    }
+  ],
+  "execs": {
+    "okex_exec_trade01": {
+      "position_ready": true,
+      "rows": 0,
+      "nonzero_positions": [],
+      "live_order_qty": 0,
+      "local_ips": [
+        "172.31.35.229",
+        "172.31.35.230"
+      ]
+    },
+    "binance_exec_spread01": {
+      "position_ready": true,
+      "rows": 0,
+      "nonzero_positions": [],
+      "live_order_qty": 0,
+      "local_ips": [
+        "172.31.35.228",
+        "172.31.35.228"
+      ]
+    }
+  },
+  "manager_health": {
+    "status": "ok",
+    "source_count": 5,
+    "generated_at_us": 1794283285681791,
+    "last_attempt_at_us": 1794283265258087,
+    "refresh_interval_secs": 60,
+    "last_refresh_error": null,
+    "pending_target_archives": 0,
+    "pending_target_mirrors": 0,
+    "target_persistence_error": false
+  },
+  "history_rows": 9216,
+  "history_formula_ready": 88,
+  "history_nq_count": 9,
+  "archive": "/home/ubuntu/cta-audits/spread01_reset_20261110T030317Z",
+  "natural_warmup_pending": [
+    "binance-futures-adausdt-15min-baseline_104",
+    "binance-futures-trbusdt-5min-td_ti_002",
+    "binance-futures-trbusdt-5min-tp_vpi_001",
+    "binance-futures-trbusdt-5min-tp_vpi_005"
+  ],
+  "processes": [
+    {
+      "pid": 1358662,
+      "cwd": "/home/ubuntu/okex_exec_trade01",
+      "comm": "python3",
+      "cpu_affinity": "0-5,48-95"
+    },
+    {
+      "pid": 1361135,
+      "cwd": "/home/ubuntu/binance_exec_spread01",
+      "comm": "python3",
+      "cpu_affinity": "0-5,48-95"
+    },
+    {
+      "pid": 2168358,
+      "cwd": "/home/ubuntu/cta-prep-binance-futures",
+      "comm": "cta-prep-binanc",
+      "cpu_affinity": "17"
+    },
+    {
+      "pid": 3894077,
+      "cwd": "/home/ubuntu/okex_exec_trade01",
+      "comm": "persist_manager",
+      "cpu_affinity": "15"
+    },
+    {
+      "pid": 3894220,
+      "cwd": "/home/ubuntu/binance_exec_spread01",
+      "comm": "persist_manager",
+      "cpu_affinity": "15"
+    },
+    {
+      "pid": 3909484,
+      "cwd": "/home/ubuntu/crypto_cta_manager",
+      "comm": "cta_web",
+      "cpu_affinity": "24"
+    },
+    {
+      "pid": 3911954,
+      "cwd": "/home/ubuntu/okex_exec_trade01",
+      "comm": "account_monitor",
+      "cpu_affinity": "21"
+    },
+    {
+      "pid": 3912050,
+      "cwd": "/home/ubuntu/okex_exec_trade01",
+      "comm": "viz_server",
+      "cpu_affinity": "0-5,48-95"
+    },
+    {
+      "pid": 3912185,
+      "cwd": "/home/ubuntu/binance_exec_spread01",
+      "comm": "account_monitor",
+      "cpu_affinity": "25"
+    },
+    {
+      "pid": 3912313,
+      "cwd": "/home/ubuntu/binance_exec_spread01",
+      "comm": "viz_server",
+      "cpu_affinity": "0-5,48-95"
+    },
+    {
+      "pid": 3912345,
+      "cwd": "/home/ubuntu/cta-prep-binance-futures",
+      "comm": "cta-factor-conf",
+      "cpu_affinity": "0-5,48-95"
+    },
+    {
+      "pid": 3918956,
+      "cwd": "/home/ubuntu/okex_exec_trade01",
+      "comm": "trade_engine",
+      "cpu_affinity": "23"
+    },
+    {
+      "pid": 3919273,
+      "cwd": "/home/ubuntu/okex_exec_trade01",
+      "comm": "exec-pre-trade",
+      "cpu_affinity": "22"
+    },
+    {
+      "pid": 3919575,
+      "cwd": "/home/ubuntu/binance_exec_spread01",
+      "comm": "trade_engine",
+      "cpu_affinity": "27"
+    },
+    {
+      "pid": 3920104,
+      "cwd": "/home/ubuntu/binance_exec_spread01",
+      "comm": "exec-pre-trade",
+      "cpu_affinity": "26"
+    },
+    {
+      "pid": 3923566,
+      "cwd": "/home/ubuntu/cta-factor-spread",
+      "comm": "cta-factor-spre",
+      "cpu_affinity": "18"
+    }
+  ],
+  "latest_verification_ms": 1794283423929
+}

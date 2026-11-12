@@ -1,0 +1,15 @@
+{
+  "src/cta_factor_calc/config.rs": "aa0bb6c3c21e116a9c73ef2da646df081cbada791539c785e405f8f59286bda5",
+  "src/cta_factor_calc/mod.rs": "ef6e7993b2993253ef442f95c0bed10399cf099cc8219fa4485d9dba1b910854",
+  "src/cta_factor_calc/positions_tests.rs": "ea4b9f0012e4bcb8ee6e936559563494f2ca512ac89110f3bc3f2df80d8c79e0",
+  "src/cta_factor_calc/tests.rs": "5d0f84ee1078803909a2ff1093b27869c64b5d655d987415c5809904eee6937a",
+  "src/bin/cta_hourly_history.rs": "6eb1861e9f031a2c82c8948bfe41b4508299a5e704a2a8a97649e076dbb4afa3",
+  "web/cta_factor_config/index.html": "7fc33f850a9b5ede19a3a5bd43263a9d821c798803fd4af2f121689fb875fcbc",
+  "crates/persist_manager/examples/retire_spread01_history.rs": "cb4150289c0c20402fb2d0e104d973872441b340bd610247df4c5dd8c0dc1c73",
+  "crates/persist_manager/Cargo.toml": "9ee546c7a030b805e5ee4ababe0c163189b7e144ab5d3a527ef532d67255713b",
+  "config/cta_factor_spread/okex-futures_binance-futures_1min.json": "63b6ccce82fbdb7f3137565c3c4ee58c9a0fcf772e188e49fd19d1eb95a458e9",
+  "config/cta_factor_spread/symbol_groups.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+  "config/cta_factor_spread/okex-futures_binance-futures_5min.json": "9445718cfd4f449224a0eaae7b704f5ea78ac2136418fce5d6615c7f4233cf51",
+  "config/cta_factor_spread/okex-futures_binance-futures_15min.json": "945674f27bd8e4f283ceb1cdff720dee45c9bdaac09a3e969f4d6bd27a0b02dc",
+  "config/cta_factor_spread/okex-futures_binance-futures_1h.json": "aae17f834fabc77b81c1c7bf49687f3ce08c3cc93603c17ab62191668f717ba0"
+}

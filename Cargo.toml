@@ -68,6 +68,10 @@ name = "cta_baseline_seed"
 path = "src/bin/cta_baseline_seed.rs"
 
 [[bin]]
+name = "cta-memory-replay"
+path = "src/bin/cta_memory_replay.rs"
+
+[[bin]]
 name = "dat_pbs"
 path = "src/bin/dat_pbs.rs"
 
@@ -362,6 +366,7 @@ factor_engine = { path = "crates/factor_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }
 rolling_common = { path = "crates/rolling_common" }
 period_pbs = { path = "crates/period_pbs" }
+rdkafka = "0.36"
 viz_common = { path = "crates/viz_common" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"

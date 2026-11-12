@@ -3225,6 +3225,7 @@ dependencies = [
  "prost",
  "quote_plan",
  "rayon",
+ "rdkafka",
  "redis",
  "reqwest",
  "rolling_common",

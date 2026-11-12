@@ -1,0 +1,1674 @@
+[
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_TI_008",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "TD_TI_013",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_020",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_034",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "baseline_196",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "factor_052",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "AAVEUSDT",
+    "factor": "factor_trades_019",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_MT_011",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_MT_019",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_PR_008",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_PT_003",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_008",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "TD_TI_024",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_055",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_104",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "baseline_164",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "depth_log_ba_bps5",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "factor": "factor_trades_044",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PR_015",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_PR_015",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_016",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "TD_TI_033",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "baseline_034",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_052",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_052",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ATOMUSDT",
+    "factor": "factor_114",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_011",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_011",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_MT_038",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_PT_024",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_TI_015",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_TI_031",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_TI_031",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "TD_VI_026",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "depth_touch_add_imb",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_021",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "BCHUSDT",
+    "factor": "factor_094",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "TP_VPI_006",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "baseline_104",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "CRVUSDT",
+    "factor": "factor_052",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_032",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_036",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_036",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_039",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_039",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_MT_040",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PR_010",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PR_010",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PR_010",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_004",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_PT_010",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_008",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_008",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_008",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_024",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_027",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_030",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_TI_038",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_VI_025",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TD_VI_028",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_004",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_011",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_011",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_018",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "TP_VPI_019",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_006",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_025",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_035",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_035",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_116",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_123",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_164",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "baseline_174",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_046",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_172",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_trades_010",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_trades_010",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOGEUSDT",
+    "factor": "factor_trades_044",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_019",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_032",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_MT_040",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_008",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_024",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_024",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_027",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_031",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TD_TI_031",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TP_VPI_006",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "TP_VPI_006",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_006",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_011",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_025",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_035",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_081",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_141",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_157",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "baseline_164",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "buy_volume",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_004",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_052",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_111",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_033",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_043",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "DOTUSDT",
+    "factor": "factor_trades_044",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_MT_017",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_PT_003",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_PT_004",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_TI_008",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_VI_028",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "TD_VI_028",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_113",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "baseline_141",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_052",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "ETCUSDT",
+    "factor": "factor_trades_025",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_008",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "TD_TI_027",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_177",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "FILUSDT",
+    "factor": "factor_trades_014",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_MT_022",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_PR_006",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_024",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_024",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_036",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_037",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TD_TI_038",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "TP_VPI_004",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_005",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_005",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_028",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_126",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_141",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_164",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "baseline_164",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "depth_level_imb",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_036",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_051",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_052",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_102",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_102",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_125",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "NEARUSDT",
+    "factor": "factor_trades_024",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_015",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_017",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_019",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_021",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_027",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_042",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_MT_042",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PR_005",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_009",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_PT_009",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_002",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_024",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_027",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_038",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_TI_038",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_011",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TD_VI_025",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TP_VPI_001",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "TP_VPI_005",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_005",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_019",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_045",
+    "nq": "0.2/0.8",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_045",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_045",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_046",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_046",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_053",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_077",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_079",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_105",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_105",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_116",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_120",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_129",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_141",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_163",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_164",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "baseline_198",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "depth_touch_net",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_037",
+    "nq": "关闭",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_094",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_125",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "15min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "nq": "0.2/0.8",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "TRBUSDT",
+    "factor": "factor_trades_045",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "5min",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_025",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_040",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_091",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "baseline_113",
+    "nq": "关闭",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_107",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_trades_020",
+    "nq": "0.50",
+    "sign": -1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  },
+  {
+    "symbol": "UNIUSDT",
+    "factor": "factor_trades_036",
+    "nq": "0.50",
+    "sign": 1,
+    "interval": "1h",
+    "venue": "binance-futures"
+  }
+]

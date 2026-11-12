@@ -33,14 +33,10 @@ This layout pins market-data processes to dedicated cores where possible.
 Treat CPU0-5 as housekeeping/general OS capacity and market-data cores as
 explicit per-process bindings.
 
-- 5 `spread_pbs` processes:
-  - Binance split into 2 processes: `binance-margin` and `binance-futures`.
-  - Gate, OKEx, and Bitget each run as one `*-both` process.
-- 2 `depth_pub` processes:
-  - Binance runs one `binance-both` depth publisher on CPU14.
-  - OKEx runs one `okex-both` depth publisher on CPU13 for model input.
-  - Bitget and Gate depth publishers are not running in the current
-    layout.
+- `spread_pbs` runs Binance margin, Binance futures market and bookticker,
+  Gate, OKEx, Bitget, Gate/Bitget futures BBO, and Bybit market and bookticker.
+- `depth_pub_general` runs on CPU13 for Binance, OKEx, Bitget and Gate;
+  Bybit depth is provided by a separate unpinned `depth_pub` process.
 - Model-input auxiliary processes also run on housekeeping/general cores:
   - OKEx margin/futures rolling metrics: `rm_ok_mg_ok_fu`.
   - OKEx margin trade-flow feature publisher: `tff_ok_mg`.
@@ -51,16 +47,25 @@ explicit per-process bindings.
 | CPU | Process | Venue dir | Env override | pmdaemon name |
 | --- | --- | --- | --- | --- |
 | 8 | `spread_pbs` | `~/spread_pbs/binance-margin` | `SPREAD_PBS_CORE=8` | `spp_bn_mg` |
-| 9 | `spread_pbs` | `~/spread_pbs/binance-futures` | `SPREAD_PBS_CORE=9` | `spp_bn_fu` |
+| 9 | `spread_pbs` | `~/spread_pbs/binance-futures` bookticker | split role | `spp_bn_fu_bookticker` |
 | 10 | `spread_pbs` | `~/spread_pbs/gate-both` | `SPREAD_PBS_CORE=10` | `spp_gt_bo` |
 | 11 | `spread_pbs` | `~/spread_pbs/bitget-both` | `SPREAD_PBS_CORE=11` | `spp_bg_bo` |
 | 12 | `spread_pbs` | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=12`; source OKX credentials, then unset `IPC_NAMESPACE` | `spp_ok_bo` |
-| 13 | `depth_pub` | `~/depth_pub/okex-both` | `DEPTH_PUB_CORE=13` | `dp_ok_both` |
-| 14 | `depth_pub` | `~/depth_pub/binance-both` | `DEPTH_PUB_CORE=14` | `dp_bn_both` |
+| 13 | `depth_pub_general` | `~/depth_pub/general` | core 13 | `dp_general` |
+| 14 | `spread_pbs` | `~/spread_pbs/binance-futures` market | split role | `spp_bn_fu_market` |
 
-Treat the table as authoritative for the current market-data host unless the user explicitly
-updates the topology. Do not assume CPU13 is Bitget depth on this host; it is
-currently OKEx `depth_pub`.
+On 2026-11-11, JP additionally deployed `bybit-both` spread publishers on
+CPU33 (market) and CPU34 (bookticker), using `ens42` sources
+`172.31.46.90/172.31.46.91`. A separate `~/depth_pub/bybit-both` publishes
+Bybit margin and futures depth25 on housekeeping cores; Bybit trade-flow
+publishers and margin/futures rolling metrics also run on housekeeping cores.
+As with Gate on JP, both Bybit trade-flow configs use `depth_channel: "none"`;
+this enables RL volatility only, not the full trade-flow feature. The
+independently published depth25 remains available to other consumers.
+Re-check live process state and sample readiness before using them for trading.
+
+Check the live process state and `docs/core_allocation.md` before changing this
+layout; the shared depth publisher on CPU13 handles several venues.
 
 ## Dual ENI Network Lanes
 
@@ -88,6 +93,33 @@ to Linux, never public/EIP addresses directly.
 | `ens42` | `172.31.46.91` | `54.199.82.56` |
 | `ens42` | `172.31.46.92` | `52.192.54.88` |
 | `ens42` | `172.31.46.93` | `18.181.48.65` |
+
+For JP `bybit_fr_arb01`, use
+`local_ips = ["172.31.35.232", "172.31.35.233"]` on `ens41`, shared with
+`gate_fr_arb02`. On 2026-11-11 both sources passed signed Bybit account-info
+requests with that environment's key; the SG runtime was stopped and the JP
+runtime was deployed. An EDGE imbalance during cutover was hedged after user
+approval and pre_trade was restarted to clear stale hedge state; the signal
+was resumed. Re-check risk, open orders and live state before any operation.
+Re-check authentication and actual REST and WebSocket source addresses, and
+ensure SG and JP never trade the same account concurrently.
+
+The 2026-11-11 SG top-level environment inventory found three distinct Bybit
+API keys. The FR environment is on JP; the other environments remain pending:
+
+| Key group | SG environments sharing the key | JP plan |
+| --- | --- | --- |
+| FR | `bybit_fr_arb01`, `bybit-intra-arb01` | FR uses `.232/.233` as above; intra migration and source IPs pending |
+| Intra/Exec | `bybit-intra-arb02`, `bybit_exec_trade02` | Environments, source IPs and schedule pending |
+| Cross | `bybit-binance-cross-arb01` | Environment, source IPs and schedule pending; separately verify Binance credentials and dependencies |
+
+All three keys authenticated from SG's trading IP, and their queried whitelists
+included the JP order-lane addresses. Only the FR key has been directly tested
+from JP. Before migrating any other key, select its source IPs and perform a
+signed read-only test from those exact addresses; verify market data, account
+ownership and strategy dependencies. Shared credentials do not authorize
+concurrent trading of the same account from SG and JP. Do not treat the SG
+environment inventory as a complete inventory of all keys at Bybit.
 
 Keep the current `spread_pbs` source assignments explicit:
 
@@ -212,6 +244,11 @@ Check worktree state before changing repo scripts:
 git status --short
 git diff --stat
 ```
+
+The deployment and verification examples below predate the current shared
+`depth_pub_general` and Binance split-role layout. Do not run the old depth
+or Binance examples as written; use the environment-local scripts and the
+current live inventory in `docs/core_allocation.md`.
 
 Deploy the selected venues from the repo checkout:
 

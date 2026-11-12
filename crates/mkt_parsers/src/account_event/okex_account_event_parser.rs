@@ -15,6 +15,9 @@ use log::{debug, info, warn};
 use sonic_rs::JsonValueTrait;
 use symbol_utils::TradingVenue;
 
+// Keep this finite so risk classification and UniMMR recovery accept it.
+const OKEX_NO_MAINTENANCE_MARGIN_RATIO: f64 = 99_999_999.0;
+
 #[derive(Clone)]
 pub struct OkexAccountEventParser;
 
@@ -234,7 +237,7 @@ impl OkexAccountEventParser {
                 actual_equity_usd,
                 parse_f64_field(account.get("mmr")),
                 parse_f64_field(account.get("imr")),
-                parse_f64_field(account.get("mgnRatio")),
+                parse_account_margin_ratio(account),
                 parse_f64_field(account.get("borrowFroz")),
                 parse_f64_field(account.get("notionalUsd")),
             );
@@ -608,6 +611,23 @@ fn parse_f64_field(v: Option<&serde_json::Value>) -> f64 {
     parse_f64_field_opt(v).unwrap_or(0.0)
 }
 
+fn parse_account_margin_ratio(account: &serde_json::Value) -> f64 {
+    let raw_ratio = account.get("mgnRatio");
+    // OKX reports an empty ratio when no maintenance margin is required. Do
+    // not turn missing/malformed MMR or an explicit zero ratio into safe risk.
+    if raw_ratio
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.trim().is_empty())
+        && parse_f64_field_opt(account.get("mmr")) == Some(0.0)
+        && parse_f64_field_opt(account.get("adjEq"))
+            .is_some_and(|equity| equity.is_finite() && equity > 0.0)
+    {
+        OKEX_NO_MAINTENANCE_MARGIN_RATIO
+    } else {
+        parse_f64_field(raw_ratio)
+    }
+}
+
 fn parse_abs_f64_field(v: Option<&serde_json::Value>) -> Option<f64> {
     v.and_then(|val| {
         if let Some(n) = val.as_f64() {
@@ -955,6 +975,71 @@ mod tests {
         assert!((risk.margin_ratio - 66.7489666667).abs() < 1e-12);
         assert!((risk.borrowed_usd - 100.0).abs() < 1e-12);
         assert!((risk.notional_usd - 300_000.0).abs() < 1e-9);
+    }
+
+    fn parse_test_account_risk(account: serde_json::Value) -> BasicAccountRiskMsg {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let event = serde_json::json!({"arg": {"channel": "account"}, "data": [account]});
+        assert_eq!(parser.parse(Bytes::from(event.to_string()), &sink), 1);
+        let wrapped = sink.recv().expect("risk event");
+        let (kind, scope, payload) = split_basic_account_event(&wrapped).expect("wrapped risk");
+        assert_eq!(kind, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        BasicAccountRiskMsg::from_bytes(payload).expect("risk payload")
+    }
+
+    #[test]
+    fn account_risk_empty_ratio_without_maintenance_margin_is_free_trade() {
+        use crate::msg::basic_account_msg::{AccountRiskLevel, AccountRiskLevelProvider};
+
+        let risk = parse_test_account_risk(serde_json::json!({
+            "uTime": "1794296603708", "adjEq": "998.68", "totalEq": "998.68",
+            "imr": "0", "mmr": "0", "mgnRatio": "", "notionalUsd": "0"
+        }));
+        assert_eq!(risk.margin_ratio, OKEX_NO_MAINTENANCE_MARGIN_RATIO);
+        assert!(risk.margin_ratio.is_finite());
+        assert_eq!(risk.maintenance_margin_usd, 0.0);
+        assert_eq!(risk.timestamp, 1_794_296_603_708);
+        assert_eq!(
+            risk.account_risk_level(BasicAccountScope::OkexUnified),
+            Some(AccountRiskLevel::FreeTrade)
+        );
+    }
+
+    #[test]
+    fn account_risk_preserves_explicit_low_ratios_even_without_maintenance_margin() {
+        use crate::msg::basic_account_msg::{AccountRiskLevel, AccountRiskLevelProvider};
+
+        for ratio in ["0", "1", "1.04"] {
+            let risk = parse_test_account_risk(serde_json::json!({
+                "adjEq": "1000", "mmr": "0", "mgnRatio": ratio
+            }));
+            assert_eq!(risk.margin_ratio, ratio.parse::<f64>().unwrap());
+            assert_eq!(
+                risk.account_risk_level(BasicAccountScope::OkexUnified),
+                Some(AccountRiskLevel::Liquidation)
+            );
+        }
+    }
+
+    #[test]
+    fn account_risk_requires_factual_zero_maintenance_and_positive_equity_for_empty_ratio() {
+        for account in [
+            serde_json::json!({"adjEq": "1000", "mmr": "10", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "1000", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "1000", "mmr": "", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "1000", "mmr": "bad", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "0", "mmr": "0", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "-1", "mmr": "0", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "NaN", "mmr": "0", "mgnRatio": ""}),
+            serde_json::json!({"mmr": "0", "mgnRatio": ""}),
+            serde_json::json!({"adjEq": "1000", "mmr": "0", "mgnRatio": "bad"}),
+            serde_json::json!({"adjEq": "1000", "mmr": "0"}),
+        ] {
+            let risk = parse_test_account_risk(account.clone());
+            assert_eq!(risk.margin_ratio, 0.0, "account={account}");
+        }
     }
 
     #[test]

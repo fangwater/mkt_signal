@@ -96,18 +96,7 @@ fn needs_depth(name: &str) -> bool {
     name.starts_with("depth_") || name.starts_with("factor_") && !name.starts_with("factor_trades_")
 }
 fn needs_size(name: &str) -> bool {
-    matches!(
-        name,
-        "TD_TI_031"
-            | "baseline_035"
-            | "baseline_046"
-            | "factor_trades_018"
-            | "large_sell"
-            | "net_buy_medium"
-            | "small_order"
-            | "small_sell"
-            | "medium_buy"
-    )
+    mkt_signal::cta_factor_calc::requires_amount_thresholds(name)
 }
 fn rule_jobs(paths: &[PathBuf]) -> Result<(Vec<Job>, Plan)> {
     let mut jobs = BTreeMap::<String, Job>::new();
@@ -500,7 +489,10 @@ fn main() -> Result<()> {
                 records += 1;
                 last = last.max(period.ts);
                 if progress.elapsed().as_secs() >= 20 {
-                    eprintln!("KAFKA records={records} last_period_ms={last} points={points} elapsed={:.1}s",started.elapsed().as_secs_f64());
+                    eprintln!(
+                        "KAFKA records={records} last_period_ms={last} points={points} elapsed={:.1}s",
+                        started.elapsed().as_secs_f64()
+                    );
                     progress = Instant::now();
                 }
             }
@@ -654,6 +646,23 @@ mod tests {
         let mut out = GzEncoder::new(fs::File::create(path).unwrap(), Compression::fast());
         out.write_all(text.as_bytes()).unwrap();
         out.finish().unwrap();
+    }
+
+    #[test]
+    fn history_classification_covers_all_factors_requiring_live_thresholds() {
+        for name in [
+            "baseline_196",
+            "factor_trades_019",
+            "factor_trades_020",
+            "TD_TI_031",
+        ] {
+            assert!(
+                needs_size(name),
+                "missing factual classification for {name}"
+            );
+        }
+        assert!(!needs_size("TD_TI_008"));
+        assert!(!needs_size("depth_touch_net"));
     }
 
     #[test]

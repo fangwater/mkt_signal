@@ -1,0 +1,10 @@
+{
+  "release": "cta_factor_config_auth_20261110T043440Z",
+  "source_commit": "a00dc38fe068dcd1e4b0a32cbaa8139c4856f166",
+  "source_branch": "arbmm",
+  "previous_sha256": "b667bbc68f03d65014bf61a611ef7378f51a91782fffff7ce1577d62f5e5aaa2",
+  "candidate_sha256": "a00a7084dcb5ce2774623989bd300d37cc6012f760306c1255f62061f104e615",
+  "scope": "binance_exec_rx01,binance_exec_rx03,okex_exec_trade01,binance_exec_spread01",
+  "actor": "manager_session",
+  "session_fingerprint_retained": true
+}

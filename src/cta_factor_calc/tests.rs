@@ -181,7 +181,7 @@ fn strategy_groups_share_calculations_and_own_independent_frequency_strategies()
             "spread01",
             "spread02",
             Worker::Spread,
-            2,
+            8,
         ),
     ] {
         let config = Config::load(std::path::Path::new(config_path)).unwrap();
@@ -432,7 +432,11 @@ fn prep02_templates_keep_5min_15min_after_icx_and_1min_retirement() {
     assert_eq!(plan.symbol_groups.0["top-20"].len(), 20);
     assert_eq!(plan.symbol_groups.0["last-20"].len(), 19);
     let spread = Plan::load(std::path::Path::new("config/cta_factor_spread")).unwrap();
-    assert_eq!(spread.symbol_groups, plan.symbol_groups);
+    assert!(spread.symbol_groups.0.is_empty());
+    assert!(spread
+        .combinations
+        .values()
+        .all(|combination| combination.symbol_group.is_none()));
 }
 
 #[test]

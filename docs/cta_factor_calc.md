@@ -1,6 +1,6 @@
 # CTA 因子计算与仓位表
 
-最后更新：2026-11-09（1h Tardis 原生输入历史包及 Kafka 衔接）
+最后更新：2026-11-10（Spread01 四频段全量替换，取消券池）
 
 ## 券池维度
 
@@ -9,7 +9,8 @@ Prep 和 Spread 现在按 `strategy_group × symbol_group × 市场 × interval`
 同一标的可以出现在多个券池，各券池分别维护规则、开关、额度、开平仓阈值、仓位账本和
 Manager 归属。比如 `cta-top-5-prep02-bn-1min-pos` 与
 `cta-top-20-prep02-bn-1min-pos` 是两个策略，公共因子计算仍只进行一次。
-Spread 对应 `cta-top-5-spread01-okx-bn-1min-pos`。
+带券池的 Spread 可使用 `cta-top-5-spread01-okx-bn-1min-pos`；当前 Spread01 按用户要求不设券池，
+使用 `cta-spread01-okx-bn-{1min,5min,15min,1h}-pos` 四张表。
 
 每个计算进程的组合目录内新增 `symbol_groups.json`，直接接受组名到完整 USDT 币对数组的 JSON：
 
@@ -83,12 +84,15 @@ cta-factor-spread --config config/cta_factor_spread.toml --put-symbol-groups /pa
 | `cta-prep01-bn-5min-pos` | 5min | `binance-futures_5min.json.signal.max_pos_u` |
 | `cta-prep01-bn-15min-pos` | 15min | `binance-futures_15min.json.signal.max_pos_u` |
 | `cta-spread01-okx-bn-1min-pos` | 1min | `cta_factor_spread/okex-futures_binance-futures_1min.json.signal.max_pos_u` |
+| `cta-spread01-okx-bn-5min-pos` | 5min | `cta_factor_spread/okex-futures_binance-futures_5min.json.signal.max_pos_u` |
+| `cta-spread01-okx-bn-15min-pos` | 15min | `cta_factor_spread/okex-futures_binance-futures_15min.json.signal.max_pos_u` |
+| `cta-spread01-okx-bn-1h-pos` | 1h | `cta_factor_spread/okex-futures_binance-futures_1h.json.signal.max_pos_u` |
 
 组合文件名必须与 `name` 一致；用 `prep02_binance-futures_1min` 等名字区分同频段配置。
 每份 JSON 显式填写 `strategy_group`（1–32 位小写字母、数字或下划线，以字母开头）。
 Manager 策略名为 `cta-<strategy_group>-<市场缩写>-<频段>-pos`，Spread 增加参照市场缩写。
 同一策略组/券池/市场/频段只允许一份带 `signal` 的组合；不同组可同时配置同市场同频段。
-同一组可包含 1min / 5min / 15min / 1h 四个 Prep 频段，Spread 支持 1min / 1h。
+同一组可包含 1min / 5min / 15min / 1h 四个 Prep 频段，Spread 支持相同四个频段。
 两个计算进程各持有自己的单实例运行锁。
 共享完整因子 ID 的定义必须一致；各组可以有不同符号权重、NQ 门槛及交易参数。
 
@@ -108,7 +112,7 @@ Spread 每个 symbol × factor 一份；不是整个频段共享一个总金额�
 
 仓位表由因子进程内的 `cta_factor_calc::positions` 模块维护，不再启动独立
 `cta-signal` / `cta_*_signal` 进程。Prep 进程持有各策略组配置的四个频段表，Spread 进程
-持有各策略组的 OKX–Binance 1min / 1h 表。仓位直接读取当前有效计算代次的结果，无需通过
+持有各策略组的 OKX–Binance 1min / 5min / 15min / 1h 表。仓位直接读取当前有效计算代次的结果，无需通过
 IPC 订阅自己的因子流；原因子 IPC 仍可供其他只读消费者使用。
 
 每张表在 `<history_dir>/positions/<仓位表名>.json` 持久化完整组合、子仓位、
@@ -193,7 +197,7 @@ bar 的 `high-close` 之和，与 Rust 实现一致。用户确认将 SOL/DOGE 1
 |---|---:|---|
 | Prep01 | 3 | `cta-prep01-bn-{1min,5min,15min}-pos` |
 | Prep02 | 3 | `cta-prep02-bn-{1min,5min,15min}-pos` |
-| Spread01 | 1 | `cta-spread01-okx-bn-1min-pos` |
+| Spread01 | 4 | `cta-spread01-okx-bn-{1min,5min,15min,1h}-pos` |
 | PRC RBF | 3 | `rbf_big`、`rbf_mid_1min`、`rbf_small` |
 | PRC funding | 1 | `funding` |
 | PRC CTA | 2 | `CTA_TOP_V1`、`CTA_TOP_V2` |
@@ -205,7 +209,8 @@ PRC 的真实账户绑定、权限、令牌和 virtual01 保留。没有发送�
 
 ## 统一配置入口和 JSON
 
-统一导航入口为 `/delist/`，固定提供 CTA Prep 和 CTA Spread 两个配置链接。
+`/delist/` 提供 CTA Prep 和 CTA Spread 两个配置链接；Manager 账号卡片、账号概览及
+策略卡片也提供「信号配置」，策略链接直接选择对应频段。
 链接通过 `?worker=cta-prep-binance-futures` / `?worker=cta-factor-spread` 选择清单；
 配置页也提供“返回 Delist”。Spread 的便捷入口 `/cta/cta-factor-spread/config/`
 跳转到同一编辑器的 Spread 清单，保留各自独立的计算与回放状态。
@@ -213,9 +218,16 @@ PRC 的真实账户绑定、权限、令牌和 virtual01 保留。没有发送�
 新的页面路径为 `/cta/cta-prep-binance-futures/config/`，由独立
 `cta-factor-config` 提供（默认仅监听 `127.0.0.1:19220`）。这是源码中准备的
 入口。页面沿用旧 CTA Perp 配置中心的深色样式，先选择 Prep/Spread、策略组与券池，
-再用 1min/5min/15min/1h 标签切换当前频段；Spread 展示 1min / 1h。每个频段独立维护
+再用 1min/5min/15min/1h 标签切换当前频段；Spread 展示 1min / 5min / 15min / 1h。每个频段独立维护
 开关、USDT 金额、开平仓阈值和因子 JSON；页面没有仓位表、计算窗口参数、逐行编辑器
 或其他因子输入格式。配置服务器只写组合 JSON，不直接发布持仓或订单。
+
+2026-11-10，统一编辑器网关改为沿用 Manager 会话，并检查共享编辑器涉及全部账号的
+`configure` 权限，不再额外要求 Delist 登录。匿名返回401、无配置权限返回403；
+非GET/HEAD请求必须携带与网关一致的Origin。Nginx覆盖客户端审计身份头为
+`manager_session`，日志保留会话指纹；此标记不是已解析的用户名。
+修复仅平滑重载Nginx，没有重启Manager、计算或交易进程，也未修改策略文件。
+回执见 `artifacts/cta_factor_config_auth_20261110/`。
 
 配置预览、保存及 worker 的 `--put-combination` / `--import-symbol-factors`
 会先查询 Binance USD-M 完整合约目录，仅保留 `status=TRADING` 的 Binance
@@ -290,14 +302,17 @@ Spread 因子来源市场以及既有内部计算参数和阈值覆盖。校验�
 跨市场 spread 行使用 `因子=spread` 和 `reference_venue`。同一组合需要另一
 市场或频率时，可在具体行显式覆盖 `venue`、`interval`；普通单 venue 行仍只有
 原四列。`config/cta_factor_spread/okex-futures_binance-futures_1min.json` 为正式 Spread 清单：
-TRB、DOT、ADA、NEAR、ATOM、DOGE、ETC、CRV，共 34 条普通因子规则，符号沿用用户提供值。
-默认 NQ 0.50，自动补齐各标的的 NQ 和价差，合并为 50 项计算；发布保持关闭。
+Spread01 当前为12币、209条普通因子规则：1min 28条、5min 56条、15min 18条、1h 107条。
+四份 `okex-futures_binance-futures_<interval>.json` 使用同一 `spread01` 策略组、不设券池，
+`symbol_groups.json` 为空。保留每行符号及NQ，自动补齐NQ和价差后合并为215项计算。
+原34条规则及旧账本已整体退役；仓库模板均关闭，线上状态及归档见
+`artifacts/cta_spread01_replacement/`。
 `cta-prep-binance-futures` 只接受 Binance 永续输入；OKX 和混合市场计算由独立
 `cta-factor-spread` 承担，可用同一个配置服务程序的 `--spread --config ...`
 入口维护。也可在主配置服务增加 `--spread-config /path/cta_factor_spread.toml`，
 在同一页面切换两个独立计算进程；环境脚本使用 `CTA_SPREAD_FACTOR_CONFIG`。
 两份目录、回放状态和并发保存摘要保持独立。Prep 仓位表仅支持 Binance 永续；
-Spread 仓位表支持 OKX–Binance 永续 1min / 1h、v0，并要求显式填写
+Spread 仓位表支持 OKX–Binance 永续 1min / 5min / 15min / 1h、v0，并要求显式填写
 `signal.spread.long_quantile` 与 `short_quantile`。普通因子行的 `venue` 指向
 `binance-futures`，组合的 `venue` / `reference_venue` 分别为 OKX / Binance；
 程序自动补齐每个标的的 spread 依赖，无需手工重复添加计算行。

@@ -1,6 +1,41 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-11 05:15 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-11 09:05 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-11 09:04 UTC，JP Delist 移除 SG Redis、远程平仓及备份主机配置，
+经环境本地脚本停止 SG SSH 隧道并重启 Delist PID3513519，保持 CPU28。
+11个 JP Viz 快照目标全部验证通过，Bybit FR 交易及 NAV 保持运行。回退配置位于
+JP `~/delist_risk_server/backups/retire_sg_20261111/`。
+
+2026-11-11 08:57 UTC，按用户要求停止 SG 剩余旧应用：Bybit intra01 的
+Config/Viz、Bybit 双路 spread、depth、现货和永续 trade-flow、rolling metrics、
+SG public bridge，以及 SG TLen Config 和 CTA Manager；CTA Manager 已禁用自启动。
+PM2 保存列表已清空，旧列表备份在 SG `~/backups/retire_sg_apps_20261111/`。
+SG 未发现交易、行情或上述应用进程；系统设施、Redis、数据库和共享连接保留。
+JP Bybit FR 交易及行情仍运行，NAV active；当时杠杆约1.62，原1.60上限仍限制新开仓。
+
+2026-11-11 05:34–05:44 UTC，按用户确认将 EDGE 永续单笔 reduce-only 市价买入
+2402枚，15笔成交均为taker，平均价0.37282265、手续费0.16119366 USDT；NAV已核验
+15笔成交及手续费。停止信号后旧hedge订单自动撤销，手工对齐后重启信号时发现旧
+pre_trade内存仍保留待对冲数量并产生9笔重复买单；立即停signal和pre_trade、全部撤单，
+确认无重复成交，再重启pre_trade重建仓位，先不发单验证后恢复实盘信号。
+当前pre_trade PID3081168、signal PID3085759，行情market PID3086525/CPU33、
+bookticker PID3086954/CPU34；SG全部FR进程停止。EDGE净差约0.13 USDT、总净差约
+23.8 USDT、风险free_trade、UniMMR约6.06、pos_dump为空，现无活动订单。
+当前杠杆约1.64高于原上限1.60，新开仓被风控拦截；未修改原杠杆或风险参数。
+迁移/订单记录在JP `~/bybit_fr_arb01/run/migration_20261111/`。
+
+2026-11-11 05:02–05:30 UTC，将 `bybit_fr_arb01` 从 SG 迁至 JP：SG 全套停止，
+停信号后现货/永续订单两次复查为0；1.4G RocksDB 141文件逐项SHA-256核验后迁至JP。
+JP persist PID3004553/CPU15；account_monitor PID3005120、trade_engine PID3009154、
+pre_trade PID3011353、Viz PID3011461、Config PID3011519、dashboard PID3011568
+均在 housekeeping；交易两路 `.35.232/.35.233`、REST及WS认证通过。JP 网关、
+Delist和NAV已改读本地快照，NAV PID3044325已订阅本地账户风险IPC；Delist
+PID3042125、SG共享隧道 PID3041901 均CPU28。JP行情 market PID3048782/CPU33、
+bookticker PID3048809/CPU34，接口20041/20141/20341为本机回环。
+05:25 短暂恢复信号后 EDGE 浓度平仓形成约895 USDT净空；05:28暂停signal并撤销
+EDGE现货单，原合约对冲maker单已超时撤销；该历史净差随后已按上文对齐。
+`~/bybit_fr_arb01/run/migration_20261111/`保留迁移哈希及配置回退；SG原库保留。
 
 2026-11-11 05:15 UTC，发布 `arbmm f6d4c06f` 修复 Delist 的 Spread 备份周期校验。
 仅通过环境本地脚本重启 Delist PID3024821 与 SG 隧道 PID3024552，全线程仍 CPU28。
@@ -9,11 +44,32 @@
 回退 `~/delist_risk_server/backups/spread_backup_f6d4c06f/`；
 核验 `data/ops/delist_spread_backup_20261111/`，详情见 `docs/delist_risk_server.md`。
 
+2026-11-11 04:42 UTC，JP NAV 的 `bybit_fr_arb01` 凭据读取改为本机受限文件；
+原 JP PostgreSQL 历史、起点和授权保留。通过 `.35.232` 增量同步成交、资金费及
+利息；04:45定时任务随后使用本地凭据成功执行，三项水位更新至04:45 UTC。
+NAV 用于 Bybit 的7个候选交易网卡出口均已认证。
+SG FR 仍交易，实时快照继续走原JP回环网关；NAV未重启、原PID483448/CPU24保持，
+FR总览live且权益、敞口可用。登记 `host=local` 表示NAV凭据所在地，非交易环境
+已迁移：若NAV在FR迁机前重启，本地账户风险IPC可能不可用，FR总览依靠原SG快照；
+迁机时需切换快照及验证本地IPC。回退登记和PG schema备份在JP
+`~/crypto_nav_manager/maintenance-backups/bybit_fr_local_collect_20261111/`。
+
 2026-11-11 04:10 UTC，发布 FR 年化异常表格，Delist 二进制来自
 `arbmm d71d7841`；Delist PID2887312 和 SG 隧道 PID2887284 均绑 CPU28。
 回退备份在 `~/delist_risk_server/backups/fr_yield_ui_d71d7841/`；
 NAV 目录13项，11个 FR PnL 请求均返回 HTTP 200。
 
+
+2026-11-11 03:58–04:01 UTC，在 JP 新增 Bybit 现货/永续行情：`spread_pbs`
+market PID2860248/CPU33、bookticker PID2860294/CPU34；两者分别使用行情网卡
+`.46.90/.46.91`。`depth_pub` PID2872256、现货/永续 trade-flow PID2870204/2871330
+和滚动指标 PID2862730 均运行于 housekeeping；行情及 depth25 已收到实际数据，
+滚动指标仍在积累样本。按 Gate 配置 trade-flow 的 `depth_channel=none`，独立保留
+depth25。仅迁移行情参数，SG FR 交易及 JP NAV 采集位置保持；FR 上 JP 的部署仍待定。
+SG 旧 `bybit-intra-arb01` 持久化已停，订单库压缩备份保存在本机
+`data/order_archives/bybit_intra_arb01_20261111/`，传输 SHA-256 已核验，归档内容与
+停机源 RocksDB 逐文件比较一致。`depth_channel=none` 与 Gate 一样仅发布 RL 波动率，
+不发布完整 trade-flow 特征；需要完整特征时须另行启用 depth25 并验证。
 
 2026-11-11 03:40 UTC，发布 FR 七日及三十日年化表格，Delist 二进制来自
 `arbmm 64f220c7`；Delist PID2820172 和 SG 隧道 PID2820145 均绑 CPU28。
@@ -27,6 +83,115 @@ NAV 目录13项，11个 FR PnL 请求均返回 HTTP 200。
 NAV 目录13项，11个 FR PnL 请求均返回 HTTP 200。
 
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
+
+2026-11-10 09:25–09:35 UTC，补齐 `okex_mm_83777` 的NAV历史采集及CTA净值汇总。
+NAV代码 `6c0b270` 将现用环境接入15分钟定时成交/资金费采集和既有HTTP汇总，
+沿用独立金额FIFO；登记、统计起点和权限保持。补采184条成交、资金费0条但成功
+水位完整，并采集BTC/ETH费率。仅本机构建NAV，SCP暂存、SHA-256校验和原子
+安装后重载 `crypto-nav-manager.service`，PID483448仍CPU24；CTA PID3909484和
+193个采样进程的身份/CPU mask保持，MM交易五进程未启停。NAV明细及CTA总览
+均live，lgq查看和prc隔离、静态页面/脚本均核验；4个诊断会话已删。
+CTA沿用闭合4小时曲线，截至08:00的27点完整；首笔实盘08:03，当前收益已在
+首页/NAV明细显示，12:00自然采样点再纳入后续成交。没有新增Exec source或
+交易绑定，未改MM参数、local_ips、ENI或共享行情。回执
+`data/ops/okex_mm_nav_20261110/`；远端回退与采集备份在
+`~/crypto_nav_manager/maintenance-backups/okex_mm_onboard_20261110/`。
+
+2026-11-10 08:42 UTC，复核 `bitget_fr_arb01` 的CTA/NAV/Delist接入，补齐恢复时
+遗漏的Delist私有Viz映射：`bitget_fr_arb01 -> http://127.0.0.1:20151/snapshot`。
+线上与仓库 `config/delist_snapshot_targets.toml` 各只新增该条，其他10条逐项保持。
+仅通过Delist环境本地脚本重载监控，PID379033仍CPU28；110个采样交易/行情/
+NAV/CTA进程的PID和CPU mask保持。CTA的lgq查看授权、NAV活动登记与delist读取
+授权均已回读，CTA实际汇总为live、无loading；新盘起点仍07:56:36.692 UTC。
+Delist报告已为fresh、complete=true、risk_status=ok、errors=[]，首次核验净差约
+0.04558 USD；后续新建仓的既有对冲计划按原逻辑观察。未调整交易参数、网卡、
+源IP或监听。证据及回退：`data/ops/bitget_fr_arb01_restore_20261110/delist_snapshot_fix/`
+及远端同名维护目录。
+
+2026-11-10 08:16–08:28 UTC，按操作员指令将 `bitget_fr_arb01` 资金账户的
+20,000 USDT划入UTA（transferId `1503962714985279488`），私有接口成功且余额回读
+确认UTA可用20,000 USDT，资金账户仅余小于1e-8 USDT尾数。沿用Bitget02/03一致
+的正套名单，排除合约最高4倍、与现有FR固定5倍要求冲突的HUSDT，启用其余21币；
+反套/主动清仓名单为空，UniMMR候选为该21币，抵押品检查全部通过。
+通过环境本地脚本重启引擎PID334847、pre_trade PID334958，并于08:21:50启动
+trade_signal PID335050；21个合约5倍设置全部确认，失败0，风控与共享策略参数保持。
+引擎 `TRADE_ENGINE_READ_ONLY=false`、信号 `TRADE_SIGNAL_NO_EMIT=false`；
+原5个监控/记录/页面进程保持，8组件主线程全部CPU0-5，未新增独占核。
+沿用已SHA-256核验的恢复产物，未另行发布；`trade_engine.toml` 与退役前配置字节一致，
+两条交易连接继续`.231/.231`。112个非目标采样进程PID/CPU全部保持，NAV/Delist/CTA未重启。
+08:26:45交易所确认CELO现货4条及永续1条成交，永续short967.3，另有2笔永续对冲
+和7笔现货挂单；实时敞口约199.67 USD，风险free_trade，策略继续按既有规则建仓。
+新NAV起点仍07:56:36.692 UTC，无旧初始快照；新库首4条成交始于08:23:01，
+累计收益约0.03960 USD，仅来源成交返佣，20,000划转未作为收益。
+旧40,052/7,427/1,596条成交/资金费/利息归档计数保持。回执、实盘观察及NAV验证：
+`data/ops/bitget_fr_arb01_restore_20261110/go_live/`；远端同名维护目录保留私有env回退。
+
+2026-11-10 07:55–08:08 UTC，按操作员要求恢复 JP `bitget_fr_arb01`，沿用原账户、
+稍后入金，作为新盘子独立核算。同步 `arbmm a00dc38f` 工作区本机构建7组件release，
+精确SCP暂存、逐文件SHA-256核验后原子安装；原运行配置和环境本地脚本保留。
+新目录不复制旧data/run，原运行目录及订单归档仍在
+`~/retired_data/bitget_fr_arb01_20261109/`。旧NAV schema改名为
+`retired_bitget_fr_arb01_20261109`，其中40,052条成交、7,427条资金费、1,596条利息
+及旧快照/水位保留；活动schema重建，统计起点设为 `2026-11-10 07:56:36.692 UTC`，
+无旧初始快照，累计盈亏0，监控曲线3个点均0。旧清仓及交易名单清空，风控参数保留。
+通过环境本地脚本启动7组件，主线程掩码均继承housekeeping `0-5`，不新增独占核：
+trade_engine283718、account_monitor283860、pre_trade284154、viz_server284256、
+config284526、fr_signal_dashboard284787、persist_manager302412。
+账户暂无USDT，仅BGB约0.1442 USD，交易所确认零永续/挂单/负债；
+`TRADE_ENGINE_READ_ONLY=true`，trade_signal保持停止，入金后另行启用交易。
+恢复NAV/CTA只读目录、Delist白名单和原20051/20151/20161入口；NAV291158仍CPU24，
+Delist291287及既有SG隧道仍CPU28，CTA3909484仍CPU24。新同步source为
+`bitget_fr_arb01_20261110`，监听回环50082；6382仅预留，旧50057保持不可用，
+center历史source及collector未改。初次监听遇到临时端口占用，经环境脚本仅重启
+目标persist_manager后监听及gRPC空库校验通过。117个其他采样进程身份/CPU保持；
+同期OKX MM的2项进程变化见其独立实盘启用记录，未计入本次保持证明。
+本机证据：`data/ops/bitget_fr_arb01_restore_20261110/`；私有回退/维护包：
+`~/maintenance/bitget_fr_arb01_restore_20261110/`。入金不作为交易收益，新盘不回溯旧盘历史。
+
+2026-11-10 08:01–08:07 UTC，按操作员明确指令开启 `okex_mm_83777` BTC/ETH
+USDT永续实盘。先核验UID556411065144578537、零挂单/仓位/成交及两币cross杠杆5，
+确认vol输入持续更新、70分位开仓限制开启、Tlen关闭，再将环境
+`TRADE_ENGINE_READ_ONLY=0`、`TRADE_SIGNAL_NO_EMIT=0`；二进制及原引擎SHA-256
+启动校验保持。本地 `arbmm` 与 `origin/arbmm` 同步，无构建或其他产物发布。
+只经环境本地脚本先停signal、重启引擎PID291094/CPU32，再启动signal
+PID291515/CPU30；账户监控PID275138/CPU29、pre_trade PID424228/CPU31及
+持久化PID421889/CPU15保持。signal重启后按原规则积累至少10个vol样本，随后
+两币真实挂单及maker成交已由交易所确认，08:07已见ETH11笔/BTC6笔maker fill，
+两币各5轮MMHedge query/reply正常，账户风险为 `free_trade`。维持单笔50U、
+单币500U及内部杠杆上限5；未改源IP、
+共享行情或其他环境。环境私有回退为 `~/okex_mm_83777/backups/go_live_20261110/env.sh`，
+核验回执在同环境 `run/go_live_20261110/`，本地副本 `data/ops/okex_mm_live_20261110/`。
+
+2026-11-10 07:54–07:57 UTC，按操作员要求关闭 `okex_mm_83777` 的 Tlen，
+BTC/ETH USDT 永续 cross 杠杆及环境内部 `max_leverage` 均设为5；交易所及
+Redis回读、signal热加载和风险快照均核验。修复OKX空仓 `mgnRatio=""` 被当作0：
+仅明确 `mmr=0` 且调整后权益为正时使用有限安全值，保留明确低比率及异常数据的
+原处理。基于同步 `arbmm a00dc38f` 加本次解析器补丁的独立本机构建快照发布，
+未混入工作区其他改动；193项解析器测试及release通过，精确SCP上传、SHA-256
+核验、原子安装后仅经环境本地脚本重启账户监控，PID275138仍CPU29。
+引擎/pre_trade/signal仍PID422890/424228/426569、CPU32/31/30；185个存活
+受保护进程的可执行文件/CPU mask核对未变。线上风险恢复 `free_trade`，零仓位、
+零敞口；保留 `TRADE_ENGINE_READ_ONLY=1`、`TRADE_SIGNAL_NO_EMIT=1`，未开启交易。
+`env.sh`、`trade_engine.toml`、CPU分配及 `.229/.230` 源IP不变。
+证据 `data/ops/okex_mm_readiness_20261110/`，远端回退二进制及核验元数据在
+`~/okex_mm_83777/backups/readiness_20261110/`，运行回执在同环境 `run/readiness_20261110/`。
+
+2026-11-10 04:36 UTC，CTA Prep/Spread配置入口修复额外Delist登录导致的401，
+沿用Manager会话及全部相关账号的configure权限。仅替换共享Nginx片段并平滑重载；
+Nginx主进程仍1862269，97个受保护进程的PID/绑核及35份配置/二进制哈希未变。
+未改CPU分配、源IP或策略参数，回执见 `artifacts/cta_factor_config_auth_20261110/`。
+
+2026-11-10 04:01 UTC，Spread01整体替换为12币、209条规则，按1min/5min/15min/1h
+维护28/56/18/107条规则及四张仓位表，不设券池；215项共享计算仍在CPU18。
+旧两侧仓位及IOTA -0.1尾仓已按用户确认全部成交平掉，交易所确认挂单/仓位为0；
+旧订单库、Redis分仓和因子账本已归档后重置。Manager定向移除1246条旧目标记录，
+核对同范围其他1,342,639条目标未变；共享服务恢复后已完成缓存初始化。
+12币×768根（9216根）原生小时输入已安装，导入检查88/88项普通因子就绪，
+worker已从保留Kafka追平，1h109/109、1min35/35、5min46/49、15min21/22项就绪；
+四张表均已开启，两侧8条绑定各跟随1份，每规则100U，执行模板仍为ctaker。
+OKX/Binance两侧执行进程已恢复且position_ready=true。source ID、namespace及
+local_ips沿用：OKX `.229/.230`，Binance `.228/.228`。完整回执与最终启用状态见
+`artifacts/cta_spread01_replacement/`。
 
 2026-11-10 02:29 UTC，修复 FR 账户目录偶发超时。NAV `c8cb8fa` 的现有
 `/api/strategies` 新增 `include_credentials=false`：保持原有登录/账户授权筛选，
@@ -176,6 +341,20 @@ pre_trade仍为 `bf3f5698` 构建的`a4786154…7576c2a`，Gate四路交易WS登
 `~/gate_fr_arb0{1,4}/backups/paired_close_bf3f5698_20261109/`；本地构建及核验记录：
 `data/ops/gate_close_patch_bf3f5698_20261109/verification.json`。
 
+2026-11-09 02:35–02:50 UTC，退役 JP `bitget_fr_arb01`。通过环境本地脚本停止
+并移除其8个进程，撤销10笔ZBT现货挂单；21笔reduce-only永续市价平仓及1笔ZBT
+现货市价卖出共53条成交，逐单数量相符且全部为taker。交易所复核永续、挂单、
+负债均为0；仍有20种低于数量步长的现货零头，合计约0.0966 USD，不能用市价单
+卖出。原订单库187个文件打包为294 MiB tar.gz并回传本机，归档及逐文件SHA-256
+全部匹配；运行目录移至 `~/retired_data/bitget_fr_arb01_20261109/runtime/`。
+NAV/CTA活动登记及相关读取授权移除，Delist目录由13项降至12项、FR入口白名单
+移除该环境，旧网页各入口HTTP410；停止6357同步转发。重载NAV和Delist监控，
+未重启其他交易栈；Delist PID705377、SG隧道PID705321仍全部CPU28。CTA Manager
+移除K线/资金费率两处旧环境配置路径后重载，PID718583仍CPU24；121个其他交易
+及行情进程身份保持。PM2保存的启动清单及其备份也仅删除该环境的3项旧登记。
+该环境原进程在housekeeping掩码上运行，未释放独占隔离核；共享`.231`出口保留。
+本机订单与清仓核验：`data/ops/bitget_fr_arb01_retire_20261109/`。
+
 2026-11-06 15:29–15:40 UTC，JP Manager 发布 `b8eb962` 的目标推送异步 PG 副本。
 既有本地工作区 release `--no-default-features` 构建，按上次线上源码清单核对保留
 既有功能；SCP临时路径、SHA-256核验及6个来源的不可变分仓指纹预检通过后原子
@@ -210,6 +389,20 @@ release精确上传、SHA-256核验及原子安装；JP196/SG20个参数对象�
 `../artifacts/parameter_changes_20261106/`，私有回退
 `~/delist_risk_server/run/parameter-changes-20261106/`。
 
+2026-11-06 07:26 UTC，JP `okex_mm_83777` 换用独立 OKX 子账户
+UID `556411065144578537`，`.229/.230` 两个交易出口均只读鉴权成功。按操作员要求
+直接删除该环境旧观察订单库（874898字节），新 RocksDB 独立重建，未归档旧库；
+Redis 风控、币种及策略配置保持。通过环境本地脚本恢复 Config、公共利率缓存、Viz、
+persist_manager、trade_engine、pre_trade、account_monitor 和 trade_signal 共8个进程。
+引擎 PID422890/CPU32，pre_trade PID424228/CPU31，监控 PID424427/CPU29，
+信号 PID426569/CPU30，持久化 PID421889/CPU15；Viz PID421759、Config PID413152、
+利率缓存 PID413204 使用 housekeeping。所有进程新凭据及 `TRADE_ENGINE_READ_ONLY=1`、
+`TRADE_SIGNAL_NO_EMIT=1` 已核验，日志确认拒绝交易和抑制信号，MM 路径不设杠杆。
+公网 Config/Viz/snapshot 均HTTP200，新账户及页面均零仓位/敞口，零挂单，启动后零成交；
+交易账户现有约1000 USDT，本次未划转资金。145个受保护进程身份/CPU mask及
+Exec/Intra、共享采集中心配置、原二进制保持。未改网络；中心 collector 未接入此 MM。
+核验记录：`~/okex_mm_83777/run/observe_account_20261106T071851Z/result.json`。
+
 2026-11-06 07:15 UTC，JP `~/delist_risk_server` 发布MM参数备份；本地同步arbmm
 `103b1333`加本次补丁构建release，上传核验SHA-256并原子安装，环境本地脚本重启。
 Delist PID406318、SG隧道 PID406290，CPU均为 `0-5,48-95`；156个既有服务进程
@@ -223,6 +416,17 @@ COS新顶层前缀403后改用既有授权树下 `fr-config-backups/mm-config-ba
 源IP与隔离核分配保持；详情 `docs/delist_risk_server.md`，证据
 `../artifacts/mm_parameter_backup_20261106/`，回退及核验
 `~/delist_risk_server/run/mm-parameter-backup-20261106/`。
+
+2026-11-06 06:54 UTC，按操作员要求替换 JP `~/okex_mm_83777/env.sh` 的三项 OKX
+凭据，权限保持 `0600`；只改凭据，保留 `TRADE_ENGINE_READ_ONLY=1` 和
+`TRADE_SIGNAL_NO_EMIT=1`。新凭据在现有 `.229/.230` 出口的只读账户查询均返回
+`50110`（IP 不在白名单），新账户 UID 尚未确认。通过该环境本地脚本停止 signal、
+pre_trade、trade_engine、account_monitor、persist_manager、Viz、Config 和利率缓存，
+现场确认无残留 MM 进程；CPU29–32 保留，未恢复观察或交易。145个受保护进程身份及
+CPU mask、Exec/Intra 的 env.sh、MM 二进制和 trade_engine.toml 均保持。
+旧 MM 持久化保留为原账户证据，恢复前须确认新 UID 并隔离不同账户历史。
+原配置及核验记录位于
+`~/okex_mm_83777/backups/credential_rotation_20261106T065308Z/`；未修改网络或共享行情。
 
 2026-11-06 06:38 UTC，JP `~/delist_risk_server` 发布当前共享 CTA 备份的钉钉告警。
 本地同步arbmm构建release，临时路径上传、SHA-256核验并原子安装，环境本地脚本
@@ -245,6 +449,47 @@ COS新顶层前缀403后改用既有授权树下 `fr-config-backups/mm-config-ba
 未改源IP或隔离核分配，详见 `docs/delist_risk_server.md`；证据
 `../artifacts/cta_shared_backup_20261106/`，回退产物及删除清单
 `~/delist_risk_server/run/cta-shared-backup-20261106/`。
+
+2026-11-06，`okex_mm_83777` 全套启动为观察模式：交易引擎只读拒绝全部交易
+请求，trade_signal 不发布信号；账户监控、pre_trade、持久化、Viz、Config 运行。
+account_monitor/trade_signal/pre_trade/trade_engine 分别绑 CPU29/30/31/32，
+持久化在 CPU15；同账户 `okex_exec_trade01` 保持原进程与绑定。另启动只读行情
+`trade_flow_feature/okex-futures` 和本地 OKX 借贷利率缓存，补入 BTC 行情阈值。
+持久化 PID4117078 已加载3个 MM 币种，行情为 `okex-futures`；信号 PID4096168、
+引擎 PID4075038、pre_trade PID4076675、监控 PID4078598，均核验绑核及只读开关。
+环境启动时核验只读引擎 SHA-256，防止后续覆盖成未验证的二进制后静默启动；
+更新引擎时须先验证只读拦截，再同步更换 env.sh 中的校验值。
+
+2026-11-06 02:32 UTC，旧 `okex_mm_alpha` 的订单和清仓证据归档由 JP 迁至本机
+`/mnt/nvme-raid0-28t/fanghaizhou/order_archives/okex_mm_alpha_20261029T071005Z/`；
+26 个文件逐项 SHA-256 一致、两份压缩包校验通过后删除 JP 原归档目录。未操作进程。
+
+2026-11-06 02:28 UTC，按操作员要求将 JP 共享 `redis-server.service` 的全部7个线程
+从 housekeeping CPU0-5 在线迁到独立物理核CPU28，包括主线程及AOF fsync后台线程。
+Redis PID2769589、启动标识和NRestarts=0保持；294个受保护进程身份及既有线程绑核
+均核对保持。CPU28属于既有隔离段，SMT sibling已下线；29-32仍保留给已配置的MM。
+新增 `/etc/systemd/system/redis-server.service.d/cpu-affinity.conf`，清除继承列表后设置
+`CPUAffinity=28`，`daemon-reload`核验有效值28；未重启Redis或其他服务。
+原Redis配置、AOF everysec策略及原服务单元保持，备份及线程基线在
+`~/crypto_cta_manager/backups/redis-cpu28-20261106T022854Z/`。
+同内容配置模板在Manager仓库 `deploy/jp_meta/redis-server.service.d/cpu-affinity.conf`。
+迁移后至02:31:53 UTC，自然绑定发布633次成功、0次失败，其中rbf_small/trade03
+成功58次，绑定发布最大耗时17ms；125秒内连续1241次只读PING全部成功，P95约0.098ms、
+最大3.663ms，无新增AOF fsync延迟告警。复核7个Redis线程仍全在28、294个受保护
+进程身份及既有绑核保持。这是短期运行观测，不据此认定间歇性故障已永久消除。
+
+2026-11-06 02:24 UTC，修复旧 MM 目录删除后 Manager 的 K 线和 funding IP 排除列表
+仍指向旧配置的问题；两处改为 `okex_mm_83777/trade_engine.toml`，其余配置未变。
+仅重启 Manager，PID3952558、CPU24；交易进程未重启。旧地址覆盖仍保持，专用 K 线
+出口不变。Manager 重启后理论索引需要重新预热。远端原配置备份在
+`~/crypto_cta_manager/config/backups/mm_83777_exclusion_20261106T022354Z/`。
+
+2026-11-06，JP 新建 `okex_mm_83777`，账户别名 `okex_83777`，取代已停止的
+`okex_mm_alpha` 槽位，旧目录已移除且订单归档校验保留；本地同步 arbmm `bf0d5c94` 构建六个二进制，上传校验后
+原子安装。新环境预留 account_monitor CPU29、trade_signal CPU30、pre_trade
+CPU31、trade_engine CPU32、persist_manager CPU15；当时所有进程停止。使用独立
+namespace 和空订单库，config/viz 复用 18112/10212，未启动交易。该账户同时由
+`okex_exec_trade01` 使用，不能同时启动 MM 与 Exec 管理相同现货库存。
 
 2026-11-05 03:40–03:41 UTC，Gate arb01最后一笔O对冲成交，连续三次原生零挂单、
 停信号后再次核验零挂单，仅剩净尾差合计140.47 U、单币最大27.90 U，随后发布
@@ -1631,22 +1876,28 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 10 | spread_pbs gate-both | |
 | 11 | spread_pbs bitget-both | 忙时单核饱和,候选拆分(margin/futures 两进程) |
 | 12 | spread_pbs okex-both | |
-| 13 | depth_pub_general | 本机 8 路 depth25（BN/OKX/Bitget/Gate × margin+futures）；**不含 Bybit**（Bybit 在 sg）。pm2 `dp_general` |
+| 13 | depth_pub_general | 本机 8 路 depth25（BN/OKX/Bitget/Gate × margin+futures）；Bybit 由独立 depth_pub 负责。pm2 `dp_general` |
 | 14 | spread_pbs binance-futures market | 原 depth_pub binance-both 腾出；trade/incremental/derivatives |
-| 15 | persist_manager ×N | 原FR等及新okex_exec_trade01/binance_exec_spread01只读账户持久化；旧MM停止 |
+| 15 | persist_manager ×N | 原FR等及okex_exec_trade01/binance_exec_spread01持久化；新账户MM PID421889，旧MM alpha停止 |
 | 16 | spread_pbs gate-bitget-futures-bbo | 独立 Gate / Bitget USDT 合约 BBO；`spp_gate_bitget_futures_bbo`；IPC `futures_bbo` |
 | 17 | cta-prep-binance-futures | PID2168358；Prep01四频段与Prep02三券池×5min/15min/1h，同进程596项计算，回放完成且四张小时表已启用；原仓位账本保留；无额外独占核 |
-| 18 | cta-factor-spread | PID2970968；Spread01发布开启，两所绑定各1份，50项计算就绪；全部线程CPU18 |
+| 18 | cta-factor-spread | PID3923566；Spread01四频段、209条规则/215项计算；无券池；1h109/109项就绪，发布开启，两侧各4条绑定跟随1份 |
 | 19 | 空闲 | RX03 旧因子/信号/页面已停止，Exec07 已清仓解绑并移除 Manager 入口 |
 | 20 | exec_volatility_pub(exec_volatility_binance) | 共享Binance现货/永续Vol，PID2865016；独立于RX01生命周期 |
-| 21 | okex_exec_trade01 account_monitor | PID1397233；原MM停止 |
-| 22 | okex_exec_trade01 exec-pre-trade | PID4127465；规则刷新按venue隔离 |
-| 23 | okex_exec_trade01 trade_engine | PID3936778 |
-| 24 | crypto_cta_manager / cta_web | PID1276059；目标PG副本异步更新；退役Binance FR01后清理两条旧路径并重载 |
-| 25 | binance_exec_spread01 account_monitor | PID1361356；81857独立执行环境 |
-| 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID4133978 / PID3939283 |
-| 28 | redis-server.service + Delist / SG隧道 | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3024821、隧道 PID3024552 全线程28，env.sh DELIST_CORE=28及PM2 taskset启动持久化；原RX04旧进程已停止 |
-| 29-35 | (空) | 原 binance-intra-arb02 已下线删除 |
+| 21 | okex_exec_trade01 account_monitor | PID3911954；UID241049181320564736，与当前MM为不同子账户 |
+| 22 | okex_exec_trade01 exec-pre-trade | PID3919273；规则刷新按venue隔离 |
+| 23 | okex_exec_trade01 trade_engine | PID3918956 |
+| 24 | crypto_cta_manager / cta_web + crypto_nav_manager | CTA PID3909484；NAV PID483448，MM83777统计接入，交易进程保持 |
+| 25 | binance_exec_spread01 account_monitor | PID3912185；81857独立执行环境 |
+| 26-27 | binance_exec_spread01 exec-pre-trade / trade_engine | PID3920104 / PID3919575 |
+| 28 | redis-server.service + Delist | Redis PID2769589，全部7线程及systemd CPUAffinity=28；Delist PID3513519，env.sh DELIST_CORE=28；SG隧道于11-11停止 |
+| 29 | okex_mm_83777 account_monitor | PID275138；UID556411065144578537，空仓风险解析已修复，实盘账户监控 |
+| 30 | okex_mm_83777 trade_signal | PID291515；BTC/ETH实盘，vol门限开启、Tlen关闭 |
+| 31 | okex_mm_83777 pre_trade | PID424228；实盘风控/开仓/对冲 |
+| 32 | okex_mm_83777 trade_engine | PID291094；实盘交易开启，二进制SHA-256启动校验保留 |
+| 33 | spread_pbs bybit-both market | 现货/永续成交、增量及衍生指标 |
+| 34 | spread_pbs bybit-both bookticker | 现货/永续 BBO |
+| 35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
@@ -1667,12 +1918,12 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 2026-10-11 05:46 UTC trade05 待执行量/权益修复：本地 release 上传并校验 SHA-256 后原子安装，通过环境脚本重启 exec-pre-trade（PID 3371755）、Viz（PID 3371634），并重启 Manager 网页服务。trade_engine、账户监控、persist_manager 与 RX02 四个信号进程继续运行，RX03 无进程。CPU 分配仍为 housekeeping 0-5。Manager 已解析 RapidX 账户权益；待下单量按步长、minQty、minNotional 检查，真实余量保留在差额中。线上证据：`artifacts/trade05_pending_equity_live_validation.json`、`artifacts/trade05_pending_equity_live_browser.json`。
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
-binance_fr_arb02/03/04、gate_fr_arb01/02/03/04、bitget_fr_arb01/02、
+binance_fr_arb02/03/04、gate_fr_arb01/02/03/04、bitget_fr_arb01（新盘建仓运行）/02、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `binance_exec_trade08` 的engine、executor、监控、持久化、Viz/Config已于2026-11-02停止；
 原 virtual02/RX02 跟随和 Grid 绑定已移除。
-`okex_mm_alpha` 已于2026-10-29停止，其 persist_manager 原绑核15，配置保留。
+`okex_mm_alpha` 已于2026-10-29停止，槽位于2026-11-06由 `okex_mm_83777` 替代。
 `binance-cta-rx01` 的 persist_manager 同样堆叠在 15。
 `bitget_fr_arb03` 已启动；其 persist_manager 绑核 15，其余进程未绑核。
 2026-10-04 15:11 UTC 重新发布 `gate_fr_arb03`（`322c482c`，Gate WS 保证金恢复解锁），
@@ -1862,17 +2113,17 @@ NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp
 
 | 核 | 进程 | 备注 |
 |----|------|------|
-| 8 | spread_pbs bybit-both(market 角色) | trade/incremental/derivatives |
-| 9 | spread_pbs bybit-both(bookticker 角色) | BBO 专核 |
+| 8 | 原 spread_pbs bybit-both(market 角色) | 2026-11-11 已停止 |
+| 9 | 原 spread_pbs bybit-both(bookticker 角色) | 2026-11-11 已停止 |
 | 10 | NIC IRQ: enp39s0 下单网卡 | 禁止再绑用户进程 |
 | 11 | NIC IRQ: enp40s0 行情网卡 | 禁止再绑用户进程 |
-| 12 | account_monitor_bybit(bybit_fr_arb01) | 2026-10-23 FR切换，PID1581248 |
-| 13 | trade_signal(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603903；实盘信号启用 |
-| 14 | pre_trade(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603176 |
-| 15 | trade_engine(bybit_fr_arb01) | 2026-10-23 清仓后重启，PID1603071；单线程；`TRADE_ENGINE_IPC_CORE` 已废弃 |
+| 12 | 原 bybit_fr_arb01 account_monitor | 2026-11-11 已迁至 JP，SG 进程停止 |
+| 13 | 原 bybit_fr_arb01 trade_signal | 2026-11-11 已迁至 JP，SG 进程停止 |
+| 14 | 原 bybit_fr_arb01 pre_trade | 2026-11-11 已迁至 JP，SG 进程停止 |
+| 15 | 原 bybit_fr_arb01 trade_engine | 2026-11-11 已迁至 JP，SG 进程停止 |
 
-未绑核、跑在 housekeeping 0-7 的热路径进程(截至本次盘点):
-depth_pub、trade_flow_feature_pub、rolling_metrics及若干 persist_manager。
+此前未绑核、跑在 housekeeping 0-7 的 depth_pub、trade_flow_feature_pub、
+rolling_metrics 已于 2026-11-11 停止；当时未发现 persist_manager 运行。
 原MM alpha及CTA Exec全套已于2026-10-29停止并删除部署，CTA专用CPU6 publisher停止；
 bybit-intra-arb02 原有全套进程使用 0-7，2026-10-16 已全部停止。
 这些与 housekeeping/系统中断同核竞争;隔离段 IRQ 已迁到 10/11。

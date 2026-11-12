@@ -36,18 +36,6 @@ base_url = "http://47.238.128.48"
 host = "47.128.92.224"
 base_url = "http://47.128.92.224"
 
-# JP Bitget FR source. The manager stays stopped until the operator starts
-# the new environment; this allocation reserves its local gRPC bind now.
-[[allocations]]
-port = 6357
-region = "jp"
-strategy = "fr"
-env = "bitget_fr_arb01"
-source_id = "bitget_fr_arb01"
-public_url = "http://54.64.147.69:6357"
-bind = "127.0.0.1:50057"
-status = "planned"
-
 # Local cross arb01 source on this machine.
 # binance-intra-arb01 retired 2026-09-22; port 6342 freed.
 # gate-intra-arb01 and bitget-intra-arb01 retired 2026-10-08;
@@ -99,8 +87,8 @@ status = "fixed"
 port = 6355
 region = "local"
 strategy = "mm"
-env = "okex_mm_alpha"
-source_id = "okex_mm_alpha"
+env = "okex_mm_83777"
+source_id = "okex_mm_83777"
 public_url = "http://127.0.0.1:6355"
 bind = "127.0.0.1:50055"
 status = "fixed"
@@ -153,4 +141,16 @@ env = "bitget_fr_arb03"
 source_id = "bitget_fr_arb03"
 public_url = "http://127.0.0.1:6381"
 bind = "127.0.0.1:50081"
+status = "planned"
+
+# Fresh Bitget FR arb01 book. Keep the retired source and its 50057 endpoint
+# separate; only the new loopback bind is active, without a collector cutover.
+[[allocations]]
+port = 6382
+region = "local"
+strategy = "fr"
+env = "bitget_fr_arb01"
+source_id = "bitget_fr_arb01_20261110"
+public_url = "http://127.0.0.1:6382"
+bind = "127.0.0.1:50082"
 status = "planned"

@@ -1,0 +1,12 @@
+{
+  "public_gateway": "http://13.115.227.29:4191",
+  "manager_only_login": true,
+  "page_status": 200,
+  "api_status": 200,
+  "rules": {
+    "15min": 18,
+    "1h": 107,
+    "1min": 28,
+    "5min": 56
+  }
+}

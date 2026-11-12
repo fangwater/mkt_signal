@@ -1,0 +1,54 @@
+{
+  "live": true,
+  "checks": [
+    {
+      "interval": "1min",
+      "rules": 28,
+      "enabled": true,
+      "config_loaded": true,
+      "api_status": 200
+    },
+    {
+      "interval": "1min",
+      "rules": 28,
+      "enabled": true,
+      "config_loaded": true,
+      "api_status": 200
+    },
+    {
+      "interval": "5min",
+      "rules": 56,
+      "enabled": true,
+      "config_loaded": true,
+      "api_status": 200
+    },
+    {
+      "interval": "15min",
+      "rules": 18,
+      "enabled": true,
+      "config_loaded": true,
+      "api_status": 200
+    },
+    {
+      "interval": "1h",
+      "rules": 107,
+      "enabled": true,
+      "config_loaded": true,
+      "api_status": 200
+    }
+  ],
+  "account_button": true,
+  "overview_buttons": 5,
+  "binding_buttons_per_market": 4,
+  "both_execution_markets": true,
+  "mobile_button_visible": true,
+  "prep_links_preserved": true,
+  "hidden_account_links_absent": true,
+  "manager_only_login": true,
+  "anonymous_status": 401,
+  "unprivileged_status": 403,
+  "missing_or_cross_origin_write_status": 403,
+  "malformed_same_origin_preview_status": 422,
+  "config_saves": 0,
+  "errors": []
+}

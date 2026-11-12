@@ -1,0 +1,14 @@
+{
+  "okex-swap": {
+    "earliest_period_ms": 1794096609000,
+    "earliest_utc": "2026-11-08T00:10:09+00:00",
+    "offset_log": "Kafka watermarks: earliest_offset is the low watermark; high_offset is the next offset\ntopic=okex-swap partition=0 earliest_offset=7243925 high_offset=7372496 available_messages=128571",
+    "decoded_messages": 3
+  },
+  "binance-futures": {
+    "earliest_period_ms": 1794102438000,
+    "earliest_utc": "2026-11-08T01:47:18+00:00",
+    "offset_log": "Kafka watermarks: earliest_offset is the low watermark; high_offset is the next offset\ntopic=binance-futures partition=0 earliest_offset=11894818 high_offset=11953980 available_messages=59162",
+    "decoded_messages": 3
+  }
+}

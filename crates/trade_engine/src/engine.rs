@@ -542,6 +542,21 @@ fn parse_bool_env(value: &str) -> Option<bool> {
     }
 }
 
+fn read_only_trade_rejection(msg: &TradeRequestMsg, exchange: Exchange) -> TradeExecOutcome {
+    TradeExecOutcome {
+        req_type: msg.req_type,
+        client_order_id: msg.client_order_id,
+        status: 403,
+        body: "trade engine is in read-only mode".to_string(),
+        exchange,
+        order_id: 0,
+        order_status_u8: 0,
+        order_update_time: 0,
+        executed_qty: 0.0,
+        response_price: 0.0,
+    }
+}
+
 fn configured_binance_ws_markets() -> (bool, bool) {
     if let Ok(Some(venue)) = runtime_common::exec_market::configured_venue() {
         return (venue == order_common::TradingVenue::BinanceFutures, false);
@@ -1616,6 +1631,15 @@ impl TradeEngine {
         }
 
         let canonical_exchange = exchange.as_str();
+        let read_only = match std::env::var("TRADE_ENGINE_READ_ONLY") {
+            Ok(value) => parse_bool_env(&value)
+                .ok_or_else(|| anyhow!("TRADE_ENGINE_READ_ONLY must be a boolean"))?,
+            Err(std::env::VarError::NotPresent) => false,
+            Err(err) => return Err(anyhow!("invalid TRADE_ENGINE_READ_ONLY: {err}")),
+        };
+        if read_only {
+            info!("trade_engine read-only mode: all trade requests are rejected; queries remain enabled");
+        }
         let fast_poll = enable_ipc_fast_poll();
         let router_idle_spin_iters = router_idle_spin_iters(fast_poll);
         let internal_open_terminate_enabled = fast_poll;
@@ -2714,6 +2738,15 @@ impl TradeEngine {
                 };
                 idle_spin_count = 0;
                 routed_since_yield = true;
+                if read_only {
+                    warn!(
+                        "trade_engine read-only mode rejected request type={:?} client_order_id={}",
+                        msg.req_type, msg.client_order_id
+                    );
+                    let _ = trade_resp_sink_for_req_worker
+                        .send(read_only_trade_rejection(&msg, exchange_for_req_worker));
+                    continue;
+                }
                 if exec_markets.is_some_and(|markets| {
                     !markets
                         .into_iter()
@@ -4764,8 +4797,8 @@ mod tests {
         binance_batch_modify_order_rest_pairs, binance_batch_modify_outcomes,
         binance_modify_order_rest_pairs, binance_std_usdt_transfer_rest_pairs,
         configured_binance_ws_markets, enable_ipc_fast_poll, exec_query_request_allowed,
-        exec_trade_request_allowed, parse_bool_env, router_idle_spin_iters,
-        trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        exec_trade_request_allowed, parse_bool_env, read_only_trade_rejection,
+        router_idle_spin_iters, trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
@@ -4781,6 +4814,22 @@ mod tests {
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn read_only_rejection_preserves_request_identity_for_orders_and_cancels() {
+        for req_type in [
+            TradeRequestType::OkexNewUMOrder,
+            TradeRequestType::OkexCancelUMOrder,
+        ] {
+            let msg = TradeRequestMsg::create(req_type, 123, 456, b"{}").unwrap();
+            let response = read_only_trade_rejection(&msg, Exchange::Okex);
+            assert_eq!(response.req_type, req_type);
+            assert_eq!(response.client_order_id, 456);
+            assert_eq!(response.status, 403);
+            assert_eq!(response.order_id, 0);
+            assert_eq!(response.executed_qty, 0.0);
+        }
     }
 
     #[test]

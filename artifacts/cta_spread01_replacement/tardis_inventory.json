@@ -1,0 +1,170 @@
+{
+  "AAVEUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 131985092,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 2592716140,
+      "latest": "2026-11-08"
+    }
+  },
+  "ADAUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 111851435,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 2007816776,
+      "latest": "2026-11-08"
+    }
+  },
+  "ATOMUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 51736796,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 779950092,
+      "latest": "2026-11-08"
+    }
+  },
+  "BCHUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 144513703,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 3493592669,
+      "latest": "2026-11-08"
+    }
+  },
+  "CRVUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 85944407,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 1056037810,
+      "latest": "2026-11-08"
+    }
+  },
+  "DOGEUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 222393308,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 4444649068,
+      "latest": "2026-11-08"
+    }
+  },
+  "DOTUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 167169641,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 2830910602,
+      "latest": "2026-11-08"
+    }
+  },
+  "ETCUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 47135159,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 947740671,
+      "latest": "2026-11-08"
+    }
+  },
+  "FILUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 215387080,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 2958576741,
+      "latest": "2026-11-08"
+    }
+  },
+  "NEARUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 328174808,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 4161743200,
+      "latest": "2026-11-08"
+    }
+  },
+  "TRBUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 34130493,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 614536440,
+      "latest": "2026-11-08"
+    }
+  },
+  "UNIUSDT": {
+    "trades": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 175663751,
+      "latest": "2026-11-08"
+    },
+    "incremental_book_L2": {
+      "days": 31,
+      "missing": [],
+      "gzip_bytes": 2865441311,
+      "latest": "2026-11-08"
+    }
+  }
+}

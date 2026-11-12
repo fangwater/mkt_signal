@@ -1,6 +1,13 @@
 # Delist Risk Server
 
-最后更新：2026-11-11 05:15 UTC（修复 CTA Spread 四周期配置备份；Delist保持CPU28）
+最后更新：2026-11-11 09:05 UTC（停用 SG 连接；Delist保持CPU28）
+
+2026-11-11 09:04 UTC，SG 已无运行交易策略，JP Delist 停用 SG Redis、远程平仓、
+备份 SSH 主机及三路端口隧道；Bybit FR 使用 JP 本地快照。通过环境本地脚本重启
+Delist PID3513519 / CPU28，11个 JP Viz 快照目标验证通过。备份配置在
+`~/delist_risk_server/backups/retire_sg_20261111/`。启动脚本支持将
+`DELIST_SG_REDIS_SSH_HOST` 显式设为空，避免回退到 `sg`；JP 本地备份继续启用。
+PM2 恢复清单仅更新 Delist 并移除 SG 隧道项，其余服务条目不变，旧清单也在回退目录。
 
 2026-11-11 05:15 UTC，发布生产 `arbmm f6d4c06f`，修复 CTA Spread 每日备份。
 Spread worker 已支持 `1min/5min/15min/1h`，Delist 仍使用只允许 `1min/1h` 的
@@ -45,6 +52,38 @@ NAV 目录13项，11个 FR PnL 请求返回 HTTP 200；受保护接口匿名返�
 NAV 目录13项，11个 FR PnL 请求返回 HTTP 200；受保护接口匿名返回401。
 二进制及页面回退备份在 `~/delist_risk_server/backups/fr_yield_958bb8a3/`。
 
+2026-11-10 08:42 UTC，复核接入时发现 `bitget_fr_arb01` 的NAV/CTA登记和Delist
+白名单虽已恢复，但私有快照目标在退役时删除后漏补，报告因此为unavailable，错误为
+`no private Viz snapshot target configured for bitget_fr_arb01`。线上和仓库的
+`config/delist_snapshot_targets.toml` 只补回
+`bitget_fr_arb01 = "http://127.0.0.1:20151/snapshot"`，保留其他10条配置。
+通过环境本地脚本重载Delist后PID379033仍CPU28，110个采样交易/行情/NAV/CTA
+进程PID及CPU保持。实际诊断报告与 `/exposures` 同源，现为catalog_current=true、
+data_status=fresh、complete=true、risk_status=ok、errors=[]；首次净差约0.04558 USD。
+CTA的lgq实际汇总live/无loading，NAV目录和delist读取授权均已复核；无账户历史重置。
+备份/回执：`data/ops/bitget_fr_arb01_restore_20261110/delist_snapshot_fix/` 及
+远端 `~/maintenance/bitget_fr_arb01_restore_20261110/delist_snapshot_fix/`。
+
+2026-11-10 08:21:50 UTC，按操作员指令，`bitget_fr_arb01` 在20,000 USDT资金账户
+划入UTA并回读后开启实盘。21币正套沿用Bitget02/03名单但排除4倍上限的HUSDT，
+21个合约5倍设置全部确认，抵押品检查通过，原风控和共享策略参数保持。
+现货/永续均已出现真实成交，Delist目录和授权保持；遗漏的私有快照映射于08:42补齐。
+NAV统计起点仍07:56:36.692 UTC，新成交、费用和收益独立，划转不记交易收益。
+当前为8组件交易运行；旧历史归档保留。
+回执及观察：`data/ops/bitget_fr_arb01_restore_20261110/go_live/`。
+
+2026-11-10 08:01–08:08 UTC，恢复 `bitget_fr_arb01` 的NAV活动登记、`delist`读取授权、
+CTA外部目录及`lgq`查看授权；线上和本机FR白名单分别只补回该环境，保留其余既有差异。
+仅恢复8个目标Nginx location，页面/Config/WS继续要求原登录，回环snapshot返回200；
+未持有可用Delist浏览器会话，未将匿名跳转当作已验证的登录后页面。NAV和Delist重载后
+分别为PID291158/CPU24、PID291287/CPU28，原SG隧道继续CPU28，CTA PID3909484不变。
+旧NAV成交/资金费/利息、快照及水位归档到 `retired_bitget_fr_arb01_20261109`；
+新统计起点为 `2026-11-10 07:56:36.692 UTC`，新表均0条，累计盈亏和3个监控采样点均0。
+NAV/CTA汇总已出现新盘，collection_status=live；尚无完整昨日口径的字段保持null。
+原账户暂无USDT，仅约0.1442 USD BGB；交易所零永续/挂单/负债，7组件只读观察，
+trade_signal保持停止，等待入金。新订单库不继承旧盘，旧运行目录及订单归档保留。
+核验和恢复记录见 `data/ops/bitget_fr_arb01_restore_20261110/`、`docs/core_allocation.md`。
+
 2026-11-10 02:29 UTC，修复账户目录读取依赖远端凭据SSH的问题。
 01:08:25 NAV目录请求15秒超时触发01:08:28告警；01:09:18已自动恢复。
 原NAV目录请求会检查每个环境的凭据文件，包括SG的SSH读取。NAV `c8cb8fa`
@@ -70,6 +109,17 @@ Delist SHA-256：`f1103843107dd0224046c562486d13addbb2a18afb349b445962a3a3b1ccb8
 `~/delist_risk_server/backups/fr_catalog_cc25b455_20261110/` 和
 `~/crypto_nav_manager/maintenance-backups/fr_catalog_20261110/`。
 
+2026-11-09，按操作员要求退役 `bitget_fr_arb01`。NAV的`strategy_envs`记录停用并
+移除读取授权，CTA对应`external:jp-meta-nav:bitget_fr_arb01`目录项停用并移除查看
+授权；历史记录保留。线上及仓库FR入口白名单各自仅删除该环境，保留原有差异。
+重载NAV和Delist后，NAV目录刷新由13项降至12项；Delist PID705377及SG隧道
+PID705321仍全部CPU28。旧FR网页、Config、WS及snapshot入口均改为HTTP410。
+CTA Manager的K线/资金费率出口隔离清单同时删除两条旧环境配置路径，重载后
+PID718583仍为CPU24；其他121个受保护交易/行情进程身份保持。
+21个永续仓位及可交易ZBT现货的22笔市价单全部成交，53条fill均为taker；
+20种低于交易数量步长的现货零头约0.0966 USD仍在账户，不能视为完全零余额。
+订单归档及回执：`data/ops/bitget_fr_arb01_retire_20261109/`。
+
 2026-11-06 14:39–14:40 UTC，按操作员要求将 Delist 和其 SG 隧道迁至 CPU28，
 与已隔离的轻载 Redis 共用。Delist PID1367608、隧道 PID1367582 的全部线程
 核验为28；Redis PID2769589及全部7线程保持，无 Redis 重启。新增环境本地
@@ -79,6 +129,20 @@ Delist SHA-256：`f1103843107dd0224046c562486d13addbb2a18afb349b445962a3a3b1ccb8
 214个其他长期进程身份/既有存活线程绑核保持。JP/SG参数监控正常，11个FR快照
 完整，通知队列为空；迁移后200次长连接 PING 全通过，P95 0.349ms、最大2.991ms。
 回退及核验在 `~/delist_risk_server/run/cpu28-20261106T143858Z/`。
+
+2026-11-06 07:26 UTC，`okex_mm_83777` 换用独立 UID `556411065144578537` 并
+恢复8个观察进程；旧观察订单库按操作员要求删除并重建。NAV/Delist 登记保持，
+Config/Viz/snapshot 均HTTP200，当前新账户零仓位/敞口、零挂单，启动后零成交。
+交易引擎只读、信号不发布；MM 仍不参与 Delist 自动清仓或删列表。
+
+2026-11-06 06:54 UTC，`okex_mm_83777` 按操作员要求替换账户凭据后全部停止，
+待新凭据的 IP 白名单和 UID 验证。NAV/Delist 登记保持；MM snapshot 暂不可用，
+不得将其解释为新账户零仓位。只读/不发布信号开关保留，详情见核心分配及 IP 绑定登记。
+
+2026-11-06，JP `okex_mm_83777`（别名 `okex_83777`）作为独立 MM 记录加入
+NAV，并授予 `delist` 读取权限；Delist 已成功刷新 NAV 目录，账户数由12增至13。
+该环境处于只读观察模式，交易引擎拒绝交易请求，信号不发布。OKX MM 不在
+Delist 自动清仓或自动删列表支持范围；其币种清单为 `mm_trade_symbols:okex-futures`。
 
 Authenticated HTTP service for trading-book delist / opening-restriction risk on
 Binance, Bitget, Gate, Bybit, and OKX. Official market snapshots plus announcement LLM
@@ -1395,12 +1459,16 @@ notification links to its full protected archive under
 endpoints are `/api/parameter-changes` and `/api/parameter-change?site=jp&id=...`.
 Full archives remain available through the individual record links.
 
-The FR per-environment Delist grants remain in place. MM configuration now
-requires a Delist login. The CTA internal verifier requires both a valid Delist
-session/write origin and the existing Manager `configure` permission for the
-same explicit source IDs. One combined verifier avoids nested Nginx auth-request
-semantics. Nginx overwrites actor/IP headers; internal verification endpoints
-are blocked externally. All current configuration backends bind only loopback,
+The FR per-environment Delist grants remain in place. MM configuration requires
+a Delist login. Since 2026-11-10, the shared CTA editor gateway uses the account
+workspace's Manager session and requires Manager `configure` permission for
+every explicit source ID in its shared catalog. It does not require an additional
+Delist session. Nginx requires an explicit matching Origin for non-GET/HEAD
+requests and overwrites actor/IP headers; internal verification endpoints
+are blocked externally. The status-only Manager verifier supplies no username:
+CTA journals use the truthful `manager_session` actor marker and retain a hashed
+session fingerprint, rather than attributing an unidentified human. All current
+configuration backends bind only loopback,
 including the SG Bybit service reached through the existing private gateway.
 
 The 2026-11-06 investigation compared the current Prep files with that day's
@@ -1806,10 +1874,10 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_CORE` | Optional CPU list for Delist, its SG tunnel and child collectors; JP uses `28` with Redis. Unset inherits affinity. |
 | `DELIST_PG_URL` | `postgres://delist_risk:...@127.0.0.1:5432/delist_risk` |
 | `DELIST_REDIS_URL` | JP Redis, default `redis://127.0.0.1:6379/0` |
-| `DELIST_SG_REDIS_URL` | SG Bybit Redis through a local SSH tunnel, `redis://127.0.0.1:16379/0` |
-| `DELIST_SG_REDIS_SSH_HOST` | SSH target for the SG tunnel, default `sg` |
-| `DELIST_SG_WEB_TUNNEL_PORT` | Optional JP loopback port forwarding to SG loopback 4191; deployed `14191` |
-| `DELIST_SG_FLATTEN_SSH_HOST` | Explicit SSH target enabling SG Bybit FR flatten; deployed `sg` |
+| `DELIST_SG_REDIS_URL` | Optional SG Redis over a local SSH tunnel; disabled in JP |
+| `DELIST_SG_REDIS_SSH_HOST` | SG SSH target; JP explicitly sets it empty |
+| `DELIST_SG_WEB_TUNNEL_PORT` | Optional SG web forward; disabled in JP |
+| `DELIST_SG_FLATTEN_SSH_HOST` | Optional SG Bybit FR flatten target; disabled in JP |
 | `DELIST_ANNOUNCEMENT_INTERVAL_SECS` | default `86400` |
 | `DELIST_OFFICIAL_INTERVAL_SECS` | default `86400` |
 | `DELIST_LISTING_INTERVAL_SECS` | default `86400`; a separate catalog fetch runs at `00:00 UTC` |
@@ -1828,9 +1896,10 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_LLM_BACKUP_*` | optional backup endpoint |
 | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | optional SAPI snapshots |
 
-### SG Bybit universe
+### SG Bybit universe (historical configuration)
 
-Bybit books run on SG. Its Redis stays loopback-only; do not expose port 6379
+This configuration was retired on 2026-11-11; current Bybit FR runs on JP.
+When using an SG deployment in the future, its Redis must stay loopback-only; do not expose port 6379
 or point `DELIST_SG_REDIS_URL` at a public IP. On the JP delist host, add the
 following to the environment-local `config/delist_risk_server.env` and restart
 the service:

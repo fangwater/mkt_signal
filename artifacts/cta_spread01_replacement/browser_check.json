@@ -1,0 +1,11 @@
+{
+  "frequencies": {
+    "1min": 28,
+    "5min": 56,
+    "15min": 18,
+    "1h": 107
+  },
+  "symbol_pools": 0,
+  "mobile_overflow": false,
+  "errors": []
+}

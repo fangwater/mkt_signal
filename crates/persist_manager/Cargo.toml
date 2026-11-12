@@ -96,6 +96,10 @@ tower-http = { version = "0.4", features = ["cors"], optional = true }
 tonic-build = { version = "0.12", optional = true }
 protoc-bin-vendored = { version = "3", optional = true }
 
+[[example]]
+name = "retire_spread01_history"
+required-features = ["runtime"]
+
 [features]
 default = []
 embedded = ["dep:rocksdb", "dep:serde", "dep:serde_json"]

@@ -21,6 +21,18 @@
 失败时自动直连。没有新增 Nginx 缓存、端口、白名单或部署；历史种子仅保存在各计算
 代次目录供审计，不作为主机共享行情缓存。官方契约沿用下文 Binance K 线消费者条目。
 
+2026-11-06 07:26 UTC，`okex_mm_83777` 新账户只读观察栈恢复，环境本地公共
+利率缓存 PID413204 再次监听 `127.0.0.1:28901`。继续只请求下述官方公共端点，
+不使用账户凭据；缓存策略、端点 allowlist、TTL 和 Nginx 配置保持。
+
+2026-11-06 06:54 UTC，`okex_mm_83777` 替换私有账户凭据后全部停止，包含环境本地
+`127.0.0.1:28901` 利率缓存；待私有账户 IP 白名单和 UID 验证后再恢复观察。
+公共缓存策略、端点 allowlist、TTL 和 Nginx 配置保持。
+
+2026-11-06，JP `okex_mm_83777` 观察模式使用本机 `127.0.0.1:28901` 利率缓存；
+该缓存直接向 OKX 官方公共 `GET /api/v5/public/interest-rate-loan-quota` 请求，
+每小时一次，不使用账户凭据，不新增 Nginx 公共缓存或代理路径。
+
 2026-11-05 Delist 风险服务接入 OKX 官方公共只读来源，均直接访问官方 HTTPS，
 不新增 Nginx 路由、监听或缓存：`GET /api/v5/public/instruments?instType=SPOT|SWAP`
 用于完整目录和下架日程；`GET /api/v5/support/announcements?annType=announcements-delistings&page=N`

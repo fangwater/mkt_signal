@@ -147,7 +147,7 @@ function scopeDoc(interval){
 }
 function renderTabs(){
   $('frequency-tabs').replaceChildren();
-  const intervals=selectedWorker==='cta-factor-spread'?['1min','1h']:prepIntervals;
+  const intervals=prepIntervals;
   for(const interval of intervals){
     const doc=scopeDoc(interval),button=document.createElement('button');
     button.type='button';button.setAttribute('role','tab');button.setAttribute('aria-selected',String(draft?.name===doc?.name));button.dataset.interval=interval;button.dataset.name=doc?.name||'';button.disabled=busy||!doc;
