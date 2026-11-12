@@ -213,9 +213,10 @@ def main():
                         time.sleep(.1)
                     raise AssertionError(report())
 
-                data = wait_account(lambda a: a['risk_abs_usdt'] == 0 and not a['breaches'])
-                time.sleep(2.5)
-                assert not next(a for a in report()['accounts'] if a['slug'] == slugs[0])['breaches']
+                # A plan refreshed on every poll cannot hide a persistent actual imbalance.
+                data = wait_account(lambda a: a['risk_abs_usdt'] == 160 and a['risk_status'] == 'alert')
+                account = next(a for a in data['accounts'] if a['slug'] == slugs[0])
+                assert next(row for row in account['rows'] if row['asset'] == 'TEST')['hedge_plan_qty'] == 160
                 mode['gate'] = 'excess'
                 data = wait_account(lambda a: a['risk_status'] == 'alert')
                 assert len(data['accounts']) == 4

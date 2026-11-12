@@ -515,39 +515,16 @@ fn parse_row(value: &Value) -> Result<Row> {
             "{asset} 持仓估值无效"
         );
     }
+    // A queued or working hedge is not a position. Its age, rejection state and
+    // eventual execution are unknown here, so it cannot offset factual risk.
+    // Keep plan metadata diagnostic-only, including when it is unavailable.
     let hedge_plan_qty = match value.get("arb_hedge_net_qty") {
-        Some(Value::Null) => Some(0.0), // Current producer explicitly has no strategy plan.
-        Some(value) => Some(
-            value
-                .as_f64()
-                .filter(|v| v.is_finite())
-                .context("无效的对冲计划净量")?,
-        ),
-        None => None, // An older/incomplete producer cannot prove plan coverage.
+        Some(Value::Null) => Some(0.0),
+        Some(value) => value.as_f64().filter(|v| v.is_finite()),
+        None => None,
     };
-    let uncovered_qty = if net_qty.abs() <= 1e-12 {
-        Some(0.0)
-    } else {
-        hedge_plan_qty.map(|plan| {
-            let covered = if plan.signum() == net_qty.signum() {
-                plan.abs().min(net_qty.abs())
-            } else {
-                0.0
-            };
-            net_qty.signum() * (net_qty.abs() - covered)
-        })
-    };
-    let uncovered_usdt = if priced {
-        uncovered_qty.map(|qty| {
-            if net_qty.abs() <= 1e-12 {
-                0.0
-            } else {
-                net * (qty / net_qty)
-            }
-        })
-    } else {
-        None
-    };
+    let uncovered_qty = Some(net_qty);
+    let uncovered_usdt = priced.then_some(net);
     Ok(Row {
         asset,
         open_qty,
@@ -618,13 +595,6 @@ fn parse_for_exchange(
                 row.ignored_spot_tail = cash_leg && settings.ignores_spot_tail(exchange, &row);
                 if row.net_usdt.is_none() && !row.ignored_spot_tail {
                     errors.push(format!("{} 有持仓但缺少有效价格", row.asset));
-                }
-                if row.net_usdt.is_some() && row.uncovered_usdt.is_none() && !row.ignored_spot_tail
-                {
-                    errors.push(format!(
-                        "{} 缺少对冲计划元数据，不能判定异常敞口",
-                        row.asset
-                    ));
                 }
                 rows.push(row);
             }
@@ -847,31 +817,53 @@ mod tests {
     }
 
     #[test]
-    fn normal_construction_never_becomes_exposure_alert_or_recovery() {
+    fn unfilled_plan_cannot_hide_persistent_exposure_or_confirm_recovery() {
         let mut m = Monitor::new(Settings::default());
         let mut building = row("IDOL", 160.0);
         building["arb_hedge_net_qty"] = serde_json::json!(160.0);
-        // Pending excludes quantities already borrowed by a live hedge order;
-        // the full strategy net quantity covers both pending and working parts.
+        // This could be queued, working or stuck: none proves a hedge fill.
         building["arb_pending_hedge_qty"] = serde_json::json!(1.0);
-        for t in [0, 10_000, 20_000, 30_000, 120_000] {
+        for t in [0, 10_000, 20_000, 30_000, 40_000] {
             apply(&mut m, vec![building.clone()], NOW + t);
             let a = account(&m, NOW + t);
             assert_eq!(a.abs_usdt, Some(160.0));
-            assert_eq!(a.risk_abs_usdt, Some(0.0));
-            assert!(a.breaches.is_empty());
+            assert_eq!(a.risk_abs_usdt, Some(160.0));
+            assert_eq!(a.risk_status, if t < 30_000 { "pending" } else { "alert" });
+            let observation =
+                super::super::notifications::exposure_observations(&m.report(NOW + t, true))
+                    .into_iter()
+                    .find(|o| o.key == "exposure/gate_fr_arb04/IDOL")
+                    .unwrap();
+            assert_eq!(observation.problem, (t >= 30_000).then_some(true));
         }
-        apply(&mut m, vec![row("IDOL", 0.0)], NOW + 130_000);
-        assert!(account(&m, NOW + 130_000).breaches.is_empty());
+        // An oversized refreshed plan must not clear the alert either.
+        building["arb_hedge_net_qty"] = serde_json::json!(1000.0);
+        apply(&mut m, vec![building], NOW + 50_000);
+        assert_eq!(account(&m, NOW + 50_000).risk_status, "alert");
+        apply(&mut m, vec![row("IDOL", 0.0)], NOW + 60_000);
+        assert!(account(&m, NOW + 60_000).breaches.is_empty());
+        assert_eq!(account(&m, NOW + 60_000).risk_status, "ok");
     }
 
     #[test]
-    fn unplanned_adl_difference_is_not_hidden_by_a_partial_or_wrong_direction_plan() {
+    fn actual_hedge_fill_during_confirmation_window_avoids_alert() {
+        let mut m = Monitor::new(Settings::default());
+        let mut building = row("ON", 600.0);
+        building["arb_hedge_net_qty"] = serde_json::json!(600.0);
+        apply(&mut m, vec![building], NOW);
+        assert_eq!(account(&m, NOW).risk_status, "pending");
+        apply(&mut m, vec![row("ON", 0.0)], NOW + 10_000);
+        apply(&mut m, vec![row("ON", 0.0)], NOW + 30_000);
+        assert!(account(&m, NOW + 30_000).breaches.is_empty());
+    }
+
+    #[test]
+    fn actual_exposure_is_independent_of_plan_direction_and_size() {
         for (net, plan, expected) in [
-            (160.0, 10.0, 150.0),
+            (160.0, 10.0, 160.0),
             (160.0, -1000.0, 160.0),
-            (-160.0, -10.0, -150.0),
-            (160.0, 500.0, 0.0),
+            (-160.0, -10.0, -160.0),
+            (160.0, 500.0, 160.0),
             (0.0, 500.0, 0.0),
         ] {
             let mut value = row("BTC", net);
@@ -888,11 +880,11 @@ mod tests {
         }
         let a = account(&m, NOW + 30_000);
         assert_eq!(a.risk_status, "alert");
-        assert_eq!(a.breaches["asset:BTC"].value_usdt, 150.0);
+        assert_eq!(a.breaches["asset:BTC"].value_usdt, 160.0);
     }
 
     #[test]
-    fn missing_plan_metadata_is_unknown_while_explicit_no_strategy_is_uncovered() {
+    fn missing_or_invalid_plan_metadata_cannot_hide_factual_exposure() {
         let mut value = row("BTC", 160.0);
         value.as_object_mut().unwrap().remove("arb_hedge_net_qty");
         let sample = parse(
@@ -901,8 +893,10 @@ mod tests {
             &Settings::default(),
         )
         .unwrap();
-        assert!(!sample.errors.is_empty());
-        assert_eq!(sample.rows[0].uncovered_usdt, None);
+        assert!(sample.errors.is_empty());
+        assert_eq!(sample.rows[0].uncovered_usdt, Some(160.0));
+        value["arb_hedge_net_qty"] = serde_json::json!("invalid");
+        assert_eq!(parse_row(&value).unwrap().uncovered_usdt, Some(160.0));
         value["arb_hedge_net_qty"] = Value::Null;
         assert_eq!(parse_row(&value).unwrap().uncovered_usdt, Some(160.0));
     }

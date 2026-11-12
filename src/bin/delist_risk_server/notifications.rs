@@ -754,10 +754,10 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
             });
             observations.push(Observation {
                 key: format!("exposure/{}/{}", account.slug, row.asset),
-                title: format!("{} {} 未覆盖差额", account.slug, row.asset),
+                title: format!("{} {} 实际净敞口", account.slug, row.asset),
                 problem,
                 detail: format!(
-                    "未覆盖差额 {} USDT；单币阈值 {:.2} USDT；实际净量 {:.8}，策略对冲计划净量 {}",
+                    "实际净敞口 {} USDT；单币阈值 {:.2} USDT；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）",
                     row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
                         .unwrap_or_else(|| "未知".into()),
@@ -771,7 +771,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
         }
         observations.push(Observation {
             key: format!("exposure/{}/total", account.slug),
-            title: format!("{} 未覆盖差额合计", account.slug),
+            title: format!("{} 实际净敞口合计", account.slug),
             problem: account.risk_abs_usdt.filter(|_| fresh).and_then(|value| {
                 if value > report.settings.account_limit_usdt
                     && account.breaches.get("total").is_some_and(|b| b.confirmed)
@@ -784,7 +784,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                 }
             }),
             detail: format!(
-                "未覆盖差额逐币绝对值合计 {:.2} USDT；账户阈值 {:.2} USDT{}",
+                "实际净敞口逐币绝对值合计 {:.2} USDT；账户阈值 {:.2} USDT{}",
                 account.risk_abs_usdt.unwrap_or(0.0),
                 report.settings.account_limit_usdt,
                 if account.complete {

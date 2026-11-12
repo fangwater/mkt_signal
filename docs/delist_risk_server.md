@@ -305,6 +305,22 @@ annualizations using the latest account equity; they are not forecasts or tradin
 
 ## FR exposure checks
 
+2026-11-12 ON incident: the deployed monitor subtracted stale strategy plans and
+reported only 0.06–0.14 USDT of risk per Gate account despite 535–2,024 USDT of
+actual ON exposure. The corrected code below uses factual net positions and
+the existing persistence window. This correction is pending deployment; the
+historical deployment observations below describe the earlier implementation.
+
+The trading-side failure was separate: paired-close work had unconditional
+priority over opening hedges, including quantities larger than the remaining
+reducing position or smaller than one contract lot. The local correction caps
+close queries to the live reducing quantity and venue step. Only unsubmitted,
+unexecutable close work can be matched against opposite due opening work;
+live orders and unresolved outcomes retain their reservations. Matching work
+never changes factual fills or account net positions. This trading correction
+is also pending deployment and does not itself reconcile the current live ON
+inventory.
+
 Deployment verified 2026-11-04 10:04 UTC on JP: source `b77e5da1`, Delist PID
 `2922632`, SG tunnel PID `2922607`, both CPU `0-5`.
 Binary SHA-256: `a2a490e1f810706b6af7b08f5a05609f4607f24d3b8ec20c097bdb082684df06`.
@@ -374,27 +390,26 @@ Redis, executing orders or sending notifications. Existing deployments must
 replace `DELIST_SNAPSHOT_BASE_URL` with the target-file setting when publishing
 the matching binary and start script.
 
-It keeps raw account net position differences visible, but alerts only on the
-**uncovered difference** after subtracting same-direction strategy hedge-plan
-coverage. The coverage is capped at the actual net quantity: a larger plan cannot
-invent an opposite risk, and an opposite-direction plan covers none. The producer's
-`arb_hedge_net_qty` includes both pending and quantities already borrowed by a
-working hedge; subtracting `arb_pending_hedge_qty` alone would falsely flag normal
-construction. Explicit null means no strategy plan; absent/invalid metadata is
-unknown. A plan does not prove an order is active, filled or unstalled; order
-progress/rejection evidence is needed for a separate stalled-execution check.
+Exposure alarms use **actual account net positions**. Strategy hedge plans,
+pending work and working orders remain diagnostic fields and never offset risk:
+a plan can be rejected or stalled indefinitely without producing a hedge fill.
+Missing or invalid plan metadata does not prevent evaluating valid account
+positions. The existing 30-second persistence window filters transient leg
+imbalances during normal construction; an actual hedge fill, not a refreshed
+plan, can clear an exposure breach.
 
-It sums **absolute per-asset uncovered differences** within each account; different
-assets and accounts cannot cancel each other's risk. The signed `TOTAL` row is
-ignored. Two-leg quantities/valuations, raw differences, plan quantities, the
-largest uncovered difference, pending hedge
-quantity, timestamps and all nonzero snapshot positions are available on the
-board. Mobile summaries are stacked; detailed position tables scroll locally.
+The monitor sums **absolute per-asset actual net exposures** within each account;
+different assets and accounts cannot cancel each other's risk. The signed
+`TOTAL` row is ignored. The current `uncovered_qty` / `uncovered_usdt` fields
+represent the factual net quantity / valuation without plan subtraction.
+`risk_abs_usdt` excludes only explicitly approved spot tails; `abs_usdt` retains
+all priced rows for diagnostics. Two-leg positions, strategy plan and pending
+quantities remain visible separately.
 
-Default monitoring thresholds on uncovered differences are **100 USDT per asset**, **500 USDT per account**,
-and **30 seconds** of observed excess before a persistent warning. Initial excess
-is shown immediately as pending. These are display thresholds, independent of
-trading, delisting, automatic dump and flatten thresholds. The collector itself
+Default thresholds are **100 USDT per asset**, **500 USDT per account**, and
+**30 seconds** of observed excess before a persistent warning. Initial excess
+is shown immediately as pending. These are monitoring thresholds, independent
+of trading, delisting, automatic dump and flatten thresholds. The collector
 neither changes Redis lists nor submits orders; the independently configured FR
 DingTalk channel below consumes its observations.
 
@@ -472,7 +487,7 @@ one explicit setup test and exits. No extra scheduler or GPT model is introduced
   symbols are automatically added to strategies.
 - UniMMR uses the live account state and configured trigger/recovery lines;
   the gap between those lines is unknown for recovery. Confirmed asset/account
-  uncovered exposure, incomplete data, provider failures and empty UniMMR close lists send
+  actual net exposure, incomplete data, provider failures and empty UniMMR close lists send
   once on first detection and once on confirmed recovery. There is no periodic
   repeat or severity-change repeat. Unknown/missing/stale data never recover a
   prior issue. A fully closed asset requires complete fresh coverage to recover.

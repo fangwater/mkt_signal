@@ -31,6 +31,9 @@ struct PairedClose {
     reserved: f64,
     first_filled: f64,
     hedge_filled: f64,
+    // Unsubmitted close work matched against opposite unsubmitted opening work.
+    // This releases a reservation without inventing an exchange fill.
+    hedge_netted: f64,
     first_finished: bool,
 }
 
@@ -73,7 +76,7 @@ impl CloseExposureLedger {
         let mut symbol_held = 0.0;
         let mut total_held_usdt = 0.0;
         for order in self.orders.values() {
-            let held = (order.reserved - order.hedge_filled).max(0.0);
+            let held = (order.reserved - order.hedge_filled - order.hedge_netted).max(0.0);
             let mark = valid_price(&price, &order.asset)?;
             total_held_usdt += held * mark;
             if order.asset == r.asset {
@@ -103,6 +106,7 @@ impl CloseExposureLedger {
                 reserved: granted,
                 first_filled: 0.0,
                 hedge_filled: 0.0,
+                hedge_netted: 0.0,
                 first_finished: false,
             },
         );
@@ -163,7 +167,7 @@ impl CloseExposureLedger {
             || !position.is_finite()
             || position * sign >= 0.0
             || qty > position.abs() + EPS
-            || qty > (r.first_filled - r.hedge_filled).max(0.0) + EPS
+            || qty > (r.first_filled - r.hedge_filled - r.hedge_netted).max(0.0) + EPS
         {
             return Err(
                 "paired-close hedge exceeds factual fills or would increase its position".into(),
@@ -177,17 +181,28 @@ impl CloseExposureLedger {
             return;
         }
         if let Some(r) = self.orders.get_mut(&id) {
-            r.hedge_filled = (r.hedge_filled + qty).min(r.first_filled);
+            r.hedge_filled = (r.hedge_filled + qty).min(r.first_filled - r.hedge_netted);
         }
         self.retire(id);
     }
 
+    pub fn net_unsubmitted_hedge(&mut self, id: i64, qty: f64) -> f64 {
+        if !qty.is_finite() || qty <= 0.0 {
+            return 0.0;
+        }
+        let Some(r) = self.orders.get_mut(&id) else {
+            return 0.0;
+        };
+        let netted = qty.min((r.first_filled - r.hedge_filled - r.hedge_netted).max(0.0));
+        r.hedge_netted += netted;
+        self.retire(id);
+        netted
+    }
+
     fn retire(&mut self, id: i64) {
-        if self
-            .orders
-            .get(&id)
-            .is_some_and(|r| r.first_finished && r.reserved - r.hedge_filled <= EPS)
-        {
+        if self.orders.get(&id).is_some_and(|r| {
+            r.first_finished && r.reserved - r.hedge_filled - r.hedge_netted <= EPS
+        }) {
             self.orders.remove(&id);
         }
     }
@@ -216,6 +231,29 @@ mod tests {
             total_limit_usdt: 1_000.0,
         }
     }
+    #[test]
+    fn netted_work_releases_only_unfilled_credit_without_inventing_fills() {
+        let mut ledger = CloseExposureLedger::default();
+        ledger.reserve(request(1, 10.0), |_| Some(1.0)).unwrap();
+        ledger.first_fill(1, 10.0);
+        ledger.finish_first(1);
+        ledger.hedge_fill(1, 2.0);
+        assert_eq!(ledger.net_unsubmitted_hedge(1, 3.0), 3.0);
+        let entry = &ledger.orders[&1];
+        assert_eq!(entry.first_filled, 10.0);
+        assert_eq!(entry.hedge_filled, 2.0);
+        assert_eq!(entry.hedge_netted, 3.0);
+        assert!(ledger
+            .check_hedge(1, TradingVenue::GateFutures, Side::Buy, 5.0, -5.0)
+            .is_ok());
+        assert!(ledger
+            .check_hedge(1, TradingVenue::GateFutures, Side::Buy, 6.0, -10.0)
+            .is_err());
+        assert_eq!(ledger.net_unsubmitted_hedge(1, 100.0), 5.0);
+        assert!(!ledger.contains(1));
+        assert_eq!(ledger.net_unsubmitted_hedge(1, 100.0), 0.0);
+    }
+
     #[test]
     fn existing_unbalanced_account_can_close_but_concurrent_unfinished_work_is_bounded() {
         let mut l = CloseExposureLedger::default();

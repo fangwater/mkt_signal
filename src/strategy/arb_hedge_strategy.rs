@@ -1659,7 +1659,119 @@ impl ArbHedgeStrategy {
         true
     }
 
-    fn send_hedge_query(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
+    /// Only queued work can be matched. Never release a live/unresolved order's
+    /// reservation, and never turn a work offset into a factual exchange fill.
+    fn net_unexecutable_paired_close_work(&mut self, now_ts: i64, executable_qty: f64) {
+        if self.inflight_hedge_query.is_some()
+            || !self.hedge_order_meta.is_empty()
+            || !self.orphaned_hedge_order_meta.is_empty()
+            || !executable_qty.is_finite()
+            || executable_qty < 0.0
+        {
+            return;
+        }
+        let close_due = self.paired_close_hedge_queue.due_qty(now_ts);
+        let opening_due = self.pending_hedge_queue.due_qty(now_ts);
+        if close_due * opening_due >= 0.0 {
+            return;
+        }
+        // Do not consume protective-exit identities as ordinary opening work.
+        if self.pending_hedge_queue.due_lots(now_ts).iter().any(|lot| {
+            self.force_close_open_ids
+                .contains(&lot.open_client_order_id.unwrap_or(0))
+        }) {
+            return;
+        }
+        let qty = (close_due.abs() - executable_qty)
+            .max(0.0)
+            .min(opening_due.abs());
+        if qty <= ARB_HEDGE_QTY_EPS {
+            return;
+        }
+        let opening = self
+            .pending_hedge_queue
+            .borrow(now_ts, opening_due.signum() * qty);
+        let closing = self
+            .paired_close_hedge_queue
+            .borrow(now_ts, close_due.signum() * opening.qty);
+        let monitor = MonitorChannel::instance();
+        let mut netted = 0.0;
+        for lot in closing.lots {
+            let id = lot.open_client_order_id.unwrap_or(0);
+            let matched = monitor.net_unsubmitted_paired_close_hedge(id, lot.qty);
+            netted += matched;
+            if lot.qty - matched > ARB_HEDGE_QTY_EPS {
+                self.paired_close_hedge_queue.release_with_id(
+                    now_ts,
+                    lot.qv.signum() * (lot.qty - matched),
+                    lot.price,
+                    id,
+                );
+            }
+        }
+        let mut consumed = netted;
+        for lot in opening.lots {
+            let matched = consumed.min(lot.qty);
+            consumed -= matched;
+            if lot.qty - matched > ARB_HEDGE_QTY_EPS {
+                // Restore original timing and identity, including future work.
+                self.pending_hedge_queue.put_with_id(
+                    lot.ts,
+                    lot.close_ts,
+                    lot.qv.signum() * (lot.qty - matched),
+                    lot.price,
+                    lot.open_client_order_id.unwrap_or(0),
+                );
+            }
+        }
+        if netted > ARB_HEDGE_QTY_EPS {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} netted unsubmitted opposite hedge work qty={:.8} executable_close_qty={:.8} remaining_close={:.8} remaining_open={:.8}; no exchange fill",
+                self.strategy_id, self.symbol, netted, executable_qty,
+                self.paired_close_hedge_queue.net_qty(), self.pending_hedge_queue.net_qty()
+            );
+        }
+    }
+
+    /// Floor close work to the remaining reducing position and the venue lot.
+    /// Unknown rules/prices are distinct from a known zero executable quantity.
+    fn executable_paired_close_qty(&self, now_ts: i64) -> Option<f64> {
+        let due = self.paired_close_hedge_queue.due_qty(now_ts);
+        if due.abs() <= ARB_HEDGE_QTY_EPS {
+            return Some(0.0);
+        }
+        let monitor = MonitorChannel::instance();
+        let position = monitor.get_position_qty(&self.symbol, self.hedge_venue);
+        if !position.is_finite() {
+            return None;
+        }
+        if position * due <= 0.0 {
+            return Some(0.0);
+        }
+        let mark = self.mark_price()?;
+        let multiplier = monitor
+            .qty_to_base_at_price(self.hedge_venue, &self.symbol, 1.0, mark)
+            .ok()?;
+        if !multiplier.is_finite() || multiplier <= 0.0 {
+            return None;
+        }
+        let aligned = monitor
+            .align_close_order_by_venue(
+                self.hedge_venue,
+                &self.symbol,
+                due.abs().min(position.abs()) / multiplier,
+                mark,
+            )
+            .ok()?;
+        Some(aligned.map_or(0.0, |(qty, _)| qty * multiplier))
+    }
+
+    fn send_hedge_query(
+        &mut self,
+        now_ts: i64,
+        due_hedge_qty: f64,
+        paired_open_id: Option<i64>,
+    ) -> bool {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u = risk_loader
@@ -1667,20 +1779,11 @@ impl ArbHedgeStrategy {
             .max(0.0)
             * risk_loader.max_symbol_exposure_ratio().max(0.0);
         let request_seq = self.next_hedge_request_seq();
-        let paired_lot = self
-            .paired_close_hedge_queue
-            .due_lots(now_ts)
-            .into_iter()
-            .next();
-        let due_hedge_qty = if paired_lot.is_some() {
-            self.paired_close_hedge_queue.due_qty(now_ts)
-        } else {
+        let pending_hedge_qty = if paired_open_id.is_some() {
             due_hedge_qty
+        } else {
+            self.pending_hedge_queue.net_qty()
         };
-        let pending_hedge_qty = paired_lot.as_ref().map_or_else(
-            || self.pending_hedge_queue.net_qty(),
-            |_| self.paired_close_hedge_queue.net_qty(),
-        );
         let query_msg = ArbHedgeSignalQueryMsg::new(
             self.strategy_id,
             &self.symbol,
@@ -1701,10 +1804,7 @@ impl ArbHedgeStrategy {
         }) {
             Ok(true) => {
                 self.begin_inflight_hedge_query(request_seq, now_ts);
-                if let Some(lot) = paired_lot {
-                    self.inflight_hedge_query.as_mut().unwrap().target_open_id =
-                        lot.open_client_order_id;
-                }
+                self.inflight_hedge_query.as_mut().unwrap().target_open_id = paired_open_id;
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 if !suppress_pre_submit_hot_path_logs() {
                     info!(
@@ -1714,7 +1814,7 @@ impl ArbHedgeStrategy {
                         request_seq,
                         self.net_qty_queue.net_qty(),
                         due_hedge_qty,
-                        self.pending_hedge_queue.net_qty(),
+                        pending_hedge_qty,
                         self.next_query_ts_us
                     );
                 }
@@ -1900,19 +2000,28 @@ impl ArbHedgeStrategy {
         if self.adl_spot_hedge {
             return self.try_adl_spot_hedge(now_ts);
         }
-        if let Some(lot) = self
-            .paired_close_hedge_queue
-            .due_lots(now_ts)
-            .into_iter()
-            .next()
-            .filter(|_| self.due_force_close_open_id(now_ts).is_none())
+        if !self.paired_close_hedge_queue.is_empty()
+            && self.due_force_close_open_id(now_ts).is_none()
         {
             if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
                 return false;
             }
-            // Use the ordinary quote path, but borrow only this factual close fill.
-            // Never let a lazy opening hedge or an opposite old queue suppress its completion.
-            return self.send_hedge_query(now_ts, lot.qv);
+            let Some(executable_qty) = self.executable_paired_close_qty(now_ts) else {
+                return false;
+            };
+            self.net_unexecutable_paired_close_work(now_ts, executable_qty);
+            if executable_qty > ARB_HEDGE_QTY_EPS {
+                if let Some(lot) = self.paired_close_hedge_queue.due_lots(now_ts).first() {
+                    let due = self.paired_close_hedge_queue.due_qty(now_ts);
+                    return self.send_hedge_query(
+                        now_ts,
+                        due.signum() * due.abs().min(executable_qty),
+                        lot.open_client_order_id,
+                    );
+                }
+            }
+            // A zero position or sub-lot close must not monopolize the query
+            // path. Opening work still passes the normal live exposure checks.
         }
         let force_close_due = self.due_force_close_open_id(now_ts).is_some();
         if force_close_due {
@@ -2129,7 +2238,7 @@ impl ArbHedgeStrategy {
                     }
                     return false;
                 }
-                self.send_hedge_query(now_ts, due_hedge_qty)
+                self.send_hedge_query(now_ts, due_hedge_qty, None)
             }
         }
     }
@@ -4135,6 +4244,155 @@ mod tests {
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
+
+    fn stalled_close_fixture(close_qty: f64, opening_qty: f64) -> ArbHedgeStrategy {
+        crate::pre_trade::monitor_channel::tests::install_binance_arb_hedge_exposure_fixture(
+            20.0, -40.0, false,
+        );
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        monitor
+            .reserve_paired_close_exposure(
+                "FILUSDT",
+                TradingVenue::BinanceMargin,
+                Side::Sell,
+                close_qty,
+                OPEN_ID_B,
+            )
+            .unwrap();
+        monitor.record_paired_close_first_fill(OPEN_ID_B, close_qty);
+        monitor.finish_paired_close_first(OPEN_ID_B);
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "FILUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy
+            .paired_close_hedge_queue
+            .release_with_id(1, -close_qty, 100.0, OPEN_ID_B);
+        strategy
+            .pending_hedge_queue
+            .release_with_id(1, opening_qty, 100.0, OPEN_ID_A);
+        strategy
+            .net_qty_queue
+            .apply_fill(1, opening_qty - close_qty, 100.0);
+        strategy
+    }
+
+    #[test]
+    fn close_query_caps_to_live_position_and_floors_lot_tails_before_selection() {
+        let mut strategy = stalled_close_fixture(3.5, 2551.0);
+        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(-2.0, 1.0);
+        assert_eq!(strategy.executable_paired_close_qty(2), Some(2.0));
+        strategy.net_unexecutable_paired_close_work(2, 2.0);
+        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.0);
+        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(0.0, 1.0);
+        assert_eq!(strategy.executable_paired_close_qty(3), Some(0.0));
+        strategy.net_unexecutable_paired_close_work(3, 0.0);
+        assert!(strategy.paired_close_hedge_queue.is_empty());
+        assert_eq!(strategy.pending_hedge_queue.net_qty(), 2547.5);
+
+        let strategy = stalled_close_fixture(0.6, 1342.0);
+        crate::pre_trade::monitor_channel::tests::update_arb_hedge_exposure_fixture(-2.0, 1.0);
+        assert_eq!(strategy.executable_paired_close_qty(2), Some(0.0));
+    }
+
+    #[test]
+    fn flat_position_close_tail_is_netted_without_changing_factual_net_position() {
+        // ON-style state: no short remains, but a small close blocks a much
+        // larger opposite opening hedge. Net only unsubmitted work, not fills.
+        let mut strategy = stalled_close_fixture(0.6, 1342.0);
+        let before_net = strategy.net_qty();
+        let before_work = strategy.outstanding_hedge_work_qv();
+        strategy.net_unexecutable_paired_close_work(2, 0.0);
+        assert!(strategy.paired_close_hedge_queue.is_empty());
+        assert!((strategy.pending_hedge_queue.net_qty() - 1341.4).abs() < 1e-9);
+        assert_eq!(strategy.net_qty(), before_net);
+        assert!((strategy.outstanding_hedge_work_qv() - before_work).abs() < 1e-9);
+        assert!(
+            !crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                .is_paired_close(OPEN_ID_B)
+        );
+        assert!(strategy.hedge_order_meta.is_empty());
+    }
+
+    #[test]
+    fn executable_close_keeps_priority_and_only_excess_work_is_matched() {
+        let mut strategy = stalled_close_fixture(3.5, 2551.0);
+        strategy.net_unexecutable_paired_close_work(2, 3.5);
+        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -3.5);
+        assert_eq!(strategy.pending_hedge_queue.net_qty(), 2551.0);
+        strategy.net_unexecutable_paired_close_work(2, 2.0);
+        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.0);
+        assert_eq!(strategy.pending_hedge_queue.net_qty(), 2549.5);
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        assert!(monitor
+            .check_paired_close_hedge(
+                OPEN_ID_B,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                2.0
+            )
+            .is_ok());
+        assert!(monitor
+            .check_paired_close_hedge(
+                OPEN_ID_B,
+                "FILUSDT",
+                TradingVenue::BinanceFutures,
+                Side::Buy,
+                2.1
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn close_netting_preserves_unmatched_credit_and_future_open_work() {
+        let mut strategy = stalled_close_fixture(3.5, 1.0);
+        strategy
+            .pending_hedge_queue
+            .put_with_id(2, 100, 10.0, 100.0, 1003);
+        strategy.net_unexecutable_paired_close_work(3, 0.0);
+        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -2.5);
+        assert_eq!(strategy.pending_hedge_queue.net_qty(), 10.0);
+        assert_eq!(strategy.pending_hedge_queue.due_qty(3), 0.0);
+        assert!(
+            crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                .is_paired_close(OPEN_ID_B)
+        );
+    }
+
+    #[test]
+    fn close_netting_waits_for_inflight_and_unresolved_order_outcomes() {
+        let mut strategy = stalled_close_fixture(1.0, 10.0);
+        strategy.begin_inflight_hedge_query(1, 1);
+        strategy.net_unexecutable_paired_close_work(2, 0.0);
+        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -1.0);
+        strategy.inflight_hedge_query = None;
+        let meta = ArbHedgeOrderMeta {
+            paired_close_lots: Vec::new(),
+            intra_allocations: None,
+            signal_ts: 1,
+            price_offset: 0.0,
+            signal_bbo: None,
+            borrowed_qv: 2.0,
+            order_base_qty: 2.0,
+            filled_base_qty: 0.0,
+            expire_ts: 0,
+            next_expire_check_ts: 0,
+            cancel_requested: false,
+            bound_open_client_order_id: OPEN_ID_A,
+            from_key: Vec::new(),
+        };
+        strategy.hedge_order_meta.insert(2000, meta);
+        strategy.net_unexecutable_paired_close_work(2, 0.0);
+        assert_eq!(strategy.pending_hedge_queue.net_qty(), 10.0);
+        let meta = strategy.hedge_order_meta.remove(&2000).unwrap();
+        strategy.orphaned_hedge_order_meta.insert(2000, meta);
+        strategy.net_unexecutable_paired_close_work(2, 0.0);
+        assert_eq!(strategy.paired_close_hedge_queue.net_qty(), -1.0);
+        assert_eq!(strategy.outstanding_hedge_work_qv(), 11.0);
+    }
 
     #[test]
     fn paired_close_fills_keep_their_identity_and_are_not_netted_against_old_open_demand() {

@@ -4149,6 +4149,17 @@ impl MonitorChannel {
         });
     }
 
+    pub(crate) fn net_unsubmitted_paired_close_hedge(&self, id: i64, qty: f64) -> f64 {
+        Self::try_with_inner(|inner| {
+            inner
+                .close_inventory
+                .borrow_mut()
+                .exposure
+                .net_unsubmitted_hedge(id, qty)
+        })
+        .unwrap_or(0.0)
+    }
+
     pub(crate) fn check_paired_close_hedge(
         &self,
         id: i64,
@@ -10557,6 +10568,36 @@ pub(crate) mod tests {
         });
         MonitorChannel::refresh_basic_state_cache();
         strategy_mgr
+    }
+
+    pub(crate) fn update_arb_hedge_exposure_fixture(hedge_qty: f32, qty_step: f64) {
+        MonitorChannel::with_inner_mut(|inner| {
+            let mut positions = BasicUmManager::new(Exchange::Binance);
+            positions.apply_position(&BasicPositionMsg::create(
+                0,
+                "FILUSDT".into(),
+                if hedge_qty >= 0.0 { 'L' } else { 'S' },
+                hedge_qty.abs(),
+            ));
+            if let LegMgr::Futures { um, .. } = &inner.hedge_leg {
+                *um.borrow_mut() = positions;
+            }
+            let mut table = VenueMinQtyTable::new(TradingVenue::BinanceFutures);
+            table.set_entry_for_test(MinQtyEntry {
+                symbol: "FILUSDT".into(),
+                base_asset: "FIL".into(),
+                quote_asset: "USDT".into(),
+                min_qty: qty_step,
+                step_size: qty_step,
+                price_tick: Some(0.01),
+                min_notional: None,
+            });
+            inner
+                .venue_min_qty_tables
+                .insert(TradingVenue::BinanceFutures, Rc::new(table));
+        });
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MonitorChannel::refresh_basic_state_cache();
     }
 
     fn install_binance_exec_cross_section_fixture() {
