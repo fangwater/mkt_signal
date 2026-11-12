@@ -2,7 +2,9 @@
 use anyhow::{ensure, Context, Result};
 use futures_util::{stream, StreamExt};
 use mkt_signal::common::delist_accounts::AccountSpec;
+use mkt_signal::strategy::arb_hedge_strategy::ARB_HEDGE_PENDING_QUERY_MIN_USDT;
 use order_common::TradingVenue;
+use quote_plan::hedge_split::MIN_TAIL_NOTIONAL_USDT;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use serde::Serialize;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
@@ -140,6 +142,10 @@ impl Parameters {
         rules: Option<&VenueMinQtyTable>,
     ) -> Option<Limits> {
         let symbol = normalize_symbol_for_internal(&format!("{asset}USDT"));
+        let order_amount = *self
+            .amount_overrides
+            .get(&symbol)
+            .unwrap_or(&self.order_amount);
         Some(Limits {
             symbol_limit_usdt: exposure_limit(
                 *self
@@ -148,13 +154,11 @@ impl Parameters {
                     .unwrap_or(&self.max_pos_u),
                 self.symbol_ratio,
             )?,
-            order_amount_usdt: *self
-                .amount_overrides
-                .get(&symbol)
-                .unwrap_or(&self.order_amount),
+            order_amount_usdt: order_amount,
             maker_buy_orders: self.buy_orders,
             maker_sell_orders: self.sell_orders,
-            min_hedge_usdt: rules.and_then(|table| min_hedge_usdt(table, &symbol, mark?)),
+            min_hedge_usdt: rules
+                .and_then(|table| min_hedge_usdt(table, &symbol, mark?, order_amount)),
         })
     }
 }
@@ -213,7 +217,12 @@ fn hedge_venue(exchange: &str) -> Result<TradingVenue> {
     }
 }
 
-fn min_hedge_usdt(table: &VenueMinQtyTable, symbol: &str, mark: f64) -> Option<f64> {
+fn min_hedge_usdt(
+    table: &VenueMinQtyTable,
+    symbol: &str,
+    mark: f64,
+    order_amount: f64,
+) -> Option<f64> {
     if !mark.is_finite() || mark <= 0.0 || !table.is_tradable_symbol(symbol) {
         return None;
     }
@@ -230,10 +239,18 @@ fn min_hedge_usdt(table: &VenueMinQtyTable, symbol: &str, mark: f64) -> Option<f
         return None;
     }
     let step = table.step_size(symbol)?;
-    let qty = table
-        .min_qty(symbol)?
-        .max(step)
-        .max(table.min_notional(symbol).unwrap_or(0.0) / (multiplier * mark));
+    // The ordinary hedge route waits below its query floor, then the maker
+    // splitter retains sub-25U tails. A smaller full hand can still execute.
+    let strategy_minimum = order_amount
+        .min(MIN_TAIL_NOTIONAL_USDT)
+        .max(ARB_HEDGE_PENDING_QUERY_MIN_USDT);
+    let qty = table.min_qty(symbol)?.max(step).max(
+        table
+            .min_notional(symbol)
+            .unwrap_or(0.0)
+            .max(strategy_minimum)
+            / (multiplier * mark),
+    );
     let value = (qty / step).ceil() * step * multiplier * mark;
     (value.is_finite() && value > 0.0).then_some(value)
 }
@@ -413,15 +430,20 @@ mod tests {
     #[test]
     fn decimal_contract_minimum_uses_multiplier_and_rounds_up_to_step() {
         let gate = table(TradingVenue::GateFutures, Some(10.0));
-        assert_eq!(min_hedge_usdt(&gate, "ONUSDT", 3.0), Some(6.0));
+        assert_eq!(min_hedge_usdt(&gate, "ONUSDT", 3.0, 100.0), Some(27.0));
         assert_eq!(
-            min_hedge_usdt(&table(TradingVenue::GateFutures, None), "ONUSDT", 3.0),
+            min_hedge_usdt(
+                &table(TradingVenue::GateFutures, None),
+                "ONUSDT",
+                3.0,
+                100.0
+            ),
             None
         );
         let bitget = table(TradingVenue::BitgetFutures, Some(100.0));
-        assert!((min_hedge_usdt(&bitget, "ONUSDT", 3.0).unwrap() - 5.1).abs() < 1e-10);
-        assert_eq!(min_hedge_usdt(&gate, "MISSINGUSDT", 3.0), None);
-        assert_eq!(min_hedge_usdt(&gate, "ONUSDT", 0.0), None);
+        assert!((min_hedge_usdt(&bitget, "ONUSDT", 3.0, 100.0).unwrap() - 25.2).abs() < 1e-10);
+        assert_eq!(min_hedge_usdt(&gate, "MISSINGUSDT", 3.0, 100.0), None);
+        assert_eq!(min_hedge_usdt(&gate, "ONUSDT", 0.0, 100.0), None);
     }
 
     #[test]
@@ -438,5 +460,15 @@ mod tests {
         assert!(cache.get("gate").is_none());
         cache.0.get_mut("gate").unwrap().refreshed = Some(Instant::now());
         assert!(cache.get("gate").is_some());
+    }
+
+    #[test]
+    fn smaller_full_hands_and_query_floor_are_not_confused_with_25u_tails() {
+        let table = table(TradingVenue::BitgetFutures, None);
+        for (amount, expected) in [(100.0, 25.2), (20.0, 20.1), (1.0, 10.2)] {
+            assert!(
+                (min_hedge_usdt(&table, "ONUSDT", 3.0, amount).unwrap() - expected).abs() < 1e-10
+            );
+        }
     }
 }

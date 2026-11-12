@@ -154,6 +154,7 @@ impl BreachKind {
 /// Quantity anchors: repricing and refreshed plans cannot manufacture progress.
 #[derive(Clone, Debug)]
 pub(super) struct Progress {
+    open_qty: f64,
     net_qty: f64,
     hedge_qty: f64,
     since_ms: i64,
@@ -198,6 +199,7 @@ impl Row {
             return false;
         }
         let p = progress.entry(self.asset.clone()).or_insert(Progress {
+            open_qty: self.open_qty,
             net_qty: self.net_qty,
             hedge_qty: self.hedge_qty,
             since_ms: now,
@@ -206,15 +208,27 @@ impl Row {
         });
         let direction = p.net_qty.signum();
         let min_progress_qty = min_trade * self.net_qty.abs() / value.abs();
+        // Paired closing sells cash and buys back the short. Both legs shrink
+        // while their small net difference can stay unchanged. Count the matched
+        // reduction, but never let growing imbalance or a one-leg close hide risk.
+        let paired_close = p.open_qty * p.hedge_qty < 0.0
+            && p.open_qty * self.open_qty >= 0.0
+            && p.hedge_qty * self.hedge_qty >= 0.0
+            && (p.open_qty.abs() - self.open_qty.abs())
+                .min(p.hedge_qty.abs() - self.hedge_qty.abs())
+                >= min_progress_qty
+            && self.net_qty.abs() <= (p.open_qty + p.hedge_qty).abs() + 1e-9;
         let progressed = self.net_qty.signum() != direction
             || (p.hedge_qty - self.hedge_qty) * direction >= min_progress_qty
-            || (p.net_qty - self.net_qty) * direction >= min_progress_qty;
+            || (p.net_qty - self.net_qty) * direction >= min_progress_qty
+            || paired_close;
         self.made_progress = progressed;
         if progressed
             || !p.confirmed
                 && now.saturating_sub(p.last_observed_ms)
                     > (settings.interval_secs * 3) as i64 * 1000
         {
+            p.open_qty = self.open_qty;
             p.net_qty = self.net_qty;
             p.hedge_qty = self.hedge_qty;
             p.since_ms = now;
@@ -1048,6 +1062,88 @@ mod tests {
         }
     }
 
+    fn position_row(open: f64, hedge: f64) -> Value {
+        let mut value = building_row("TEST", open + hedge);
+        value["open_qty"] = json!(open);
+        value["open_usdt"] = json!(open);
+        value["hedge_qty"] = json!(hedge);
+        value["hedge_usdt"] = json!(hedge);
+        value
+    }
+
+    #[test]
+    fn paired_closing_progress_counts_both_directions_and_accumulates_small_fills() {
+        for (open, hedge) in [
+            (1040.0_f64, -1000.0_f64),
+            (1000.0, -1040.0),
+            (-1040.0, 1000.0),
+            (-1000.0, 1040.0),
+        ] {
+            let mut m = Monitor::new(Settings::default());
+            for t in (0..=360_000).step_by(10_000) {
+                let closed = t as f64 / 10_000.0;
+                apply(
+                    &mut m,
+                    vec![position_row(
+                        open - open.signum() * closed,
+                        hedge - hedge.signum() * closed,
+                    )],
+                    NOW + t,
+                );
+                let a = account(&m, NOW + t);
+                assert!(a.breaches.is_empty(), "open={open} hedge={hedge} t={t}");
+                assert_eq!(
+                    a.rows[0].stalled_since_ms,
+                    Some(NOW + (t / 100_000) * 100_000)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closing_that_widens_imbalance_or_only_buys_back_short_does_not_reset_stall() {
+        for cash_reduction in [0.0, 1.0] {
+            let mut m = Monitor::new(Settings::default());
+            for t in (0..=180_000).step_by(10_000) {
+                let units = t as f64 / 10_000.0;
+                apply(
+                    &mut m,
+                    vec![position_row(
+                        1040.0 - cash_reduction * units,
+                        -1000.0 + 2.0 * units,
+                    )],
+                    NOW + t,
+                );
+            }
+            let a = account(&m, NOW + 180_000);
+            assert_eq!(a.breaches["asset:TEST"].kind, BreachKind::Stalled);
+        }
+    }
+
+    #[test]
+    fn normal_retained_tail_clears_wrong_stall_but_still_checks_hard_limit() {
+        let mut m = Monitor::new(Settings::default());
+        let mut value = position_row(1011.0, -1000.0);
+        for t in (0..=180_000).step_by(10_000) {
+            apply(&mut m, vec![value.clone()], NOW + t);
+        }
+        assert_eq!(
+            account(&m, NOW + 180_000).breaches["asset:TEST"].kind,
+            BreachKind::Stalled
+        );
+        value["limits"]["min_hedge_usdt"] = json!(25.0);
+        apply(&mut m, vec![value.clone()], NOW + 190_000);
+        let a = account(&m, NOW + 190_000);
+        assert!(a.breaches.is_empty());
+        assert_eq!(a.rows[0].stalled_since_ms, None);
+        value["limits"]["symbol_limit_usdt"] = json!(10.0);
+        apply(&mut m, vec![value], NOW + 200_000);
+        assert_eq!(
+            account(&m, NOW + 200_000).breaches["asset:TEST"].kind,
+            BreachKind::HardLimit
+        );
+    }
+
     #[test]
     fn frozen_on_exposure_under_both_limits_alerts_after_three_minutes_despite_repricing_plans() {
         let mut m = Monitor::new(Settings::default());
@@ -1092,17 +1188,10 @@ mod tests {
     }
 
     #[test]
-    fn tiny_fills_accumulate_but_wrong_way_changes_do_not_reset_stall_timer() {
+    fn tiny_fills_accumulate_before_recovering_stall() {
         let mut m = Monitor::new(Settings::default());
         for t in (0..=180_000).step_by(10_000) {
-            let mut value = building_row("ON", 400.0);
-            // The hedge moves in the direction that increases this long exposure.
-            let wrong = t as f64 / 1000.0;
-            value["open_qty"] = json!(1400.0 - wrong);
-            value["open_usdt"] = value["open_qty"].clone();
-            value["hedge_qty"] = json!(-1000.0 + wrong);
-            value["hedge_usdt"] = value["hedge_qty"].clone();
-            apply(&mut m, vec![value], NOW + t);
+            apply(&mut m, vec![building_row("ON", 400.0)], NOW + t);
         }
         assert_eq!(
             account(&m, NOW + 180_000).breaches["asset:ON"].kind,

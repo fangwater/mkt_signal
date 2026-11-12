@@ -1,6 +1,6 @@
 use order_common::Side;
 
-const MIN_TAIL_NOTIONAL_USDT: f64 = 25.0;
+pub const MIN_TAIL_NOTIONAL_USDT: f64 = 25.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HedgeLevel {

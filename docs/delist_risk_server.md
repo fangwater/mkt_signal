@@ -541,10 +541,12 @@ Current exposure policy (Delist published independently on 2026-11-12 12:51 UTC)
 - A still-tradable residual with no actual reducing progress for **180 seconds**
   alerts even below both limits. Progress uses base-quantity anchors: a hedge-leg
   change in the reducing direction, or an actual net-quantity reduction of at
-  least the venue's minimum hedge order. Small fills accumulate against the
-  anchor. Opening more exposure, quote/mark changes, cancel/reprice and plan
+  least the normal executable hedge amount. Matched reductions of both opposing
+  legs also count as progress when the net imbalance does not grow; normal cash
+  sells plus short buybacks must not be mistaken for a stalled hedge. Small fills
+  accumulate against the quantity anchors. Opening more exposure, quote/mark changes, cancel/reprice and plan
   refreshes never reset the clock. An exposure direction reversal begins a new
-  observation. Residuals below the venue minimum hedge notional are exempt only
+  observation. Residuals below the normal executable hedge amount are exempt only
   from stagnation detection, never from hard limits.
 - Missing/invalid limits, sizing or hedge rules are incomplete data;
   known hard limits can still alert. No fixed 100/500 USDT fallback masks missing
@@ -559,7 +561,12 @@ Minimum hedge amounts reuse `VenueMinQtyTable` public providers, one cache per
 exchange, refreshed at most every five minutes with a five-second timeout.
 A cached table expires after fifteen minutes without a successful refresh.
 Gate/OKX use contract multipliers; linear Binance/Bitget/Bybit quantities are
-base amounts. The minimum includes quantity step rounding and minimum notional.
+base amounts. The minimum includes quantity step rounding, venue minimum
+notional, the existing 10U ordinary hedge-query floor, and the maker splitter's
+25U retained-tail rule. If a configured full hand is smaller than 25U, that hand
+can execute subject to the query/venue floors. Delist imports the existing shared
+constants; it does not change trading thresholds or treat normal retained tails
+as stalled orders. Hard-limit checks remain independent of these exemptions.
 Missing/stale rules do not suppress known hard caps but cannot prove recovery.
 
 The exposure entry, risk entry and every underlying account-monitor timestamp

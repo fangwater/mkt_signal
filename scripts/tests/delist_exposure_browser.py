@@ -286,7 +286,7 @@ def main():
                 account = next(a for a in data['accounts'] if a['slug'] == slugs[0])
                 test_row = next(row for row in account['rows'] if row['asset'] == 'TEST')
                 assert test_row['hedge_plan_qty'] == 160
-                assert test_row['limits']['min_hedge_usdt'] == 10
+                assert test_row['limits']['min_hedge_usdt'] == 25
                 assert test_row['limits']['symbol_limit_usdt'] == 1000
                 assert account['limit_usdt'] == 500
                 assert ['HGETALL', 'fr_strategy_params_bitget-margin_bitget-futures'] in redis_commands
