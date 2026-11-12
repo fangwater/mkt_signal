@@ -1,6 +1,14 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-11 09:05 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 07:54 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12，按用户要求通过环境本地脚本停止 JP `gate_fr_arb01–04` 全套服务，
+包含 signal/pre_trade/trade_engine/account_monitor/persist_manager/Viz/Config/dashboard；
+07:46 UTC `/proc` 复核四环境无运行进程，交易所挂单为零。原 CPU/IP 分配保留，
+未发布或重启 Rust 产物。ON 经 38 笔合约 taker SELL 完成对齐，最短间隔 5.079 秒，
+各户只余不足 10 ON 的尾差；后续全币合约对齐按用户授权单独执行，策略保持停盘。
+最初错误使用现货优先的成交、修正及审计见
+`artifacts/gate_fr_on_repair_20261112/README.md`。
 
 2026-11-11 09:04 UTC，JP Delist 移除 SG Redis、远程平仓及备份主机配置，
 经环境本地脚本停止 SG SSH 隧道并重启 Delist PID3513519，保持 CPU28。
@@ -1918,11 +1926,12 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 2026-10-11 05:46 UTC trade05 待执行量/权益修复：本地 release 上传并校验 SHA-256 后原子安装，通过环境脚本重启 exec-pre-trade（PID 3371755）、Viz（PID 3371634），并重启 Manager 网页服务。trade_engine、账户监控、persist_manager 与 RX02 四个信号进程继续运行，RX03 无进程。CPU 分配仍为 housekeeping 0-5。Manager 已解析 RapidX 账户权益；待下单量按步长、minQty、minNotional 检查，真实余量保留在差额中。线上证据：`artifacts/trade05_pending_equity_live_validation.json`、`artifacts/trade05_pending_equity_live_browser.json`。
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
-binance_fr_arb02/03/04、gate_fr_arb01/02/03/04、bitget_fr_arb01（新盘建仓运行）/02、
+binance_fr_arb02/03/04、bitget_fr_arb01（新盘建仓运行）/02、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `binance_exec_trade08` 的engine、executor、监控、持久化、Viz/Config已于2026-11-02停止；
 原 virtual02/RX02 跟随和 Grid 绑定已移除。
+`gate_fr_arb01/02/03/04` 全套已于2026-11-12停止，原 CPU 分配保留。
 `okex_mm_alpha` 已于2026-10-29停止，槽位于2026-11-06由 `okex_mm_83777` 替代。
 `binance-cta-rx01` 的 persist_manager 同样堆叠在 15。
 `bitget_fr_arb03` 已启动；其 persist_manager 绑核 15，其余进程未绑核。

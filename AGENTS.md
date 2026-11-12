@@ -279,6 +279,17 @@ Before live-impact commands, state the target env, exchange, symbol scope, and w
 
 Never revert user or operator changes in environment directories unless explicitly asked. If repo and env copies differ, inspect both and explain which one you are modifying.
 
+For FR exposure alignment (平敞口 / 补敞口 / 仓位对齐), preserve spot inventory
+and prefer adjusting the futures leg. A factual net long normally requires a
+futures SELL; a factual net short normally requires a futures BUY, sized from
+fresh spot equity plus futures base quantity. Alignment is not a request to
+liquidate both legs or to minimize gross holdings. Do not buy or sell spot for
+alignment unless the user explicitly authorizes that spot action. If futures
+cannot safely execute, report the concrete blocker instead of silently switching
+to spot. Follow the user's taker chunk size and interval, verify each order's
+actual fill and refreshed net position before the next order, and never submit
+a replacement while an earlier order's outcome is unknown.
+
 ## CTP Execution Location Restriction
 
 CTP must not run on the current development machine or on any intranet machine.

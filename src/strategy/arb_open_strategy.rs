@@ -68,6 +68,39 @@ impl ArbOpenStrategy {
         }
     }
 
+    fn stalled_hedge_cancel_input(&self, now_ts: i64) -> Option<OpenCancelInput> {
+        let monitor = MonitorChannel::instance();
+        let order = monitor.order_manager().borrow().get(self.open_order_id())?;
+        if order.status.is_terminal() {
+            return None;
+        }
+        let remaining = (order.quantity - order.cumulative_filled_quantity).max(0.0);
+        let base_qty = monitor
+            .qty_to_base_at_price(order.venue, &order.symbol, remaining, order.price)
+            .unwrap_or(remaining * order.qty_multiplier);
+        let signed_qty = if order.side == order_common::Side::Buy {
+            base_qty
+        } else {
+            -base_qty
+        };
+        if monitor
+            .check_arb_hedge_progress_risk(&order.symbol, signed_qty)
+            .is_ok()
+        {
+            return None;
+        }
+        Some(OpenCancelInput {
+            signal_name: "ArbCancel",
+            target_strategy_id: self.strategy_id(),
+            target_client_order_id: order.client_order_id,
+            cancel_side: order.side,
+            cancel_reason: "hedge_stalled",
+            trigger_ts: now_ts,
+            from_key: b"hedge_stalled".to_vec(),
+            mkt_ts: 0,
+        })
+    }
+
     pub fn handle_arb_open_view_with_symbol(
         &mut self,
         ctx: ArbOpenCtxView<'_>,
@@ -338,7 +371,15 @@ impl Strategy for ArbOpenStrategy {
         self.apply_trade_engine_response_common(response);
     }
 
-    fn handle_period_clock(&mut self, _current_tp: i64) {
+    fn handle_period_clock(&mut self, current_tp: i64) {
+        let now_ts = if current_tp > 0 {
+            current_tp
+        } else {
+            get_timestamp_us()
+        };
+        if let Some(input) = self.stalled_hedge_cancel_input(now_ts) {
+            self.handle_open_cancel_signal_common(input);
+        }
         self.handle_open_leg_timeout_common();
         self.handle_query_watchdogs();
     }
@@ -361,6 +402,50 @@ mod tests {
         OpenStrategyCommon, PendingOrderQueryReason, QueryWatchdog,
     };
     use crate::strategy::order_reconcile::monotonic_cumulative_fill;
+
+    #[test]
+    fn stalled_hedge_targets_only_expanding_live_open_remainders() {
+        use crate::pre_trade::monitor_channel::{
+            tests::install_binance_arb_hedge_exposure_fixture, MonitorChannel,
+        };
+        use order_common::{OrderType, Side, TradingVenue};
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        let monitor = MonitorChannel::instance();
+        let mut strategy = ArbOpenStrategy::new(7);
+        let id = 7_i64 << 32 | 1;
+        strategy.open_state.order.open_order_id = id;
+        let manager = monitor.order_manager();
+        manager.borrow_mut().create_order(
+            TradingVenue::BinanceMargin,
+            id,
+            OrderType::Limit,
+            "FILUSDT".into(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+        );
+        assert!(strategy.stalled_hedge_cancel_input(1).is_none());
+        for ts in [1, 10_000_001, 30_000_001] {
+            monitor.record_arb_hedge_failure("FILUSDT", ts, "test_rejection");
+        }
+        let input = strategy.stalled_hedge_cancel_input(31_000_001).unwrap();
+        assert_eq!(input.target_strategy_id, 7);
+        assert_eq!(input.target_client_order_id, id);
+        assert_eq!(input.cancel_reason, "hedge_stalled");
+        // Selection does not discard a live order or its reservation.
+        assert!(manager.borrow().get(id).is_some());
+        manager
+            .borrow_mut()
+            .update(id, |order| order.side = Side::Sell);
+        assert!(strategy.stalled_hedge_cancel_input(32_000_001).is_none());
+        manager.borrow_mut().update(id, |order| {
+            order.side = Side::Buy;
+            order.cumulative_filled_quantity = order.quantity;
+        });
+        assert!(strategy.stalled_hedge_cancel_input(33_000_001).is_none());
+    }
 
     #[test]
     fn handle_open_failed_cleanup_clears_local_strategy_state() {

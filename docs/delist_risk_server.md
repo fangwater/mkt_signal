@@ -321,6 +321,43 @@ never changes factual fills or account net positions. This trading correction
 is also pending deployment and does not itself reconcile the current live ON
 inventory.
 
+The ON fill timeline distinguishes the completed exit from the failed reopening.
+Gate FR 03 had 0.551875 ON spot and zero futures by 2026-11-10 11:38 UTC;
+it then bought another 7,500 ON from 11:55:22 through 11:58:27 without a
+futures fill. At 11:55:24 the opening hedge queue held 1,685 ON of SELL demand,
+but the deployed scheduler still selected 18 ON of old paired-close BUY work.
+Its 10 ON order failed the live-position check because no short remained. The
+rejected work returned to the close queue, and unconditional close priority
+selected it again before reaching the opening SELL path. These SELL orders
+were blocked before submission to Gate. The ordinary exposure limit still
+worked: at 11:57:42, another spot BUY was rejected because projected exposure
+would grow from 901.4163 to 1,002.3675 USDT against a 1,000 USDT limit.
+
+The follow-up FR admission guard latches after at least three explicit hedge
+failures spanning 30 seconds without a factual hedge fill. Failures include
+local/exchange rejection, send failure, query timeout, zero-fill terminal orders
+and repeated observation of an unresolved orphan. Observation requires due or
+reserved hedge work worth at least 10 USDT and excludes known sub-lot dust;
+model waiting and future work alone are not failures. Same-exchange venues do
+not identify the deployment mode: the configured FundingArb mode owns this
+guard; Intra and the dedicated ADL repair path remain outside its scope.
+
+While latched, reject orders that increase the absolute factual account net,
+even below the ordinary exposure ceiling. Normal opening/hedge admission also
+checks outstanding orders independently by direction, so opposite reservations
+cannot hide risk. Each ArbOpen cancels its expanding resting remainder through
+the existing cancellation/reconciliation path. New factual hedge fills or fully
+resolved work reset the guard; acknowledgements, query replies and elapsed time
+do not. Live/unknown reservations are never discarded or blindly resubmitted.
+The guard is an additional local change after `ffe3e563`; neither correction
+has been deployed as part of the 2026-11-12 stop/alignment operation.
+
+All four JP Gate FR environments were stopped. ON was subsequently aligned
+using futures-only taker SELL orders, preserving the spot inventory left after
+an initial erroneous spot-first operation. Full execution accounting, residual
+positions and the evidence limitations are recorded in
+`artifacts/gate_fr_on_repair_20261112/README.md`.
+
 Deployment verified 2026-11-04 10:04 UTC on JP: source `b77e5da1`, Delist PID
 `2922632`, SG tunnel PID `2922607`, both CPU `0-5`.
 Binary SHA-256: `a2a490e1f810706b6af7b08f5a05609f4607f24d3b8ec20c097bdb082684df06`.

@@ -1,6 +1,12 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-11 09:05 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-12 07:54 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-12，JP `gate_fr_arb01–04` 全套服务已停止，随后按用户授权以合约对齐敞口，
+未恢复策略。01/03/04 的 `.35.231` 和 02 的 `.35.232/.35.233` 继续保留原分配；
+与其他环境共享的地址仍在使用，不能当作空闲 IP。未修改 `local_ips`、ENI/EIP、
+路由、杠杆或 Redis 风控。执行及初始现货操作错误记录见
+`artifacts/gate_fr_on_repair_20261112/README.md`。
 
 2026-11-11 09:04 UTC，Delist 的 SG 连接及隧道已停用，JP 本地 Bybit 快照保持可用；
 交易 source IP 与网络配置未变。
@@ -1056,9 +1062,9 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 | `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-cta-rx01`、`okex-intra-arb01`；RX01/03分别接Exec06/07，Exec02–04的首地址；新 `binance_exec_spread01` 为81857独立只读环境。旧trade08/RX02停止，IOTA尾仓未动；trade05已归档 |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `okex_exec_trade01 local_ips[0]`；不同子账户 `okex_mm_83777` 实盘共用 |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `okex_exec_trade01 local_ips[1]`；不同子账户 `okex_mm_83777` 实盘共用 |
-| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（04 已恢复交易，05 停止）、`bitget_fr_arb01`/`02`/`03`；Bitget 01于2026-11-10入金20,000 USDT后作为新盘建仓运行 |
-| `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02`、`bybit_fr_arb01` `local_ips[0]` |
-| `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02`、`bybit_fr_arb01` `local_ips[1]` |
+| `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb02`–`04`、`gate_fr_arb01`/`03`/`04`/`05`（01/03/04于11-12停止，05继续停止）、`bitget_fr_arb01`/`02`/`03`；Bitget 01于2026-11-10入金20,000 USDT后作为新盘建仓运行 |
+| `172.31.35.232` | `54.238.97.67` | 已使用 | `gate_fr_arb02`（11-12停止，分配保留）、`bybit_fr_arb01` `local_ips[0]` |
+| `172.31.35.233` | `54.64.165.84` | 已使用 | `gate_fr_arb02`（11-12停止，分配保留）、`bybit_fr_arb01` `local_ips[1]` |
 | `172.31.35.234` | `54.64.228.233` | 已配置 | Exec `trade02`、`trade03`、`trade04` `local_ips[1]` |
 
 ## ens42 映射

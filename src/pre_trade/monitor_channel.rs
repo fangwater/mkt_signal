@@ -3209,6 +3209,7 @@ struct MonitorChannelInner {
     order_manager: Rc<RefCell<OrderManager>>,
     /// 本地 ArbClose 可平库存账本。启动/首次访问用账户快照 seed，运行中只相信本地订单回报。
     close_inventory: Rc<RefCell<CloseInventoryLedger>>,
+    hedge_progress: RefCell<super::hedge_progress_guard::HedgeProgressGuard>,
     /// Monotonic counter incremented when a TradeUpdate is received.
     trade_update_seq: u64,
     /// 各账户 scope 最新一份风险快照，由 account_monitor 端 AccountRisk 消息驱动。
@@ -5449,6 +5450,7 @@ impl MonitorChannel {
             orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
             order_manager: Rc::new(RefCell::new(OrderManager::new(binance_account_mode))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -7015,6 +7017,57 @@ impl MonitorChannel {
         })
     }
 
+    pub(crate) fn record_arb_hedge_failure(&self, symbol: &str, now_us: i64, reason: &str) {
+        Self::try_with_inner(|inner| {
+            if inner.arb_mode == ArbMode::FundingArb
+                && inner.hedge_progress.borrow_mut().failure(symbol, now_us)
+            {
+                warn!("FR hedge stalled: symbol={} repeated_failures_for_at_least_30s reason={}; block expanding orders until factual progress or resolved work", symbol, reason);
+            }
+        });
+    }
+
+    pub(crate) fn clear_arb_hedge_failure(&self, symbol: &str, reason: &str) {
+        Self::try_with_inner(|inner| {
+            if inner.hedge_progress.borrow_mut().clear(symbol) {
+                info!(
+                    "FR hedge progress restored: symbol={} reason={}",
+                    symbol, reason
+                );
+            }
+        });
+    }
+
+    /// Used both before new opening orders and to cancel expanding resting opens.
+    /// Direction follows the current factual account net, never a queued plan.
+    pub(crate) fn check_arb_hedge_progress_risk(
+        &self,
+        symbol: &str,
+        signed_base_qty: f64,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            if !inner.hedge_progress.borrow().blocked(symbol) {
+                return Ok(());
+            }
+            let asset = extract_base_asset_key(symbol).ok_or("invalid stalled hedge symbol")?;
+            Self::with_basic_state_cached(|state| {
+                let (open, hedge) = state
+                    .exposures
+                    .get(asset.as_ref())
+                    .copied()
+                    .unwrap_or_default();
+                let net = open + hedge;
+                if !net.is_finite()
+                    || !signed_base_qty.is_finite()
+                    || (net + signed_base_qty).abs() > net.abs() + 1e-9
+                {
+                    return Err(format!("symbol={symbol} hedge stalled: order expands actual net exposure current_qty={net:.8} order_qty={signed_base_qty:.8}"));
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Arb opening/hedge exposure includes the worst fill of all active orders.
     /// Risk may converge above a limit; additional expansion must fit after execution.
     pub fn check_arb_order_exposure_risk(
@@ -7023,6 +7076,7 @@ impl MonitorChannel {
         hedge_venue: TradingVenue,
         hedge_signed_base_qty: f64,
     ) -> Result<(), String> {
+        self.check_arb_hedge_progress_risk(symbol, hedge_signed_base_qty)?;
         Self::with_inner(|inner| {
             Self::with_basic_state_cached(|state| {
                 let projection = Self::arb_hedge_exposure_projection_inner(
@@ -7033,6 +7087,12 @@ impl MonitorChannel {
                     hedge_signed_base_qty,
                 )?;
                 let eps = 1e-6_f64;
+                if inner.hedge_progress.borrow().blocked(symbol)
+                    && projection.symbol_next_exposure_usdt
+                        > projection.symbol_current_exposure_usdt + eps
+                {
+                    return Err(format!("symbol={symbol} hedge stalled: order expands worst-case exposure including active orders"));
+                }
                 if projection.symbol_next_exposure_usdt
                     > projection.symbol_current_exposure_usdt + eps
                     && projection.symbol_next_exposure_usdt > projection.symbol_limit_usdt + eps
@@ -9655,6 +9715,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Standard,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::from([(
                 BasicAccountScope::BinanceStdUm,
@@ -10100,6 +10161,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10220,6 +10282,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10275,6 +10338,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10325,6 +10389,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10407,6 +10472,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10467,6 +10533,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10556,6 +10623,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10656,6 +10724,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10713,6 +10782,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10771,6 +10841,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::from([(
                 BasicAccountScope::BinanceUnified,
@@ -10845,6 +10916,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -10904,6 +10976,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -10962,6 +11035,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -11020,6 +11094,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -11078,6 +11153,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk,
             latest_binance_std_um_wallet: None,
@@ -11175,6 +11251,80 @@ pub(crate) mod tests {
 
         assert!(MonitorChannel::instance()
             .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+            .is_ok());
+    }
+
+    #[test]
+    fn stalled_hedge_blocks_both_expanding_directions_below_normal_limit() {
+        for (net, expanding, reducing) in [(1.0, 1.0, -1.0), (-1.0, -1.0, 1.0)] {
+            install_binance_arb_hedge_exposure_fixture(net, 0.0, false);
+            let monitor = MonitorChannel::instance();
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, expanding)
+                .is_ok());
+            for ts in [1, 10_000_001, 30_000_001] {
+                monitor.record_arb_hedge_failure("FILUSDT", ts, "test_rejection");
+            }
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, expanding)
+                .unwrap_err()
+                .contains("hedge stalled"));
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, reducing)
+                .is_ok());
+            assert!(monitor
+                .check_arb_order_exposure_risk(
+                    "FILUSDT",
+                    TradingVenue::BinanceFutures,
+                    reducing * 3.0
+                )
+                .is_err());
+            monitor.clear_arb_hedge_failure("FILUSDT", "test_fill");
+            assert!(monitor
+                .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, expanding)
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn stalled_hedge_does_not_overbook_reducing_orders_or_forget_reservations() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        let monitor = MonitorChannel::instance();
+        let manager = monitor.order_manager();
+        manager.borrow_mut().create_order(
+            TradingVenue::BinanceFutures,
+            123,
+            order_common::OrderType::Limit,
+            "FILUSDT".into(),
+            Side::Sell,
+            4.0,
+            100.0,
+            false,
+            1.0,
+        );
+        for ts in [1, 10_000_001, 30_000_001] {
+            monitor.record_arb_hedge_failure("FILUSDT", ts, "test_timeout");
+        }
+        assert!(monitor
+            .check_arb_hedge_progress_risk("FILUSDT", -1.0)
+            .is_ok());
+        assert!(monitor
+            .check_arb_order_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -1.0)
+            .unwrap_err()
+            .contains("including active orders"));
+        assert!(manager.borrow().get(123).is_some());
+    }
+
+    #[test]
+    fn stalled_hedge_guard_excludes_non_fr_modes() {
+        install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
+        MonitorChannel::with_inner_mut(|inner| inner.arb_mode = ArbMode::IntraArb);
+        let monitor = MonitorChannel::instance();
+        for ts in [1, 10_000_001, 30_000_001] {
+            monitor.record_arb_hedge_failure("FILUSDT", ts, "test_rejection");
+        }
+        assert!(monitor
+            .check_arb_hedge_progress_risk("FILUSDT", 1.0)
             .is_ok());
     }
 
@@ -11587,6 +11737,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -11870,6 +12021,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -11928,6 +12080,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -11999,6 +12152,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
@@ -12108,6 +12262,7 @@ pub(crate) mod tests {
                 BinanceAccountMode::Unified,
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            hedge_progress: RefCell::default(),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
             latest_binance_std_um_wallet: None,
