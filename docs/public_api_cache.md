@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12 12:53 UTC（Delist 复用公共交易规则缓存；Gate REST 补价及 Binance PM 借款检查保持）
+最后更新：2026-11-12（Delist 敞口检查移除额外交易规则轮询，待本次发布验收；既有下架来源保持）
 
 2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底，
 已随 `293f6352` 于 10:13 UTC 发布至 JP `gate_fr_arb01–04`，四盘仍关闭 `trade_signal`。
@@ -495,12 +495,13 @@ CTA Manager 的现货理论估值新增 Binance 公共 `GET /api/v3/klines`，�
 两者仍直连 Binance，不新增 Nginx 路由或把签名 RapidX `sym/info` 纳入公共缓存。
 此次仅代码接入，未变更线上代理部署。
 
-### Delist FR exposure order rules (published 2026-11-12 12:51 UTC)
+### Delist FR exposure inputs (2026-11-12 revision)
 
-Delist reuses `VenueMinQtyTable` for minimum tradable hedge amounts. Each
-exchange catalog is refreshed at most once per five minutes across all FR
-accounts; requests time out after five seconds and cached rules expire after
-fifteen minutes. Bitget uses the existing `BITGET_PUBLIC_API_BASE` and allowlisted
-`/api/v3/market/instruments?category=USDT-FUTURES` endpoint. Other venues keep
-their existing public-provider URLs; this introduces no Nginx endpoint or
-private/authenticated request through the shared cache.
+The directional maker-band policy removes the exposure monitor's
+`VenueMinQtyTable` cache and its five-minute public order-rule polling. Exposure
+checks now read only Redis parameters and existing Viz position snapshots.
+The separate delisting catalogs, schedules and announcement fetches still use
+their existing public URLs and Bitget cache. This change adds no endpoint,
+listener or Nginx configuration and never routes private requests through the cache.
+The 12:51 UTC deployment briefly used an extra order-rule cache; it is superseded
+by this revision. Deployment confirmation is recorded in `docs/delist_risk_server.md`.

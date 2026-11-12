@@ -1,15 +1,10 @@
-//! Read-only FR configuration and cached public venue order rules for Delist.
+//! Read-only FR limits and directional order sizing from Redis for Delist.
 use anyhow::{ensure, Context, Result};
-use futures_util::{stream, StreamExt};
 use mkt_signal::common::delist_accounts::AccountSpec;
-use mkt_signal::strategy::arb_hedge_strategy::ARB_HEDGE_PENDING_QUERY_MIN_USDT;
-use order_common::TradingVenue;
-use quote_plan::hedge_split::MIN_TAIL_NOTIONAL_USDT;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use serde::Serialize;
-use signal_common::venue_min_qty_table::VenueMinQtyTable;
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct Limits {
@@ -19,7 +14,6 @@ pub struct Limits {
     /// None means the direction has no finite maker cap.
     pub maker_buy_orders: Option<u32>,
     pub maker_sell_orders: Option<u32>,
-    pub min_hedge_usdt: Option<f64>,
 }
 
 pub struct Parameters {
@@ -135,12 +129,7 @@ impl Parameters {
         exposure_limit(equity, self.total_ratio)
     }
 
-    pub fn limits(
-        &self,
-        asset: &str,
-        mark: Option<f64>,
-        rules: Option<&VenueMinQtyTable>,
-    ) -> Option<Limits> {
+    pub fn limits(&self, asset: &str) -> Option<Limits> {
         let symbol = normalize_symbol_for_internal(&format!("{asset}USDT"));
         let order_amount = *self
             .amount_overrides
@@ -157,8 +146,6 @@ impl Parameters {
             order_amount_usdt: order_amount,
             maker_buy_orders: self.buy_orders,
             maker_sell_orders: self.sell_orders,
-            min_hedge_usdt: rules
-                .and_then(|table| min_hedge_usdt(table, &symbol, mark?, order_amount)),
         })
     }
 }
@@ -206,107 +193,9 @@ pub async fn read(url: &str, spec: &AccountSpec) -> Result<Parameters> {
         .context("Redis 参数读取超时")?
 }
 
-fn hedge_venue(exchange: &str) -> Result<TradingVenue> {
-    match exchange {
-        "binance" => Ok(TradingVenue::BinanceFutures),
-        "gate" => Ok(TradingVenue::GateFutures),
-        "bitget" => Ok(TradingVenue::BitgetFutures),
-        "bybit" => Ok(TradingVenue::BybitFutures),
-        "okex" => Ok(TradingVenue::OkexFutures),
-        _ => anyhow::bail!("不支持的 FR 对冲市场"),
-    }
-}
-
-fn min_hedge_usdt(
-    table: &VenueMinQtyTable,
-    symbol: &str,
-    mark: f64,
-    order_amount: f64,
-) -> Option<f64> {
-    if !mark.is_finite() || mark <= 0.0 || !table.is_tradable_symbol(symbol) {
-        return None;
-    }
-    let multiplier = match table.venue() {
-        TradingVenue::GateFutures | TradingVenue::OkexFutures => {
-            table.contract_multiplier_opt(symbol)?
-        }
-        TradingVenue::BinanceFutures | TradingVenue::BitgetFutures | TradingVenue::BybitFutures => {
-            1.0
-        }
-        _ => return None,
-    };
-    if !multiplier.is_finite() || multiplier <= 0.0 {
-        return None;
-    }
-    let step = table.step_size(symbol)?;
-    // The ordinary hedge route waits below its query floor, then the maker
-    // splitter retains sub-25U tails. A smaller full hand can still execute.
-    let strategy_minimum = order_amount
-        .min(MIN_TAIL_NOTIONAL_USDT)
-        .max(ARB_HEDGE_PENDING_QUERY_MIN_USDT);
-    let qty = table.min_qty(symbol)?.max(step).max(
-        table
-            .min_notional(symbol)
-            .unwrap_or(0.0)
-            .max(strategy_minimum)
-            / (multiplier * mark),
-    );
-    let value = (qty / step).ceil() * step * multiplier * mark;
-    (value.is_finite() && value > 0.0).then_some(value)
-}
-
-struct CachedRules {
-    table: VenueMinQtyTable,
-    attempted: Option<Instant>,
-    refreshed: Option<Instant>,
-}
-
-#[derive(Default)]
-pub struct RuleCache(BTreeMap<String, CachedRules>);
-
-impl RuleCache {
-    pub async fn refresh(&mut self, specs: &[AccountSpec]) {
-        for spec in specs.iter().filter(|s| s.kind == "funding_rate") {
-            if let Ok(venue) = hedge_venue(&spec.exchange) {
-                self.0
-                    .entry(spec.exchange.clone())
-                    .or_insert_with(|| CachedRules {
-                        table: VenueMinQtyTable::new(venue),
-                        attempted: None,
-                        refreshed: None,
-                    });
-            }
-        }
-        // One catalog per exchange, at most once every five minutes (not per account).
-        stream::iter(self.0.iter_mut())
-            .for_each_concurrent(5, |(exchange, cached)| async move {
-                if cached
-                    .attempted
-                    .is_some_and(|at| at.elapsed() < Duration::from_secs(300))
-                {
-                    return;
-                }
-                cached.attempted = Some(Instant::now());
-                match tokio::time::timeout(Duration::from_secs(5), cached.table.refresh()).await {
-                    Ok(Ok(())) => cached.refreshed = Some(Instant::now()),
-                    _ => {
-                        log::warn!("Delist exposure order-rule refresh failed exchange={exchange}")
-                    }
-                }
-            })
-            .await;
-    }
-
-    pub fn get(&self, exchange: &str) -> Option<&VenueMinQtyTable> {
-        let cached = self.0.get(exchange)?;
-        (cached.refreshed?.elapsed() <= Duration::from_secs(900)).then_some(&cached.table)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use signal_common::min_qty_table::MinQtyEntry;
 
     fn risk() -> Hash {
         [
@@ -342,22 +231,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(params.account_limit(750000.0), Some(3750.0));
-        let on = params.limits("ON", Some(1.0), None).unwrap();
+        let on = params.limits("ON").unwrap();
         assert_eq!(on.symbol_limit_usdt, 40.0);
         assert_eq!(on.order_amount_usdt, 30.0);
         assert_eq!(
             (on.maker_buy_orders, on.maker_sell_orders),
             (Some(10), Some(6))
         );
-        assert_eq!(
-            params.limits("AIN", None, None).unwrap().symbol_limit_usdt,
-            64.0
-        );
-        assert_eq!(
-            params.limits("BTC", None, None).unwrap().symbol_limit_usdt,
-            800.0
-        );
-        assert_eq!(on.min_hedge_usdt, None); // Missing rules do not hide a known hard cap.
+        assert_eq!(params.limits("AIN").unwrap().symbol_limit_usdt, 64.0);
+        assert_eq!(params.limits("BTC").unwrap().symbol_limit_usdt, 800.0);
     }
 
     #[test]
@@ -397,78 +279,6 @@ mod tests {
         risk.insert("max_symbol_exposure_ratio".into(), "0".into());
         let params = Parameters::parse(risk, strategy(), [None, None, None], None).unwrap();
         assert_eq!(params.account_limit(f64::NAN), Some(0.0));
-        assert_eq!(
-            params.limits("ON", None, None).unwrap().symbol_limit_usdt,
-            0.0
-        );
-    }
-
-    fn table(venue: TradingVenue, multiplier: Option<f64>) -> VenueMinQtyTable {
-        let mut table = VenueMinQtyTable::new(venue);
-        table.replace_snapshot(
-            [(
-                "ONUSDT".into(),
-                MinQtyEntry {
-                    symbol: "ONUSDT".into(),
-                    base_asset: "ON".into(),
-                    quote_asset: "USDT".into(),
-                    min_qty: 0.1,
-                    step_size: 0.1,
-                    price_tick: None,
-                    min_notional: Some(5.0),
-                },
-            )]
-            .into(),
-            multiplier
-                .map(|m| [("ONUSDT".into(), m)].into())
-                .unwrap_or_default(),
-            ["ONUSDT".into()].into(),
-        );
-        table
-    }
-
-    #[test]
-    fn decimal_contract_minimum_uses_multiplier_and_rounds_up_to_step() {
-        let gate = table(TradingVenue::GateFutures, Some(10.0));
-        assert_eq!(min_hedge_usdt(&gate, "ONUSDT", 3.0, 100.0), Some(27.0));
-        assert_eq!(
-            min_hedge_usdt(
-                &table(TradingVenue::GateFutures, None),
-                "ONUSDT",
-                3.0,
-                100.0
-            ),
-            None
-        );
-        let bitget = table(TradingVenue::BitgetFutures, Some(100.0));
-        assert!((min_hedge_usdt(&bitget, "ONUSDT", 3.0, 100.0).unwrap() - 25.2).abs() < 1e-10);
-        assert_eq!(min_hedge_usdt(&gate, "MISSINGUSDT", 3.0, 100.0), None);
-        assert_eq!(min_hedge_usdt(&gate, "ONUSDT", 0.0, 100.0), None);
-    }
-
-    #[test]
-    fn expired_order_rules_cannot_confirm_recovery() {
-        let mut cache = RuleCache::default();
-        cache.0.insert(
-            "gate".into(),
-            CachedRules {
-                table: table(TradingVenue::GateFutures, Some(10.0)),
-                attempted: Some(Instant::now()),
-                refreshed: Some(Instant::now() - Duration::from_secs(901)),
-            },
-        );
-        assert!(cache.get("gate").is_none());
-        cache.0.get_mut("gate").unwrap().refreshed = Some(Instant::now());
-        assert!(cache.get("gate").is_some());
-    }
-
-    #[test]
-    fn smaller_full_hands_and_query_floor_are_not_confused_with_25u_tails() {
-        let table = table(TradingVenue::BitgetFutures, None);
-        for (amount, expected) in [(100.0, 25.2), (20.0, 20.1), (1.0, 10.2)] {
-            assert!(
-                (min_hedge_usdt(&table, "ONUSDT", 3.0, amount).unwrap() - expected).abs() < 1e-10
-            );
-        }
+        assert_eq!(params.limits("ON").unwrap().symbol_limit_usdt, 0.0);
     }
 }

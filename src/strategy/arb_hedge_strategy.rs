@@ -61,7 +61,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
-pub const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 10.0;
+const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 10.0;
 const ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT: f64 = 1.0;
 const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
 const ARB_HEDGE_QUERY_TIMEOUT_US: i64 = 3_000_000;

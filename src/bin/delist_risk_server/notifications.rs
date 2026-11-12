@@ -747,39 +747,44 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
             let problem = if !fresh {
                 None
             } else if hard {
-                // A hard-limit incident has its own identity so an earlier maker/stall
+                // A hard-limit incident has its own identity so an earlier maker
                 // warning cannot deduplicate away the escalation. Do not fake recovery.
                 None
             } else if breach.is_some_and(|b| b.confirmed) {
                 Some(true)
-            } else if breach.is_none()
-                && row.assessable()
-                && (row.stalled_since_ms.is_none() || row.made_progress)
-            {
+            } else if breach.is_none() && row.assessable() {
                 Some(false)
             } else {
                 None
             };
             observations.push(Observation {
                 key: format!("exposure_limit/{}/{}", account.slug, row.asset),
-                title: format!("{} {} 达到策略敞口硬限额", account.slug, row.asset),
-                problem: if !fresh
-                    || row.uncovered_usdt.is_none()
-                    || row.limits.is_none() && row.net_qty.abs() > 1e-12
-                {
+                title: format!(
+                    "{} {} 超出方向 maker 区间并达到限仓线",
+                    account.slug, row.asset
+                ),
+                problem: if !fresh || !row.assessable() {
                     None
                 } else {
                     Some(hard)
                 },
                 detail: format!(
-                    "实际净敞口 {} USDT；策略硬限额 {} USDT；首次观察即报警",
+                    "实际净敞口 {} USDT；交易限仓线 {} USDT；方向 maker 正常区间 {} USDT；{}",
                     row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
                         .unwrap_or_else(|| "未知".into()),
                     row.limits
                         .as_ref()
                         .map(|l| format!("{:.2}", l.symbol_limit_usdt))
-                        .unwrap_or_else(|| "未知".into())
+                        .unwrap_or_else(|| "未知".into()),
+                    row.normal_buffer_usdt
+                        .map(|v| format!("{v:.2}"))
+                        .unwrap_or_else(|| "未设有限区间".into()),
+                    if hard {
+                        "超出正常区间并达到限仓线，首次观察即报警"
+                    } else {
+                        "未触发单币立即报警条件"
+                    },
                 ),
             });
             observations.push(Observation {
@@ -787,7 +792,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                 title: format!("{} {} 实际净敞口", account.slug, row.asset),
                 problem,
                 detail: format!(
-                    "{}；实际净敞口 {} USDT；策略硬限额 {}，正常 maker 缓冲 {} USDT；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）{}",
+                    "{}；实际净敞口 {} USDT；交易限仓线 {}，正常 maker 区间 {} USDT；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）",
                     breach.map(|b| b.kind.label()).unwrap_or("未触发异常条件"),
                     row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
@@ -798,7 +803,6 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                     row.hedge_plan_qty
                         .map(|v| format!("{v:.8}"))
                         .unwrap_or_else(|| "未知".into()),
-                    row.stalled_since_ms.map(|since| format!("；距上次实际进展 {} 秒", account.checked_ms.saturating_sub(since) / 1000)).unwrap_or_default()
                 ),
             });
         }
@@ -1432,7 +1436,6 @@ mod tests {
             rows: vec![],
             errors: vec!["unpriced".into()],
             breaches: BTreeMap::new(),
-            progress: BTreeMap::new(),
         };
         let mut report = super::super::exposure::Report {
             as_of_ms: now_ms(),

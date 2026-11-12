@@ -1,7 +1,7 @@
 //! Read-only FR account exposure checks. Values come from account-monitor-derived
 //! Viz snapshots, not strategy targets. This module never submits trading actions.
 
-use super::exposure_parameters::{self, Limits, RuleCache};
+use super::exposure_parameters::{self, Limits};
 use anyhow::{bail, ensure, Context, Result};
 use futures_util::stream::{self, StreamExt};
 use mkt_signal::common::delist_accounts::{AccountSpec, RedisSite};
@@ -18,7 +18,6 @@ pub struct Settings {
     pub persistence_secs: u64,
     pub data_persistence_secs: u64,
     pub maker_buffer_factor: f64,
-    pub stalled_secs: u64,
     pub catalog_max_age_secs: u64,
     pub ignored_spot_tails: BTreeMap<String, BTreeMap<String, SpotTailRule>>,
 }
@@ -45,10 +44,9 @@ impl Default for Settings {
         Self {
             interval_secs: 10,
             max_age_secs: 90,
-            persistence_secs: 30,
+            persistence_secs: 180,
             data_persistence_secs: 60,
             maker_buffer_factor: 1.5,
-            stalled_secs: 180,
             catalog_max_age_secs: 180,
             ignored_spot_tails: BTreeMap::new(),
         }
@@ -76,10 +74,6 @@ impl Settings {
         ensure!(
             self.maker_buffer_factor.is_finite() && self.maker_buffer_factor >= 1.0,
             "maker buffer factor must be finite and at least one"
-        );
-        ensure!(
-            (1..=3600).contains(&self.stalled_secs),
-            "stalled duration must be 1..3600 seconds"
         );
         for rules in self.ignored_spot_tails.values() {
             for rule in rules.values() {
@@ -117,9 +111,6 @@ pub struct Row {
     pub asset: String,
     pub limits: Option<Limits>,
     pub normal_buffer_usdt: Option<f64>,
-    pub stalled_since_ms: Option<i64>,
-    #[serde(skip)]
-    pub(super) made_progress: bool,
     pub open_qty: f64,
     pub hedge_qty: f64,
     pub net_qty: f64,
@@ -138,109 +129,30 @@ pub struct Row {
 pub enum BreachKind {
     HardLimit,
     MakerBuffer,
-    Stalled,
 }
 
 impl BreachKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::HardLimit => "达到策略硬限额",
+            Self::HardLimit => "达到报警限额",
             Self::MakerBuffer => "持续超过正常 maker 缓冲",
-            Self::Stalled => "实际敞口对冲停滞",
         }
     }
-}
-
-/// Quantity anchors: repricing and refreshed plans cannot manufacture progress.
-#[derive(Clone, Debug)]
-pub(super) struct Progress {
-    open_qty: f64,
-    net_qty: f64,
-    hedge_qty: f64,
-    since_ms: i64,
-    last_observed_ms: i64,
-    confirmed: bool,
 }
 
 impl Row {
     pub(super) fn assessable(&self) -> bool {
         self.uncovered_usdt.is_some()
             && (self.net_qty.abs() <= 1e-12
-                || self
-                    .limits
-                    .as_ref()
-                    .is_some_and(|l| l.min_hedge_usdt.is_some()))
-    }
-
-    fn update_progress(
-        &mut self,
-        progress: &mut BTreeMap<String, Progress>,
-        now: i64,
-        settings: &Settings,
-    ) -> bool {
-        if self.net_qty.abs() <= 1e-12 && self.uncovered_usdt.is_some() {
-            progress.remove(&self.asset);
-            return false;
-        }
-        let Some(min_trade) = self.limits.as_ref().and_then(|l| l.min_hedge_usdt) else {
-            if let Some(p) = progress.get_mut(&self.asset) {
-                p.last_observed_ms = 0;
-            }
-            return false;
-        };
-        let Some(value) = self.uncovered_usdt else {
-            if let Some(p) = progress.get_mut(&self.asset) {
-                p.last_observed_ms = 0;
-            }
-            return false;
-        };
-        if value.abs() < min_trade {
-            progress.remove(&self.asset);
-            return false;
-        }
-        let p = progress.entry(self.asset.clone()).or_insert(Progress {
-            open_qty: self.open_qty,
-            net_qty: self.net_qty,
-            hedge_qty: self.hedge_qty,
-            since_ms: now,
-            last_observed_ms: now,
-            confirmed: false,
-        });
-        let direction = p.net_qty.signum();
-        let min_progress_qty = min_trade * self.net_qty.abs() / value.abs();
-        // Paired closing sells cash and buys back the short. Both legs shrink
-        // while their small net difference can stay unchanged. Count the matched
-        // reduction, but never let growing imbalance or a one-leg close hide risk.
-        let paired_close = p.open_qty * p.hedge_qty < 0.0
-            && p.open_qty * self.open_qty >= 0.0
-            && p.hedge_qty * self.hedge_qty >= 0.0
-            && (p.open_qty.abs() - self.open_qty.abs())
-                .min(p.hedge_qty.abs() - self.hedge_qty.abs())
-                >= min_progress_qty
-            && self.net_qty.abs() <= (p.open_qty + p.hedge_qty).abs() + 1e-9;
-        let progressed = self.net_qty.signum() != direction
-            || (p.hedge_qty - self.hedge_qty) * direction >= min_progress_qty
-            || (p.net_qty - self.net_qty) * direction >= min_progress_qty
-            || paired_close;
-        self.made_progress = progressed;
-        if progressed
-            || !p.confirmed
-                && now.saturating_sub(p.last_observed_ms)
-                    > (settings.interval_secs * 3) as i64 * 1000
-        {
-            p.open_qty = self.open_qty;
-            p.net_qty = self.net_qty;
-            p.hedge_qty = self.hedge_qty;
-            p.since_ms = now;
-            p.confirmed = false;
-        } else if self.net_qty.abs() > p.net_qty.abs() {
-            // Enlarging exposure updates the reduction anchor, never the clock.
-            p.net_qty = self.net_qty;
-        }
-        p.last_observed_ms = now;
-        p.confirmed |= now.saturating_sub(p.since_ms) >= settings.stalled_secs as i64 * 1000;
-        self.stalled_since_ms = Some(p.since_ms);
-        p.confirmed
+                || self.limits.as_ref().is_some_and(|l| {
+                    (if self.net_qty >= 0.0 {
+                        l.maker_buy_orders
+                    } else {
+                        l.maker_sell_orders
+                    })
+                    .is_none()
+                        || self.normal_buffer_usdt.is_some()
+                }))
     }
 }
 
@@ -281,8 +193,6 @@ pub struct Account {
     pub rows: Vec<Row>,
     pub errors: Vec<String>,
     pub breaches: BTreeMap<String, Breach>,
-    #[serde(skip)]
-    pub(super) progress: BTreeMap<String, Progress>,
 }
 
 impl Account {
@@ -310,7 +220,6 @@ impl Account {
             rows: Vec::new(),
             errors: vec!["等待首次检查".into()],
             breaches: BTreeMap::new(),
-            progress: BTreeMap::new(),
         }
     }
 
@@ -388,12 +297,9 @@ impl Monitor {
                     for breach in account.breaches.values_mut() {
                         breach.observation_interrupted = true;
                     }
-                    for progress in account.progress.values_mut() {
-                        progress.last_observed_ms = 0;
-                    }
                     // Keep the last values and all prior risk evidence.
                 }
-                Ok(mut sample) => {
+                Ok(sample) => {
                     let advanced = account.snapshot_ms.is_none_or(|ts| sample.snapshot_ms > ts);
                     account.snapshot_ms = Some(sample.snapshot_ms);
                     account.account_ms = Some(sample.account_ms);
@@ -433,47 +339,42 @@ impl Monitor {
                     account.largest_asset = largest.map(|r| r.asset.clone());
                     account.largest_usdt = largest.and_then(|r| r.uncovered_usdt);
                     let mut above = BTreeMap::new();
-                    for row in &mut sample.rows {
-                        if row.ignored_spot_tail {
-                            account.progress.remove(&row.asset);
+                    for row in &sample.rows {
+                        if row.ignored_spot_tail || !row.assessable() {
                             continue;
                         }
-                        let stalled = if advanced {
-                            row.update_progress(&mut account.progress, now, &self.settings)
-                        } else {
-                            row.stalled_since_ms =
-                                account.progress.get(&row.asset).map(|p| p.since_ms);
-                            false
-                        };
                         let Some(value) = row.uncovered_usdt else {
                             continue;
                         };
                         let Some(limits) = &row.limits else {
                             continue;
                         };
+                        // A configured maker budget is the first boundary. Normal
+                        // inventory differences cannot become incidents just because
+                        // they persist or a max_pos_u override restricts new opening.
+                        if row
+                            .normal_buffer_usdt
+                            .is_some_and(|buffer| value.abs() <= buffer)
+                        {
+                            continue;
+                        }
                         let violation = if limits.symbol_limit_usdt > 0.0
                             && value.abs() >= limits.symbol_limit_usdt
                         {
-                            Some((BreachKind::HardLimit, limits.symbol_limit_usdt))
-                        } else if stalled {
-                            Some((BreachKind::Stalled, limits.min_hedge_usdt.unwrap()))
-                        } else if let Some(buffer) =
-                            row.normal_buffer_usdt.filter(|b| value.abs() > *b)
-                        {
-                            Some((BreachKind::MakerBuffer, buffer))
+                            Some((
+                                BreachKind::HardLimit,
+                                limits
+                                    .symbol_limit_usdt
+                                    .max(row.normal_buffer_usdt.unwrap_or(0.0)),
+                            ))
                         } else {
-                            None
+                            row.normal_buffer_usdt
+                                .map(|buffer| (BreachKind::MakerBuffer, buffer))
                         };
                         if let Some((kind, limit)) = violation {
                             above.insert(
                                 format!("asset:{}", row.asset),
-                                (
-                                    Some(row.asset.clone()),
-                                    value,
-                                    kind,
-                                    limit,
-                                    row.stalled_since_ms,
-                                ),
+                                (Some(row.asset.clone()), value, kind, limit),
                             );
                         }
                     }
@@ -482,7 +383,7 @@ impl Monitor {
                         if value >= limit {
                             above.insert(
                                 "total".into(),
-                                (None, value, BreachKind::HardLimit, limit, None),
+                                (None, value, BreachKind::HardLimit, limit),
                             );
                         }
                     }
@@ -511,15 +412,8 @@ impl Monitor {
                             breach.observation_interrupted = true;
                             true
                         });
-                        account.progress.retain(|asset, p| {
-                            if known_assets.contains(asset.as_str()) {
-                                return true;
-                            }
-                            p.last_observed_ms = 0;
-                            !account.complete
-                        });
                     }
-                    for (key, (asset, value, kind, limit_usdt, stalled_since)) in above {
+                    for (key, (asset, value, kind, limit_usdt)) in above {
                         if !advanced {
                             continue;
                         }
@@ -545,9 +439,6 @@ impl Monitor {
                         }
                         breach.kind = kind;
                         breach.limit_usdt = limit_usdt;
-                        if kind == BreachKind::Stalled {
-                            breach.since_ms = stalled_since.unwrap_or(now);
-                        }
                         breach.last_observed_ms = now;
                         breach.observation_interrupted = false;
                         breach.value_usdt = value;
@@ -713,8 +604,6 @@ fn parse_row(value: &Value) -> Result<Row> {
         asset,
         limits: None,
         normal_buffer_usdt: None,
-        stalled_since_ms: None,
-        made_progress: false,
         open_qty,
         hedge_qty,
         net_qty,
@@ -843,10 +732,7 @@ fn assess_limits(sample: &mut Sample, settings: &Settings) {
         });
         if !row.ignored_spot_tail
             && row.net_qty.abs() > 1e-12
-            && (row
-                .limits
-                .as_ref()
-                .is_none_or(|l| l.min_hedge_usdt.is_none())
+            && (row.limits.is_none()
                 || row.limits.as_ref().is_some_and(|l| {
                     (if row.net_qty >= 0.0 {
                         l.maker_buy_orders
@@ -858,7 +744,7 @@ fn assess_limits(sample: &mut Sample, settings: &Settings) {
                 }))
         {
             sample.errors.push(format!(
-                "{} 缺少 Redis 配置限额、方向 maker 数或最小对冲金额",
+                "{} 缺少有效 Redis 单手金额或方向 maker 参数",
                 row.asset
             ));
         }
@@ -871,7 +757,6 @@ pub async fn collect(
     settings: &Settings,
     jp_redis: &str,
     sg_redis: Option<&str>,
-    rules: &RuleCache,
 ) -> Vec<(String, Result<Sample>)> {
     let specs: Vec<_> = specs
         .iter()
@@ -905,16 +790,7 @@ pub async fn collect(
                             sample.risk["total_equity"].as_f64().unwrap_or(f64::NAN),
                         );
                         for row in &mut sample.rows {
-                            let mark = [
-                                (row.hedge_qty, row.hedge_usdt),
-                                (row.open_qty, row.open_usdt),
-                            ]
-                            .into_iter()
-                            .find_map(|(qty, value)| {
-                                let mark = value? / qty;
-                                (mark.is_finite() && mark > 0.0).then_some(mark)
-                            });
-                            row.limits = params.limits(&row.asset, mark, rules.get(&spec.exchange));
+                            row.limits = params.limits(&row.asset);
                         }
                     }
                     Err(err) => sample.errors.push(format!("{err:#}")),
@@ -936,7 +812,7 @@ mod tests {
     use serde_json::json;
 
     // Policy fixtures supply evaluated limits independently of the Viz input.
-    // Production collect() obtains these exclusively from Redis and venue rules.
+    // Production collect() obtains these exclusively from Redis.
     fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
         parse_for_exchange(snapshot, now, settings, "gate")
     }
@@ -962,6 +838,13 @@ mod tests {
         Ok(sample)
     }
 
+    fn settings() -> Settings {
+        Settings {
+            persistence_secs: 30,
+            ..Settings::default()
+        }
+    }
+
     const NOW: i64 = 1_790_000_000_000;
 
     fn spec(slug: &str, site: RedisSite) -> AccountSpec {
@@ -978,7 +861,7 @@ mod tests {
 
     fn row(asset: &str, net: f64) -> Value {
         json!({"asset":asset,"open_qty":1000.0+net,"hedge_qty":-1000.0,
-            "open_usdt":1000.0+net,"hedge_usdt":-1000.0,"net_qty":net,"net_usdt":net,"is_total":false,"arb_hedge_net_qty":0.0,"limits":{"symbol_limit_usdt":1000.0,"order_amount_usdt":(100.0/1.5),"maker_buy_orders":1,"maker_sell_orders":1,"min_hedge_usdt":10.0}})
+            "open_usdt":1000.0+net,"hedge_usdt":-1000.0,"net_qty":net,"net_usdt":net,"is_total":false,"arb_hedge_net_qty":0.0,"limits":{"symbol_limit_usdt":1000.0,"order_amount_usdt":(100.0/1.5),"maker_buy_orders":1,"maker_sell_orders":1}})
     }
 
     fn snapshot(rows: Vec<Value>, now: i64) -> Value {
@@ -1015,167 +898,174 @@ mod tests {
     fn building_row(asset: &str, net: f64) -> Value {
         let mut value = row(asset, net);
         value["limits"] = json!({"symbol_limit_usdt":2000.0,"order_amount_usdt":100.0,
-            "maker_buy_orders":10,"maker_sell_orders":2,"min_hedge_usdt":10.0});
+            "maker_buy_orders":10,"maker_sell_orders":2});
         value
     }
 
     #[test]
-    fn hard_limits_alert_on_first_snapshot_even_at_exact_boundary_and_inside_buffer() {
-        for net in [400.0, -400.0] {
-            let mut m = Monitor::new(Settings::default());
-            let mut value = building_row("ON", net);
-            value["limits"]["symbol_limit_usdt"] = json!(400.0);
-            apply(&mut m, vec![value], NOW);
-            let a = account(&m, NOW);
-            let b = &a.breaches["asset:ON"];
-            assert!(b.confirmed);
-            assert_eq!(b.kind, BreachKind::HardLimit);
-        }
+    fn gate_normal_maker_wait_and_small_capped_tails_stay_quiet_indefinitely() {
         let mut m = Monitor::new(Settings::default());
+        let values: Vec<_> = [
+            ("O", 99.5, 800.0),
+            ("TRUST", 194.0, 800.0),
+            ("BGSC", -1.83, 0.8),
+            ("XDC", 0.60, 0.5),
+        ]
+        .into_iter()
+        .map(|(asset, net, cap)| {
+            let mut v = building_row(asset, net);
+            v["limits"]["symbol_limit_usdt"] = json!(cap);
+            v["limits"]["maker_sell_orders"] = json!(10);
+            v
+        })
+        .collect();
+        for t in (0..=3_600_000).step_by(10_000) {
+            apply(&mut m, values.clone(), NOW + t);
+            let a = account(&m, NOW + t);
+            assert!(a.complete && a.breaches.is_empty());
+            assert!(a.rows.iter().all(|r| r.normal_buffer_usdt == Some(1500.0)));
+        }
+        let report = m.report(NOW + 3_600_000, true);
+        let observations = super::super::notifications::exposure_observations(&report);
+        assert!(observations
+            .iter()
+            .filter(|o| o.key.starts_with("exposure/") || o.key.starts_with("exposure_limit/"))
+            .all(|o| o.problem == Some(false)));
+    }
+
+    #[test]
+    fn maker_band_is_directional_and_includes_its_boundary() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=180_000).step_by(10_000) {
+            apply(&mut m, vec![building_row("LONG", 400.0)], NOW + t);
+        }
+        assert!(account(&m, NOW + 180_000).breaches.is_empty());
+        apply(&mut m, vec![building_row("SHORT", -300.0)], NOW + 190_000);
+        assert!(account(&m, NOW + 190_000).breaches.is_empty());
+        for t in (200_000..=380_000).step_by(10_000) {
+            apply(&mut m, vec![building_row("SHORT", -400.0)], NOW + t);
+        }
+        assert!(account(&m, NOW + 380_000).breaches["asset:SHORT"].confirmed);
+        assert_eq!(
+            account(&m, NOW + 380_000).rows[0].normal_buffer_usdt,
+            Some(300.0)
+        );
+    }
+
+    #[test]
+    fn exceeding_band_waits_three_minutes_but_hard_limit_and_total_escalate_immediately() {
+        let mut m = Monitor::new(Settings::default());
+        assert_eq!(m.settings.persistence_secs, 180);
+        for t in (0..=180_000).step_by(10_000) {
+            apply(&mut m, vec![row("OVER", 160.0)], NOW + t);
+            assert_eq!(
+                account(&m, NOW + t).breaches["asset:OVER"].confirmed,
+                t >= 180_000
+            );
+        }
+        let mut hard = row("OVER", 400.0);
+        hard["limits"]["symbol_limit_usdt"] = json!(400.0);
+        apply(&mut m, vec![hard], NOW + 190_000);
+        let a = account(&m, NOW + 190_000);
+        assert_eq!(a.breaches["asset:OVER"].kind, BreachKind::HardLimit);
+        assert!(a.breaches["asset:OVER"].confirmed);
         apply(
             &mut m,
-            vec![building_row("A", 250.0), building_row("B", -250.0)],
-            NOW,
+            vec![building_row("A", 250.0), building_row("B", 250.0)],
+            NOW + 200_000,
         );
-        let a = account(&m, NOW);
-        assert_eq!(a.net_usdt, Some(0.0));
+        let a = account(&m, NOW + 200_000);
+        assert_eq!(a.breaches.len(), 1);
         assert!(a.breaches["total"].confirmed);
-        assert_eq!(a.breaches["total"].kind, BreachKind::HardLimit);
     }
 
     #[test]
-    fn normal_construction_with_real_hedge_progress_does_not_alert() {
-        let mut m = Monitor::new(Settings::default());
-        for t in (0..=360_000).step_by(10_000) {
-            let mut value = building_row("IDOL", 400.0);
-            let filled = t as f64 / 100.0;
-            value["open_qty"] = json!(1400.0 + filled);
-            value["open_usdt"] = value["open_qty"].clone();
-            value["hedge_qty"] = json!(-1000.0 - filled);
-            value["hedge_usdt"] = value["hedge_qty"].clone();
-            apply(&mut m, vec![value], NOW + t);
-            let a = account(&m, NOW + t);
-            assert!(a.breaches.is_empty());
-            assert_eq!(a.risk_abs_usdt, Some(400.0));
-            assert_eq!(a.rows[0].normal_buffer_usdt, Some(1500.0));
-            assert_eq!(a.rows[0].stalled_since_ms, Some(NOW + t));
-        }
-    }
-
-    fn position_row(open: f64, hedge: f64) -> Value {
-        let mut value = building_row("TEST", open + hedge);
-        value["open_qty"] = json!(open);
-        value["open_usdt"] = json!(open);
-        value["hedge_qty"] = json!(hedge);
-        value["hedge_usdt"] = json!(hedge);
-        value
-    }
-
-    #[test]
-    fn paired_closing_progress_counts_both_directions_and_accumulates_small_fills() {
-        for (open, hedge) in [
-            (1040.0_f64, -1000.0_f64),
-            (1000.0, -1040.0),
-            (-1040.0, 1000.0),
-            (-1000.0, 1040.0),
+    fn normal_band_recovers_both_old_incident_keys_but_invalid_parameters_cannot() {
+        let mut m = Monitor::new(settings());
+        let mut value = row("XDC", 150.0);
+        value["limits"]["symbol_limit_usdt"] = json!(0.5);
+        apply(&mut m, vec![value.clone()], NOW);
+        assert!(account(&m, NOW).breaches["asset:XDC"].confirmed);
+        value.as_object_mut().unwrap().remove("limits");
+        apply(&mut m, vec![value], NOW + 10_000);
+        assert!(account(&m, NOW + 10_000).breaches["asset:XDC"].confirmed);
+        let mut normal = building_row("XDC", 150.0);
+        normal["limits"]["symbol_limit_usdt"] = json!(0.5);
+        apply(&mut m, vec![normal], NOW + 20_000);
+        assert!(account(&m, NOW + 20_000).breaches.is_empty());
+        let observations =
+            super::super::notifications::exposure_observations(&m.report(NOW + 20_000, true));
+        for key in [
+            "exposure/gate_fr_arb04/XDC",
+            "exposure_limit/gate_fr_arb04/XDC",
         ] {
-            let mut m = Monitor::new(Settings::default());
-            for t in (0..=360_000).step_by(10_000) {
-                let closed = t as f64 / 10_000.0;
-                apply(
-                    &mut m,
-                    vec![position_row(
-                        open - open.signum() * closed,
-                        hedge - hedge.signum() * closed,
-                    )],
-                    NOW + t,
-                );
-                let a = account(&m, NOW + t);
-                assert!(a.breaches.is_empty(), "open={open} hedge={hedge} t={t}");
-                assert_eq!(
-                    a.rows[0].stalled_since_ms,
-                    Some(NOW + (t / 100_000) * 100_000)
-                );
-            }
+            assert_eq!(
+                observations.iter().find(|o| o.key == key).unwrap().problem,
+                Some(false)
+            );
         }
     }
 
     #[test]
-    fn closing_that_widens_imbalance_or_only_buys_back_short_does_not_reset_stall() {
-        for cash_reduction in [0.0, 1.0] {
-            let mut m = Monitor::new(Settings::default());
-            for t in (0..=180_000).step_by(10_000) {
-                let units = t as f64 / 10_000.0;
-                apply(
-                    &mut m,
-                    vec![position_row(
-                        1040.0 - cash_reduction * units,
-                        -1000.0 + 2.0 * units,
-                    )],
-                    NOW + t,
-                );
-            }
-            let a = account(&m, NOW + 180_000);
-            assert_eq!(a.breaches["asset:TEST"].kind, BreachKind::Stalled);
-        }
-    }
-
-    #[test]
-    fn normal_retained_tail_clears_wrong_stall_but_still_checks_hard_limit() {
+    fn normal_band_precedes_small_cap_but_crossing_band_escalates_immediately() {
         let mut m = Monitor::new(Settings::default());
-        let mut value = position_row(1011.0, -1000.0);
-        for t in (0..=180_000).step_by(10_000) {
-            apply(&mut m, vec![value.clone()], NOW + t);
-        }
+        let mut value = building_row("XDC", 1500.0);
+        value["limits"]["symbol_limit_usdt"] = json!(0.5);
+        apply(&mut m, vec![value.clone()], NOW);
+        assert!(!account(&m, NOW).breaches.contains_key("asset:XDC"));
+        value["net_qty"] = json!(1501.0);
+        value["net_usdt"] = json!(1501.0);
+        value["open_qty"] = json!(2501.0);
+        value["open_usdt"] = json!(2501.0);
+        apply(&mut m, vec![value.clone()], NOW + 10_000);
+        let a = account(&m, NOW + 10_000);
+        assert_eq!(a.breaches["asset:XDC"].kind, BreachKind::HardLimit);
+        assert_eq!(a.breaches["asset:XDC"].limit_usdt, 1500.0);
+        assert!(a.breaches["asset:XDC"].confirmed);
+
+        // Overflow is unknown, not an unlimited band or proof of recovery.
+        value["limits"]["order_amount_usdt"] = json!(f64::MAX);
+        apply(&mut m, vec![value], NOW + 20_000);
+        let a = account(&m, NOW + 20_000);
+        assert!(!a.complete && !a.rows[0].assessable());
+        assert!(a.breaches["asset:XDC"].confirmed);
+        let observations =
+            super::super::notifications::exposure_observations(&m.report(NOW + 20_000, true));
         assert_eq!(
-            account(&m, NOW + 180_000).breaches["asset:TEST"].kind,
-            BreachKind::Stalled
+            observations
+                .iter()
+                .find(|o| o.key == "exposure_limit/gate_fr_arb04/XDC")
+                .unwrap()
+                .problem,
+            None
         );
-        value["limits"]["min_hedge_usdt"] = json!(25.0);
-        apply(&mut m, vec![value.clone()], NOW + 190_000);
+    }
+
+    #[test]
+    fn unlimited_maker_capacity_keeps_symbol_cap_and_disabled_cap_keeps_band() {
+        let mut m = Monitor::new(Settings::default());
+        let mut unlimited = building_row("UNLIMITED", 400.0);
+        unlimited["limits"]["maker_buy_orders"] = Value::Null;
+        unlimited["limits"]["symbol_limit_usdt"] = json!(400.0);
+        apply(&mut m, vec![unlimited], NOW);
+        let a = account(&m, NOW);
+        assert!(a.complete);
+        assert_eq!(a.rows[0].normal_buffer_usdt, None);
+        assert!(a.breaches["asset:UNLIMITED"].confirmed);
+
+        let mut disabled = row("DISABLED", 160.0);
+        disabled["limits"]["symbol_limit_usdt"] = json!(0.0);
+        for t in (10_000..=190_000).step_by(10_000) {
+            apply(&mut m, vec![disabled.clone()], NOW + t);
+        }
         let a = account(&m, NOW + 190_000);
-        assert!(a.breaches.is_empty());
-        assert_eq!(a.rows[0].stalled_since_ms, None);
-        value["limits"]["symbol_limit_usdt"] = json!(10.0);
-        apply(&mut m, vec![value], NOW + 200_000);
-        assert_eq!(
-            account(&m, NOW + 200_000).breaches["asset:TEST"].kind,
-            BreachKind::HardLimit
-        );
-    }
-
-    #[test]
-    fn frozen_on_exposure_under_both_limits_alerts_after_three_minutes_despite_repricing_plans() {
-        let mut m = Monitor::new(Settings::default());
-        for t in (0..=180_000).step_by(10_000) {
-            let mut value = building_row("ON", 400.0);
-            let price = 1.0 + t as f64 / 1_000_000.0;
-            for key in ["open_usdt", "hedge_usdt", "net_usdt"] {
-                value[key] = json!(value[key].as_f64().unwrap() * price);
-            }
-            value["arb_hedge_net_qty"] = json!(400.0 + t as f64);
-            value["arb_pending_hedge_qty"] = json!(t / 1000);
-            apply(&mut m, vec![value], NOW + t);
-            let a = account(&m, NOW + t);
-            assert_eq!(a.risk_status, if t < 180_000 { "ok" } else { "alert" });
-            assert_eq!(a.rows[0].stalled_since_ms, Some(NOW));
-        }
-        let b = &account(&m, NOW + 180_000).breaches["asset:ON"];
-        assert_eq!(b.kind, BreachKind::Stalled);
-        assert!(b.confirmed);
-        // A real hedge fill clears the stalled incident even while new opens keep net unchanged.
-        let mut filled = building_row("ON", 400.0);
-        filled["open_qty"] = json!(1500.0);
-        filled["open_usdt"] = json!(1500.0);
-        filled["hedge_qty"] = json!(-1100.0);
-        filled["hedge_usdt"] = json!(-1100.0);
-        apply(&mut m, vec![filled], NOW + 190_000);
-        assert!(account(&m, NOW + 190_000).breaches.is_empty());
+        assert_eq!(a.breaches["asset:DISABLED"].kind, BreachKind::MakerBuffer);
+        assert!(a.breaches["asset:DISABLED"].confirmed);
     }
 
     #[test]
     fn maker_buffer_uses_direction_and_symbol_order_amount() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let mut short = building_row("SHORT", -400.0);
         short["limits"]["order_amount_usdt"] = json!(80.0);
         for t in [0, 10_000, 20_000, 30_000] {
@@ -1188,172 +1078,9 @@ mod tests {
     }
 
     #[test]
-    fn tiny_fills_accumulate_before_recovering_stall() {
-        let mut m = Monitor::new(Settings::default());
-        for t in (0..=180_000).step_by(10_000) {
-            apply(&mut m, vec![building_row("ON", 400.0)], NOW + t);
-        }
-        assert_eq!(
-            account(&m, NOW + 180_000).breaches["asset:ON"].kind,
-            BreachKind::Stalled
-        );
-        for (t, fill, recovered) in [(190_000, 5.0, false), (200_000, 10.0, true)] {
-            let mut value = building_row("ON", 400.0 - fill);
-            value["open_qty"] = json!(1400.0);
-            value["open_usdt"] = json!(1400.0);
-            value["hedge_qty"] = json!(-1000.0 - fill);
-            value["hedge_usdt"] = value["hedge_qty"].clone();
-            apply(&mut m, vec![value], NOW + t);
-            assert_eq!(account(&m, NOW + t).breaches.is_empty(), recovered);
-        }
-    }
-
-    #[test]
-    fn unpriced_gap_restarts_pending_stall_and_cannot_recover_confirmed_stall() {
-        let mut m = Monitor::new(Settings::default());
-        for t in (0..=180_000).step_by(10_000) {
-            let mut value = building_row("ON", 400.0);
-            if t == 100_000 {
-                for k in ["open_usdt", "hedge_usdt", "net_usdt"] {
-                    value[k] = json!(0.0);
-                }
-            }
-            apply(&mut m, vec![value], NOW + t);
-        }
-        assert!(account(&m, NOW + 180_000).breaches.is_empty());
-        for t in (190_000..=290_000).step_by(10_000) {
-            apply(&mut m, vec![building_row("ON", 400.0)], NOW + t);
-        }
-        assert!(account(&m, NOW + 290_000).breaches["asset:ON"].confirmed);
-        let mut missing = building_row("ON", 400.0);
-        missing.as_object_mut().unwrap().remove("limits");
-        apply(&mut m, vec![missing], NOW + 300_000);
-        assert!(!account(&m, NOW + 300_000).complete);
-        assert!(account(&m, NOW + 300_000).breaches["asset:ON"].confirmed);
-        apply(&mut m, vec![building_row("ON", 400.0)], NOW + 310_000);
-        assert!(account(&m, NOW + 310_000).breaches["asset:ON"].confirmed);
-    }
-
-    #[test]
-    fn untradeable_dust_is_not_stalled_but_never_exempt_from_hard_limit() {
-        let mut m = Monitor::new(Settings::default());
-        for t in (0..=180_000).step_by(10_000) {
-            apply(&mut m, vec![building_row("TAIL", 1.0)], NOW + t);
-        }
-        assert!(account(&m, NOW + 180_000).breaches.is_empty());
-        let mut value = building_row("TAIL", 1.0);
-        value["limits"]["symbol_limit_usdt"] = json!(1.0);
-        apply(&mut m, vec![value], NOW + 190_000);
-        assert_eq!(
-            account(&m, NOW + 190_000).breaches["asset:TAIL"].kind,
-            BreachKind::HardLimit
-        );
-    }
-
-    #[test]
-    fn first_snapshot_cannot_recover_old_stall_and_hard_limit_escalates_separately() {
-        let mut m = Monitor::new(Settings::default());
-        apply(&mut m, vec![building_row("ON", 400.0)], NOW);
-        let observations = super::super::notifications::exposure_observations(&m.report(NOW, true));
-        let normal_key = "exposure/gate_fr_arb04/ON";
-        assert_eq!(
-            observations
-                .iter()
-                .find(|o| o.key == normal_key)
-                .unwrap()
-                .problem,
-            None
-        );
-        for t in (10_000..=180_000).step_by(10_000) {
-            apply(&mut m, vec![building_row("ON", 400.0)], NOW + t);
-        }
-        let observations =
-            super::super::notifications::exposure_observations(&m.report(NOW + 180_000, true));
-        assert_eq!(
-            observations
-                .iter()
-                .find(|o| o.key == normal_key)
-                .unwrap()
-                .problem,
-            Some(true)
-        );
-        let mut limited = building_row("ON", 400.0);
-        limited["limits"]["symbol_limit_usdt"] = json!(400.0);
-        apply(&mut m, vec![limited], NOW + 190_000);
-        let observations =
-            super::super::notifications::exposure_observations(&m.report(NOW + 190_000, true));
-        assert_eq!(
-            observations
-                .iter()
-                .find(|o| o.key == normal_key)
-                .unwrap()
-                .problem,
-            None
-        );
-        assert_eq!(
-            observations
-                .iter()
-                .find(|o| o.key == "exposure_limit/gate_fr_arb04/ON")
-                .unwrap()
-                .problem,
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn repeated_snapshot_cannot_confirm_stall_and_disabled_caps_do_not_disable_stall_monitoring() {
-        let mut value = building_row("ON", 400.0);
-        value["limits"]["symbol_limit_usdt"] = json!(0.0);
-        let sample = parse(
-            &snapshot(vec![value.clone()], NOW),
-            NOW,
-            &Settings::default(),
-        )
-        .unwrap();
-        let mut m = Monitor::new(Settings::default());
-        m.apply(
-            &[spec("gate_fr_arb04", RedisSite::Jp)],
-            vec![("gate_fr_arb04".into(), Ok(sample))],
-            NOW,
-            true,
-        );
-        for t in [
-            10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000,
-        ] {
-            let sample = parse(&snapshot(vec![value.clone()], NOW), NOW + t, &m.settings).unwrap();
-            m.apply(
-                &[spec("gate_fr_arb04", RedisSite::Jp)],
-                vec![("gate_fr_arb04".into(), Ok(sample))],
-                NOW + t,
-                true,
-            );
-        }
-        for t in (90_000..=270_000).step_by(10_000) {
-            apply(&mut m, vec![value.clone()], NOW + t);
-        }
-        let a = account(&m, NOW + 270_000);
-        assert_eq!(a.breaches["asset:ON"].since_ms, NOW + 90_000);
-        assert!(a.breaches["asset:ON"].confirmed);
-    }
-
-    #[test]
-    fn unlimited_maker_count_is_valid_and_still_has_stagnation_protection() {
-        let mut m = Monitor::new(Settings::default());
-        let mut value = building_row("ON", 400.0);
-        value["limits"]["maker_buy_orders"] = Value::Null;
-        for t in (0..=180_000).step_by(10_000) {
-            apply(&mut m, vec![value.clone()], NOW + t);
-            assert!(account(&m, NOW + t).complete);
-        }
-        let a = account(&m, NOW + 180_000);
-        assert_eq!(a.rows[0].normal_buffer_usdt, None);
-        assert_eq!(a.breaches["asset:ON"].kind, BreachKind::Stalled);
-    }
-
-    #[test]
     fn flat_position_does_not_require_obsolete_symbol_limits_to_prove_recovery() {
-        let mut m = Monitor::new(Settings::default());
-        let mut limited = building_row("ON", 400.0);
+        let mut m = Monitor::new(settings());
+        let mut limited = row("ON", 400.0);
         limited["limits"]["symbol_limit_usdt"] = json!(400.0);
         apply(&mut m, vec![limited], NOW);
         let mut flat = row("ON", 0.0);
@@ -1361,7 +1088,6 @@ mod tests {
         apply(&mut m, vec![flat], NOW + 10_000);
         assert!(account(&m, NOW + 10_000).complete);
         assert!(account(&m, NOW + 10_000).breaches.is_empty());
-        assert!(account(&m, NOW + 10_000).progress.is_empty());
         let observations =
             super::super::notifications::exposure_observations(&m.report(NOW + 10_000, true));
         assert_eq!(
@@ -1376,7 +1102,7 @@ mod tests {
 
     #[test]
     fn incomplete_data_requires_persistence_and_complete_data_recovers_immediately() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         // Repeated reads of the same incomplete snapshot still prove missing data.
         let incomplete = snapshot(vec![json!({"asset":"UNPRICED"})], NOW);
         for t in [0, 10_000, 20_000, 30_000, 40_000, 50_000, 59_999, 60_000] {
@@ -1406,7 +1132,7 @@ mod tests {
 
     #[test]
     fn failed_reads_confirm_data_incompleteness_but_observation_gaps_reset_pending() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         for t in [
             0, 10_000, 20_000, 60_000, 70_000, 80_000, 90_000, 100_000, 110_000, 120_000,
         ] {
@@ -1430,7 +1156,7 @@ mod tests {
     fn transient_incomplete_data_clears_and_uses_configured_persistence() {
         let mut m = Monitor::new(Settings {
             data_persistence_secs: 20,
-            ..Settings::default()
+            ..settings()
         });
         apply(&mut m, vec![json!({"asset":"BAD"})], NOW);
         assert_eq!(data_problem(&m, NOW), None);
@@ -1444,7 +1170,7 @@ mod tests {
 
     #[test]
     fn absolute_risk_does_not_cancel_assets_or_include_total_row() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         apply(
             &mut m,
             vec![
@@ -1463,7 +1189,7 @@ mod tests {
 
     #[test]
     fn unfilled_plan_cannot_hide_persistent_exposure_or_confirm_recovery() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let mut building = row("IDOL", 160.0);
         building["arb_hedge_net_qty"] = serde_json::json!(160.0);
         // This could be queued, working or stuck: none proves a hedge fill.
@@ -1492,7 +1218,7 @@ mod tests {
 
     #[test]
     fn actual_hedge_fill_during_confirmation_window_avoids_alert() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let mut building = row("ON", 600.0);
         building["arb_hedge_net_qty"] = serde_json::json!(600.0);
         apply(&mut m, vec![building], NOW);
@@ -1517,7 +1243,7 @@ mod tests {
             assert_eq!(parsed.uncovered_qty, Some(expected));
             assert_eq!(parsed.uncovered_usdt, Some(expected));
         }
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let mut adl = row("BTC", 160.0);
         adl["arb_hedge_net_qty"] = serde_json::json!(10.0);
         for t in [0, 10_000, 20_000, 30_000] {
@@ -1532,12 +1258,7 @@ mod tests {
     fn missing_or_invalid_plan_metadata_cannot_hide_factual_exposure() {
         let mut value = row("BTC", 160.0);
         value.as_object_mut().unwrap().remove("arb_hedge_net_qty");
-        let sample = parse(
-            &snapshot(vec![value.clone()], NOW),
-            NOW,
-            &Settings::default(),
-        )
-        .unwrap();
+        let sample = parse(&snapshot(vec![value.clone()], NOW), NOW, &settings()).unwrap();
         assert!(sample.errors.is_empty());
         assert_eq!(sample.rows[0].uncovered_usdt, Some(160.0));
         value["arb_hedge_net_qty"] = serde_json::json!("invalid");
@@ -1548,7 +1269,7 @@ mod tests {
 
     #[test]
     fn approved_spot_tails_do_not_create_incompleteness_but_keep_unknown_prices_visible() {
-        let mut settings = Settings::default();
+        let mut settings = settings();
         settings.ignored_spot_tails.insert(
             "gate".into(),
             BTreeMap::from([(
@@ -1614,7 +1335,7 @@ mod tests {
     fn production_spot_tail_policy_has_only_finite_bounded_rules() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("config/fr_exposure_ignored_spot_tails.json");
-        let mut settings = Settings::default();
+        let mut settings = settings();
         settings.ignored_spot_tails = load_ignored_spot_tails(&path).unwrap();
         settings.validate().unwrap();
         assert_eq!(settings.ignored_spot_tails.len(), 2);
@@ -1626,7 +1347,7 @@ mod tests {
 
     #[test]
     fn transient_recovers_and_sustained_excess_confirms_then_clears() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         apply(&mut m, vec![row("BTC", 160.0)], NOW);
         assert_eq!(account(&m, NOW).risk_status, "pending");
         apply(&mut m, vec![row("BTC", 1.0)], NOW + 10_000);
@@ -1641,7 +1362,7 @@ mod tests {
 
     #[test]
     fn different_assets_do_not_inherit_each_others_duration() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         for t in [0, 10_000, 20_000] {
             apply(&mut m, vec![row("BTC", 160.0)], NOW + t);
         }
@@ -1653,7 +1374,7 @@ mod tests {
 
     #[test]
     fn cumulative_small_residuals_trigger_account_limit() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         for t in [0, 10_000, 20_000, 30_000] {
             apply(
                 &mut m,
@@ -1670,7 +1391,7 @@ mod tests {
 
     #[test]
     fn failed_or_partial_refresh_never_clears_confirmed_risk() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         for t in [0, 10_000, 20_000, 30_000] {
             apply(&mut m, vec![row("BTC", 160.0)], NOW + t);
         }
@@ -1692,7 +1413,7 @@ mod tests {
 
     #[test]
     fn unpriced_holdings_are_unknown_even_when_qty_nets_to_zero() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let mut r = row("UNPRICED", 0.0);
         r["open_usdt"] = json!(0);
         r["hedge_usdt"] = json!(0);
@@ -1707,7 +1428,7 @@ mod tests {
 
     #[test]
     fn known_asset_recovers_independently_of_other_unpriced_holdings() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let mut unpriced = row("UNKNOWN", 10.0);
         for key in ["open_usdt", "hedge_usdt", "net_usdt"] {
             unpriced[key] = json!(0);
@@ -1725,7 +1446,7 @@ mod tests {
 
     #[test]
     fn unknown_observation_interrupts_pending_confirmation() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         apply(&mut m, vec![row("BTC", 160.0)], NOW);
         apply(&mut m, vec![json!({"asset":"BTC"})], NOW + 20_000);
         apply(&mut m, vec![row("BTC", 160.0)], NOW + 30_000);
@@ -1736,7 +1457,7 @@ mod tests {
 
     #[test]
     fn rejects_stale_future_missing_and_duplicate_channels() {
-        let settings = Settings::default();
+        let settings = settings();
         for path in [
             "/entries/0/entry/ts_ms",
             "/entries/1/entry/ts_ms",
@@ -1770,24 +1491,18 @@ mod tests {
                 vec![bad]
             },
         ] {
-            let s = parse(&snapshot(rows, NOW), NOW, &Settings::default()).unwrap();
+            let s = parse(&snapshot(rows, NOW), NOW, &settings()).unwrap();
             assert!(!s.errors.is_empty());
         }
         let mut d = snapshot(vec![], NOW);
-        assert!(parse(&d, NOW, &Settings::default())
-            .unwrap()
-            .errors
-            .is_empty());
+        assert!(parse(&d, NOW, &settings()).unwrap().errors.is_empty());
         d["entries"][1]["entry"]["total_position"] = json!(2000);
-        assert!(!parse(&d, NOW, &Settings::default())
-            .unwrap()
-            .errors
-            .is_empty());
+        assert!(!parse(&d, NOW, &settings()).unwrap().errors.is_empty());
     }
 
     #[test]
     fn cached_snapshot_cannot_confirm_duration_and_observation_gap_resets_pending() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         apply(&mut m, vec![row("BTC", 160.0)], NOW);
         let old = parse(
             &snapshot(vec![row("BTC", 160.0)], NOW),
@@ -1811,7 +1526,7 @@ mod tests {
 
     #[test]
     fn stopped_collector_and_failed_catalog_invalidate_healthy_result() {
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         apply(&mut m, vec![row("BTC", 0.1)], NOW);
         assert_eq!(account(&m, NOW).risk_status, "ok");
         assert_eq!(account(&m, NOW + 30_001).risk_status, "unknown");
@@ -1866,15 +1581,14 @@ mod tests {
         let results = collect(
             &snapshots,
             &specs,
-            &Settings::default(),
+            &settings(),
             "redis://127.0.0.1:1/0",
             None,
-            &RuleCache::default(),
         )
         .await;
         assert_eq!(results.len(), 4);
         assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 2);
-        let mut m = Monitor::new(Settings::default());
+        let mut m = Monitor::new(settings());
         let now = chrono::Utc::now().timestamp_millis();
         m.apply(&specs, results, now, true);
         let report = m.report(now, true);
@@ -1906,23 +1620,23 @@ mod tests {
             entry["type"] = entry["channel"].clone();
             entry.as_object_mut().unwrap().remove("channel");
         }
-        assert_eq!(parse(&d, NOW, &Settings::default()).unwrap().rows.len(), 1);
+        assert_eq!(parse(&d, NOW, &settings()).unwrap().rows.len(), 1);
         for settings in [
             Settings {
                 interval_secs: 0,
-                ..Settings::default()
+                ..settings()
             },
             Settings {
                 maker_buffer_factor: f64::NAN,
-                ..Settings::default()
+                ..settings()
             },
             Settings {
                 max_age_secs: 1,
-                ..Settings::default()
+                ..settings()
             },
             Settings {
                 data_persistence_secs: 3601,
-                ..Settings::default()
+                ..settings()
             },
         ] {
             assert!(settings.validate().is_err());
@@ -1930,7 +1644,7 @@ mod tests {
         for data_persistence_secs in [0, 60, 3600] {
             Settings {
                 data_persistence_secs,
-                ..Settings::default()
+                ..settings()
             }
             .validate()
             .unwrap();

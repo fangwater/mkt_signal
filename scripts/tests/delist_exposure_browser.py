@@ -83,10 +83,6 @@ def main():
                     coverage = 86400000 if slug == nav_slugs[3] else 7 * 86400000
                     return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': coverage},
                                                          'rolling30d': {'annualizedReturn': annualized_30d, 'coveredMs': 7 * 86400000}}})
-                if self.path.startswith('/api/v3/market/instruments'):
-                    return self.respond({'code': '00000', 'msg': 'success', 'data': [{
-                        'symbol': 'TESTUSDT', 'baseCoin': 'TEST', 'quoteCoin': 'USDT',
-                        'minOrderQty': '10', 'quantityMultiplier': '1', 'minOrderAmount': '10'}]})
                 if self.path == '/snapshot':
                     now = int(time.time()*1000)
                     entries = []
@@ -228,7 +224,6 @@ def main():
         redis_fixture.daemon_threads = True
         threading.Thread(target=redis_fixture.serve_forever, daemon=True).start()
         redis_url = f'redis://127.0.0.1:{redis_fixture.server_address[1]}/0'
-        environment['BITGET_PUBLIC_API_BASE'] = origin
         log = open(root/'service.log', 'wb')
         server = subprocess.Popen([str(args.delist_binary.resolve()), '--bind', f'127.0.0.1:{port}',
             '--access-config', str(root/'access.json'), '--book', str(root/'data/book.json'),
@@ -286,7 +281,6 @@ def main():
                 account = next(a for a in data['accounts'] if a['slug'] == slugs[0])
                 test_row = next(row for row in account['rows'] if row['asset'] == 'TEST')
                 assert test_row['hedge_plan_qty'] == 160
-                assert test_row['limits']['min_hedge_usdt'] == 25
                 assert test_row['limits']['symbol_limit_usdt'] == 1000
                 assert account['limit_usdt'] == 500
                 assert ['HGETALL', 'fr_strategy_params_bitget-margin_bitget-futures'] in redis_commands

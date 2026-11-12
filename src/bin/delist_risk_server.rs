@@ -179,14 +179,12 @@ struct Args {
     exposure_interval_secs: u64,
     #[arg(long, default_value_t = 90)]
     exposure_max_age_secs: u64,
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, default_value_t = 180)]
     exposure_persistence_secs: u64,
     #[arg(long, default_value_t = 60)]
     data_persistence_secs: u64,
     #[arg(long, default_value_t = 1.5)]
     exposure_maker_buffer_factor: f64,
-    #[arg(long, default_value_t = 180)]
-    exposure_stalled_secs: u64,
 
     /// Explicit bounded exceptions for operator-confirmed spot tails.
     #[arg(long, default_value = "config/fr_exposure_ignored_spot_tails.json")]
@@ -557,7 +555,6 @@ async fn main() -> Result<()> {
         persistence_secs: args.exposure_persistence_secs,
         data_persistence_secs: args.data_persistence_secs,
         maker_buffer_factor: args.exposure_maker_buffer_factor,
-        stalled_secs: args.exposure_stalled_secs,
         catalog_max_age_secs: args.nav_strategy_interval_secs.saturating_mul(3).max(90),
         ignored_spot_tails: exposure::load_ignored_spot_tails(&args.exposure_ignored_spot_tails)?,
     };
@@ -1067,7 +1064,6 @@ async fn main() -> Result<()> {
     }
     let exposure_state = state.clone();
     tokio::spawn(async move {
-        let mut rules = exposure_parameters::RuleCache::default();
         let mut interval = time::interval(Duration::from_secs(
             exposure_state.exposure_settings.interval_secs,
         ));
@@ -1075,14 +1071,12 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             let specs = exposure_state.accounts.read().await.clone();
-            rules.refresh(&specs).await;
             let samples = exposure::collect(
                 &exposure_state.snapshots,
                 &specs,
                 &exposure_state.exposure_settings,
                 &exposure_state.jp_redis,
                 exposure_state.sg_redis.as_deref(),
-                &rules,
             )
             .await;
             let current = exposure_catalog_current(&exposure_state).await;

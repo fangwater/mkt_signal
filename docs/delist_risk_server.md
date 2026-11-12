@@ -1,6 +1,10 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 13:12 UTC（已修正正常对冲尾差及成对平仓的停滞误报）
+最后更新：2026-11-12（方向 maker 正常区间优先；新策略待本次发布验收）
+
+本次修订以单手金额 × 对应 buy/sell maker 数 × 1.5 作为单币正常区间；
+区间内只展示，不因等待时间或极小限仓覆盖值报警。下文13:08/12:51的
+停滞计时及独立单币硬线为历史发布记录，已由本次策略取代，发布验收另行记录。
 
 2026-11-12 13:08 UTC，仅发布 Delist `arbmm ff83434d`，修复 Bitget 正常尾差报警。
 原监控只看交易所最低下单额（多数约5U），漏掉策略普通对冲查询的10U门槛和
@@ -544,50 +548,39 @@ represent the factual net quantity / valuation without plan subtraction.
 all priced rows for diagnostics. Two-leg positions, strategy plan and pending
 quantities remain visible separately.
 
-Current exposure policy (Delist published independently on 2026-11-12 12:51 UTC):
+Current exposure policy (directional maker band, 2026-11-12 revision):
 
-- Reaching the strategy single-symbol limit (`max_pos_u_for_symbol ×
-  max_symbol_exposure_ratio`) or account limit (`equity ×
-  max_total_exposure_ratio`) alerts on the first fresh observation, including
-  equality. With the default poll interval, this means the next 10-second check,
-  not an exchange-event-time push. A nonpositive configured exposure ratio means disabled.
-- Normal construction buffer is the exposure direction's maker capacity ×
-  effective per-symbol order amount × **1.5**. The opening direction cap is
-  bounded by the general pending-order cap; the larger of opening and closing
-  directional capacities covers both normal modes. An unlimited capacity skips
-  only this buffer check; hard-limit and stagnation checks remain active.
-  No count of 10 is invented. Excess over this buffer must persist
-  **30 seconds**. Hard limits always take precedence over this buffer.
-- A still-tradable residual with no actual reducing progress for **180 seconds**
-  alerts even below both limits. Progress uses base-quantity anchors: a hedge-leg
-  change in the reducing direction, or an actual net-quantity reduction of at
-  least the normal executable hedge amount. Matched reductions of both opposing
-  legs also count as progress when the net imbalance does not grow; normal cash
-  sells plus short buybacks must not be mistaken for a stalled hedge. Small fills
-  accumulate against the quantity anchors. Opening more exposure, quote/mark changes, cancel/reprice and plan
-  refreshes never reset the clock. An exposure direction reversal begins a new
-  observation. Residuals below the normal executable hedge amount are exempt only
-  from stagnation detection, never from hard limits.
-- Missing/invalid limits, sizing or hedge rules are incomplete data;
-  known hard limits can still alert. No fixed 100/500 USDT fallback masks missing
-  configuration. A first snapshot after restart cannot recover an old stalled
-  incident without observed quantity progress or a below-minimum residual.
+- The normal single-symbol band is the effective per-symbol order amount ×
+  the exposure direction's maker capacity × **1.5**. Positive net exposure uses
+  buy capacity; negative net exposure uses sell capacity. The opening direction
+  cap is bounded by the general pending-order cap; the larger of opening and
+  closing directional capacities covers both normal modes. Counts come from
+  Redis; no count of 10 is invented.
+- A valued exposure **inside or exactly on this band is display-only**, even if
+  it remains unchanged for hours or a small `max_pos_u` override makes the raw
+  strategy exposure cap smaller than the band. Gate's 100U hand and 10 orders
+  give a 1500U normal band; O/TRUST maker waits and BGSC/XDC tiny tails stay quiet.
+  This classification is not evidence that an order is stuck or filled.
+- Outside the normal band, reaching the strategy single-symbol cap
+  (`max_pos_u_for_symbol × max_symbol_exposure_ratio`) alerts on the first
+  fresh observation. Otherwise excess over the band must persist **180 seconds**.
+  A nonpositive exposure ratio disables that cap. An unlimited directional
+  maker capacity supplies no finite band; its configured symbol cap still applies.
+- The account limit (`equity × max_total_exposure_ratio`) remains independent:
+  the sum of absolute actual net exposures reaching that limit alerts immediately,
+  even when individual assets remain inside their maker bands. Immediate means
+  the next fresh poll (10 seconds by default), including equality at the cap.
+- Missing/invalid limits, sizing or valuation remain incomplete data, never
+  invented defaults. A fresh assessable row back inside the normal band recovers
+  either previous symbol incident identity; missing data cannot recover it.
 
 The collector does not modify Redis, submit orders, or change trading guards.
-The independent FR DingTalk channel consumes its observations. The fixed asset
-and account CLI limits were removed. Only Delist and its start wrapper/page need publishing. The existing Viz/IPC
-contract is unchanged; trading processes need no rebuild or restart.
-Minimum hedge amounts reuse `VenueMinQtyTable` public providers, one cache per
-exchange, refreshed at most every five minutes with a five-second timeout.
-A cached table expires after fifteen minutes without a successful refresh.
-Gate/OKX use contract multipliers; linear Binance/Bitget/Bybit quantities are
-base amounts. The minimum includes quantity step rounding, venue minimum
-notional, the existing 10U ordinary hedge-query floor, and the maker splitter's
-25U retained-tail rule. If a configured full hand is smaller than 25U, that hand
-can execute subject to the query/venue floors. Delist imports the existing shared
-constants; it does not change trading thresholds or treat normal retained tails
-as stalled orders. Hard-limit checks remain independent of these exemptions.
-Missing/stale rules do not suppress known hard caps but cannot prove recovery.
+The independent FR DingTalk channel consumes its observations. Only Delist and
+its start wrapper/page need publishing; the existing Viz/IPC contract is unchanged.
+The independent inactivity timer, quantity progress anchors and minimum-hedge
+rule cache have been removed. Exposure monitoring reads Redis and Viz only,
+with no extra public order-rule requests or dependency on 10U/25U trading floors.
+Delist's separate delisting catalog and announcement fetches remain in use.
 
 The exposure entry, risk entry and every underlying account-monitor timestamp
 must be no older than 90 seconds and at most five seconds in the future.
@@ -622,9 +615,8 @@ scope after these explicit exclusions. Old incompleteness notices for newly
 excluded tails are retired as a policy change, not sent as price-data recoveries.
 
 The wrapper accepts `DELIST_EXPOSURE_INTERVAL_SECS`,
-`DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS`,
-`DELIST_EXPOSURE_MAKER_BUFFER_FACTOR` (default `1.5`) and
-`DELIST_EXPOSURE_STALLED_SECS` (default `180`).
+`DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS` (default `180`)
+and `DELIST_EXPOSURE_MAKER_BUFFER_FACTOR` (default `1.5`).
 `DELIST_DATA_PERSISTENCE_SECS` (default `60`) requires continuously incomplete
 FR position data before alerting; complete data recovers immediately.
 The identical report is atomically saved beside the risk book as
