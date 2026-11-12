@@ -1,6 +1,19 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12（Binance PM FR 最低借款额与返还现金检查）
+最后更新：2026-11-12（Gate FR 缺失标记价补价；Binance PM FR 最低借款额与返还现金检查）
+
+2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底（代码，尚未发布）。
+默认连续缺价 30 秒后，直连官方无鉴权
+`GET /api/v4/futures/usdt/contracts/<CONTRACT>`，只接受名称匹配且有限、正数的
+`mark_price`，写入现有 mark 表并刷新账户估值；不使用 `last` 或现货价格代替。
+`PRE_TRADE_GATE_MARK_REST_AFTER_SECS` 可设为 5–3600 秒，默认 30；每 5 秒检查，
+每轮最多 8 次串行请求、间隔 100ms、超时 5 秒，失败后该币至少等 30 秒再试。
+429/503 全局退避至少 60 秒，并遵守数值型 `Retry-After`。仅针对 Gate FR
+现货/合约配对的实际持仓（含两腿净额为零），无合约持仓且目录无对应合约的资产
+继续使用既有现货集中度补价。持仓消失或行情先补齐时跳过请求/回写。
+此兜底修复缺价，不把已有标记价的更新间隔当作缺价；Gate ticker 可因价格不变而不推送。
+不依赖 `trade_signal`，不携带账户凭据、不跟随重定向、不新增 Nginx 缓存或白名单。
+官方契约：[Get a single contract](https://www.gate.com/docs/developers/apiv4/en/#get-a-single-contract)。
 
 2026-11-12，Binance PM FR 的开仓检查由账户容量任务调度（当前每60秒，组件自身最短间隔30秒），
 通过现有交易引擎查询路由读取

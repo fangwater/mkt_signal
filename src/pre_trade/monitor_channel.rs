@@ -3347,6 +3347,39 @@ fn missing_position_mark_assets(
     missing
 }
 
+fn gate_missing_mark_symbols(
+    exposures: &HashMap<String, (f64, f64)>,
+    prices: &PriceTable,
+    open_venue: TradingVenue,
+    rules: Option<&VenueMinQtyTable>,
+) -> Vec<String> {
+    let mapper = create_symbol_mapper(Exchange::Gate);
+    let mut symbols = exposures
+        .iter()
+        .filter_map(|(asset, &(open, hedge))| {
+            if is_exposure_exempt_asset(asset)
+                || open.abs() + hedge.abs() <= POSITION_MARK_QTY_EPSILON
+            {
+                return None;
+            }
+            let symbol = mapper.asset_to_price_symbol(asset);
+            if super::gate_mark_price_supplement::has_mark(prices, &symbol) {
+                return None;
+            }
+            let futures_qty = if open_venue == TradingVenue::GateFutures {
+                open
+            } else {
+                hedge
+            };
+            (futures_qty.abs() > POSITION_MARK_QTY_EPSILON
+                || rules.is_some_and(|table| table.contains_symbol(&symbol)))
+            .then_some(symbol)
+        })
+        .collect::<Vec<_>>();
+    symbols.sort_unstable();
+    symbols
+}
+
 fn gate_spot_only_quantity(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
@@ -5166,6 +5199,52 @@ impl MonitorChannel {
         })
     }
 
+    /// Missing Gate futures marks needed by factual holdings, including paired
+    /// positions whose net is zero. Unknown spot-only assets use spot valuation.
+    pub(crate) fn gate_mark_price_rest_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| {
+            if !super::gate_mark_price_supplement::enabled(
+                inner.open_venue,
+                inner.hedge_venue,
+                inner.arb_mode,
+            ) {
+                return Vec::new();
+            }
+            Self::with_basic_state_cached(|state| {
+                gate_missing_mark_symbols(
+                    &state.exposures,
+                    &inner.price_table.borrow(),
+                    inner.open_venue,
+                    inner
+                        .venue_min_qty_tables
+                        .get(&TradingVenue::GateFutures)
+                        .map(Rc::as_ref),
+                )
+            })
+        })
+    }
+
+    pub(crate) fn seed_gate_mark_price_if_missing(&self, symbol: &str, mark: f64) -> bool {
+        // Recheck both the holding and the stream after the asynchronous GET.
+        if !self
+            .gate_mark_price_rest_symbols()
+            .iter()
+            .any(|s| s == symbol)
+        {
+            return false;
+        }
+        let applied = super::gate_mark_price_supplement::seed_missing_mark(
+            &mut self.price_table().borrow_mut(),
+            symbol,
+            mark,
+            get_timestamp_us(),
+        );
+        if applied {
+            Self::mark_basic_state_price_dirty();
+        }
+        applied
+    }
+
     /// Concentration-only valuation. A spot quote can supplement a spot-only
     /// holding, but cannot replace a futures mark or become an execution quote.
     pub(crate) fn concentration_position_usdt_snapshot(
@@ -5475,6 +5554,12 @@ impl MonitorChannel {
                 derivatives_listeners,
             });
         });
+
+        if refresh_order_rules_from_venue
+            && super::gate_mark_price_supplement::enabled(open_venue, hedge_venue, arb_mode)
+        {
+            super::gate_mark_price_supplement::start_poll(&Self::instance().price_table());
+        }
 
         Ok(())
     }
@@ -8442,6 +8527,58 @@ pub(crate) mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    #[test]
+    fn gate_rest_marks_include_balanced_holdings_and_skip_unlisted_spot_only_assets() {
+        let exposures = HashMap::from([
+            ("BICO".into(), (1000.0, -1000.0)),
+            ("PUNDIX".into(), (0.0, -100.0)),
+            ("BTC".into(), (1.0, 0.0)),
+            ("SLVON".into(), (0.01, 0.0)),
+            ("FLAT".into(), (0.0, 0.0)),
+            ("USDT".into(), (1000.0, 0.0)),
+        ]);
+        let mut prices = PriceTable::new();
+        let mut rules = VenueMinQtyTable::new(TradingVenue::GateFutures);
+        rules.set_entry_for_test(VenueMinQtyEntry {
+            symbol: "BTCUSDT".into(),
+            base_asset: "BTC".into(),
+            quote_asset: "USDT".into(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: None,
+        });
+        assert_eq!(
+            gate_missing_mark_symbols(&exposures, &prices, TradingVenue::GateMargin, Some(&rules)),
+            vec!["BICO_USDT", "BTC_USDT", "PUNDIX_USDT"]
+        );
+        // An index update does not resolve a missing mark.
+        prices.update_index_price("PUNDIX_USDT", 0.1, 1);
+        prices.update_mark_price("BICO_USDT", 0.01315, 2);
+        assert_eq!(
+            gate_missing_mark_symbols(&exposures, &prices, TradingVenue::GateMargin, None),
+            vec!["PUNDIX_USDT"]
+        );
+        let reversed = exposures
+            .iter()
+            .map(|(a, &(o, h))| (a.clone(), (h, o)))
+            .collect();
+        assert_eq!(
+            gate_missing_mark_symbols(&reversed, &prices, TradingVenue::GateFutures, None),
+            vec!["PUNDIX_USDT"]
+        );
+        assert!(super::super::gate_mark_price_supplement::seed_missing_mark(
+            &mut prices,
+            "PUNDIX_USDT",
+            0.0839,
+            3,
+        ));
+        assert!(
+            gate_missing_mark_symbols(&exposures, &prices, TradingVenue::GateMargin, None)
+                .is_empty()
+        );
+    }
 
     #[test]
     fn concentration_spot_fallback_does_not_replace_a_mark_or_price_futures() {

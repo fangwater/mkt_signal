@@ -25,6 +25,7 @@ pub mod exec_volatility_channel;
 pub mod exec_volume_channel;
 pub mod fr_position_concentration_guard;
 pub mod gate_fr_risk_limit_guard;
+mod gate_mark_price_supplement;
 mod gate_spot_valuation;
 pub(crate) mod hedge_progress_guard;
 pub mod intra_bwd_symbol_list;
