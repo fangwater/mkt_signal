@@ -315,8 +315,14 @@ def check_bybit(client: Client, report: Report) -> None:
     require(isinstance(data, dict), "Bybit: invalid collateral info")
     rows = rows_by(data.get("list"), "currency")
     for coin in report.assets:
-        require(coin in rows, f"Bybit: missing collateral status for {coin}")
-        row = rows[coin]
+        row = rows.get(coin)
+        if row is None:
+            # The default list can omit eligible, non-borrowable coins (e.g. BSB).
+            data = client.get("/v5/account/collateral-info", {"currency": coin})
+            require(isinstance(data, dict), f"Bybit: invalid collateral info for {coin}")
+            selected = rows_by(data.get("list"), "currency")
+            require(coin in selected, f"Bybit: missing collateral status for {coin}")
+            row = selected[coin]
         if not boolean(row.get("marginCollateral"), f"{coin}.marginCollateral"):
             report.unsupported.append(coin)
         elif not boolean(row.get("collateralSwitch"), f"{coin}.collateralSwitch"):

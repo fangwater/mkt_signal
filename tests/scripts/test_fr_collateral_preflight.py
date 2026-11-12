@@ -45,6 +45,34 @@ class CollateralChecks(unittest.TestCase):
         self.assertTrue(report.ok)
         self.assertEqual(report.unsupported, ["NEW"])
 
+    def test_bybit_missing_bulk_coin_uses_its_actual_collateral_switch(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                client = self.bybit({"marginCollateral": True, "collateralSwitch": True})
+                client.responses[("/v5/account/collateral-info", (("currency", "BSB"),))] = {
+                    "list": [{"currency": "BSB", "borrowable": False,
+                              "marginCollateral": True, "collateralSwitch": enabled}],
+                }
+                report = check.Report("env", "bybit", ["NEW", "BSB"])
+                check.check_bybit(client, report)
+                self.assertEqual(report.ok, enabled)
+                self.assertEqual(report.disabled, [] if enabled else ["BSB"])
+                self.assertEqual(report.unsupported, [])
+                self.assertEqual(client.calls[-1],
+                                 ("/v5/account/collateral-info", {"currency": "BSB"}))
+                self.assertEqual(len(client.calls), 3)
+
+    def test_bybit_targeted_missing_or_invalid_status_still_blocks(self):
+        for data in (None, {"list": []}, {"list": [{"currency": "OTHER"}]},
+                     {"list": [{"currency": "BSB", "marginCollateral": True}]},
+                     {"list": [{"currency": "BSB", "marginCollateral": True,
+                                "collateralSwitch": "true"}]}):
+            with self.subTest(data=data):
+                client = self.bybit({"marginCollateral": True, "collateralSwitch": True})
+                client.responses[("/v5/account/collateral-info", (("currency", "BSB"),))] = data
+                with self.assertRaises(check.PreflightError):
+                    check.check_bybit(client, check.Report("env", "bybit", ["BSB"]))
+
     def test_bybit_missing_or_string_boolean_never_passes(self):
         for fields in ({"marginCollateral": True},
                        {"marginCollateral": True, "collateralSwitch": "false"}):
