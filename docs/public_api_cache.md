@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12 10:16 UTC（Gate FR 缺失标记价补价发布；Binance PM FR 最低借款额与返还现金检查）
+最后更新：2026-11-12 12:47 UTC（Delist 复用公共交易规则缓存；Gate REST 补价及 Binance PM 借款检查保持）
 
 2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底，
 已随 `293f6352` 于 10:13 UTC 发布至 JP `gate_fr_arb01–04`，四盘仍关闭 `trade_signal`。
@@ -494,3 +494,13 @@ CTA Manager 的现货理论估值新增 Binance 公共 `GET /api/v3/klines`，�
 仅补缺失分钟的本地缓存。现货使用裸币名缓存键，合约使用完整交易对缓存键。
 两者仍直连 Binance，不新增 Nginx 路由或把签名 RapidX `sym/info` 纳入公共缓存。
 此次仅代码接入，未变更线上代理部署。
+
+### Delist FR exposure order rules (2026-11-12)
+
+Delist reuses `VenueMinQtyTable` for minimum tradable hedge amounts. Each
+exchange catalog is refreshed at most once per five minutes across all FR
+accounts; requests time out after five seconds and cached rules expire after
+fifteen minutes. Bitget uses the existing `BITGET_PUBLIC_API_BASE` and allowlisted
+`/api/v3/market/instruments?category=USDT-FUTURES` endpoint. Other venues keep
+their existing public-provider URLs; this introduces no Nginx endpoint or
+private/authenticated request through the shared cache.

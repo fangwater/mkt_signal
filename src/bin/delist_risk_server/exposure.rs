@@ -1,6 +1,7 @@
 //! Read-only FR account exposure checks. Values come from account-monitor-derived
 //! Viz snapshots, not strategy targets. This module never submits trading actions.
 
+use super::exposure_parameters::{self, Limits, RuleCache};
 use anyhow::{bail, ensure, Context, Result};
 use futures_util::stream::{self, StreamExt};
 use mkt_signal::common::delist_accounts::{AccountSpec, RedisSite};
@@ -9,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use viz_common::resample::PreTradeExposureLimits;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Settings {
@@ -115,7 +115,7 @@ impl Settings {
 #[derive(Clone, Debug, Serialize)]
 pub struct Row {
     pub asset: String,
-    pub limits: Option<PreTradeExposureLimits>,
+    pub limits: Option<Limits>,
     pub normal_buffer_usdt: Option<f64>,
     pub stalled_since_ms: Option<i64>,
     #[serde(skip)]
@@ -697,17 +697,7 @@ fn parse_row(value: &Value) -> Result<Row> {
     let uncovered_usdt = priced.then_some(net);
     Ok(Row {
         asset,
-        limits: serde_json::from_value::<PreTradeExposureLimits>(value["limits"].clone())
-            .ok()
-            .filter(|l| {
-                l.symbol_limit_usdt.is_finite()
-                    && l.symbol_limit_usdt >= 0.0
-                    && l.order_amount_usdt.is_finite()
-                    && l.order_amount_usdt > 0.0
-                    && l.maker_buy_orders.is_none_or(|n| n > 0)
-                    && l.maker_sell_orders.is_none_or(|n| n > 0)
-                    && l.min_hedge_usdt.is_none_or(|v| v.is_finite() && v > 0.0)
-            }),
+        limits: None,
         normal_buffer_usdt: None,
         stalled_since_ms: None,
         made_progress: false,
@@ -727,12 +717,7 @@ fn parse_row(value: &Value) -> Result<Row> {
     })
 }
 
-#[cfg(test)]
-fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
-    parse_for_exchange(snapshot, now, settings, "gate")
-}
-
-fn parse_for_exchange(
+fn parse_positions(
     snapshot: &Value,
     now: i64,
     settings: &Settings,
@@ -760,12 +745,6 @@ fn parse_for_exchange(
     let values = exposure["rows"].as_array().context("缺少敞口行")?;
     let mut rows = Vec::new();
     let mut errors = Vec::new();
-    let limit_usdt = risk["total_exposure_limit_usdt"]
-        .as_f64()
-        .filter(|v| v.is_finite() && *v >= 0.0);
-    if limit_usdt.is_none() {
-        errors.push("缺少策略实际账户敞口限额".into());
-    }
     let mut seen = BTreeSet::new();
     let mut invalid_assets = BTreeSet::new();
     for value in values {
@@ -783,36 +762,6 @@ fn parse_for_exchange(
                     venue == format!("{exchange}-margin") || venue == format!("{exchange}-spot")
                 });
                 row.ignored_spot_tail = cash_leg && settings.ignores_spot_tail(exchange, &row);
-                row.normal_buffer_usdt = row.limits.as_ref().and_then(|l| {
-                    let count = if row.net_qty >= 0.0 {
-                        l.maker_buy_orders
-                    } else {
-                        l.maker_sell_orders
-                    }?;
-                    let value = count as f64 * l.order_amount_usdt * settings.maker_buffer_factor;
-                    value.is_finite().then_some(value)
-                });
-                if !row.ignored_spot_tail
-                    && row.net_qty.abs() > 1e-12
-                    && (row
-                        .limits
-                        .as_ref()
-                        .is_none_or(|l| l.min_hedge_usdt.is_none())
-                        || row.limits.as_ref().is_some_and(|l| {
-                            (if row.net_qty >= 0.0 {
-                                l.maker_buy_orders
-                            } else {
-                                l.maker_sell_orders
-                            })
-                            .is_some()
-                                && row.normal_buffer_usdt.is_none()
-                        }))
-                {
-                    errors.push(format!(
-                        "{} 缺少策略生效限额、方向 maker 数或最小对冲金额",
-                        row.asset
-                    ));
-                }
                 if row.net_usdt.is_none() && !row.ignored_spot_tail {
                     errors.push(format!("{} 有持仓但缺少有效价格", row.asset));
                 }
@@ -854,7 +803,7 @@ fn parse_for_exchange(
     });
     Ok(Sample {
         risk: risk.clone(),
-        limit_usdt,
+        limit_usdt: None,
         snapshot_ms,
         account_ms,
         rows,
@@ -862,10 +811,53 @@ fn parse_for_exchange(
     })
 }
 
+fn assess_limits(sample: &mut Sample, settings: &Settings) {
+    if sample.limit_usdt.is_none() {
+        sample
+            .errors
+            .push("缺少 Redis 账户敞口限额或有效权益".into());
+    }
+    for row in &mut sample.rows {
+        row.normal_buffer_usdt = row.limits.as_ref().and_then(|l| {
+            let count = if row.net_qty >= 0.0 {
+                l.maker_buy_orders
+            } else {
+                l.maker_sell_orders
+            }?;
+            let value = count as f64 * l.order_amount_usdt * settings.maker_buffer_factor;
+            value.is_finite().then_some(value)
+        });
+        if !row.ignored_spot_tail
+            && row.net_qty.abs() > 1e-12
+            && (row
+                .limits
+                .as_ref()
+                .is_none_or(|l| l.min_hedge_usdt.is_none())
+                || row.limits.as_ref().is_some_and(|l| {
+                    (if row.net_qty >= 0.0 {
+                        l.maker_buy_orders
+                    } else {
+                        l.maker_sell_orders
+                    })
+                    .is_some()
+                        && row.normal_buffer_usdt.is_none()
+                }))
+        {
+            sample.errors.push(format!(
+                "{} 缺少 Redis 配置限额、方向 maker 数或最小对冲金额",
+                row.asset
+            ));
+        }
+    }
+}
+
 pub async fn collect(
     snapshots: &SnapshotClient,
     specs: &[AccountSpec],
     settings: &Settings,
+    jp_redis: &str,
+    sg_redis: Option<&str>,
+    rules: &RuleCache,
 ) -> Vec<(String, Result<Sample>)> {
     let specs: Vec<_> = specs
         .iter()
@@ -878,14 +870,43 @@ pub async fn collect(
                 if spec.site == RedisSite::Unsupported {
                     bail!("账户主机不受支持");
                 }
-                // One slow account cannot hold up the remaining accounts or the UI.
-                let snapshot = snapshots.fetch(&spec.slug, Duration::from_secs(5)).await?;
-                parse_for_exchange(
-                    &snapshot,
+                let url = match spec.site {
+                    RedisSite::Jp => Some(jp_redis),
+                    RedisSite::Sg => sg_redis,
+                    RedisSite::Unsupported => None,
+                };
+                let (snapshot, params) =
+                    tokio::join!(snapshots.fetch(&spec.slug, Duration::from_secs(5)), async {
+                        exposure_parameters::read(url.context("账户 Redis 未配置")?, &spec).await
+                    },);
+                let mut sample = parse_positions(
+                    &snapshot?,
                     chrono::Utc::now().timestamp_millis(),
                     settings,
                     &spec.exchange,
-                )
+                )?;
+                match params {
+                    Ok(params) => {
+                        sample.limit_usdt = params.account_limit(
+                            sample.risk["total_equity"].as_f64().unwrap_or(f64::NAN),
+                        );
+                        for row in &mut sample.rows {
+                            let mark = [
+                                (row.hedge_qty, row.hedge_usdt),
+                                (row.open_qty, row.open_usdt),
+                            ]
+                            .into_iter()
+                            .find_map(|(qty, value)| {
+                                let mark = value? / qty;
+                                (mark.is_finite() && mark > 0.0).then_some(mark)
+                            });
+                            row.limits = params.limits(&row.asset, mark, rules.get(&spec.exchange));
+                        }
+                    }
+                    Err(err) => sample.errors.push(format!("{err:#}")),
+                }
+                assess_limits(&mut sample, settings);
+                Ok(sample)
             }
             .await;
             (spec.slug, result)
@@ -899,6 +920,33 @@ pub async fn collect(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // Policy fixtures supply evaluated limits independently of the Viz input.
+    // Production collect() obtains these exclusively from Redis and venue rules.
+    fn parse(snapshot: &Value, now: i64, settings: &Settings) -> Result<Sample> {
+        parse_for_exchange(snapshot, now, settings, "gate")
+    }
+
+    fn parse_for_exchange(
+        snapshot: &Value,
+        now: i64,
+        settings: &Settings,
+        exchange: &str,
+    ) -> Result<Sample> {
+        let mut sample = parse_positions(snapshot, now, settings, exchange)?;
+        sample.limit_usdt = Some(500.0);
+        let fixtures = entry(snapshot, "pre_trade_exposure")?["rows"]
+            .as_array()
+            .unwrap();
+        for row in &mut sample.rows {
+            row.limits = fixtures
+                .iter()
+                .find(|v| v["asset"].as_str() == Some(&row.asset))
+                .and_then(|v| serde_json::from_value(v["limits"].clone()).ok());
+        }
+        assess_limits(&mut sample, settings);
+        Ok(sample)
+    }
 
     const NOW: i64 = 1_790_000_000_000;
 
@@ -922,7 +970,7 @@ mod tests {
     fn snapshot(rows: Vec<Value>, now: i64) -> Value {
         json!({"entries":[
             {"channel":"pre_trade_exposure","entry":{"ts_ms":now,"rows":rows}},
-            {"channel":"pre_trade_risk","entry":{"ts_ms":now,"account_risks":[{"ts_ms":now}],"total_exposure_limit_usdt":500.0,"total_position":0.0,"open_leg":{"venue":"gate-margin"}}}
+            {"channel":"pre_trade_risk","entry":{"ts_ms":now,"account_risks":[{"ts_ms":now}],"total_equity":50000.0,"total_position":0.0,"open_leg":{"venue":"gate-margin"}}}
         ]})
     }
 
@@ -1688,7 +1736,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collector_discovers_gate04_sg_and_isolates_account_failures() {
+    async fn collector_keeps_positions_but_marks_failed_redis_as_incomplete() {
         use axum::{routing::get, Json, Router};
         let app = Router::new().route(
             "/snapshot",
@@ -1726,7 +1774,15 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        let results = collect(&snapshots, &specs, &Settings::default()).await;
+        let results = collect(
+            &snapshots,
+            &specs,
+            &Settings::default(),
+            "redis://127.0.0.1:1/0",
+            None,
+            &RuleCache::default(),
+        )
+        .await;
         assert_eq!(results.len(), 4);
         assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 2);
         let mut m = Monitor::new(Settings::default());
@@ -1740,16 +1796,17 @@ mod tests {
                 .iter()
                 .filter(|a| a.risk_status == "unknown")
                 .count(),
-            2
+            4
         );
-        assert_eq!(
-            report
-                .accounts
-                .iter()
-                .filter(|a| a.risk_status == "ok")
-                .count(),
-            2
-        );
+        let gate = report
+            .accounts
+            .iter()
+            .find(|a| a.slug == "gate_fr_arb04")
+            .unwrap();
+        assert_eq!(gate.abs_usdt, Some(10.0));
+        assert!(!gate.complete);
+        assert!(gate.rows[0].limits.is_none()); // Ignore any injected snapshot limits.
+        assert!(gate.errors.iter().any(|e| e.contains("Redis")));
         server.abort();
     }
 

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 11:45 UTC（本地敞口报警分离硬限额、maker 缓冲和 3 分钟停滞；发布继续暂停）
+最后更新：2026-11-12 12:47 UTC（敞口限额改为直接读取 Redis；独立发布 Delist 准备中）
 
 2026-11-12 11:02 UTC，Delist新增“资金划转”导航 `/delist/transfers/`，接入独立Rust服务
 `~/ltp_transfer_server/ltp_transfer_server`（包 `crates/ltp_transfer_server`）。
@@ -482,9 +482,15 @@ Exposure alarms use **actual account net positions**. Strategy hedge plans,
 pending work and working orders remain diagnostic fields and never offset risk:
 a plan can be rejected or stalled indefinitely without producing a hedge fill.
 Missing or invalid plan metadata does not prevent evaluating valid account
-positions. Limits and sizing come from the parameters actually loaded by
-`pre_trade`, including venue-scoped `max_pos_u` and per-symbol `amount_u`
-overrides. Delist does not independently reinterpret Redis configuration.
+positions. Limits and sizing are calculated from a read-only Redis transaction on each
+poll. Account risk parameters come from
+`<env>:<open>:<hedge>:pre_trade_risk_params`; the shared
+`fr_strategy_params_<open>_<hedge>` hash supplies `order_amount`. Per-symbol
+`max_pos_u` follows the same open-venue precedence as the strategy (MM, Exec,
+then FR overrides); FR `amount_u_overrides` supplies per-symbol sizing.
+The account cap uses the existing snapshot's `total_equity`. These are current
+configured limits; Delist does not claim to verify when pre_trade applied a hot
+reload. Invalid/missing configuration remains incomplete, with no guessed defaults.
 
 The monitor sums **absolute per-asset actual net exposures** within each account;
 different assets and accounts cannot cancel each other's risk. The signed
@@ -501,7 +507,7 @@ publication remains paused):
   max_symbol_exposure_ratio`) or account limit (`equity ×
   max_total_exposure_ratio`) alerts on the first fresh observation, including
   equality. With the default poll interval, this means the next 10-second check,
-  not an exchange-event-time push. Zero published limits mean disabled.
+  not an exchange-event-time push. A nonpositive configured exposure ratio means disabled.
 - Normal construction buffer is the exposure direction's maker capacity ×
   effective per-symbol order amount × **1.5**. The opening direction cap is
   bounded by the general pending-order cap; the larger of opening and closing
@@ -524,10 +530,14 @@ publication remains paused):
 
 The collector does not modify Redis, submit orders, or change trading guards.
 The independent FR DingTalk channel consumes its observations. The fixed asset
-and account CLI limits were removed. Publishing this policy requires matching
-`pre_trade`, `viz_server` and any running `fr_signal_dashboard` artifacts for
-the updated existing resample IPC contract, plus Delist and its start wrapper; there is no alternate wire format
-or rolling mixed-codec compatibility path.
+and account CLI limits were removed. Only Delist and its start wrapper/page need publishing. The existing Viz/IPC
+contract is unchanged; trading processes need no rebuild or restart.
+Minimum hedge amounts reuse `VenueMinQtyTable` public providers, one cache per
+exchange, refreshed at most every five minutes with a five-second timeout.
+A cached table expires after fifteen minutes without a successful refresh.
+Gate/OKX use contract multipliers; linear Binance/Bitget/Bybit quantities are
+base amounts. The minimum includes quantity step rounding and minimum notional.
+Missing/stale rules do not suppress known hard caps but cannot prove recovery.
 
 The exposure entry, risk entry and every underlying account-monitor timestamp
 must be no older than 90 seconds and at most five seconds in the future.

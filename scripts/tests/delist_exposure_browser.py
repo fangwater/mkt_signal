@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import socketserver
 import subprocess
 import tempfile
 import threading
@@ -27,8 +28,8 @@ def main():
     args = parser.parse_args()
     mode = {'gate': 'building'}
     backups = []
-    slugs = ['gate_fr_arb01', 'gate_fr_arb04', 'bybit_fr_arb01']
-    nav_slugs = slugs + ['bitget_fr_arb01']
+    slugs = ['bitget_fr_arb01', 'bitget_fr_arb02', 'bitget_fr_arb03']
+    nav_slugs = slugs + ['bitget_fr_arb04']
     with tempfile.TemporaryDirectory(prefix='delist-exposure-browser-') as temporary:
         root = Path(temporary)
         (root/'data').mkdir()
@@ -72,8 +73,8 @@ def main():
             def do_GET(self):
                 if self.path.split('?', 1)[0] == '/nav-api/strategies':
                     return self.respond([{'slug': slug, 'alias': '<img src=x onerror=alert(1)>' if slug == slugs[0] else slug,
-                                          'host': 'sg' if slug.startswith('bybit') else 'jp',
-                                          'strategyKind': 'funding_rate', 'exchange': 'bybit' if slug.startswith('bybit') else 'bitget' if slug.startswith('bitget') else 'gate'} for slug in nav_slugs]
+                                          'host': 'sg' if slug == slugs[2] else 'jp',
+                                          'strategyKind': 'funding_rate', 'exchange': 'bitget'} for slug in nav_slugs]
                                          + [{'slug': 'binance_exec_trade01', 'host': 'jp', 'strategyKind': 'cta', 'exchange': 'binance'}])
                 if self.path.split('?', 1)[0].startswith('/nav-api/strategies/') and self.path.split('?', 1)[0].endswith('/pnl'):
                     slug = self.path.split('/')[3]
@@ -82,6 +83,10 @@ def main():
                     coverage = 86400000 if slug == nav_slugs[3] else 7 * 86400000
                     return self.respond({'performance': {'rolling7d': {'annualizedReturn': annualized, 'coveredMs': coverage},
                                                          'rolling30d': {'annualizedReturn': annualized_30d, 'coveredMs': 7 * 86400000}}})
+                if self.path.startswith('/api/v3/market/instruments'):
+                    return self.respond({'code': '00000', 'msg': 'success', 'data': [{
+                        'symbol': 'TESTUSDT', 'baseCoin': 'TEST', 'quoteCoin': 'USDT',
+                        'minOrderQty': '10', 'quantityMultiplier': '1', 'minOrderAmount': '10'}]})
                 if self.path == '/snapshot':
                     now = int(time.time()*1000)
                     entries = []
@@ -94,7 +99,6 @@ def main():
                         row = {'asset': 'TEST', 'open_qty': 1000+qty, 'hedge_qty': -1000,
                                'open_usdt': (1000+qty)*price, 'hedge_usdt': -1000*price,
                                'net_qty': qty, 'net_usdt': qty*price, 'is_total': False,
-                               'limits': {'symbol_limit_usdt': 1000, 'order_amount_usdt': 100/1.5, 'maker_buy_orders': 1, 'maker_sell_orders': 1, 'min_hedge_usdt': 10},
                                'arb_hedge_net_qty': qty if mode['gate'] == 'building' and slug == slugs[0] else 0}
                         rows = [row]
                         if slug == slugs[0]:
@@ -103,15 +107,15 @@ def main():
                                          'net_usdt': 0, 'is_total': False, 'arb_hedge_net_qty': 0})
                         entries.extend([
                             {'namespace': slug, 'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
-                            {'namespace': slug, 'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000, 'total_exposure_limit_usdt': 500}}
+                            {'namespace': slug, 'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000, 'total_equity': 50000, 'open_leg': {'venue': 'bitget-margin'}}}
                         ])
                     return self.respond({'entries': entries})
                 # Keep the existing navigation and backups populated: an empty board
                 # misses layout regressions caused by adding the exposure section.
                 accounts = [{'slug': slug, 'alias': slug, 'kind': 'funding_rate',
-                             'exchange': 'bybit' if slug.startswith('bybit') else 'gate',
-                             'host': 'sg' if slug.startswith('bybit') else 'jp',
-                             'venues': ['gate-margin', 'gate-futures'], 'tone': 'ok',
+                             'exchange': 'bitget',
+                             'host': 'sg' if slug == slugs[2] else 'jp',
+                             'venues': ['bitget-margin', 'bitget-futures'], 'tone': 'ok',
                              'universe_n': 42, 'risk_n': 0,
                              'viz_url': '/delist/open?env='+slug+'&panel=viz',
                              'config_url': '/delist/open?env='+slug+'&panel=config'} for slug in slugs]
@@ -163,11 +167,73 @@ def main():
         (root/'access.json').write_text(json.dumps(access))
         (root/'snapshots.toml').write_text('[snapshots]\n' + ''.join(f'{slug} = "{origin}/snapshot"\n' for slug in nav_slugs))
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('DELIST_', 'LOCAL_NOTIFICATION_'))}
+        # RESP fixture: read-only account configuration, with actual MULTI/EXEC
+        # semantics so the collector's account/shared key routing is exercised.
+        redis_commands = []
+        risk = {'max_pos_u': '100000', 'max_symbol_exposure_ratio': '.01',
+                'max_total_exposure_ratio': '.01', 'max_pending_limit_orders': '1',
+                'arb_max_pending_limit_buy_orders': '1', 'arb_max_pending_limit_sell_orders': '1',
+                'arb_close_max_pending_limit_buy_orders': '1', 'arb_close_max_pending_limit_sell_orders': '1'}
+
+        def resp(value):
+            if value is None:
+                return b'$-1\r\n'
+            if isinstance(value, list):
+                return b'*'+str(len(value)).encode()+b'\r\n'+b''.join(map(resp, value))
+            value = str(value).encode()
+            return b'$'+str(len(value)).encode()+b'\r\n'+value+b'\r\n'
+
+        class RedisHandler(socketserver.StreamRequestHandler):
+            def handle(self):
+                queued = None
+                while line := self.rfile.readline():
+                    assert line.startswith(b'*'), line
+                    command = []
+                    for _ in range(int(line[1:])):
+                        size = int(self.rfile.readline()[1:])
+                        command.append(self.rfile.read(size).decode())
+                        assert self.rfile.read(2) == b'\r\n'
+                    op = command[0].upper()
+                    redis_commands.append(command)
+                    if op == 'MULTI':
+                        queued = []
+                        self.wfile.write(b'+OK\r\n')
+                        continue
+                    if op == 'EXEC':
+                        self.wfile.write(resp(queued))
+                        queued = None
+                        continue
+                    if op in ('CLIENT', 'SELECT', 'PING'):
+                        self.wfile.write(b'+OK\r\n')
+                        continue
+                    assert op in ('HGETALL', 'GET', 'TYPE', 'SMEMBERS', 'SCARD', 'EXISTS', 'MGET'), command
+                    value = None
+                    if op == 'HGETALL':
+                        fields = risk if command[1].endswith(':pre_trade_risk_params') else (
+                            {'order_amount': str(100/1.5)} if command[1] == 'fr_strategy_params_bitget-margin_bitget-futures' else {})
+                        value = [part for pair in fields.items() for part in pair]
+                    elif op == 'MGET':
+                        value = [None] * (len(command)-1)
+                    elif op == 'SMEMBERS':
+                        value = []
+                    elif op == 'TYPE':
+                        value = 'none'
+                    if queued is not None:
+                        queued.append(value)
+                        self.wfile.write(b'+QUEUED\r\n')
+                    else:
+                        self.wfile.write(resp(value))
+
+        redis_fixture = socketserver.ThreadingTCPServer(('127.0.0.1', 0), RedisHandler)
+        redis_fixture.daemon_threads = True
+        threading.Thread(target=redis_fixture.serve_forever, daemon=True).start()
+        redis_url = f'redis://127.0.0.1:{redis_fixture.server_address[1]}/0'
+        environment['BITGET_PUBLIC_API_BASE'] = origin
         log = open(root/'service.log', 'wb')
         server = subprocess.Popen([str(args.delist_binary.resolve()), '--bind', f'127.0.0.1:{port}',
             '--access-config', str(root/'access.json'), '--book', str(root/'data/book.json'),
             '--web-dir', str(ROOT/'web/delist_risk'), '--snapshot-targets', str(root/'snapshots.toml'),
-            '--nav-strategies-url', origin+'/nav-api/strategies', '--redis', 'redis://127.0.0.1:1/0',
+            '--nav-strategies-url', origin+'/nav-api/strategies', '--redis', redis_url, '--sg-redis', redis_url,
             '--redis-backup-env-root', str(root), '--skip-postgres', '--skip-redis-backup',
             '--skip-ws', '--skip-llm', '--skip-official', '--skip-announcements',
             '--exposure-interval-secs', '1', '--exposure-max-age-secs', '5', '--exposure-persistence-secs', '2'],
@@ -214,10 +280,17 @@ def main():
                         time.sleep(.1)
                     raise AssertionError(report())
 
+                # Old Viz snapshots contain no limits; Redis and public rules supply them.
                 # A plan refreshed on every poll cannot hide a persistent actual imbalance.
                 data = wait_account(lambda a: a['risk_abs_usdt'] == 160 and a['risk_status'] == 'alert')
                 account = next(a for a in data['accounts'] if a['slug'] == slugs[0])
-                assert next(row for row in account['rows'] if row['asset'] == 'TEST')['hedge_plan_qty'] == 160
+                test_row = next(row for row in account['rows'] if row['asset'] == 'TEST')
+                assert test_row['hedge_plan_qty'] == 160
+                assert test_row['limits']['min_hedge_usdt'] == 10
+                assert test_row['limits']['symbol_limit_usdt'] == 1000
+                assert account['limit_usdt'] == 500
+                assert ['HGETALL', 'fr_strategy_params_bitget-margin_bitget-futures'] in redis_commands
+                assert ['GET', f'{slugs[0]}:bitget-margin:bitget-futures:amount_u_overrides'] in redis_commands
                 mode['gate'] = 'excess'
                 data = wait_account(lambda a: a['risk_status'] == 'alert')
                 assert len(data['accounts']) == 4
@@ -228,9 +301,9 @@ def main():
                 assert '低于 10%' in page.locator('#fr-yield').inner_text()
                 assert '不足 30 天' in page.locator('#fr-yield').inner_text()
                 assert '25.00%' in page.locator('#fr-yield').inner_text()
-                assert 'bybit_fr_arb01' not in page.locator('#fr-yield').inner_text()
-                assert 'gate_fr_arb04' not in page.locator('#fr-yield').inner_text()
-                assert 'bitget_fr_arb01' not in page.locator('#fr-yield').inner_text()
+                assert 'bitget_fr_arb03' not in page.locator('#fr-yield').inner_text()
+                assert 'bitget_fr_arb02' not in page.locator('#fr-yield').inner_text()
+                assert 'bitget_fr_arb04' not in page.locator('#fr-yield').inner_text()
                 assert '1 个 FR 年化数据不可用' in page.locator('#fr-yield').inner_text()
                 assert page.locator('#fr-yield tbody tr[data-row-key]').count() == 1
                 assert '9.00%' in page.locator('#fr-yield tbody tr[data-row-key]').first.inner_text()
@@ -255,12 +328,12 @@ def main():
                     for button in page.locator('#exchange-list .backup-action').all():
                         button.click(trial=True)
                 page.set_viewport_size({'width': 1440, 'height': 1000})
-                page.locator('[data-announcement="gate"] > summary').click()
+                page.locator('[data-announcement="bitget"] > summary').click()
                 page.once('dialog', lambda dialog: dialog.accept())
                 page.locator('#exchange-list .backup-action').first.click()
                 page.wait_for_function("document.querySelector('#exchange-list .backup-action').textContent === '立即备份'")
                 assert backups == [{'kind': 'funding_rate', 'env': slugs[0]}]
-                assert page.locator('[data-announcement="gate"]').evaluate('e => e.open')
+                assert page.locator('[data-announcement="bitget"]').evaluate('e => e.open')
                 assert page.locator('#exchange-list .backup-action').count() == 3
                 page.locator('[data-filter="all"]').click()
                 assert page.locator('#metrics strong').first.inner_text() == '5'
@@ -291,7 +364,7 @@ def main():
                 assert page.title() == 'CTA 策略与因子 · Risk Monitor'
                 assert page.locator('#exchange-list, #exposure-panel, #filters').count() == 0
                 assert page.locator('#metrics strong').first.inner_text() == '1'
-                assert page.locator('#cta-config-entries a').count() == 2
+                assert page.locator('#cta-config-entries a').count() == 3
                 assert page.locator('#cta-strategies .backup-action').count() == 2
                 for worker, kind in [('cta-prep-binance-futures', 'cta_perp'), ('cta-factor-spread', 'cta_spread')]:
                     page.once('dialog', lambda dialog: dialog.accept())
@@ -314,12 +387,12 @@ def main():
                 page.wait_for_selector('#exchange-list .backup-action')
                 assert page.locator('#metrics strong').first.inner_text() == '3'
                 page.locator('#exposure-panel > summary').click()
-                page.wait_for_selector('[data-exposure-account="gate_fr_arb01"]')
+                page.wait_for_selector('[data-exposure-account="bitget_fr_arb01"]')
                 assert page.locator('[data-exposure-account]').count() == 4
                 assert '敞口异常' in page.locator('#exposures').inner_text()
                 assert page.locator('#exposures img').count() == 0
-                assert page.locator('#exposures a[href*="gate_fr_arb04"]').count() == 1
-                details = page.locator('details[data-env="gate_fr_arb01"]')
+                assert page.locator('#exposures a[href*="bitget_fr_arb02"]').count() == 1
+                details = page.locator('details[data-env="bitget_fr_arb01"]')
                 details.locator('summary').click()
                 assert '160.00 U' in details.inner_text()
                 if args.screenshot_dir:
@@ -331,14 +404,14 @@ def main():
                 assert account['risk_status'] == 'alert' and account['abs_usdt'] == 160
                 page.evaluate('loadExposures()')
                 page.wait_for_function("document.querySelector('#exposures').textContent.includes('保留异常记录')")
-                assert page.locator('details[data-env="gate_fr_arb01"][open]').count() == 1
+                assert page.locator('details[data-env="bitget_fr_arb01"][open]').count() == 1
                 assert page.locator('#exposure-panel').evaluate('e => e.open')
                 mode['gate'] = 'stale'
                 wait_account(lambda a: any('过期' in e for e in a['errors']))
                 mode['gate'] = 'recovered'
                 wait_account(lambda a: a['risk_status'] == 'unknown' and a['abs_usdt'] == 1 and not a['breaches'])
                 # Wait for the page's real ten-second refresh, not a direct render call.
-                page.wait_for_function("document.querySelector('[data-exposure-account=gate_fr_arb01]').textContent.includes('无法确认') && !document.querySelector('#exposures .exposure__breach')", timeout=15_000)
+                page.wait_for_function("document.querySelector('[data-exposure-account=bitget_fr_arb01]').textContent.includes('无法确认') && !document.querySelector('#exposures .exposure__breach')", timeout=15_000)
                 assert '有持仓但缺少有效价格' in page.locator('#exposures').inner_text()
                 page.set_viewport_size({'width': 390, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -353,6 +426,8 @@ def main():
             server.wait(timeout=10)
             log.close()
             gateway.shutdown()
+            redis_fixture.shutdown()
+            redis_fixture.server_close()
             gateway.server_close()
 
 

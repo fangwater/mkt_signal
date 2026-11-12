@@ -89,6 +89,8 @@ mod cta_factors;
 mod cta_mapping;
 #[path = "delist_risk_server/exposure.rs"]
 mod exposure;
+#[path = "delist_risk_server/exposure_parameters.rs"]
+mod exposure_parameters;
 #[path = "delist_risk_server/fr_yield.rs"]
 mod fr_yield;
 #[path = "delist_risk_server/notifications.rs"]
@@ -1065,6 +1067,7 @@ async fn main() -> Result<()> {
     }
     let exposure_state = state.clone();
     tokio::spawn(async move {
+        let mut rules = exposure_parameters::RuleCache::default();
         let mut interval = time::interval(Duration::from_secs(
             exposure_state.exposure_settings.interval_secs,
         ));
@@ -1072,10 +1075,14 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             let specs = exposure_state.accounts.read().await.clone();
+            rules.refresh(&specs).await;
             let samples = exposure::collect(
                 &exposure_state.snapshots,
                 &specs,
                 &exposure_state.exposure_settings,
+                &exposure_state.jp_redis,
+                exposure_state.sg_redis.as_deref(),
+                &rules,
             )
             .await;
             let current = exposure_catalog_current(&exposure_state).await;
