@@ -1020,6 +1020,22 @@ fn prune(dir: &Path, keep: usize, today: NaiveDate) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(super) fn test_redis_available() -> bool {
+    let available = std::process::Command::new("redis-server")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !available {
+        eprintln!(
+            "skipping Redis integration test: redis-server must be installed and runnable on PATH"
+        );
+    }
+    available
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use mkt_signal::common::delist_accounts::RedisSite;
@@ -1093,6 +1109,9 @@ mod tests {
 
     #[tokio::test]
     async fn mm_archives_restore_scoped_and_shared_parameters_without_running_processes() {
+        if !test_redis_available() {
+            return;
+        }
         let root = std::env::temp_dir().join(format!("mm-backup-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let (_redis, url) = start_redis(&root).await;
@@ -1255,14 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn individual_archives_restore_fr_config_and_preserve_history_on_failure() {
-        if Command::new("redis-server")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
-        {
-            eprintln!("skipping: redis-server is unavailable");
+        if !test_redis_available() {
             return;
         }
         let root = std::env::temp_dir().join(format!(

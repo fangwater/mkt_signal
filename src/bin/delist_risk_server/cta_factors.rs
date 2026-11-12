@@ -357,21 +357,87 @@ pub fn test_environment() -> TestEnvironment {
 #[cfg(test)]
 pub fn test_environment_for(worker: Worker) -> TestEnvironment {
     let root = std::env::temp_dir().join(format!("delist-factor-{}", uuid::Uuid::new_v4()));
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
     let directory = if worker == Worker::Perp {
-        "config/cta_prep_binance_futures"
+        "cta_prep_binance_futures"
     } else {
-        "config/cta_factor_spread"
+        "cta_factor_spread"
     };
-    fs::create_dir_all(root.join(directory)).unwrap();
-    fs::copy(
-        source.join(worker.default_config()),
+    fs::create_dir_all(root.join("config").join(directory)).unwrap();
+    // Keep discovery/backup fixtures independent of operator-edited live configs.
+    fs::write(
         root.join(worker.default_config()),
+        format!(
+            "combinations_dir = \"{directory}\"\nhistory_dir = \"../data/{directory}\"\nlookback_secs = 3600\ncatchup_timeout_secs = 60\n[kafka]\nbrokers = \"127.0.0.1:1\"\n"
+        ),
     )
     .unwrap();
-    for entry in fs::read_dir(source.join(directory)).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(entry.path(), root.join(directory).join(entry.file_name())).unwrap();
+    let groups = if worker == Worker::Perp {
+        serde_json::json!({"top-5":["BTCUSDT"], "top-20":["BTCUSDT","ETHUSDT"], "last-20":["ETHUSDT"]})
+    } else {
+        serde_json::json!({})
+    };
+    fs::write(
+        root.join("config")
+            .join(directory)
+            .join("symbol_groups.json"),
+        serde_json::to_vec(&groups).unwrap(),
+    )
+    .unwrap();
+    for interval in ["1min", "5min", "15min", "1h"] {
+        let owners: &[Option<&str>] = if worker == Worker::Perp && interval != "1min" {
+            &[None, Some("top-5"), Some("top-20"), Some("last-20")]
+        } else {
+            &[None]
+        };
+        for &group in owners {
+            let (strategy_group, name, venue) = if worker == Worker::Perp {
+                let name = match group {
+                    Some(group) => format!("{group}_prep02_binance-futures_{interval}"),
+                    None if interval == "1h" => "prep01_binance-futures_1h".into(),
+                    None => format!("binance-futures_{interval}"),
+                };
+                (
+                    if group.is_some() { "prep02" } else { "prep01" },
+                    name,
+                    "binance-futures",
+                )
+            } else {
+                (
+                    "spread01",
+                    format!("okex-futures_binance-futures_{interval}"),
+                    "okex-futures",
+                )
+            };
+            let symbols: &[&str] = match (group, interval) {
+                (Some("top-20"), "5min") => &[],
+                (Some("top-5"), _) => &["BTCUSDT"],
+                (Some("last-20"), _) => &["ETHUSDT"],
+                _ => &["BTCUSDT", "ETHUSDT"],
+            };
+            let mut combination = serde_json::json!({
+                "name":name, "strategy_group":strategy_group, "venue":venue, "interval":interval,
+                "factor_rules":symbols.iter().map(|symbol| serde_json::json!({
+                    "标的":symbol, "nq":"关闭", "符号":1, "因子":"factor_036", "venue":"binance-futures"
+                })).collect::<Vec<_>>(),
+                "signal":{"enabled":true, "max_pos_u":100,
+                    "entry":{"nq_change_enabled":false}, "execution":{}}
+            });
+            if let Some(group) = group {
+                combination["symbol_group"] = Value::from(group);
+            }
+            if worker == Worker::Spread {
+                combination["reference_venue"] = Value::from("binance-futures");
+                combination["signal"]["spread"] =
+                    serde_json::json!({"long_quantile":0.3,"short_quantile":0.7});
+            }
+            fs::write(
+                root.join("config")
+                    .join(directory)
+                    .join(format!("{name}.json")),
+                serde_json::to_vec(&combination).unwrap(),
+            )
+            .unwrap();
+        }
     }
     TestEnvironment(root)
 }
@@ -382,12 +448,20 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
+    fn repository_worker_configurations_are_valid_without_fixed_inventory_counts() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for worker in [Worker::Perp, Worker::Spread] {
+            snapshot(root, worker).unwrap();
+        }
+    }
+
+    #[test]
     fn unified_catalog_has_both_groups_without_claiming_a_live_process() {
         let env = test_environment();
         let snapshot = snapshot(&env.0.join("config/.."), Worker::Perp).unwrap();
         let view = view(Ok(&snapshot), Worker::Perp);
         assert_eq!(view.name, "cta-prep-binance-futures");
-        assert_eq!(view.unique_factor_count, 404);
+        assert_eq!(view.unique_factor_count, 8);
         assert_eq!(view.topics, ["binance-futures"]);
         let counts = view
             .combinations
@@ -395,28 +469,21 @@ mod tests {
             .map(|c| (c.name.as_str(), c.factor_count))
             .collect::<Vec<_>>();
         assert_eq!(
-            &counts[..3],
+            counts,
             [
-                ("binance-futures_15min", 180),
-                ("binance-futures_1min", 61),
-                ("binance-futures_5min", 63)
-            ]
-        );
-        assert_eq!(
-            counts[3..]
-                .iter()
-                .map(|(name, _)| *name)
-                .collect::<Vec<_>>(),
-            [
-                "last-20_prep02_binance-futures_15min",
-                "last-20_prep02_binance-futures_1min",
-                "last-20_prep02_binance-futures_5min",
-                "top-20_prep02_binance-futures_15min",
-                "top-20_prep02_binance-futures_1min",
-                "top-20_prep02_binance-futures_5min",
-                "top-5_prep02_binance-futures_15min",
-                "top-5_prep02_binance-futures_1min",
-                "top-5_prep02_binance-futures_5min"
+                ("binance-futures_15min", 2),
+                ("binance-futures_1min", 2),
+                ("binance-futures_5min", 2),
+                ("last-20_prep02_binance-futures_15min", 1),
+                ("last-20_prep02_binance-futures_1h", 1),
+                ("last-20_prep02_binance-futures_5min", 1),
+                ("prep01_binance-futures_1h", 2),
+                ("top-20_prep02_binance-futures_15min", 2),
+                ("top-20_prep02_binance-futures_1h", 2),
+                ("top-20_prep02_binance-futures_5min", 0),
+                ("top-5_prep02_binance-futures_15min", 1),
+                ("top-5_prep02_binance-futures_1h", 1),
+                ("top-5_prep02_binance-futures_5min", 1)
             ]
         );
         assert_eq!(

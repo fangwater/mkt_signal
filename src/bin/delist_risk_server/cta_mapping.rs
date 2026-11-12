@@ -898,7 +898,8 @@ mod tests {
             .unwrap();
         assert_eq!(row.kind, "spread");
         assert_eq!(row.factor_worker, "cta-factor-spread");
-        assert_eq!(row.factor_count, Some(50));
+        // Two formula inputs also require one cross-market spread per symbol.
+        assert_eq!(row.factor_count, Some(4));
         assert!(row
             .risk
             .config_url
@@ -988,8 +989,8 @@ mod tests {
         let risk = super::super::RiskBook::default()
             .query(&mkt_signal::common::delist_risk::RiskQuery::default());
         let response = load(&settings, &risk, &ListingIndex::default()).await;
-        assert_eq!(response.strategies.len(), 12);
-        assert_eq!(response.factor_processes[0].unique_factor_count, 404);
+        assert_eq!(response.strategies.len(), 13);
+        assert_eq!(response.factor_processes[0].unique_factor_count, 8);
         assert!(response.factor_processes[0]
             .combinations
             .iter()

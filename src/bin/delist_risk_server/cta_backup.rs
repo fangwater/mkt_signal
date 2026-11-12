@@ -1244,14 +1244,7 @@ mod tests {
     }
     #[tokio::test]
     async fn redis_capture_restores_config_and_excludes_unrelated_keys() {
-        if Command::new("redis-server")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
-        {
-            eprintln!("skipping: redis-server unavailable");
+        if !backup::test_redis_available() {
             return;
         }
         let root = temp_root();
