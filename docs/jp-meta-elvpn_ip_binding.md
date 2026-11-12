@@ -1,6 +1,13 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-11-12 08:36 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-11-12 10:16 UTC。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+
+2026-11-12 10:13 UTC，JP `gate_fr_arb01–04` 发布 `293f6352` 并恢复全部7个非signal服务；
+四盘 `trade_signal` 只更新二进制，保持停止。01/03/04继续 `172.31.35.231`，
+02继续 `172.31.35.232/172.31.35.233`；`env.sh`、`trade_engine.toml`及配置哈希保持。
+未更改source IP、ENI/EIP、路由和监听；既有持久化同步50040/50050/50080均通过验收。
+发布前后交易所现货/合约数量一致，挂单0。回执与备份见
+`artifacts/gate_fr_on_repair_20261112/README.md` 的 scheduler publication 记录。
 
 2026-11-12 08:33 UTC，JP `gate_fr_arb01–04` 完成全币合约对齐并恢复非signal服务。
 四盘`trade_signal`只更新文件，均未启动；Delist同步更新。01/03/04继续`.35.231`，

@@ -1,8 +1,12 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12（Gate FR 缺失标记价补价；Binance PM FR 最低借款额与返还现金检查）
+最后更新：2026-11-12 10:16 UTC（Gate FR 缺失标记价补价发布；Binance PM FR 最低借款额与返还现金检查）
 
-2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底（代码，尚未发布）。
+2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底，
+已随 `293f6352` 于 10:13 UTC 发布至 JP `gate_fr_arb01–04`，四盘仍关闭 `trade_signal`。
+已观察到 PUNDIX 等持仓通过公共 REST 补价；04 的 QTUM `4e-8` 单位现货负债低于
+既有数量阈值 `1e-6`，启动阶段保留缺价提示，10:16 UTC新快照中该提示已解除，
+四盘Delist数据均完整。未修改数量阈值，未新增缓存或网络配置。
 默认连续缺价 30 秒后，直连官方无鉴权
 `GET /api/v4/futures/usdt/contracts/<CONTRACT>`，只接受名称匹配且有限、正数的
 `mark_price`，写入现有 mark 表并刷新账户估值；不使用 `last` 或现货价格代替。

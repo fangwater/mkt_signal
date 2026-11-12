@@ -143,7 +143,7 @@ Remote rollback binaries and runtime logs are retained in each environment's
 are under `data/ops/gate_fr_recovery_20261112/` (Git-ignored). Unrelated local
 worktree changes were not included in the Rust build or this task's commits.
 
-## Scheduler simplification after recovery (not deployed)
+## Scheduler simplification after recovery
 
 The separate paired-close queue was introduced by `bf3f5698` on
 2026-11-09 05:29:24 UTC to allow paired exits when existing account exposure was
@@ -183,12 +183,55 @@ Force second-leg expansion-guard risk was introduced later by `030c37fa` on
 first-leg symbol-exposure gate predates this incident. Neither review finding
 proves an actual liquidation or a blocked emergency close occurred online.
 
-The user paused publication pending review of emergency closes. Neither this
-scheduler change nor the separately committed missing-mark REST supplement
-`caac540d` has been published as part of this follow-up.
+The user initially paused publication pending review of emergency closes. At
+the end of that review, this scheduler change and the separately committed
+missing-mark REST supplement `caac540d` were still unpublished. Subsequent
+authorization and publication are recorded below.
 
 Validation of the simplified scheduler: root library 1,570 passed, 3 ignored;
 `cargo check --bin pre_trade`, `cargo fmt --check` and `git diff --check` passed.
 The Sol review also identified a multi-lot unsubmitted-return edge case; its
 fix and regression preserve all trailing metadata through intermediate queue
 syncs and leave no temporary reservations behind. No CTP code was executed.
+
+## Authorized publication of the simplified scheduler
+
+On 2026-11-12, after explicit authorization, synchronized `arbmm` commit
+`293f63523f551984ac0f356c844f1f4b52acbe2e` was exported inside the active local
+worktree and all seven Gate FR binaries built locally in release mode. Uploaded
+artifacts were SHA-256 verified, then atomically installed in `gate_fr_arb01–04`
+(28 binary replacements). All seven non-signal services per environment were
+restored through the env-local wrappers. `trade_signal` was updated only on disk
+and remains stopped. No remote Cargo build or manual alignment trade was run.
+
+Before stopping, 25 runtime log files per environment were preserved under
+`~/gate_fr_arb0N/backups/gate_fr_publish_293f6352_20261112/`, together with rollback
+binaries and wrapper execution logs. Supervisor deletion left old pre-trade
+processes alive; the env-local wrappers detected and terminated those processes
+before installation. Script differences were inspected and existing deployed
+wrappers retained, including their listener settings. `env.sh`, trading/Viz
+configuration, source IPs, CPU masks and persistence sync ports were preserved.
+
+At 10:13 UTC, all 28 running service identities and binary hashes matched the
+manifest. Persistence remains on CPU15 and the other Gate services on
+`0-5,48-95`; existing 50040/50050/50080 sync listeners were present. All four
+accounts had zero spot/futures open orders. Non-settlement spot equity and every
+futures contract quantity exactly matched the pre-publication exchange snapshot.
+Startup logs showed no panic, port collision or authentication failure pattern.
+
+The missing-mark REST worker started in all four pre-trades with the default
+30-second threshold. Logs confirm actual public-contract REST supplements,
+including PUNDIX in 01/02. At 10:14 UTC, Viz exposure/risk snapshots were fresh
+and Delist reported complete data for 01/02/03. Environment 04 retained one
+incomplete-price warning: QTUM spot liability of `0.00000004` units, no futures
+position. This is below the existing `POSITION_MARK_QTY_EPSILON = 1e-6`, so the
+worker does not request its price. The warning was preserved and no dust trade
+was submitted. At the 10:16 UTC follow-up, the QTUM warning had cleared with the
+new snapshot and all four Delist accounts reported complete/fresh/ok data.
+All 28 service PIDs remained unchanged throughout observation.
+
+Receipts: `scheduler_deployment_manifest.json` and
+`scheduler_deployment_verification.json`. Local build/source, wrapper comparisons
+and full operation receipts are under
+`data/ops/gate_fr_publish_293f6352_20261112/` (Git-ignored). Unrelated local changes
+were excluded from the build and this publication.

@@ -1,0 +1,436 @@
+{
+  "source_commit": "293f63523f551984ac0f356c844f1f4b52acbe2e",
+  "verified_at": 1794478391.6672153,
+  "environments": [
+    {
+      "env": "gate_fr_arb01",
+      "processes": [
+        {
+          "pid": 2563192,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 2565131,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c"
+        },
+        {
+          "pid": 2567022,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d"
+        },
+        {
+          "pid": 2567456,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8"
+        },
+        {
+          "pid": 2568268,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae"
+        },
+        {
+          "pid": 2570197,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2570435,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ]
+    },
+    {
+      "env": "gate_fr_arb02",
+      "processes": [
+        {
+          "pid": 2563529,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 2565855,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c"
+        },
+        {
+          "pid": 2567128,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d"
+        },
+        {
+          "pid": 2567555,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8"
+        },
+        {
+          "pid": 2568770,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae"
+        },
+        {
+          "pid": 2570262,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2570487,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false,
+      "local_ips": [
+        "172.31.35.232",
+        "172.31.35.233"
+      ]
+    },
+    {
+      "env": "gate_fr_arb03",
+      "processes": [
+        {
+          "pid": 2564077,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 2566779,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c"
+        },
+        {
+          "pid": 2567230,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d"
+        },
+        {
+          "pid": 2567652,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8"
+        },
+        {
+          "pid": 2569261,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae"
+        },
+        {
+          "pid": 2570327,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2570535,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ]
+    },
+    {
+      "env": "gate_fr_arb04",
+      "processes": [
+        {
+          "pid": 2564405,
+          "kind": "persist_manager",
+          "comm": "persist_manager",
+          "cpus": "15",
+          "sha256": "2f1d2841e27e538bd961e71c195d09f6ba7551aca354938e505cccda65ec14bf"
+        },
+        {
+          "pid": 2566918,
+          "kind": "account_monitor",
+          "comm": "account_monitor",
+          "cpus": "0-5,48-95",
+          "sha256": "5d9f4cc91bd4c320522da121a43565247f6b0cb6b9c2f3845a7ee2f6fc12010c"
+        },
+        {
+          "pid": 2567334,
+          "kind": "trade_engine",
+          "comm": "trade_engine",
+          "cpus": "0-5,48-95",
+          "sha256": "99557009f4053e68fee895ebee4512a4c325133574698370bbe844a5b21bb02d"
+        },
+        {
+          "pid": 2567965,
+          "kind": "pre_trade",
+          "comm": "pre_trade",
+          "cpus": "0-5,48-95",
+          "sha256": "3351318bf02d219073056f8ea4bbbc503dc73e2f8e5b4b9449b4b9af6f85b1e8"
+        },
+        {
+          "pid": 2570138,
+          "kind": "viz_server",
+          "comm": "viz_server",
+          "cpus": "0-5,48-95",
+          "sha256": "069a4483143829ec50aee0cadf148d74897b6abcffafbf1a036ab9e4fc1193ae"
+        },
+        {
+          "pid": 2570387,
+          "kind": "fr_config_server.py",
+          "comm": "python3",
+          "cpus": "0-5,48-95",
+          "sha256": null
+        },
+        {
+          "pid": 2570584,
+          "kind": "fr_signal_dashboard",
+          "comm": "fr_signal_dashb",
+          "cpus": "0-5,48-95",
+          "sha256": "31cc401ddd204c9d44e143cfbbaa53b7267d068777dc34110487283d7830726b"
+        }
+      ],
+      "config_preserved": true,
+      "trade_signal_running": false,
+      "local_ips": [
+        "172.31.35.231",
+        "172.31.35.231"
+      ]
+    }
+  ],
+  "persist_sync_listeners": [
+    "LISTEN 0      128        127.0.0.1:50040      0.0.0.0:*    users:((\"persist_manager\",pid=2563192,fd=514)) ",
+    "LISTEN 0      128        127.0.0.1:50050      0.0.0.0:*    users:((\"persist_manager\",pid=2563529,fd=1695))",
+    "LISTEN 0      128        127.0.0.1:50080      0.0.0.0:*    users:((\"persist_manager\",pid=2564077,fd=135)) "
+  ],
+  "exchange_comparison": {
+    "checked_at": "2026-11-12T10:13:15.759376+00:00",
+    "environments": [
+      {
+        "env": "gate_fr_arb01",
+        "spot_open_orders": 0,
+        "futures_open_orders": 0,
+        "changes": {
+          "spot_equity": {},
+          "futures_contracts": {}
+        }
+      },
+      {
+        "env": "gate_fr_arb02",
+        "spot_open_orders": 0,
+        "futures_open_orders": 0,
+        "changes": {
+          "spot_equity": {},
+          "futures_contracts": {}
+        }
+      },
+      {
+        "env": "gate_fr_arb03",
+        "spot_open_orders": 0,
+        "futures_open_orders": 0,
+        "changes": {
+          "spot_equity": {},
+          "futures_contracts": {}
+        }
+      },
+      {
+        "env": "gate_fr_arb04",
+        "spot_open_orders": 0,
+        "futures_open_orders": 0,
+        "changes": {
+          "spot_equity": {},
+          "futures_contracts": {}
+        }
+      }
+    ]
+  },
+  "health": {
+    "checked_at": 1794478611.4574966,
+    "environments": [
+      {
+        "env": "gate_fr_arb01",
+        "viz_port": 20121,
+        "snapshot_age_seconds": 2.682,
+        "exposure_rows": 48,
+        "missing_price_assets": [
+          "SLVON",
+          "TSLAX"
+        ],
+        "rest_mark_events": [
+          "[2026-11-12T10:11:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark REST supplement started: after_secs=30 check_secs=5 retry_secs=30 max_requests=8",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ACH_USDT mark_price=0.004129 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=BAND_USDT mark_price=0.1708 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=BGSC_USDT mark_price=0.0004912 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=JOE_USDT mark_price=0.02671 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=MAV_USDT mark_price=0.0074 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=MTL_USDT mark_price=0.236 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=PUNDIX_USDT mark_price=0.0836 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SAHARA_USDT mark_price=0.00597 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SUPER_USDT mark_price=0.1557 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ZEREBRO_USDT mark_price=0.02345 source=public_contract_rest"
+        ]
+      },
+      {
+        "env": "gate_fr_arb02",
+        "viz_port": 20122,
+        "snapshot_age_seconds": 1.354,
+        "exposure_rows": 49,
+        "missing_price_assets": [
+          "CRCLX",
+          "FTM",
+          "MATIC",
+          "SLVON",
+          "TSLAX"
+        ],
+        "rest_mark_events": [
+          "[2026-11-12T10:11:56Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark REST supplement started: after_secs=30 check_secs=5 retry_secs=30 max_requests=8",
+          "[2026-11-12T10:12:46Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ACH_USDT mark_price=0.004129 source=public_contract_rest",
+          "[2026-11-12T10:12:46Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=AIXBT_USDT mark_price=0.01432 source=public_contract_rest",
+          "[2026-11-12T10:12:46Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=BAND_USDT mark_price=0.1708 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=BGSC_USDT mark_price=0.0004912 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=FLOW_USDT mark_price=0.0196 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=PUNDIX_USDT mark_price=0.0836 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SAHARA_USDT mark_price=0.00597 source=public_contract_rest",
+          "[2026-11-12T10:12:47Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SUPER_USDT mark_price=0.1557 source=public_contract_rest",
+          "[2026-11-12T10:12:51Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SUSHI_USDT mark_price=0.171 source=public_contract_rest",
+          "[2026-11-12T10:12:51Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ZEREBRO_USDT mark_price=0.02345 source=public_contract_rest"
+        ]
+      },
+      {
+        "env": "gate_fr_arb03",
+        "viz_port": 20123,
+        "snapshot_age_seconds": 2.183,
+        "exposure_rows": 24,
+        "missing_price_assets": [],
+        "rest_mark_events": [
+          "[2026-11-12T10:12:01Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark REST supplement started: after_secs=30 check_secs=5 retry_secs=30 max_requests=8",
+          "[2026-11-12T10:12:51Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ACH_USDT mark_price=0.004129 source=public_contract_rest",
+          "[2026-11-12T10:12:51Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=AIXBT_USDT mark_price=0.01432 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=JOE_USDT mark_price=0.02671 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=MTL_USDT mark_price=0.236 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SAHARA_USDT mark_price=0.00597 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SUPER_USDT mark_price=0.1557 source=public_contract_rest",
+          "[2026-11-12T10:12:52Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ZEREBRO_USDT mark_price=0.02345 source=public_contract_rest"
+        ]
+      },
+      {
+        "env": "gate_fr_arb04",
+        "viz_port": 20124,
+        "snapshot_age_seconds": 2.361,
+        "exposure_rows": 43,
+        "missing_price_assets": [
+          "AMZNX",
+          "CTC",
+          "HOODX",
+          "METAX"
+        ],
+        "rest_mark_events": [
+          "[2026-11-12T10:12:08Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark REST supplement started: after_secs=30 check_secs=5 retry_secs=30 max_requests=8",
+          "[2026-11-12T10:12:53Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ACH_USDT mark_price=0.004129 source=public_contract_rest",
+          "[2026-11-12T10:12:53Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=AIXBT_USDT mark_price=0.01432 source=public_contract_rest",
+          "[2026-11-12T10:12:54Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=BAND_USDT mark_price=0.1708 source=public_contract_rest",
+          "[2026-11-12T10:13:03Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=BGSC_USDT mark_price=0.0004912 source=public_contract_rest",
+          "[2026-11-12T10:13:03Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=FLOW_USDT mark_price=0.0196 source=public_contract_rest",
+          "[2026-11-12T10:13:04Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=HNT_USDT mark_price=0.2499 source=public_contract_rest",
+          "[2026-11-12T10:13:04Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=KOMA_USDT mark_price=0.012885 source=public_contract_rest",
+          "[2026-11-12T10:13:04Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SAHARA_USDT mark_price=0.00597 source=public_contract_rest",
+          "[2026-11-12T10:13:04Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=SUPER_USDT mark_price=0.1557 source=public_contract_rest",
+          "[2026-11-12T10:13:04Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=ZEREBRO_USDT mark_price=0.02345 source=public_contract_rest",
+          "[2026-11-12T10:13:08Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=JASMY_USDT mark_price=0.003509 source=public_contract_rest",
+          "[2026-11-12T10:13:08Z INFO  mkt_signal::pre_trade::gate_mark_price_supplement] Gate missing mark supplemented: symbol=USTC_USDT mark_price=0.004256 source=public_contract_rest"
+        ]
+      }
+    ],
+    "delist_accounts": [
+      {
+        "slug": "gate_fr_arb01",
+        "complete": true,
+        "data_status": "fresh",
+        "risk_status": "ok",
+        "risk_abs_usdt": 34.37690143793796,
+        "errors": []
+      },
+      {
+        "slug": "gate_fr_arb02",
+        "complete": true,
+        "data_status": "fresh",
+        "risk_status": "ok",
+        "risk_abs_usdt": 37.49811035761465,
+        "errors": []
+      },
+      {
+        "slug": "gate_fr_arb03",
+        "complete": true,
+        "data_status": "fresh",
+        "risk_status": "ok",
+        "risk_abs_usdt": 8.561819690252626,
+        "errors": []
+      },
+      {
+        "slug": "gate_fr_arb04",
+        "complete": true,
+        "data_status": "fresh",
+        "risk_status": "ok",
+        "risk_abs_usdt": 12.474665100118202,
+        "errors": []
+      }
+    ],
+    "delist_report_age_seconds": 9.62170696258545
+  },
+  "last_verified_at": 1794478611.309174,
+  "processes_stable": true,
+  "transient_price_dust": {
+    "env": "gate_fr_arb04",
+    "asset": "QTUM",
+    "spot_qty": -4e-08,
+    "futures_qty": 0,
+    "reason": "below POSITION_MARK_QTY_EPSILON=1e-6; warning was retained at 10:14 UTC and cleared with a later snapshot by 10:16 UTC",
+    "resolved_at_followup": true,
+    "final_delist_complete": true
+  }
+}
