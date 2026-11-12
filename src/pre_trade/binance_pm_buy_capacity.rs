@@ -30,6 +30,9 @@ struct State {
     poll_us: i64,
     cash_id: Option<i64>,
     borrow_id: Option<i64>,
+    rules_id: Option<i64>,
+    min_borrow: Option<(f64, i64)>,
+    last_buy_notional: Option<f64>,
     cash: Option<f64>,
     borrow: Option<f64>,
     snapshot: Option<Snapshot>,
@@ -38,6 +41,7 @@ struct State {
     submitted: VecDeque<(i64, f64)>,
     borrow_failed_us: i64,
     borrow_retry_us: i64,
+    borrow_error_code: i32,
     frequency_retry_us: i64,
     frequency_delay_us: i64,
 }
@@ -74,6 +78,24 @@ impl State {
             return Ok(());
         }
         let snapshot = self.fresh(now).ok_or("binance_usdt_capacity_not_ready")?;
+        let cash_after_pending = (snapshot.cash - self.reserved()).max(0.0);
+        if required.is_finite() && required > cash_after_pending + 1e-8 {
+            if now < self.borrow_retry_us && self.borrow_error_code == binance::BORROW_BELOW_MINIMUM
+            {
+                return Err("binance_usdt_borrow_below_minimum");
+            }
+            let minimum = self
+                .min_borrow
+                .filter(|(_, ts)| now >= *ts && now - *ts <= MAX_AGE_US)
+                .map(|(value, _)| value)
+                .ok_or("binance_usdt_borrow_rules_not_ready")?;
+            // Pending orders may not have spent their reserved cash yet. Never
+            // subtract reservations to pretend this order will borrow more.
+            // Reject an uncertain cash/borrowing split until a new snapshot.
+            if required - snapshot.cash + 1e-8 < minimum {
+                return Err("binance_usdt_borrow_below_minimum");
+            }
+        }
         let available = snapshot.cash + self.usable_borrow(snapshot, now) - self.reserved();
         if !required.is_finite()
             || required < 0.0
@@ -99,14 +121,30 @@ impl State {
             }
         } else if side == Side::Buy
             && quote_is_usdt
-            && matches!(code, binance::ASSET_NOT_BORROWABLE | 51006 | 51061)
+            && matches!(
+                code,
+                binance::ASSET_NOT_BORROWABLE | binance::BORROW_BELOW_MINIMUM | 51006 | 51061
+            )
         {
             self.borrow_failed_us = now;
             self.borrow_retry_us = now + RETRY_US;
+            self.borrow_error_code = code;
         }
     }
 
     fn accept(&mut self, req_type: QueryRequestType, query_id: i64, body: &[u8]) {
+        if req_type == QueryRequestType::BinanceUsdtBorrowRules {
+            if self.rules_id == Some(query_id) {
+                self.min_borrow = parse_value(req_type, body).map(|v| (v, self.poll_us));
+                if self.min_borrow.is_none() {
+                    warn!(
+                        "BinancePmBuyCapacity: invalid USDT minimum-borrow rules query_id={}",
+                        query_id
+                    );
+                }
+            }
+            return;
+        }
         let expected = match req_type {
             QueryRequestType::BinancePmUsdtCash => self.cash_id,
             QueryRequestType::BinancePmUsdtMaxBorrowable => self.borrow_id,
@@ -168,27 +206,39 @@ pub fn drive_poll(now: i64) {
     if !enabled() {
         return;
     }
-    let (cash_id, borrow_id) = {
+    let (cash_id, borrow_id, rules_id) = {
         let mut s = STATE.lock();
         if s.poll_us > 0 && now - s.poll_us < POLL_INTERVAL_US {
             return;
         }
         let cash_id = NEXT_QUERY_ID.fetch_sub(1, Ordering::Relaxed);
         let borrow_id = NEXT_QUERY_ID.fetch_sub(1, Ordering::Relaxed);
+        let rules_id = NEXT_QUERY_ID.fetch_sub(1, Ordering::Relaxed);
         s.poll_us = now;
         s.cash_id = Some(cash_id);
         s.borrow_id = Some(borrow_id);
+        s.rules_id = Some(rules_id);
         s.cash = None;
         s.borrow = None;
-        (cash_id, borrow_id)
+        (cash_id, borrow_id, rules_id)
     };
     for (kind, id) in [
         (QueryRequestType::BinancePmUsdtCash, cash_id),
         (QueryRequestType::BinancePmUsdtMaxBorrowable, borrow_id),
+        (QueryRequestType::BinanceUsdtBorrowRules, rules_id),
     ] {
-        let request = GenericQueryRequest::create(kind, now, id, Bytes::from_static(b"asset=USDT"));
+        let params = if kind == QueryRequestType::BinanceUsdtBorrowRules {
+            Bytes::new()
+        } else {
+            Bytes::from_static(b"asset=USDT")
+        };
+        let request = GenericQueryRequest::create(kind, now, id, params);
         if let Err(error) = QueryEngHub::publish_query_request("binance", &request.to_bytes()) {
-            STATE.lock().snapshot = None;
+            if kind == QueryRequestType::BinanceUsdtBorrowRules {
+                STATE.lock().min_borrow = None;
+            } else {
+                STATE.lock().snapshot = None;
+            }
             warn!(
                 "BinancePmBuyCapacity: query publish failed type={:?}: {:#}",
                 kind, error
@@ -200,7 +250,9 @@ pub fn drive_poll(now: i64) {
 pub fn handle_query_response(kind: QueryRequestType, id: i64, body: &[u8]) -> bool {
     if !matches!(
         kind,
-        QueryRequestType::BinancePmUsdtCash | QueryRequestType::BinancePmUsdtMaxBorrowable
+        QueryRequestType::BinancePmUsdtCash
+            | QueryRequestType::BinancePmUsdtMaxBorrowable
+            | QueryRequestType::BinanceUsdtBorrowRules
     ) {
         return false;
     }
@@ -225,12 +277,21 @@ fn parse_value(kind: QueryRequestType, body: &[u8]) -> Option<f64> {
             row.get("crossMarginFree")?
         }
         QueryRequestType::BinancePmUsdtMaxBorrowable => json.get("amount")?,
+        QueryRequestType::BinanceUsdtBorrowRules => {
+            if json.get("assetName").and_then(Value::as_str) != Some("USDT") {
+                return None;
+            }
+            json.get("userMinBorrow")?
+        }
         _ => return None,
     };
     let number = value
         .as_f64()
         .or_else(|| value.as_str()?.parse::<f64>().ok())?;
-    (number.is_finite() && number >= 0.0).then_some(number)
+    (number.is_finite()
+        && number >= 0.0
+        && (kind != QueryRequestType::BinanceUsdtBorrowRules || number > 0.0))
+        .then_some(number)
 }
 
 pub fn check_open(
@@ -242,7 +303,15 @@ pub fn check_open(
     if venue != TradingVenue::BinanceMargin || !enabled() {
         return Ok(());
     }
-    STATE.lock().check(
+    let mut s = STATE.lock();
+    if side == Side::Buy
+        && symbol.ends_with("USDT")
+        && required_usdt.is_finite()
+        && required_usdt > 0.0
+    {
+        s.last_buy_notional = Some(required_usdt);
+    }
+    s.check(
         side,
         symbol.ends_with("USDT"),
         required_usdt,
@@ -269,7 +338,11 @@ pub fn record_rejection(venue: TradingVenue, side: Side, symbol: &str, code: i32
     }
     if matches!(
         code,
-        binance::ASSET_NOT_BORROWABLE | binance::OPERATION_TOO_FREQUENT | 51006 | 51061
+        binance::ASSET_NOT_BORROWABLE
+            | binance::BORROW_BELOW_MINIMUM
+            | binance::OPERATION_TOO_FREQUENT
+            | 51006
+            | 51061
     ) {
         let mut s = STATE.lock();
         s.reject(side, symbol.ends_with("USDT"), code, get_timestamp_us());
@@ -291,7 +364,7 @@ pub fn snapshot() -> Option<BinancePmUsdtCapacity> {
         reserved_usdt: s.reserved(),
         snapshot_ts_ms: s.snapshot.map(|v| v.started_us / 1000),
         state: s
-            .check(Side::Buy, true, 0.0, now)
+            .check(Side::Buy, true, s.last_buy_notional.unwrap_or(0.0), now)
             .err()
             .unwrap_or("ready")
             .to_string(),
@@ -305,12 +378,89 @@ mod tests {
     const NOW: i64 = 1_000_000_000;
     fn ready(cash: f64, borrow: f64) -> State {
         State {
+            min_borrow: Some((5.0, NOW)),
             snapshot: Some(Snapshot {
                 cash,
                 borrow,
                 started_us: NOW,
             }),
             ..State::default()
+        }
+    }
+
+    #[test]
+    fn below_minimum_borrow_is_blocked_before_cash_or_credit_can_mask_it() {
+        let s = ready(95.0175808, 948126.66487636);
+        assert_eq!(
+            s.check(Side::Buy, true, 2668.0 * 0.03747, NOW),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        assert!(s.check(Side::Buy, true, 90.0, NOW).is_ok());
+        assert!(s.check(Side::Buy, true, 100.0175808, NOW).is_ok());
+        assert!(s.check(Side::Buy, true, 110.0, NOW).is_ok());
+        assert!(s.check(Side::Sell, true, 99.96996, NOW).is_ok());
+        assert!(s.check(Side::Buy, false, 99.96996, NOW).is_ok());
+        let mut pending = ready(95.0175808, 948126.66487636);
+        pending.submitted.push_back((NOW, 200.0));
+        assert_eq!(
+            pending.check(Side::Buy, true, 99.96996, NOW),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        let mut uncertain = ready(150.0, 1000.0);
+        uncertain.submitted.push_back((NOW, 100.0));
+        assert_eq!(
+            uncertain.check(Side::Buy, true, 100.0, NOW),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        assert!(uncertain.check(Side::Buy, true, 40.0, NOW).is_ok());
+    }
+
+    #[test]
+    fn unavailable_borrow_rules_only_block_borrowing_buys_and_rejects_back_off() {
+        let mut s = ready(95.0, 1000.0);
+        s.min_borrow = None;
+        assert!(s.check(Side::Buy, true, 90.0, NOW).is_ok());
+        assert_eq!(
+            s.check(Side::Buy, true, 100.0, NOW),
+            Err("binance_usdt_borrow_rules_not_ready")
+        );
+        s.min_borrow = Some((5.0, NOW - MAX_AGE_US - 1));
+        assert_eq!(
+            s.check(Side::Buy, true, 100.0, NOW),
+            Err("binance_usdt_borrow_rules_not_ready")
+        );
+        s.min_borrow = Some((5.0, NOW));
+        s.reject(Side::Buy, true, binance::BORROW_BELOW_MINIMUM, NOW + 1);
+        assert!(s.check(Side::Buy, true, 90.0, NOW + 2).is_ok());
+        assert_eq!(
+            s.check(Side::Buy, true, 110.0, NOW + 2),
+            Err("binance_usdt_borrow_below_minimum")
+        );
+        assert!(s.check(Side::Buy, true, 110.0, NOW + RETRY_US + 2).is_err());
+        s.snapshot.as_mut().unwrap().started_us = NOW + RETRY_US + 2;
+        assert!(s.check(Side::Buy, true, 110.0, NOW + RETRY_US + 2).is_ok());
+    }
+
+    #[test]
+    fn minimum_borrow_rules_require_matching_query_and_valid_usdt_value() {
+        let mut s = State {
+            poll_us: NOW,
+            rules_id: Some(-3),
+            ..State::default()
+        };
+        let body = br#"{"assetName":"USDT","userMinBorrow":"5"}"#;
+        s.accept(QueryRequestType::BinanceUsdtBorrowRules, -4, body);
+        assert!(s.min_borrow.is_none());
+        s.accept(QueryRequestType::BinanceUsdtBorrowRules, -3, body);
+        assert_eq!(s.min_borrow, Some((5.0, NOW)));
+        for body in [
+            br#"{"assetName":"BTC","userMinBorrow":"5"}"#.as_slice(),
+            br#"{"assetName":"USDT","userMinBorrow":"0"}"#,
+            br#"{"assetName":"USDT","userMinBorrow":"NaN"}"#,
+            br#"{"code":-1}"#,
+        ] {
+            s.accept(QueryRequestType::BinanceUsdtBorrowRules, -3, body);
+            assert!(s.min_borrow.is_none());
         }
     }
 

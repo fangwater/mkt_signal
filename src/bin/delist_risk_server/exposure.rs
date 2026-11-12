@@ -159,6 +159,7 @@ pub struct Account {
     pub rows: Vec<Row>,
     pub errors: Vec<String>,
     pub breaches: BTreeMap<String, Breach>,
+    pub trading_status: Option<super::trading_status::Status>,
 }
 
 impl Account {
@@ -185,6 +186,7 @@ impl Account {
             rows: Vec::new(),
             errors: vec!["等待首次检查".into()],
             breaches: BTreeMap::new(),
+            trading_status: None,
         }
     }
 
@@ -256,6 +258,9 @@ impl Monitor {
             };
             match result {
                 Err(err) => {
+                    if let Some(status) = &mut account.trading_status {
+                        status.unknown();
+                    }
                     account.complete = false;
                     account.data_status = "unavailable";
                     account.errors = vec![format!("{err:#}")];
@@ -265,6 +270,13 @@ impl Monitor {
                     // Keep the last values and all prior risk evidence.
                 }
                 Ok(sample) => {
+                    if account.exchange == "binance" {
+                        account.trading_status = super::trading_status::binance_pm_usdt(
+                            Some(&sample.risk),
+                            now,
+                            account.trading_status.is_some(),
+                        );
+                    }
                     let advanced = account.snapshot_ms.is_none_or(|ts| sample.snapshot_ms > ts);
                     account.snapshot_ms = Some(sample.snapshot_ms);
                     account.account_ms = Some(sample.account_ms);
@@ -410,6 +422,9 @@ impl Monitor {
                 || now.saturating_sub(account.checked_ms)
                     > (self.settings.interval_secs * 3) as i64 * 1000;
             if stale || stopped || !catalog_current {
+                if let Some(status) = &mut account.trading_status {
+                    status.unknown();
+                }
                 account.complete = false;
                 account.data_status = "stale";
                 account.errors.push(
@@ -814,6 +829,53 @@ mod tests {
         assert_eq!(a.net_usdt, Some(0.0));
         assert_eq!(a.breaches.len(), 3);
         assert_eq!(a.rows.len(), 2);
+    }
+
+    #[test]
+    fn opening_gate_alerts_are_independent_and_never_recover_from_missing_or_stale_data() {
+        let mut m = Monitor::new(Settings::default());
+        let mut spec = spec("binance_fr_arb03", RedisSite::Jp);
+        spec.exchange = "binance".into();
+        let slug = spec.slug.clone();
+        let apply_gate = |m: &mut Monitor, state: Option<&str>, now| {
+            let mut snapshot = snapshot(vec![row("BTC", 1.0)], now);
+            if let Some(state) = state {
+                let mut risk = super::super::trading_status::tests::risk(state);
+                risk["binance_pm_usdt"]["snapshot_ts_ms"] = json!(now);
+                snapshot["entries"][1]["entry"]["binance_pm_usdt"] =
+                    risk["binance_pm_usdt"].clone();
+            }
+            let sample = parse(&snapshot, now, &m.settings).unwrap();
+            m.apply(
+                std::slice::from_ref(&spec),
+                vec![(slug.clone(), Ok(sample))],
+                now,
+                true,
+            );
+        };
+        let problem = |report: &Report| {
+            super::super::notifications::exposure_observations(report)
+                .into_iter()
+                .find(|o| o.key == "trading_status/binance_fr_arb03")
+                .unwrap()
+                .problem
+        };
+        apply_gate(&mut m, Some("binance_margin_frequency_cooldown"), NOW);
+        assert_eq!(account(&m, NOW).risk_status, "ok");
+        assert_eq!(problem(&m.report(NOW, true)), Some(true));
+        assert_eq!(problem(&m.report(NOW, false)), None);
+        assert_eq!(problem(&m.report(NOW + 90_001, true)), None);
+        m.apply(
+            std::slice::from_ref(&spec),
+            vec![(slug.clone(), Err(anyhow::anyhow!("offline")))],
+            NOW + 1000,
+            true,
+        );
+        assert_eq!(problem(&m.report(NOW + 1000, true)), None);
+        apply_gate(&mut m, None, NOW + 2000);
+        assert_eq!(problem(&m.report(NOW + 2000, true)), None);
+        apply_gate(&mut m, Some("ready"), NOW + 3000);
+        assert_eq!(problem(&m.report(NOW + 3000, true)), Some(false));
     }
 
     #[test]

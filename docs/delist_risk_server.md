@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-11 09:05 UTC（停用 SG 连接；Delist保持CPU28）
+最后更新：2026-11-12 08:03 UTC（Binance 最低借款拦截与 FR 开仓状态告警）
 
 2026-11-11 09:04 UTC，SG 已无运行交易策略，JP Delist 停用 SG Redis、远程平仓、
 备份 SSH 主机及三路端口隧道；Bybit FR 使用 JP 本地快照。通过环境本地脚本重启
@@ -304,6 +304,23 @@ and flag coverage shorter than the nominal window. These are NAV's linear
 annualizations using the latest account equity; they are not forecasts or trading actions.
 
 ## FR exposure checks
+
+2026-11-12，Binance PM FR 开仓状态接入相同的10秒快照检查、页面和独立FR钉钉。
+频控冷却、购买能力不足、资金数据不可用、最低借款规则不可用和低于最低借款额
+均独立于敞口/UniMMR告警，按账户首次异常与确认恢复发送，持续重复和重启不重发。
+过期、失败、缺字段或未知状态不得确认恢复；`ready`还要求资金查询本身有效且新鲜。
+折叠摘要、账户卡片和明细均显示开仓受限，金额仍按实际持仓计算，不扣对冲计划。
+
+Binance `binance_fr_arb03` 的07:34 UTC拒单链为：每笔CATI买单99.96996U，
+PM USDT现金95.0175808U，自动借款差额4.9523792U低于交易所当时最低额5U；
+30次51015拒单后出现51042频控。可用保证金来自`/papi/v1/account.totalAvailableBalance`，
+不是`/papi/v1/balance.crossMarginFree`现金，也不豁免最低借款约束。
+本地开仓检查读取交易所最低额，先拦截不满足条件的BUY，不自动增加订单或借款金额；
+预留金额不能被当作已经花掉的现金来放大预计借款。规则不可用时仅拦截需借款买单，
+51015另设60秒借款冷却并要求后续有效余额快照，现金支持的买单仍按原检查处理。
+开仓状态针对最近一次待检查买单；恢复只表示本地门禁解除，不保证交易所接受下一单。
+新增查询类型6112需要配套更新`trade_engine`和`pre_trade`，现有Viz IPC结构不变。
+本段修正待发布，不能将本地测试通过视为已改变线上交易行为。
 
 2026-11-12 ON incident: the deployed monitor subtracted stale strategy plans and
 reported only 0.06–0.14 USDT of risk per Gate account despite 535–2,024 USDT of

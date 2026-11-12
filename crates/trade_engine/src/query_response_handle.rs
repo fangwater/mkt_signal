@@ -20,11 +20,33 @@ pub struct QueryExecOutcome {
 
 const QUERY_RESP_HEADER_LEN: usize = 4 + 8; // req_type + client_query_id
 
+fn compact_usdt_borrow_rules(body: &[u8]) -> Option<Bytes> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let mut rows = value
+        .as_array()?
+        .iter()
+        .filter(|r| r["assetName"] == "USDT");
+    let row = rows.next()?;
+    if rows.next().is_some() {
+        return None;
+    }
+    // The full asset catalog exceeds the fixed query IPC body. Keep the venue's
+    // original USDT row; validate its minimum and freshness in pre_trade.
+    serde_json::to_vec(row).ok().map(Bytes::from)
+}
+
 pub fn publish_query_response(
     publisher: &Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()>,
     out: QueryExecOutcome,
 ) {
-    let body = out.body.as_ref();
+    let compact = (out.req_type == QueryRequestType::BinanceUsdtBorrowRules).then(|| {
+        if (200..300).contains(&out.status) {
+            compact_usdt_borrow_rules(&out.body).unwrap_or_else(|| Bytes::from_static(b"{}"))
+        } else {
+            Bytes::from_static(b"{}")
+        }
+    });
+    let body = compact.as_ref().unwrap_or(&out.body).as_ref();
     let mut buf = [0u8; QUERY_RESP_PAYLOAD];
     let mut written = 0usize;
 
@@ -63,6 +85,32 @@ pub fn publish_query_response(
     if let Ok(sample) = publisher.loan_uninit() {
         let sample = sample.write_payload(buf);
         let _ = sample.send();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn usdt_borrow_rules_keep_exactly_one_row_without_truncating_large_catalogs() {
+        let mut rows = vec![json!({"assetName":"BTC","userMinBorrow":"0.001"}); 1000];
+        let row = json!({"assetName":"USDT","userMinBorrow":"5","isBorrowable":true});
+        rows.push(row.clone());
+        let body = serde_json::to_vec(&rows).unwrap();
+        assert!(body.len() > QUERY_RESP_PAYLOAD);
+        let compact = compact_usdt_borrow_rules(&body).unwrap();
+        assert!(compact.len() < QUERY_RESP_PAYLOAD - QUERY_RESP_HEADER_LEN);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&compact).unwrap(),
+            row
+        );
+        rows.push(row);
+        assert!(compact_usdt_borrow_rules(&serde_json::to_vec(&rows).unwrap()).is_none());
+        for invalid in [b"[]".as_slice(), b"{\"code\":-1}", b"not-json"] {
+            assert!(compact_usdt_borrow_rules(invalid).is_none());
+        }
     }
 }
 

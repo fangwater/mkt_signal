@@ -1206,7 +1206,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <strong id="bwdOpenCount">0</strong>
           </div>
           <div class="metric-card">
-            <span>USDT可用最大保证金</span>
+            <span title="组合账户的保证金余量，不等于可直接支付现货买单的 USDT 现金">账户可用保证金</span>
             <strong id="usdtMaxAvailableMargin">--</strong>
           </div>
         </div>

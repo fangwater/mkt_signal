@@ -1,6 +1,15 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-09（CTA 配置合约状态过滤、1h NQ 历史 close 预热审计）
+最后更新：2026-11-12（Binance PM FR 最低借款额检查）
+
+2026-11-12，Binance PM FR 的开仓检查每30秒通过现有交易引擎查询路由读取
+`GET /sapi/v1/margin/allAssets`，只提取USDT行的`userMinBorrow`，有效期180秒。
+目录在交易引擎内缩成原始USDT单行后进入现有IPC，避免完整目录超过4096字节消息上限。
+缺失、重复、非正/非有限最低额和过期规则禁止需要借款的新买单；现金足够的订单
+不依赖这项规则。该查询沿用签名REST客户端、环境账户和交易源IP，直连官方
+`api.binance.com`；不进入公共共享缓存，不新增Nginx端点白名单或监听。
+2026-11-12只读实查USDT的`userMinBorrow=5`，运行代码不硬编码此值。
+本段记录代码行为，发布状态见`docs/delist_risk_server.md`。
 
 2026-11-09，CTA 配置预览/保存、Prep/Spread 命令行配置导入复用官方公共只读
 `GET /fapi/v1/exchangeInfo` 完整目录，只保留 Binance `TRADING` 标的；不使用
