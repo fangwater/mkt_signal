@@ -1,6 +1,12 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 15:14 UTC（CTA备份本地/COS核验通过；先前4项回归失败已修复）
+最后更新：2026-11-12 15:36 UTC（Bybit FR重发完成，启动缺价已恢复）
+
+2026-11-12 15:34 UTC，Bybit FR arb01整套重发和3币合约小额对齐完成，8服务含signal恢复。
+启动后的HMSTR/HNT/HOLO/QTUM缺价随行情更新消失，Delist回读complete=true/risk_status=ok。
+EUR/HFT既有现货尾数保持，HFT暂无可用市场价格，仍按现货尾差展示；没有伪造价格或修改
+报警阈值。Bybit抵押品启动检查另修复BSB默认列表漏项，单币REST确认已开启后通过。
+本次没有重启Delist或行情发布器。详见`artifacts/bybit_fr_publish_20261112/`。
 
 2026-11-12 15:14 UTC，修复此前Delist全量测试的4项失败。CTA发现/映射测试改用独立合成
 Prep/Spread配置，覆盖1min/5min/15min/1h、共享计算去重、独立仓位归属、分组与空组合，
