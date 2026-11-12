@@ -1,6 +1,14 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 11:02 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-12 12:53 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-12 12:51 UTC，仅更新 JP `~/delist_risk_server` 的 Redis 敞口报警逻辑，
+源码 `arbmm 7b91d091`；本地release构建、SCP/SHA-256校验和原子安装后，经环境脚本
+重启为 PID2909567，继续 CPU28。142个其他应用进程 PID/start_ticks/CPU 及10份
+Delist配置指纹保持；11个 FR 快照数据完整，未启动/停止任何交易策略或改变trade signal。
+仅更新 Delist 开机条目、保留其他34条；源IP/网络配置保持。
+回执 `data/ops/delist_redis_7b91d091_20261112/`，详见 `docs/delist_risk_server.md`。
+
 
 2026-11-12 11:02 UTC，JP 新增独立 `~/ltp_transfer_server`，PM2 `ltp-transfer-server`，全部线程运行于
 housekeeping `0-5`，回环监听 `127.0.0.1:8788`，经已有4191网关 `/delist/transfers/`

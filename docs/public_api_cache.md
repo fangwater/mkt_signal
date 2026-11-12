@@ -1,6 +1,6 @@
 # Exchange Public API Cache
 
-最后更新：2026-11-12 12:47 UTC（Delist 复用公共交易规则缓存；Gate REST 补价及 Binance PM 借款检查保持）
+最后更新：2026-11-12 12:53 UTC（Delist 复用公共交易规则缓存；Gate REST 补价及 Binance PM 借款检查保持）
 
 2026-11-12，Gate FR `pre_trade` 增加持仓缺失标记价的异步 REST 兜底，
 已随 `293f6352` 于 10:13 UTC 发布至 JP `gate_fr_arb01–04`，四盘仍关闭 `trade_signal`。
@@ -495,7 +495,7 @@ CTA Manager 的现货理论估值新增 Binance 公共 `GET /api/v3/klines`，�
 两者仍直连 Binance，不新增 Nginx 路由或把签名 RapidX `sym/info` 纳入公共缓存。
 此次仅代码接入，未变更线上代理部署。
 
-### Delist FR exposure order rules (2026-11-12)
+### Delist FR exposure order rules (published 2026-11-12 12:51 UTC)
 
 Delist reuses `VenueMinQtyTable` for minimum tradable hedge amounts. Each
 exchange catalog is refreshed at most once per five minutes across all FR

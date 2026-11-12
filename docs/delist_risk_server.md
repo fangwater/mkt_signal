@@ -1,6 +1,26 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 12:47 UTC（敞口限额改为直接读取 Redis；独立发布 Delist 准备中）
+最后更新：2026-11-12 12:53 UTC（已独立发布 Redis 敞口限额与 maker/停滞报警策略）
+
+2026-11-12 12:51 UTC，仅发布 `arbmm 7b91d091` 的 Delist 二进制、启动脚本和页面。
+限额、方向 maker 数及单手金额直接读取 Redis，持仓/权益沿用现有 Viz 快照；
+已删除本次新增 IPC 字段，不要求 FR 的 pre_trade、Viz 或 dashboard 同步发布。
+本地 release 构建后 SCP 至明确暂存路径，SHA-256 核验并原子安装，环境本地
+stop/start 脚本重启为 PID2909567 / CPU28。二进制 SHA-256：
+`926be3e81886a0b975068aa1b3d272dd34e70523d83ad5084a83bf19d4c070b4`。
+
+上线后11个 FR 账户全部数据完整，Redis 单币覆盖、账户权益限额及最小对冲金额均可读取；
+通知队列清空且无发送错误。Gate02/04 的 AVAAI 分别约 -2501/-1504 USDT，达到
+2500/1500 USDT配置硬限额，按新规则即时报警。少数1U附近尾差也有真实的
+0.5/0.8/1U单币覆盖限额，硬限额检查不以低于最小下单额为由忽略。
+此记录是发布时观察，不代表之后的持仓状态。未执行对齐、下单或调整策略参数。
+142个其他应用进程的 PID/start_ticks/CPU 与10份配置文件指纹保持；
+仅更新 Delist 的 PM2 开机条目，其他34条保持，源IP/网络配置未变。
+39项敞口/Redis规则回归、16项通知回归、4项resample及2项viz_common测试通过；
+浏览器使用无新增字段的快照、模拟Redis和公共规则端点，覆盖报警/缺数/恢复及320–1440px。
+生产 `/healthz` 和 `/exposures` 匿名均401，未使用生产登录会话做浏览器验收。
+回退文件：`~/delist_risk_server/run/delist_redis_7b91d091_20261112/before/`；
+本机回执：`data/ops/delist_redis_7b91d091_20261112/`。其他交易进程的新版本发布继续暂停。
 
 2026-11-12 11:02 UTC，Delist新增“资金划转”导航 `/delist/transfers/`，接入独立Rust服务
 `~/ltp_transfer_server/ltp_transfer_server`（包 `crates/ltp_transfer_server`）。
@@ -500,8 +520,7 @@ represent the factual net quantity / valuation without plan subtraction.
 all priced rows for diagnostics. Two-leg positions, strategy plan and pending
 quantities remain visible separately.
 
-Current exposure policy (implemented locally on 2026-11-12; **not published**,
-publication remains paused):
+Current exposure policy (Delist published independently on 2026-11-12 12:51 UTC):
 
 - Reaching the strategy single-symbol limit (`max_pos_u_for_symbol ×
   max_symbol_exposure_ratio`) or account limit (`equity ×
