@@ -1,0 +1,170 @@
+{
+  "utc": "2026-11-12T09:07:15.872184+00:00",
+  "processes": [
+    {
+      "pid": 2341948,
+      "comm": "fr_signal_dashb",
+      "cpus": "0-5,48-95",
+      "exe": "/home/ubuntu/binance_fr_arb03/fr_signal_dashboard"
+    },
+    {
+      "pid": 2383007,
+      "comm": "viz_server",
+      "cpus": "0-5,48-95",
+      "exe": "/home/ubuntu/binance_fr_arb03/viz_server"
+    },
+    {
+      "pid": 2383326,
+      "comm": "persist_manager",
+      "cpus": "15",
+      "exe": "/home/ubuntu/binance_fr_arb03/persist_manager"
+    },
+    {
+      "pid": 2386471,
+      "comm": "account_monitor",
+      "cpus": "0-5,48-95",
+      "exe": "/home/ubuntu/binance_fr_arb03/account_monitor"
+    },
+    {
+      "pid": 2412919,
+      "comm": "trade_engine",
+      "cpus": "0-5,48-95",
+      "exe": "/home/ubuntu/binance_fr_arb03/trade_engine"
+    },
+    {
+      "pid": 2413027,
+      "comm": "pre_trade",
+      "cpus": "0-5,48-95",
+      "exe": "/home/ubuntu/binance_fr_arb03/pre_trade"
+    },
+    {
+      "pid": 2416779,
+      "comm": "trade_signal",
+      "cpus": "0-5,48-95",
+      "exe": "/home/ubuntu/binance_fr_arb03/trade_signal"
+    }
+  ],
+  "config_unchanged": true,
+  "config_sha256": {
+    "env.sh": "b9aabdba64ab40370c539e43a7cb77f6703db74aa1bc8c42f28bbeb3337cc727",
+    "trade_engine.toml": "388bb370fe85036d2fbd5c4cc1bdd4583fe3f4fcaa92a09c0bf788bd9202f60b",
+    "config/viz.toml": "fb68784b22a9b3ea3eaf67a63f18d258225b908ea5666c6d4fa841ceac49cef8"
+  },
+  "binary_sha256": {
+    "pre_trade": "4b98009be1267ecf4efb8375b9c461fa208331495a3637341693d2ed21d838e9",
+    "trade_engine": "f049bf72b76d28cdb199928d2497e7eccde405d65669a0654f16b1ce8e27ef9b",
+    "trade_signal": "8cfa76874e7a17aa20f2e829900665f4137b8e59cedbe4866fda17c4ec648350",
+    "account_monitor": "7b30acc59f40d497c4fcb82a6706cb9c80b703acd6f2643ffc5c440d35b5f577",
+    "persist_manager": "f5f4e71678c528db020d6aae8ed7fa50044dba3e82e3d6c03f2b9079ac9fe30f",
+    "viz_server": "8d68516e7b4277d9a8ad659923c01675c2db1deca7231124379bd5c7929e536e",
+    "fr_signal_dashboard": "3eb7bce5cbb7d5c1e266f0a8e4e38f7a9a3c1b26f3c7e2003fd8729a75bef09c"
+  },
+  "snapshot_age_sec": 2.922215461730957,
+  "exposure_abs_excluding_bnb": 8.114109366934676,
+  "logs": {
+    "fr_te_bn_arb03": {
+      "51015_lines": 0,
+      "51042_lines": 0,
+      "panic_lines": 0,
+      "borrow_rule_errors": 0,
+      "local_minimum_blocks": 0,
+      "missing_volatility": 0
+    },
+    "fr_pt_bn_arb03": {
+      "51015_lines": 0,
+      "51042_lines": 0,
+      "panic_lines": 0,
+      "borrow_rule_errors": 0,
+      "local_minimum_blocks": 0,
+      "missing_volatility": 0
+    },
+    "fr_am_bn_arb03": {
+      "51015_lines": 0,
+      "51042_lines": 0,
+      "panic_lines": 0,
+      "borrow_rule_errors": 0,
+      "local_minimum_blocks": 0,
+      "missing_volatility": 0
+    }
+  },
+  "capacity": {
+    "buy_capacity": 947621.73523816,
+    "cash_available": 0.0,
+    "max_borrowable": 947621.73523816,
+    "reserved_usdt": -0.0,
+    "retry_after_ms": 0,
+    "snapshot_ts_ms": 1794474415190,
+    "state": "binance_usdt_borrow_below_minimum"
+  },
+  "signal_counts": {
+    "ArbCancel": 585,
+    "ArbClose": 10,
+    "ArbOpen": 70
+  },
+  "risk_states": [
+    "free_trade"
+  ],
+  "exchange_and_delist_before_final_alignment": {
+    "bnb_position": [
+      {
+        "symbol": "BNBUSDT",
+        "positionAmt": "0.13"
+      }
+    ],
+    "bnb_trades": [
+      {
+        "orderId": 98292911854,
+        "side": "BUY",
+        "qty": "0.05",
+        "time": 1794471911368
+      },
+      {
+        "orderId": 98292911854,
+        "side": "BUY",
+        "qty": "0.08",
+        "time": 1794471911368
+      }
+    ],
+    "delist": {
+      "data_status": "fresh",
+      "trading_status": {
+        "state": "binance_usdt_borrow_below_minimum",
+        "problem": true,
+        "detail": "买单借款差额低于最低借款额或仍在拒单冷却，已在本地拦截；现金 0.00 U，可借 948021.73 U，购买能力 947922.47 U"
+      },
+      "checked_ms": 1794473761838
+    },
+    "fr_te_bn_arb03": {
+      "51015_total_lines": 0,
+      "51042_total_lines": 0,
+      "cash_snapshots": [],
+      "margin_buy_created": 0
+    },
+    "fr_pt_bn_arb03": {
+      "51015_total_lines": 0,
+      "51042_total_lines": 0,
+      "cash_snapshots": [
+        "[2026-11-12T08:53:32Z INFO  mkt_signal::pre_trade::binance_pm_buy_capacity] BinancePmBuyCapacity: cash=0.00000000 locked=0.00000000 max_borrowable=948121.72870716 reserved=-0.00000000 min_borrow=None snapshot_us=1794473612724127",
+        "[2026-11-12T08:54:32Z INFO  mkt_signal::pre_trade::binance_pm_buy_capacity] BinancePmBuyCapacity: cash=0.00000000 locked=99.99718300 max_borrowable=948021.73152416 reserved=-0.00000000 min_borrow=Some(5.0) snapshot_us=1794473672724049",
+        "[2026-11-12T08:55:32Z INFO  mkt_signal::pre_trade::binance_pm_buy_capacity] BinancePmBuyCapacity: cash=0.00000000 locked=0.00000000 max_borrowable=948021.73152416 reserved=-0.00000000 min_borrow=Some(5.0) snapshot_us=1794473732724052"
+      ],
+      "margin_buy_created": 2
+    }
+  },
+  "final_pre_signal_check": {
+    "capacity": {
+      "buy_capacity": 947721.73363816,
+      "cash_available": 0.0,
+      "max_borrowable": 947721.73363816,
+      "reserved_usdt": -0.0,
+      "retry_after_ms": 0,
+      "snapshot_ts_ms": 1794474355191,
+      "state": "ready"
+    },
+    "net_abs_excluding_bnb": 8.108167424176045,
+    "largest_non_bnb": 4.012463788566606,
+    "risk_states": [
+      "free_trade"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 08:03 UTC（Binance 最低借款拦截与 FR 开仓状态告警）
+最后更新：2026-11-12 09:08 UTC（Binance arb03 最低借款拦截发布验收）
 
 2026-11-11 09:04 UTC，SG 已无运行交易策略，JP Delist 停用 SG Redis、远程平仓、
 备份 SSH 主机及三路端口隧道；Bybit FR 使用 JP 本地快照。通过环境本地脚本重启
@@ -320,7 +320,13 @@ PM USDT现金95.0175808U，自动借款差额4.9523792U低于交易所当时最�
 51015另设60秒借款冷却并要求后续有效余额快照，现金支持的买单仍按原检查处理。
 开仓状态针对最近一次待检查买单；恢复只表示本地门禁解除，不保证交易所接受下一单。
 新增查询类型6112需要配套更新`trade_engine`和`pre_trade`，现有Viz IPC结构不变。
-本段修正待发布，不能将本地测试通过视为已改变线上交易行为。
+2026-11-12，`binance_fr_arb03` 已按标准流程发布上述程序与页面。初次恢复发现
+多档买单共用零现金快照，随后发布`163916fa`，补充冻结资金及近期买单可能返还的
+现金上界检查；现金缓冲不足的买单同样需满足最低借款额。任务实际每60秒查询。
+修正版恢复跨两个查询周期未再出现51015/51042；Delist现场`trading_status`新鲜且
+显示本地最低借款拦截。该状态可能是资金返还尚未确认的保守拦截，不代表额度耗尽。
+手工对齐的BNB误操作、过细尾差清理及用户后续指示，见
+`artifacts/binance_fr_arb03_publish_20261112/README.md`。
 
 2026-11-12 ON incident: the deployed monitor subtracted stale strategy plans and
 reported only 0.06–0.14 USDT of risk per Gate account despite 535–2,024 USDT of
