@@ -8,7 +8,6 @@ production_mode = false
 user_id_env = "CTP_USER_ID"
 password_env = "CTP_PASSWORD"
 event_capacity = 8192
-idle_sleep_us = 0 # busy polling on business_cpu; optional idle-only sleep, at most 1000 us
 response_timeout_ms = 30000
 reconnect_backoff_ms = 5000
 
@@ -23,6 +22,6 @@ symbol = "rb2701"
 # Required: replace these example CPU IDs/node with the authorized external host topology.
 [placement]
 numa_node = 0
-business_cpu = 3
-sdk_cpus = [4]
-background_cpus = [5]
+business_cpu = 0
+sdk_cpus = [2]
+background_cpus = [3]

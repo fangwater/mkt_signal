@@ -4,12 +4,10 @@ sdk_library = "/opt/ctp/6.7.11/libthosttraderapi_se.so"
 flow_directory = "/tmp/mkt_ctp_sim/flow"
 journal = "/tmp/mkt_ctp_sim/events.jsonl"
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
-sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
 front = "tcp://127.0.0.1:1"
 fallback_fronts = []
 # Only enable explicitly when authorized to confirm the broker settlement.
 confirm_settlement = false
-reconnect_backoff_ms = 5000
 broker_id = "REPLACE"
 # CTP 6.7.11 factory option: false selects the evaluation API, true the production API.
 # Confirm the required mode with the front provider; this flag alone does not prove a front is simulated.
@@ -25,8 +23,6 @@ preallocated_requests = 16384
 preallocated_orders = 4096 # cold-path capacity hint, grows automatically; not a history limit
 query_interval_ms = 1100
 response_timeout_ms = 30000
-# 0 = busy polling. Choose/pin CPU after measuring on the actual execution machine.
-idle_sleep_us = 0
 
 [[symbols]]
 venue = "CFFEX"
@@ -51,4 +47,4 @@ close_priority = "today_first"
 numa_node = 0
 business_cpu = 0
 sdk_cpus = [1]
-background_cpus = [2]
+background_cpus = [3]

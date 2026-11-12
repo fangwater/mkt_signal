@@ -66,7 +66,7 @@ pub fn version(path: &Path) -> Result<String> {
     );
     Ok(unsafe { CStr::from_ptr(out.as_ptr()) }.to_str()?.to_owned())
 }
-fn credential(name: &str, capacity: usize) -> Result<CString> {
+pub(super) fn credential(name: &str, capacity: usize) -> Result<CString> {
     let value = std::env::var(name).unwrap_or_default();
     ensure!(
         !value.is_empty() && value.len() < capacity && value.is_ascii() && !value.contains('\0'),
@@ -74,17 +74,17 @@ fn credential(name: &str, capacity: usize) -> Result<CString> {
     );
     Ok(CString::new(value)?)
 }
-struct Native {
+pub(super) struct Native {
     handle: NonNull<c_void>,
     _context: Box<ContextState>,
-    events: Receiver<(RawEvent, u64)>,
-    failed: Arc<AtomicBool>,
-    placement_fault: Arc<AtomicBool>,
+    pub(super) events: Receiver<(RawEvent, u64)>,
+    pub(super) failed: Arc<AtomicBool>,
+    pub(super) placement_fault: Arc<AtomicBool>,
     _symbols: Vec<CString>,
     symbol_pointers: Vec<*const c_char>,
 }
 impl Native {
-    fn new(config: &Config, placement: Arc<CallbackPlacement>) -> Result<Self> {
+    pub(super) fn new(config: &Config, placement: Arc<CallbackPlacement>) -> Result<Self> {
         ensure!(
             unsafe { nf_md_event_size() } == std::mem::size_of::<RawEvent>(),
             "MD FFI layout mismatch"
@@ -135,7 +135,7 @@ impl Native {
             symbol_pointers,
         })
     }
-    fn start(&self, config: &Config) -> Result<()> {
+    pub(super) fn start(&self, config: &Config) -> Result<()> {
         let fronts = CString::new(config.fronts.join(","))?;
         ensure!(
             unsafe { nf_md_start(self.handle.as_ptr(), fronts.as_ptr()) } == 0,
@@ -143,7 +143,13 @@ impl Native {
         );
         Ok(())
     }
-    fn login(&self, id: i32, broker: &CString, user: &CString, password: &CString) -> Result<()> {
+    pub(super) fn login(
+        &self,
+        id: i32,
+        broker: &CString,
+        user: &CString,
+        password: &CString,
+    ) -> Result<()> {
         ensure!(
             unsafe {
                 nf_md_login(
@@ -158,7 +164,7 @@ impl Native {
         );
         Ok(())
     }
-    fn subscribe(&self) -> Result<()> {
+    pub(super) fn subscribe(&self) -> Result<()> {
         ensure!(
             unsafe {
                 nf_md_subscribe(
@@ -427,11 +433,7 @@ pub fn run(config: Config, duration: Option<Duration>, stop: &AtomicBool) -> Res
                 output.send(json!({"type":"reconnecting","received_us":crate::persistence::now_us(),"reason":"connection/login/subscription timeout","gap":true}))?;
             }
             if !work {
-                if config.idle_sleep_us == 0 {
-                    std::hint::spin_loop();
-                } else {
-                    std::thread::sleep(Duration::from_micros(config.idle_sleep_us));
-                }
+                std::hint::spin_loop();
             }
         }
         Ok(())

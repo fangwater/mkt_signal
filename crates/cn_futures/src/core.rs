@@ -19,6 +19,7 @@ pub struct TradingCore {
     next_ref: u64,
     order_reserve: usize,
     ready: bool,
+    recovery_pending: bool,
     connected: bool,
     reason: String,
     cash: f64,
@@ -72,6 +73,7 @@ impl TradingCore {
             next_ref: 1,
             order_reserve: INITIAL_ORDER_SLOTS,
             ready: false,
+            recovery_pending: false,
             connected: false,
             reason: "not recovered".into(),
             cash: 0.0,
@@ -128,7 +130,11 @@ impl TradingCore {
         Ok(())
     }
     pub fn is_ready(&self) -> bool {
-        self.ready && self.connected
+        self.ready && self.connected && !self.recovery_pending
+    }
+    /// Gate sends while a recovery checkpoint is being committed asynchronously.
+    pub(crate) fn recovery_pending(&mut self, pending: bool) {
+        self.recovery_pending = pending;
     }
     pub fn block(&mut self, reason: impl Into<String>) {
         self.ready = false;
@@ -229,7 +235,11 @@ impl TradingCore {
                 .collect(),
             ready: self.is_ready(),
             connected: self.connected,
-            reason: &self.reason,
+            reason: if self.recovery_pending && self.ready {
+                "recovery persistence pending"
+            } else {
+                &self.reason
+            },
             trading_day: &self.day,
             available_local_budget: self.cash,
             orders: self.orders.values().collect(),
@@ -976,6 +986,10 @@ impl TradingCore {
     }
 
     pub fn prepare_cancel(&mut self, key: &OrderKey, now: Instant) -> Result<PreparedCancel> {
+        ensure!(
+            !self.recovery_pending,
+            "recovery persistence checkpoint pending"
+        );
         ensure!(self.connected, "cannot cancel while transport disconnected");
         let order = self.orders.get(key).context("unknown order to cancel")?;
         ensure!(

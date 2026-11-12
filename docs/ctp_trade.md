@@ -1,6 +1,6 @@
 # CTP 国内期货行情与交易
 
-最后更新：2026-11-11
+最后更新：2026-11-12
 
 **运行地点限制：禁止在当前开发机和所有内网机器运行 CTP，包括实盘、仿真、只读、离线 SDK、连接探针及执行 CTP 的测试/基准。** 本机仅可编辑、静态检查、格式化和编译；本页运行、SDK 版本查询及测试命令仅可在用户明确指定并授权的外部主机执行。历史本机测试记录不构成继续运行的授权，完整规则见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
 
@@ -44,7 +44,7 @@
 
 启动及重连保留交易阻断，重新认证和登录，并要求两轮无并发委托/成交回报且内容一致的委托、成交、持仓查询。原生查询间没有原子快照屏障，这只是保守收敛检查。SHFE/INE 按 PositionDate 合并今昨仓；其他交易所使用 Position 与 TodayPosition，不误用开盘时的 YdPosition 代替剩余昨仓。
 
-SDK 注册主/备用前置并负责传输重连。传输或控制响应超时后，运行时阻断交易，Release 原对象并记录所有已交付的尾部事件，再按退避时间重建连接、重新登录和对账。旧业务请求身份保留，不将旧会话拒单归给新会话。明确的认证/登录错误、歧义事件、审计故障等不会被当作网络超时无限重试。退出、重连均不自动撤销交易所挂单。
+SDK 注册主/备用前置并负责传输重连，每次重新连接仍重新认证、登录和对账。传输或控制响应超时需要重建对象时，运行时输出 `restart_required`、阻断交易并退出，留给外部监管重启；业务循环不执行 Release/Init。退出前记录所有已交付的交易尾部事件。明确的认证/登录错误、歧义事件及审计故障同样停止运行，不循环提交密码。退出、重连均不自动撤销交易所挂单。
 
 回报队列和审计故障显式阻断；未知订单、非数字交易所身份、强制平仓等事实先保留原始证据，再对账，不杜撰策略归属。订单和成交进入嵌入式 RocksDB，JSONL 为可读审计。存储、掉电与恢复边界见 [国内订单持久化](cn_order_persistence.md)。
 
@@ -60,27 +60,15 @@ SDK 注册主/备用前置并负责传输重连。传输或控制响应超时后
 
 ## CPU、NUMA 与热路径
 
-交易和行情配置现在都必须包含 `[placement]`；旧私有配置需补齐后才能使用。配置加载只检查字段范围、非空和 CPU 集合互斥，不改变 CPU 或内存策略。只有实际连接运行时才检查外部主机拓扑并应用绑定：
+行情驱动交易采用[固定四核布局](ctp_layout.md)：行情消费、策略、风控、OMS 和报撤单调用共用一个业务核，Trader/Md SDK 各一核，后台 I/O 一核。两个配置的业务核、后台核和 NUMA 节点相同，SDK 核不同；合并检查四个域不共享 SMT 物理核。配置字段 `sdk_cpus` 和 `background_cpus` 均只允许一个 CPU。仍强制 `MPOL_BIND | MPOL_F_STATIC_NODES`，失败退出，不放宽策略。
 
-```toml
-[placement]
-numa_node = 0
-business_cpu = 0
-sdk_cpus = [1]
-background_cpus = [2]
-```
+CTP 固定异步发送审计和忙轮询，已移除 `sync_before_send`、`idle_sleep_us` 与交易端 `reconnect_backoff_ms`；旧私有配置需删除这些字段。恢复屏障改为非阻塞 checkpoint 轮询，未完成时禁止交易，同时继续处理行情和回报；成功后才发布 `reconciled`。共享易达配置的同步选项保持独立。
 
-CPU 编号仅为占位。业务、SDK、后台三个域必须位于同一指定 NUMA 节点，属于进程原本允许的 CPU 集合，且不同域不能共享 SMT 物理核。行情与交易若同时运行，需分别分配物理核；示例配置没有替实际主机预留 CPU。SDK Create/Init 和重建期间临时切至 SDK CPU 集合，使其工作线程继承绑定；首次回调再次强制校验并绑定。业务线程内的普通同步回调保留业务 CPU，Create/Init 内的同步回调保留 SDK CPU，避免破坏后续工作线程的继承。Journal、RocksDB 后台线程、stdin 与行情输出线程继承后台 CPU 集合。
+高频回报仍使用 328 字节紧凑事件，928 字节控制响应池化，后台审计持有槽引用至序列化结束；尺寸为编译期结果。报撤单复用不可变模板，避免逐笔构造固定字段字符串。请求 ID 使用每页 1024 项直接索引，`preallocated_requests` 默认 16384，只是初始容量提示，仍保留迟到响应和跨会话歧义检查。
 
-运行时强制 `MPOL_BIND | MPOL_F_STATIC_NODES`，新分配页受指定节点策略约束。节点须在 `Mems_allowed_list` 中，宿主机必须允许 `get_mempolicy`、`set_mempolicy` 和绑核系统调用。拓扑、权限、绑定或临时切核后恢复失败都会返回错误；回调内失败会使主循环报错退出，没有自动放宽策略。该策略不负责迁移已经分配的旧页或保证 SDK 文件映射页全部位于指定节点。
+行情接口提供固定 `TickRecord`，同进程策略直接消费它，不经过 stdout JSON。独立 `ctp-md` 的后台输出保留为观测工具，不构成自动交易的数据交接。默认 `NoStrategy` 不产生订单，具体策略尚未配置。应用业务循环不等待队列、磁盘或消费者；厂商 SDK 同步调用内部是否阻塞尚未实测，启动/关闭仍有生命周期 I/O。详见布局文档的边界说明。
 
-高频委托、成交、报撤响应和订单/成交查询使用 **328 字节**紧凑事件；低频账户、合约及费率响应保留 **928 字节**完整事件，放入预分配池。两类事件进入同一个有界 MPSC 队列，保留入队顺序；审计持有池槽引用，直到后台序列化完成才释放。官方 81 字节错误消息字段保留完整容量。以上为编译期布局大小，不是延迟测量。
-
-报撤单固定账户/合约字段在冷路径准备不可变模板，每次请求复制模板并覆盖动态字段，避免每单构造多份 `CString`，也不依赖 SDK 保持输入结构不变。白名单外已有订单可冷路径准备仅供撤单的模板，不因此获得报新单权限。请求 ID 使用每页 1024 项的直接索引；`preallocated_requests` 默认 16384，范围 1024–2000000，只决定初始容量，历史仍可增长且保留迟到响应关联。重连移交关联表，不克隆全表。
-
-两份示例均设 `idle_sleep_us=0`，空闲时忙轮询，占用业务 CPU；可设 1–1000 微秒，仅在空闲时休眠。行情业务线程只校验并复制固定 `TickRecord`，字符串、无效数值转换、JSON 与脱敏放在输出线程。输出每批最多处理当前已就绪的 64 条消息，不等待凑批；stdout 每批 flush，文件约每 100 毫秒 flush，退出时同步文件并传播失败。
-
-共享 OMS 和归一化仍有字符串分配，不能宣称整条链路零分配。本轮只做静态审阅、格式化、编译和 Clippy；新增回归用例仅编译，CTP 测试、SDK、进程及性能基准均未执行。真实延迟与吞吐待用户指定并授权外部主机后验证，不能套用易达历史结果，见[性能说明](cn_futures_performance.md)。
+本轮仅静态审阅、格式化和编译，新增测试未执行，没有 CTP 性能数字或外部部署。
 
 ## SDK 与本地构建
 
@@ -112,7 +100,7 @@ target/release/ctp-md --sdk-version /absolute/path/libthostmduserapi_se.so
 
 ## 配置与命令
 
-无凭据示例为 `config/ctp_trade.example.toml` 与 `config/ctp_market_data.example.toml`。交易示例的 `front`/`fallback_fronts`、行情示例的 `fronts` 均是本地占位地址，运行前须复制到私有目录填写。交易每合约配置本地保守资金预算及交易所；行情只配置订阅。两进程使用独立的 flow/journal，不能共享 SDK 状态目录。
+无凭据示例为 `config/ctp_trade.example.toml` 与 `config/ctp_market_data.example.toml`。交易示例的 `front`/`fallback_fronts`、行情示例的 `fronts` 均是本地占位地址，运行前须复制到私有目录填写。交易每合约配置本地保守资金预算及交易所；行情只配置订阅。Md 与 Trader 使用独立的 flow；合并到同一进程时也不共享 SDK 状态目录。独立行情工具写自己的 journal，合并模式由交易 journal 记录控制状态和交易证据，tick 直接交给策略接口。
 
 交易凭据从配置指定的 `CTP_USER_ID`、`CTP_PASSWORD`、`CTP_APP_ID`、`CTP_AUTH_CODE` 读取；InvestorID 不同时使用 `investor_id_env`。MdApi 只使用账号密码及 BrokerID，没有交易端的 `ReqAuthenticate`，不能用行情登录证明交易端 AppID/AuthCode 授权有效。
 
@@ -124,7 +112,9 @@ target/release/ctp-trader --config /absolute/private/trade.toml --connect
 target/release/ctp-md --config /absolute/private/md.toml --connect --duration-seconds 20
 ```
 
-交易 stdin 接收单行 JSON。`state` 返回完整账户及合约规则；`reconcile` 重做规则/费率与账户对账；`shutdown` 退出而不撤单。EOF 同样退出。
+`ctp-trader --config /absolute/private/trade.toml --market-data-config /absolute/private/md.toml --connect` 在同进程启用行情接入，默认 `NoStrategy`，不会自动下单；完整布局和库策略接口见 [ctp_layout.md](ctp_layout.md)。
+
+交易 stdin 接收单行 JSON。`state` 返回完整账户及合约规则；`reconcile` 重做规则/费率与账户对账；`shutdown` 退出而不撤单。仅交易模式在 EOF 时退出；合并行情模式在 EOF 后继续运行，可用 `shutdown` 或 SIGINT/SIGTERM 正常停止。
 
 ```json
 {"op":"state"}

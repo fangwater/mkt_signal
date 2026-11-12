@@ -18,15 +18,11 @@ pub struct Config {
     pub persistence_directory: Option<PathBuf>,
     #[serde(default)]
     pub preallocated_orders: usize,
-    #[serde(default)]
-    pub sync_before_send: bool,
     pub front: String,
     #[serde(default)]
     pub fallback_fronts: Vec<String>,
     #[serde(default)]
     pub confirm_settlement: bool,
-    #[serde(default = "default_reconnect_backoff")]
-    pub reconnect_backoff_ms: u64,
     pub broker_id: String,
     pub production_mode: bool,
     pub user_id_env: String,
@@ -38,9 +34,41 @@ pub struct Config {
     pub event_capacity: usize,
     pub query_interval_ms: u64,
     pub response_timeout_ms: u64,
-    pub idle_sleep_us: u64,
     pub symbols: Vec<SymbolConfig>,
     pub risk: RiskLimits,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fixed_combined_examples_validate_without_reading_credentials_or_applying_affinity() {
+        let trade: Config =
+            toml::from_str(include_str!("../../../config/ctp_trade.example.toml")).unwrap();
+        let mut md: crate::ctp::market_data::Config =
+            toml::from_str(include_str!("../../../config/ctp_market_data.example.toml")).unwrap();
+        trade.validate_market_data(&md).unwrap();
+        md.placement.business_cpu = 9;
+        assert!(trade.validate_market_data(&md).is_err());
+        md.placement = crate::placement::PlacementConfig {
+            sdk_cpus: vec![2],
+            ..trade.placement.clone()
+        };
+        md.symbols.retain(|s| s.symbol != "IF2612");
+        assert!(trade.validate_market_data(&md).is_err());
+    }
+    #[test]
+    fn blocking_ctp_configuration_knobs_are_rejected() {
+        let trade = include_str!("../../../config/ctp_trade.example.toml");
+        for knob in [
+            "sync_before_send = true\n",
+            "sync_before_send = false\n",
+            "idle_sleep_us = 0\n",
+            "idle_sleep_us = 100\n",
+        ] {
+            assert!(toml::from_str::<Config>(&format!("{knob}{trade}")).is_err());
+        }
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,11 +92,30 @@ fn default_preallocated_requests() -> usize {
     16384
 }
 
-fn default_reconnect_backoff() -> u64 {
-    5000
-}
-
 impl Config {
+    pub fn validate_market_data(&self, md: &crate::ctp::market_data::Config) -> Result<()> {
+        self.validate()?;
+        md.validate()?;
+        self.placement.validate_combined(&md.placement)?;
+        ensure!(
+            self.broker_id == md.broker_id
+                && self.user_id_env == md.user_id_env
+                && self.password_env == md.password_env,
+            "combined Md and Trader must use the same broker and credential variable names"
+        );
+        ensure!(
+            self.flow_directory != md.flow_directory,
+            "Md and Trader require separate flow directories"
+        );
+        ensure!(
+            self.symbols.iter().all(|symbol| md
+                .symbols
+                .iter()
+                .any(|s| s.venue == symbol.venue && s.symbol == symbol.symbol)),
+            "every trading symbol must have an explicit MD subscription"
+        );
+        Ok(())
+    }
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path).context("read CTP config")?;
         let config: Self = toml::from_str(&raw)
@@ -77,14 +124,10 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
-        self.placement.validate()?;
+        self.placement.validate_fixed()?;
         ensure!(
             (1024..=2_000_000).contains(&self.preallocated_requests),
             "preallocated_requests must be 1024..2000000; it is a capacity hint, not a history limit"
-        );
-        ensure!(
-            self.reconnect_backoff_ms >= 1000,
-            "CTP reconnect backoff must be at least 1000 ms"
         );
         ensure!(
             self.front.starts_with("tcp://")
@@ -115,10 +158,7 @@ impl Config {
             self.query_interval_ms >= 1000,
             "CTP query interval must be at least 1000 ms"
         );
-        ensure!(
-            self.response_timeout_ms >= 5000 && self.idle_sleep_us <= 1000,
-            "invalid response timeout or idle sleep"
-        );
+        ensure!(self.response_timeout_ms >= 5000, "invalid response timeout");
         ensure!(
             self.flow_directory.is_absolute()
                 && self.journal.is_absolute()

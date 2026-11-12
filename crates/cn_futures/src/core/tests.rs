@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn async_recovery_gates_orders_and_cancels_without_clearing_other_failures() {
+    let mut c = core();
+    let now = Instant::now();
+    let order = c.prepare(intent(Side::Buy, Offset::Open, 1), now).unwrap();
+    c.recovery_pending(true);
+    assert!(!c.is_ready());
+    assert_eq!(c.view().reason, "recovery persistence pending");
+    assert!(c.prepare(intent(Side::Buy, Offset::Open, 1), now).is_err());
+    assert!(c.prepare_cancel(&order.key, now).is_err());
+    c.recovery_pending(false);
+    assert!(c.is_ready());
+    c.recovery_pending(true);
+    c.block("conflicting native evidence");
+    c.recovery_pending(false);
+    assert!(!c.is_ready());
+    assert_eq!(c.view().reason, "conflicting native evidence");
+}
+
+#[test]
 fn prefaulting_capacity_preserves_live_orders_references_and_action_rate_history() {
     let mut c = core();
     c.limits.max_actions_per_second = 2;

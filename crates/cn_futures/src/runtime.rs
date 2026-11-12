@@ -80,6 +80,7 @@ enum AuditPayload {
     },
     PreparedSubmit(SubmitAudit),
     PreparedCancel(CancelAudit),
+    StrategyResult(crate::ctp::strategy::ActionOutcome),
     OrderProjection(SmallVec<[OrderAudit; 1]>),
     NormalizedTrade,
     ProjectedTrade {
@@ -126,6 +127,17 @@ impl AuditPayload {
                 let order = audit.owned();
                 serde_json::json!({"type":"prepared_cancel","key":order.key,"venue":order.venue,"symbol":order.symbol,"system_id":order.system_id,"execution_route":order.execution_route})
             }
+            Self::StrategyResult(result) => match result {
+                crate::ctp::strategy::ActionOutcome::Submitted { tag, receipt } => {
+                    serde_json::json!({"type":"strategy_submit_receipt","tag":tag,"receipt":receipt})
+                }
+                crate::ctp::strategy::ActionOutcome::CancelledLocally { tag, key } => {
+                    serde_json::json!({"type":"strategy_cancel_submitted_locally","tag":tag,"key":key})
+                }
+                crate::ctp::strategy::ActionOutcome::Rejected { tag, error } => {
+                    serde_json::json!({"type":"strategy_action_rejected","tag":tag,"error":error})
+                }
+            },
             Self::OrderProjection(orders) => {
                 for order in orders {
                     order.append(&mut mutation);
@@ -191,6 +203,7 @@ pub(crate) fn redact(value: &mut Value, secrets: &[String]) {
 #[derive(Default)]
 struct WriterStats {
     records: AtomicU64,
+    confirmed: AtomicU64,
     batches: AtomicU64,
     max_batch: AtomicU64,
 }
@@ -201,6 +214,11 @@ pub struct JournalStats {
     pub synced_batches: u64,
     pub max_batch: u64,
     pub backlog: u64,
+}
+/// A persistence checkpoint is polled by the event loop; it never waits on a channel.
+pub struct DurabilityTicket {
+    target: u64,
+    deadline: Instant,
 }
 pub struct Journal {
     sender: Option<Sender<Record>>,
@@ -285,6 +303,9 @@ impl Journal {
                                 } else {
                                     committed
                                 };
+                                writer_stats
+                                    .confirmed
+                                    .fetch_add(good as u64, Ordering::Release);
                                 for (index, (display, ack, line)) in output.drain(..).enumerate() {
                                     if let Some(ack) = ack {
                                         let result = if index < good {
@@ -348,6 +369,14 @@ impl Journal {
     }
     pub fn record(&self, value: Value, display: bool) -> Result<()> {
         self.record_with(value, display, NativeMutation::default(), false)
+    }
+    pub fn strategy_result(&self, outcome: crate::ctp::strategy::ActionOutcome) -> Result<()> {
+        self.enqueue(
+            AuditPayload::StrategyResult(outcome),
+            false,
+            NativeMutation::default(),
+            false,
+        )
     }
     pub fn record_with(
         &self,
@@ -592,6 +621,14 @@ impl Journal {
         core: &mut crate::core::TradingCore,
         trades: Vec<crate::model::Fill>,
     ) -> Result<()> {
+        self.recovery_checkpoint(core, trades, true)
+    }
+    fn recovery_checkpoint(
+        &self,
+        core: &mut crate::core::TradingCore,
+        trades: Vec<crate::model::Fill>,
+        wait: bool,
+    ) -> Result<()> {
         core.apply_reference_floors(&self.reference_floors)?;
         let mut mutation = crate::persistence::projection(core, &[], true);
         mutation.trades = trades
@@ -607,11 +644,70 @@ impl Journal {
             .collect();
         // A new process may trade only after durable unresolved requests have reconciled.
         self.record_with(
-            serde_json::json!({"type":"reconciled","state":core.view()}),
-            true,
+            serde_json::json!({"type":if wait { "reconciled" } else { "recovery_checkpoint" },"state":core.view()}),
+            wait,
             mutation,
-            true,
+            wait,
         )
+    }
+    pub fn begin_recovery(
+        &self,
+        core: &mut crate::core::TradingCore,
+        trades: Vec<crate::model::Fill>,
+        now: Instant,
+    ) -> Result<DurabilityTicket> {
+        self.recovery_checkpoint(core, trades, false)?;
+        core.recovery_pending(true);
+        Ok(DurabilityTicket {
+            target: self.enqueued.get(),
+            deadline: now + Duration::from_secs(30),
+        })
+    }
+    pub fn poll_checkpoint(&self, ticket: &DurabilityTicket, now: Instant) -> Result<bool> {
+        anyhow::ensure!(
+            !self.failed.load(Ordering::Acquire),
+            "native recovery writer failed"
+        );
+        if self.stats.confirmed.load(Ordering::Acquire) >= ticket.target {
+            anyhow::ensure!(
+                !self.failed.load(Ordering::Acquire),
+                "native recovery writer failed"
+            );
+            return Ok(true);
+        }
+        if now >= ticket.deadline {
+            self.failed.store(true, Ordering::Release);
+            anyhow::bail!("native recovery checkpoint timed out");
+        }
+        Ok(false)
+    }
+    pub fn close_async(&mut self) -> Result<()> {
+        self.record(serde_json::json!({"type":"persistence_flushed"}), false)?;
+        self.sender.take();
+        Ok(())
+    }
+    pub fn poll_closed(&mut self) -> Result<bool> {
+        anyhow::ensure!(
+            self.sender.is_none(),
+            "close_async must precede poll_closed"
+        );
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return Ok(false);
+        }
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("native persistence worker panicked"))?;
+        }
+        anyhow::ensure!(
+            !self.failed.load(Ordering::Acquire),
+            "native persistence writer failed on close"
+        );
+        Ok(true)
     }
     pub fn stats(&self) -> JournalStats {
         let enqueued = self.enqueued.get();
@@ -695,10 +791,37 @@ pub fn lock_flow(path: &Path) -> Result<File> {
 
 #[cfg(feature = "ctp-sdk")]
 pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
+    run_with_strategy(
+        config,
+        None,
+        execute,
+        crate::ctp::strategy::NoStrategy,
+        &AtomicBool::new(false),
+    )
+}
+
+/// Strategy hooks, feed consumption, risk and order submission share this caller thread.
+#[cfg(feature = "ctp-sdk")]
+pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
+    config: crate::config::Config,
+    market_data: Option<crate::ctp::market_data::Config>,
+    execute: bool,
+    mut strategy: S,
+    stop: &AtomicBool,
+) -> Result<()> {
     use crate::core::{SingleLoop, TradingCore};
+    use crate::ctp::strategy::{Actions, StrategyContext};
     use crate::ctp::{self, sdk::CtpTrader, session::Session};
     use serde_json::json;
-    let placement = crate::placement::Placement::enter(&config.placement)?;
+    config.validate()?;
+    if let Some(md) = &market_data {
+        config.validate_market_data(md)?;
+    }
+    let placement = if let Some(md) = &market_data {
+        crate::placement::Placement::enter_combined(&config.placement, &md.placement)?
+    } else {
+        crate::placement::Placement::enter(&config.placement)?
+    };
     let _flow_lock = lock_flow(&config.flow_directory)?;
     let credentials = config.credentials()?;
     let redactions = [
@@ -722,14 +845,14 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             credentials.investor.as_bytes(),
         ],
     );
-    let journal = placement.on_background(|| {
+    let mut journal = placement.on_background(|| {
         Journal::start(
             &config.journal,
             config.event_capacity,
             redactions,
             &database,
             identity,
-            config.sync_before_send,
+            false, // CTP always queues intent audit without waiting for durability.
         )
     })?;
     let trader = placement.on_sdk(|| CtpTrader::new(&config, credentials, placement.callback()))?;
@@ -757,12 +880,18 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 .join(","),
         )
     })?;
+    let mut feed = market_data
+        .as_ref()
+        .map(|md| ctp::market_data::Feed::new(md, &placement))
+        .transpose()?;
+    let mut actions = Actions::default();
     let mut stopping = false;
+    let mut commands_open = true;
     let mut transport_online = false;
     let mut transport_progress = Instant::now();
-    let mut retry_at: Option<Instant> = None;
+    let mut recovery: Option<DurabilityTicket> = None;
     let outcome = (|| -> Result<()> {
-        while !stopping {
+        while !stopping && !stop.load(Ordering::Acquire) {
             if runtime.trader.placement_fault.load(Ordering::Acquire) {
                 runtime.core.block("CTP SDK CPU/NUMA binding failed");
                 anyhow::bail!("CTP SDK CPU/NUMA binding failed; no fallback is permitted");
@@ -807,11 +936,13 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                 if event.kind == ctp::CONNECTED {
                     transport_online = true;
                     transport_progress = Instant::now();
+                    recovery = None;
                     runtime.core.connected();
                 }
                 if event.kind == ctp::DISCONNECTED {
                     transport_online = false;
                     transport_progress = Instant::now();
+                    recovery = None;
                     runtime.core.disconnect();
                 }
                 if event.kind == ctp::INSTRUMENT_STATUS {
@@ -829,10 +960,8 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                             .core
                             .block("settlement not confirmed; read-only queries remain available");
                     }
-                    if let Err(error) = journal.reconciled(&mut runtime.core, trades) {
-                        runtime.core.block("durable recovery failed");
-                        return Err(error);
-                    }
+                    recovery =
+                        Some(journal.begin_recovery(&mut runtime.core, trades, batch_now)?);
                 }
                 if let Some(available) = session.take_cash_update() {
                     runtime.core.constrain_cash(available)?;
@@ -922,24 +1051,33 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                             json!({"type":"trading_blocked","error":error.to_string()}),
                             true,
                         )?;
+                    } else if let Ok(update) = &decoded {
+                        strategy.on_update(
+                            update,
+                            StrategyContext {
+                                core: &runtime.core,
+                                can_trade: execute
+                                    && runtime.core.is_ready()
+                                    && feed.as_ref().is_some_and(|md| md.ready())
+                                    && runtime.trader.events.is_empty(),
+                            },
+                        )?;
                     }
                 }
             }
             let now = Instant::now();
-            if retry_at.is_some_and(|due| now >= due) {
-                placement.on_sdk(|| {
-                    runtime.trader.start(
-                        &std::iter::once(config.front.as_str())
-                            .chain(config.fallback_fronts.iter().map(String::as_str))
-                            .collect::<Vec<_>>()
-                            .join(","),
-                    )
-                })?;
-                retry_at = None;
-                transport_progress = now;
+            if let Some(ticket) = &recovery {
+                if journal.poll_checkpoint(ticket, now)? {
+                    runtime.core.recovery_pending(false);
+                    recovery = None;
+                    journal.record(
+                        json!({"type":"reconciled","state":runtime.core.view()}),
+                        true,
+                    )?;
+                    work = true;
+                }
             }
-            if retry_at.is_none()
-                && runtime.trader.events.is_empty()
+            if runtime.trader.events.is_empty()
                 && (session.timed_out(now)
                     || (!transport_online
                         && now.saturating_duration_since(transport_progress)
@@ -947,38 +1085,91 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
             {
                 runtime.core.disconnect();
                 journal.state(&runtime.core, &[])?;
-                let mut replacement = placement.on_sdk(|| {
-                    CtpTrader::new(&config, config.credentials()?, placement.callback())
-                })?;
-                replacement.inherit_requests(&mut runtime.trader);
-                let tail = runtime.trader.events.clone();
-                let previous = std::mem::replace(&mut runtime.trader, replacement);
-                drop(previous); // Release joins all callbacks before auditing the tail.
-                for received in tail.try_iter() {
-                    journal.ctp_event(&received.event, received.received_us, false)?;
-                    if matches!(received.event.kind, ctp::TRADE | ctp::QUERY_TRADE)
-                        && ctp::text_ref(&received.event.investor)? == investor
-                    {
-                        if let Ok(fill) = received.event.to_fill() {
-                            journal.trade(fill, None, None, received.received_us)?;
+                journal.record(json!({"type":"restart_required","reason":"transport or control response timeout","venue_orders_cancelled":false}), true)?;
+                anyhow::bail!("CTP timeout requires supervisor restart; SDK lifecycle work is excluded from the business loop");
+            }
+            if let Some(kind) = session.request_due(Instant::now())? {
+                let id = runtime.trader.next_id()?;
+                let code = runtime.trader.control(kind, id, session.query_target())?;
+                session.sent(kind, id, code, Instant::now())?;
+                work = true;
+            }
+            // Tick consumption, strategy, risk, OMS and the SDK call all use this thread.
+            if let Some(md) = &mut feed {
+                for _ in 0..256 {
+                    let queued = md.has_backlog();
+                    let event = md.poll(Instant::now())?;
+                    work |= queued;
+                    let Some(event) = event else {
+                        if queued {
+                            continue;
+                        }
+                        break;
+                    };
+                    match event {
+                        ctp::market_data::FeedEvent::Tick(tick) => {
+                            let can_trade = execute
+                                && runtime.core.is_ready()
+                                && md.ready()
+                                && !md.has_backlog()
+                                && runtime.trader.events.is_empty()
+                                && ctp::text_ref(&tick.trading_day)? == runtime.core.trading_day();
+                            strategy.on_tick(
+                                &tick,
+                                StrategyContext {
+                                    core: &runtime.core,
+                                    can_trade,
+                                },
+                                &mut actions,
+                            )?;
+                            for action in actions.drain() {
+                                let allowed = can_trade
+                                    && md.ready()
+                                    && runtime.trader.events.is_empty()
+                                    && !md.has_backlog()
+                                    && !journal.failed.load(Ordering::Acquire)
+                                    && !runtime.trader.fault.load(Ordering::Acquire);
+                                let outcome = ctp::strategy::dispatch(
+                                    &mut runtime,
+                                    &journal,
+                                    action,
+                                    allowed,
+                                    Instant::now(),
+                                )?;
+                                strategy.on_result(
+                                    &outcome,
+                                    StrategyContext {
+                                        core: &runtime.core,
+                                        can_trade: allowed && runtime.core.is_ready(),
+                                    },
+                                )?;
+                                journal.strategy_result(outcome)?;
+                            }
+                        }
+                        ctp::market_data::FeedEvent::Connected { generation } => {
+                            strategy.on_market_state(false, generation)?;
+                            journal.record(
+                                json!({"type":"md_connected","generation":generation}),
+                                true,
+                            )?;
+                        }
+                        ctp::market_data::FeedEvent::Disconnected { reason } => {
+                            strategy.on_market_state(false, md.generation())?;
+                            journal.record(
+                                json!({"type":"md_disconnected","reason":reason,"gap":true}),
+                                true,
+                            )?;
+                        }
+                        ctp::market_data::FeedEvent::Ready { generation } => {
+                            strategy.on_market_state(true, generation)?;
+                            journal
+                                .record(json!({"type":"md_ready","generation":generation}), true)?;
                         }
                     }
                 }
-                session = Session::new(config.clone(), investor.clone(), now);
-                transport_online = false;
-                retry_at = Some(now + Duration::from_millis(config.reconnect_backoff_ms));
-                journal.record(json!({"type":"reconnecting","reason":"transport or control response timeout","venue_orders_cancelled":false}),true)?;
-            }
-            if retry_at.is_none() {
-                if let Some(kind) = session.request_due(Instant::now())? {
-                    let id = runtime.trader.next_id()?;
-                    let code = runtime.trader.control(kind, id, session.query_target())?;
-                    session.sent(kind, id, code, Instant::now())?;
-                    work = true;
-                }
             }
             // Never submit an opening decision ahead of a known backlog of venue events.
-            if runtime.trader.events.is_empty() {
+            if commands_open && runtime.trader.events.is_empty() {
                 match input.try_recv() {
                     Ok(command) => {
                         work = true;
@@ -998,9 +1189,18 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                             }
                             Ok(Command::Reconcile {}) => {
                                 session.restart_queries(Instant::now()).map(|_| {
+                                    recovery = None;
                                     runtime.core.block("operator-requested reconciliation");
                                     json!({"type":"reconciling"})
                                 })
+                            }
+                            Ok(Command::Submit { .. })
+                                if market_data.is_some()
+                                    && !feed.as_ref().is_some_and(|md| md.ready()) =>
+                            {
+                                Err(anyhow::anyhow!(
+                                    "MD is not ready; opening decisions are blocked"
+                                ))
                             }
                             Ok(Command::Submit { intent }) => runtime
                                 .submit_planned_with(intent, Instant::now(), |prepared| {
@@ -1036,20 +1236,26 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
                         true,
                     )?;
                     }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => stopping = true,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        commands_open = false;
+                        stopping = market_data.is_none();
+                    }
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
             if !work {
-                if config.idle_sleep_us == 0 {
-                    std::hint::spin_loop();
-                } else {
-                    std::thread::sleep(Duration::from_micros(config.idle_sleep_us));
-                }
+                std::hint::spin_loop();
             }
         }
         Ok(())
     })();
+    if outcome.is_err() {
+        runtime
+            .core
+            .block("runtime failed; complete recovery required before trading");
+    }
+    // The active business loop has ended. SDK lifecycle calls below are cold shutdown work.
+    drop(feed.take());
     // SDK Release joins callbacks; a cloned receiver retains the final delivered evidence.
     let tail = runtime.trader.events.clone();
     let fault = runtime.trader.fault.clone();
@@ -1087,7 +1293,10 @@ pub fn run(config: crate::config::Config, execute: bool) -> Result<()> {
         serde_json::json!({"type":"runtime_stopped","venue_orders_cancelled":false}),
         true,
     )?;
-    journal.finish()?;
+    journal.close_async()?;
+    while !journal.poll_closed()? {
+        std::hint::spin_loop();
+    }
     anyhow::ensure!(
         shutdown_ok,
         "CTP callback pipeline failed on shutdown; evidence retained"
@@ -1120,6 +1329,70 @@ mod tests {
         let mut value = serde_json::json!({"nested":[{"message":format!("bad {secret}")} ]});
         redact(&mut value, &[secret]);
         assert_eq!(value["nested"][0]["message"], "bad [redacted]");
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    fn fixture() -> (Journal, crossbeam_channel::Receiver<Record>) {
+        let (sender, receiver) = crossbeam_channel::bounded(8);
+        (
+            Journal {
+                sender: Some(sender),
+                enqueued: Cell::new(0),
+                stats: Arc::new(WriterStats::default()),
+                failed: Arc::new(AtomicBool::new(false)),
+                worker: None,
+                sync_before_send: false,
+                reference_floors: Default::default(),
+            },
+            receiver,
+        )
+    }
+    #[test]
+    fn checkpoint_polling_never_reads_an_ack_channel_and_requires_a_valid_prefix() {
+        let (journal, receiver) = fixture();
+        journal
+            .record(serde_json::json!({"type":"fixture"}), false)
+            .unwrap();
+        assert!(receiver.try_recv().unwrap().ack.is_none());
+        let now = Instant::now();
+        let ticket = DurabilityTicket {
+            target: 1,
+            deadline: now + Duration::from_secs(30),
+        };
+        assert!(!journal.poll_checkpoint(&ticket, now).unwrap());
+        // An error-evidence record may be durable without being a valid projection.
+        journal.stats.records.store(1, Ordering::Release);
+        assert!(!journal.poll_checkpoint(&ticket, now).unwrap());
+        journal.stats.confirmed.store(1, Ordering::Release);
+        assert!(journal.poll_checkpoint(&ticket, now).unwrap());
+        journal.failed.store(true, Ordering::Release);
+        assert!(journal.poll_checkpoint(&ticket, now).is_err());
+    }
+    #[test]
+    fn checkpoint_timeout_latches_failure_without_waiting() {
+        let (journal, _receiver) = fixture();
+        let now = Instant::now();
+        let ticket = DurabilityTicket {
+            target: 1,
+            deadline: now,
+        };
+        assert!(journal.poll_checkpoint(&ticket, now).is_err());
+        assert!(journal.failed.load(Ordering::Acquire));
+        assert!(journal.record(serde_json::Value::Null, false).is_err());
+    }
+    #[test]
+    fn async_close_disconnects_the_queue_and_has_no_ack_request() {
+        let (mut journal, receiver) = fixture();
+        journal.close_async().unwrap();
+        assert!(receiver.try_recv().unwrap().ack.is_none());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(crossbeam_channel::TryRecvError::Disconnected)
+        ));
+        assert!(journal.poll_closed().unwrap());
     }
 }
 

@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub sdk_library: PathBuf,
     pub placement: crate::placement::PlacementConfig,
-    #[serde(default)]
-    pub idle_sleep_us: u64,
     pub flow_directory: PathBuf,
     pub journal: PathBuf,
     pub fronts: Vec<String>,
@@ -39,8 +37,7 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
-        self.placement.validate()?;
-        ensure!(self.idle_sleep_us <= 1000, "invalid MD idle sleep");
+        self.placement.validate_fixed()?;
         ensure!(
             self.sdk_library.is_absolute()
                 && self.flow_directory.is_absolute()
@@ -334,7 +331,11 @@ impl Session {
 }
 
 #[cfg(feature = "ctp-sdk")]
+mod feed;
+#[cfg(feature = "ctp-sdk")]
 mod native;
+#[cfg(feature = "ctp-sdk")]
+pub use feed::{Feed, FeedEvent};
 #[cfg(feature = "ctp-sdk")]
 pub use native::{run, version};
 

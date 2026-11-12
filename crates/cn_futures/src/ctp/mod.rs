@@ -4,6 +4,7 @@ pub mod market_data;
 #[cfg(feature = "ctp-sdk")]
 pub mod sdk;
 pub mod session;
+pub mod strategy;
 
 use crate::model::*;
 use anyhow::{bail, ensure, Context, Result};

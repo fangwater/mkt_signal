@@ -12,6 +12,29 @@ pub struct PlacementConfig {
     pub background_cpus: Vec<usize>,
 }
 impl PlacementConfig {
+    pub fn validate_fixed(&self) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.sdk_cpus.len() == 1 && self.background_cpus.len() == 1,
+            "fixed CTP layout requires one SDK CPU and one background CPU per domain"
+        );
+        Ok(())
+    }
+    pub fn validate_combined(&self, md: &Self) -> Result<()> {
+        self.validate_fixed()?;
+        md.validate_fixed()?;
+        ensure!(
+            self.numa_node == md.numa_node
+                && self.business_cpu == md.business_cpu
+                && self.background_cpus == md.background_cpus,
+            "combined CTP requires the same NUMA node, business CPU and background CPU"
+        );
+        ensure!(
+            self.sdk_cpus != md.sdk_cpus,
+            "Md and Trader SDKs require distinct physical cores"
+        );
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.numa_node < 4096,
@@ -149,6 +172,7 @@ mod linux {
     /// policy; a later callback outside the SDK CPU mask is rebound before use.
     pub struct CallbackPlacement {
         id: u64,
+        business_id: u64,
         mask: libc::cpu_set_t,
         business: libc::cpu_set_t,
         owner: libc::pid_t,
@@ -167,16 +191,24 @@ mod linux {
             }
             // Synchronous SDK callbacks belong to the business owner, not SDK workers.
             let bootstrap = SDK_BOOTSTRAP.with(Cell::get);
-            let required = if tid == self.owner && !bootstrap {
+            let owner_callback = tid == self.owner && !bootstrap;
+            let required = if owner_callback {
                 &self.business
             } else {
                 &self.mask
+            };
+            // Both SDKs share the business domain. Alternating synchronous
+            // callbacks must not cause redundant affinity/NUMA syscalls there.
+            let placement_id = if owner_callback {
+                self.business_id
+            } else {
+                self.id
             };
             CALLBACK_PLACEMENT.with(|current| {
                 let cpu = unsafe { libc::sched_getcpu() };
                 let inside =
                     (0..1024).contains(&cpu) && unsafe { libc::CPU_ISSET(cpu as usize, required) };
-                if current.get() == self.id && inside {
+                if current.get() == placement_id && inside {
                     return true;
                 }
                 if !set_affinity(required) || !bind_memory(&self.nodes) {
@@ -190,7 +222,7 @@ mod linux {
                 {
                     return false;
                 }
-                current.set(self.id);
+                current.set(placement_id);
                 true
             })
         }
@@ -200,12 +232,20 @@ mod linux {
         original_policy: i32,
         original_nodes: Vec<libc::c_ulong>,
         sdk: Arc<CallbackPlacement>,
+        market_data: Option<Arc<CallbackPlacement>>,
         background: libc::cpu_set_t,
         _single_owner: std::marker::PhantomData<std::rc::Rc<()>>,
     }
     impl Placement {
         pub fn enter(config: &PlacementConfig) -> Result<Self> {
-            config.validate()?;
+            Self::enter_inner(config, None)
+        }
+        pub fn enter_combined(config: &PlacementConfig, md: &PlacementConfig) -> Result<Self> {
+            config.validate_combined(md)?;
+            Self::enter_inner(config, Some(md))
+        }
+        fn enter_inner(config: &PlacementConfig, md: Option<&PlacementConfig>) -> Result<Self> {
+            config.validate_fixed()?;
             let node_cpus = parse_list(
                 &std::fs::read_to_string(format!(
                     "/sys/devices/system/node/node{}/cpulist",
@@ -217,6 +257,7 @@ mod linux {
             let selected: Vec<_> = std::iter::once(config.business_cpu)
                 .chain(config.sdk_cpus.iter().copied())
                 .chain(config.background_cpus.iter().copied())
+                .chain(md.into_iter().flat_map(|md| md.sdk_cpus.iter().copied()))
                 .collect();
             for cpu in &selected {
                 ensure!(
@@ -224,11 +265,14 @@ mod linux {
                     "CPU {cpu} is outside the requested NUMA node or allowed affinity"
                 );
             }
-            let groups = [
+            let mut groups = vec![
                 vec![config.business_cpu],
                 config.sdk_cpus.clone(),
                 config.background_cpus.clone(),
             ];
+            if let Some(md) = md {
+                groups.push(md.sdk_cpus.clone());
+            }
             for (index, group) in groups.iter().enumerate() {
                 for cpu in group {
                     let siblings = parse_list(
@@ -285,6 +329,7 @@ mod linux {
                 1 << (config.numa_node % libc::c_ulong::BITS as usize);
             let sdk = Arc::new(CallbackPlacement {
                 id: NEXT_PLACEMENT.fetch_add(1, Ordering::Relaxed),
+                business_id: NEXT_PLACEMENT.fetch_add(1, Ordering::Relaxed),
                 mask: cpu_mask(&config.sdk_cpus),
                 business: cpu_mask(&[config.business_cpu]),
                 owner: unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t },
@@ -294,6 +339,16 @@ mod linux {
                 original_cpu,
                 original_policy,
                 original_nodes,
+                market_data: md.map(|md| {
+                    Arc::new(CallbackPlacement {
+                        id: NEXT_PLACEMENT.fetch_add(1, Ordering::Relaxed),
+                        business_id: sdk.business_id,
+                        mask: cpu_mask(&md.sdk_cpus),
+                        business: sdk.business,
+                        owner: sdk.owner,
+                        nodes: sdk.nodes.clone(),
+                    })
+                }),
                 sdk,
                 background: cpu_mask(&config.background_cpus),
                 _single_owner: std::marker::PhantomData,
@@ -318,7 +373,27 @@ mod linux {
             self.sdk.clone()
         }
         pub fn on_sdk<T>(&self, call: impl FnOnce() -> Result<T>) -> Result<T> {
-            let mut scope = AffinityScope::enter(&self.sdk.mask)?;
+            self.on_domain(&self.sdk, call)
+        }
+        pub fn market_data_callback(&self) -> Result<Arc<CallbackPlacement>> {
+            self.market_data
+                .clone()
+                .context("combined CTP placement required")
+        }
+        pub fn on_market_data_sdk<T>(&self, call: impl FnOnce() -> Result<T>) -> Result<T> {
+            self.on_domain(
+                self.market_data
+                    .as_ref()
+                    .context("combined CTP placement required")?,
+                call,
+            )
+        }
+        fn on_domain<T>(
+            &self,
+            domain: &CallbackPlacement,
+            call: impl FnOnce() -> Result<T>,
+        ) -> Result<T> {
+            let mut scope = AffinityScope::enter(&domain.mask)?;
             struct RestoreBootstrap(bool);
             impl Drop for RestoreBootstrap {
                 fn drop(&mut self) {
@@ -380,6 +455,15 @@ mod unsupported {
         pub fn enter(_: &PlacementConfig) -> Result<Self> {
             anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
         }
+        pub fn enter_combined(_: &PlacementConfig, _: &PlacementConfig) -> Result<Self> {
+            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+        }
+        pub fn market_data_callback(&self) -> Result<std::sync::Arc<CallbackPlacement>> {
+            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+        }
+        pub fn on_market_data_sdk<T>(&self, _: impl FnOnce() -> Result<T>) -> Result<T> {
+            anyhow::bail!("strict CTP CPU/NUMA placement requires Linux")
+        }
         pub fn callback(&self) -> std::sync::Arc<CallbackPlacement> {
             std::sync::Arc::new(CallbackPlacement)
         }
@@ -397,6 +481,30 @@ pub use unsupported::{CallbackPlacement, Placement};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn combined_layout_requires_one_shared_business_core_and_four_distinct_domains() {
+        let trade = PlacementConfig {
+            numa_node: 0,
+            business_cpu: 0,
+            sdk_cpus: vec![1],
+            background_cpus: vec![3],
+        };
+        let mut md = PlacementConfig {
+            sdk_cpus: vec![2],
+            ..trade.clone()
+        };
+        trade.validate_combined(&md).unwrap();
+        md.sdk_cpus = vec![1];
+        assert!(trade.validate_combined(&md).is_err());
+        md.sdk_cpus = vec![2, 4];
+        assert!(trade.validate_combined(&md).is_err());
+        md.sdk_cpus = vec![2];
+        md.business_cpu = 4;
+        assert!(trade.validate_combined(&md).is_err());
+        md.business_cpu = 0;
+        md.numa_node = 1;
+        assert!(trade.validate_combined(&md).is_err());
+    }
     #[test]
     fn validates_disjoint_sets_without_applying_a_policy() {
         let mut config = PlacementConfig {

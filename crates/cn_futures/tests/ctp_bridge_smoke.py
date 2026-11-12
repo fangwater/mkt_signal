@@ -201,7 +201,7 @@ def main():
         for old, new in [('/opt/ctp/6.7.11/libthosttraderapi_se.so', str(library)), ('/tmp/mkt_ctp_sim/flow', str(temp / 'flow')), ('/tmp/mkt_ctp_sim/events.jsonl', str(temp / 'events.jsonl')), ('broker_id = "REPLACE"', 'broker_id = "TEST"'), ('cash_budget_per_open_lot = 250000.0', 'cash_budget_per_open_lot = 10000.0'), ('max_order_lots = 1', 'max_order_lots = 10'), ('max_working_lots = 2', 'max_working_lots = 10'), ('max_actions_per_second = 2', 'max_actions_per_second = 20'), ('enable_fak_fok = false', 'enable_fak_fok = true')]:
             config = config.replace(old, new)
         config=config.replace('venue = "CFFEX"',f'venue = "{args.venue}"').replace('symbol = "IF2612"',f'symbol = "{args.symbol}"')
-        if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000").replace("reconnect_backoff_ms = 5000","reconnect_backoff_ms = 1000")
+        if args.transport_timeout: config=config.replace("response_timeout_ms = 30000","response_timeout_ms = 5000")
         config_path = temp / "config.toml"
         config_path.write_text(config)
         environment = dict(os.environ, CTP_USER_ID="test", CTP_PASSWORD="fixture-only", CTP_APP_ID="fixture", CTP_AUTH_CODE="fixture")
@@ -245,13 +245,12 @@ def main():
 
         try:
             if args.transport_timeout:
-                wait("reconnecting",timeout=15)
-                send({"op":"state"});snapshot=wait("state")
-                assert snapshot["account"] is None and not snapshot["state"]["ready"]
-                send({"op":"shutdown"});wait("runtime_stopped");assert process.wait(timeout=10)==0
+                wait("restart_required",timeout=15)
+                wait("runtime_stopped")
+                assert process.wait(timeout=10)!=0
                 events=[json.loads(line) for line in (temp/"events.jsonl").read_text().splitlines()]
                 assert not any(e.get("type")=="prepared_submit" or e.get("event",{}).get("kind")==5 for e in events)
-                print(json.dumps({"transport_timeout":True,"reconnect_backoff":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
+                print(json.dumps({"transport_timeout":True,"supervisor_restart_required":True,"trade_blocked":True,"settlement_confirmations":0,"orders_sent":0}))
                 return
             if args.unconfirmed_settlement:
                 assert not wait("reconciled")["state"]["ready"]
