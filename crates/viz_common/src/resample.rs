@@ -53,9 +53,22 @@ pub fn compute_askbid_sr(spot_ask: Option<f64>, fut_bid: Option<f64>) -> Option<
     }
 }
 
+/// Effective strategy settings, resolved by pre_trade including symbol overrides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreTradeExposureLimits {
+    /// Zero means the strategy has disabled this limit.
+    pub symbol_limit_usdt: f64,
+    pub order_amount_usdt: f64,
+    /// None means that this direction has no finite configured maker cap.
+    pub maker_buy_orders: Option<u32>,
+    pub maker_sell_orders: Option<u32>,
+    pub min_hedge_usdt: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeExposureRow {
     pub asset: String,
+    pub limits: Option<PreTradeExposureLimits>,
     pub open_qty: Option<f64>,
     pub open_usdt: Option<f64>,
     pub hedge_qty: Option<f64>,
@@ -105,6 +118,8 @@ pub struct PreTradeRiskResampleEntry {
     pub signal_counts: HashMap<String, u64>,
     pub total_equity: f64,
     pub total_exposure: f64,
+    /// Zero means disabled; null means it cannot currently be calculated.
+    pub total_exposure_limit_usdt: Option<f64>,
     pub total_position: f64,
     pub spot_equity_usd: f64,
     pub borrowed_usd: f64,

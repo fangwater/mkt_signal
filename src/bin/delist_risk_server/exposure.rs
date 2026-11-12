@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
+use viz_common::resample::PreTradeExposureLimits;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Settings {
@@ -16,8 +17,8 @@ pub struct Settings {
     pub max_age_secs: u64,
     pub persistence_secs: u64,
     pub data_persistence_secs: u64,
-    pub asset_limit_usdt: f64,
-    pub account_limit_usdt: f64,
+    pub maker_buffer_factor: f64,
+    pub stalled_secs: u64,
     pub catalog_max_age_secs: u64,
     pub ignored_spot_tails: BTreeMap<String, BTreeMap<String, SpotTailRule>>,
 }
@@ -46,8 +47,8 @@ impl Default for Settings {
             max_age_secs: 90,
             persistence_secs: 30,
             data_persistence_secs: 60,
-            asset_limit_usdt: 100.0,
-            account_limit_usdt: 500.0,
+            maker_buffer_factor: 1.5,
+            stalled_secs: 180,
             catalog_max_age_secs: 180,
             ignored_spot_tails: BTreeMap::new(),
         }
@@ -72,12 +73,14 @@ impl Settings {
             self.data_persistence_secs <= 3600,
             "data persistence must be at most 3600 seconds"
         );
-        for limit in [self.asset_limit_usdt, self.account_limit_usdt] {
-            ensure!(
-                limit.is_finite() && limit > 0.0,
-                "exposure limits must be finite and positive"
-            );
-        }
+        ensure!(
+            self.maker_buffer_factor.is_finite() && self.maker_buffer_factor >= 1.0,
+            "maker buffer factor must be finite and at least one"
+        );
+        ensure!(
+            (1..=3600).contains(&self.stalled_secs),
+            "stalled duration must be 1..3600 seconds"
+        );
         for rules in self.ignored_spot_tails.values() {
             for rule in rules.values() {
                 ensure!(
@@ -112,6 +115,11 @@ impl Settings {
 #[derive(Clone, Debug, Serialize)]
 pub struct Row {
     pub asset: String,
+    pub limits: Option<PreTradeExposureLimits>,
+    pub normal_buffer_usdt: Option<f64>,
+    pub stalled_since_ms: Option<i64>,
+    #[serde(skip)]
+    pub(super) made_progress: bool,
     pub open_qty: f64,
     pub hedge_qty: f64,
     pub net_qty: f64,
@@ -125,9 +133,108 @@ pub struct Row {
     pub pending_hedge_qty: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BreachKind {
+    HardLimit,
+    MakerBuffer,
+    Stalled,
+}
+
+impl BreachKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::HardLimit => "达到策略硬限额",
+            Self::MakerBuffer => "持续超过正常 maker 缓冲",
+            Self::Stalled => "实际敞口对冲停滞",
+        }
+    }
+}
+
+/// Quantity anchors: repricing and refreshed plans cannot manufacture progress.
+#[derive(Clone, Debug)]
+pub(super) struct Progress {
+    net_qty: f64,
+    hedge_qty: f64,
+    since_ms: i64,
+    last_observed_ms: i64,
+    confirmed: bool,
+}
+
+impl Row {
+    pub(super) fn assessable(&self) -> bool {
+        self.uncovered_usdt.is_some()
+            && (self.net_qty.abs() <= 1e-12
+                || self
+                    .limits
+                    .as_ref()
+                    .is_some_and(|l| l.min_hedge_usdt.is_some()))
+    }
+
+    fn update_progress(
+        &mut self,
+        progress: &mut BTreeMap<String, Progress>,
+        now: i64,
+        settings: &Settings,
+    ) -> bool {
+        if self.net_qty.abs() <= 1e-12 && self.uncovered_usdt.is_some() {
+            progress.remove(&self.asset);
+            return false;
+        }
+        let Some(min_trade) = self.limits.as_ref().and_then(|l| l.min_hedge_usdt) else {
+            if let Some(p) = progress.get_mut(&self.asset) {
+                p.last_observed_ms = 0;
+            }
+            return false;
+        };
+        let Some(value) = self.uncovered_usdt else {
+            if let Some(p) = progress.get_mut(&self.asset) {
+                p.last_observed_ms = 0;
+            }
+            return false;
+        };
+        if value.abs() < min_trade {
+            progress.remove(&self.asset);
+            return false;
+        }
+        let p = progress.entry(self.asset.clone()).or_insert(Progress {
+            net_qty: self.net_qty,
+            hedge_qty: self.hedge_qty,
+            since_ms: now,
+            last_observed_ms: now,
+            confirmed: false,
+        });
+        let direction = p.net_qty.signum();
+        let min_progress_qty = min_trade * self.net_qty.abs() / value.abs();
+        let progressed = self.net_qty.signum() != direction
+            || (p.hedge_qty - self.hedge_qty) * direction >= min_progress_qty
+            || (p.net_qty - self.net_qty) * direction >= min_progress_qty;
+        self.made_progress = progressed;
+        if progressed
+            || !p.confirmed
+                && now.saturating_sub(p.last_observed_ms)
+                    > (settings.interval_secs * 3) as i64 * 1000
+        {
+            p.net_qty = self.net_qty;
+            p.hedge_qty = self.hedge_qty;
+            p.since_ms = now;
+            p.confirmed = false;
+        } else if self.net_qty.abs() > p.net_qty.abs() {
+            // Enlarging exposure updates the reduction anchor, never the clock.
+            p.net_qty = self.net_qty;
+        }
+        p.last_observed_ms = now;
+        p.confirmed |= now.saturating_sub(p.since_ms) >= settings.stalled_secs as i64 * 1000;
+        self.stalled_since_ms = Some(p.since_ms);
+        p.confirmed
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Breach {
     pub asset: Option<String>,
+    pub kind: BreachKind,
+    pub limit_usdt: f64,
     pub since_ms: i64,
     pub last_observed_ms: i64,
     pub confirmed: bool,
@@ -152,6 +259,7 @@ pub struct Account {
     pub data_incomplete_confirmed: bool,
     pub abs_usdt: Option<f64>,
     pub risk_abs_usdt: Option<f64>,
+    pub limit_usdt: Option<f64>,
     pub ignored_spot_tail_n: usize,
     pub net_usdt: Option<f64>,
     pub largest_asset: Option<String>,
@@ -159,6 +267,8 @@ pub struct Account {
     pub rows: Vec<Row>,
     pub errors: Vec<String>,
     pub breaches: BTreeMap<String, Breach>,
+    #[serde(skip)]
+    pub(super) progress: BTreeMap<String, Progress>,
 }
 
 impl Account {
@@ -178,6 +288,7 @@ impl Account {
             data_incomplete_confirmed: false,
             abs_usdt: None,
             risk_abs_usdt: None,
+            limit_usdt: None,
             ignored_spot_tail_n: 0,
             net_usdt: None,
             largest_asset: None,
@@ -185,6 +296,7 @@ impl Account {
             rows: Vec::new(),
             errors: vec!["等待首次检查".into()],
             breaches: BTreeMap::new(),
+            progress: BTreeMap::new(),
         }
     }
 
@@ -262,12 +374,16 @@ impl Monitor {
                     for breach in account.breaches.values_mut() {
                         breach.observation_interrupted = true;
                     }
+                    for progress in account.progress.values_mut() {
+                        progress.last_observed_ms = 0;
+                    }
                     // Keep the last values and all prior risk evidence.
                 }
-                Ok(sample) => {
+                Ok(mut sample) => {
                     let advanced = account.snapshot_ms.is_none_or(|ts| sample.snapshot_ms > ts);
                     account.snapshot_ms = Some(sample.snapshot_ms);
                     account.account_ms = Some(sample.account_ms);
+                    account.limit_usdt = sample.limit_usdt;
                     account.complete = sample.errors.is_empty();
                     account.ignored_spot_tail_n =
                         sample.rows.iter().filter(|r| r.ignored_spot_tail).count();
@@ -303,28 +419,64 @@ impl Monitor {
                     account.largest_asset = largest.map(|r| r.asset.clone());
                     account.largest_usdt = largest.and_then(|r| r.uncovered_usdt);
                     let mut above = BTreeMap::new();
-                    for row in &sample.rows {
+                    for row in &mut sample.rows {
                         if row.ignored_spot_tail {
+                            account.progress.remove(&row.asset);
                             continue;
                         }
-                        if let Some(value) = row
-                            .uncovered_usdt
-                            .filter(|v| v.abs() > self.settings.asset_limit_usdt)
+                        let stalled = if advanced {
+                            row.update_progress(&mut account.progress, now, &self.settings)
+                        } else {
+                            row.stalled_since_ms =
+                                account.progress.get(&row.asset).map(|p| p.since_ms);
+                            false
+                        };
+                        let Some(value) = row.uncovered_usdt else {
+                            continue;
+                        };
+                        let Some(limits) = &row.limits else {
+                            continue;
+                        };
+                        let violation = if limits.symbol_limit_usdt > 0.0
+                            && value.abs() >= limits.symbol_limit_usdt
                         {
+                            Some((BreachKind::HardLimit, limits.symbol_limit_usdt))
+                        } else if stalled {
+                            Some((BreachKind::Stalled, limits.min_hedge_usdt.unwrap()))
+                        } else if let Some(buffer) =
+                            row.normal_buffer_usdt.filter(|b| value.abs() > *b)
+                        {
+                            Some((BreachKind::MakerBuffer, buffer))
+                        } else {
+                            None
+                        };
+                        if let Some((kind, limit)) = violation {
                             above.insert(
                                 format!("asset:{}", row.asset),
-                                (Some(row.asset.clone()), value),
+                                (
+                                    Some(row.asset.clone()),
+                                    value,
+                                    kind,
+                                    limit,
+                                    row.stalled_since_ms,
+                                ),
                             );
                         }
                     }
-                    if account.risk_abs_usdt.unwrap_or(0.0) > self.settings.account_limit_usdt {
-                        above.insert("total".into(), (None, account.risk_abs_usdt.unwrap()));
+                    if let Some(limit) = account.limit_usdt.filter(|l| *l > 0.0) {
+                        let value = account.risk_abs_usdt.unwrap_or(0.0);
+                        if value >= limit {
+                            above.insert(
+                                "total".into(),
+                                (None, value, BreachKind::HardLimit, limit, None),
+                            );
+                        }
                     }
                     if advanced {
                         let known_assets: BTreeSet<_> = sample
                             .rows
                             .iter()
-                            .filter(|row| row.uncovered_usdt.is_some())
+                            .filter(|row| row.assessable() || row.ignored_spot_tail)
                             .map(|row| row.asset.as_str())
                             .collect();
                         account.breaches.retain(|key, breach| {
@@ -345,13 +497,22 @@ impl Monitor {
                             breach.observation_interrupted = true;
                             true
                         });
+                        account.progress.retain(|asset, p| {
+                            if known_assets.contains(asset.as_str()) {
+                                return true;
+                            }
+                            p.last_observed_ms = 0;
+                            !account.complete
+                        });
                     }
-                    for (key, (asset, value)) in above {
+                    for (key, (asset, value, kind, limit_usdt, stalled_since)) in above {
                         if !advanced {
                             continue;
                         }
                         let breach = account.breaches.entry(key).or_insert(Breach {
                             asset,
+                            kind,
+                            limit_usdt,
                             since_ms: now,
                             last_observed_ms: now,
                             confirmed: false,
@@ -359,18 +520,26 @@ impl Monitor {
                             observation_interrupted: false,
                         });
                         // A gap in observations cannot prove continuous excess.
-                        if !breach.confirmed
-                            && (breach.observation_interrupted
-                                || now.saturating_sub(breach.last_observed_ms)
-                                    > (self.settings.interval_secs * 3) as i64 * 1000)
+                        if breach.kind != kind
+                            || !breach.confirmed
+                                && (breach.observation_interrupted
+                                    || now.saturating_sub(breach.last_observed_ms)
+                                        > (self.settings.interval_secs * 3) as i64 * 1000)
                         {
                             breach.since_ms = now;
+                            breach.confirmed = false;
+                        }
+                        breach.kind = kind;
+                        breach.limit_usdt = limit_usdt;
+                        if kind == BreachKind::Stalled {
+                            breach.since_ms = stalled_since.unwrap_or(now);
                         }
                         breach.last_observed_ms = now;
                         breach.observation_interrupted = false;
                         breach.value_usdt = value;
-                        breach.confirmed |= now.saturating_sub(breach.since_ms)
-                            >= self.settings.persistence_secs as i64 * 1000;
+                        breach.confirmed |= kind != BreachKind::MakerBuffer
+                            || now.saturating_sub(breach.since_ms)
+                                >= self.settings.persistence_secs as i64 * 1000;
                     }
                     account.rows = sample.rows;
                     account.errors = sample.errors;
@@ -454,6 +623,7 @@ impl Monitor {
 
 pub struct Sample {
     pub risk: Value,
+    limit_usdt: Option<f64>,
     snapshot_ms: i64,
     account_ms: i64,
     rows: Vec<Row>,
@@ -527,6 +697,20 @@ fn parse_row(value: &Value) -> Result<Row> {
     let uncovered_usdt = priced.then_some(net);
     Ok(Row {
         asset,
+        limits: serde_json::from_value::<PreTradeExposureLimits>(value["limits"].clone())
+            .ok()
+            .filter(|l| {
+                l.symbol_limit_usdt.is_finite()
+                    && l.symbol_limit_usdt >= 0.0
+                    && l.order_amount_usdt.is_finite()
+                    && l.order_amount_usdt > 0.0
+                    && l.maker_buy_orders.is_none_or(|n| n > 0)
+                    && l.maker_sell_orders.is_none_or(|n| n > 0)
+                    && l.min_hedge_usdt.is_none_or(|v| v.is_finite() && v > 0.0)
+            }),
+        normal_buffer_usdt: None,
+        stalled_since_ms: None,
+        made_progress: false,
         open_qty,
         hedge_qty,
         net_qty,
@@ -576,6 +760,12 @@ fn parse_for_exchange(
     let values = exposure["rows"].as_array().context("缺少敞口行")?;
     let mut rows = Vec::new();
     let mut errors = Vec::new();
+    let limit_usdt = risk["total_exposure_limit_usdt"]
+        .as_f64()
+        .filter(|v| v.is_finite() && *v >= 0.0);
+    if limit_usdt.is_none() {
+        errors.push("缺少策略实际账户敞口限额".into());
+    }
     let mut seen = BTreeSet::new();
     let mut invalid_assets = BTreeSet::new();
     for value in values {
@@ -593,6 +783,36 @@ fn parse_for_exchange(
                     venue == format!("{exchange}-margin") || venue == format!("{exchange}-spot")
                 });
                 row.ignored_spot_tail = cash_leg && settings.ignores_spot_tail(exchange, &row);
+                row.normal_buffer_usdt = row.limits.as_ref().and_then(|l| {
+                    let count = if row.net_qty >= 0.0 {
+                        l.maker_buy_orders
+                    } else {
+                        l.maker_sell_orders
+                    }?;
+                    let value = count as f64 * l.order_amount_usdt * settings.maker_buffer_factor;
+                    value.is_finite().then_some(value)
+                });
+                if !row.ignored_spot_tail
+                    && row.net_qty.abs() > 1e-12
+                    && (row
+                        .limits
+                        .as_ref()
+                        .is_none_or(|l| l.min_hedge_usdt.is_none())
+                        || row.limits.as_ref().is_some_and(|l| {
+                            (if row.net_qty >= 0.0 {
+                                l.maker_buy_orders
+                            } else {
+                                l.maker_sell_orders
+                            })
+                            .is_some()
+                                && row.normal_buffer_usdt.is_none()
+                        }))
+                {
+                    errors.push(format!(
+                        "{} 缺少策略生效限额、方向 maker 数或最小对冲金额",
+                        row.asset
+                    ));
+                }
                 if row.net_usdt.is_none() && !row.ignored_spot_tail {
                     errors.push(format!("{} 有持仓但缺少有效价格", row.asset));
                 }
@@ -634,6 +854,7 @@ fn parse_for_exchange(
     });
     Ok(Sample {
         risk: risk.clone(),
+        limit_usdt,
         snapshot_ms,
         account_ms,
         rows,
@@ -695,13 +916,13 @@ mod tests {
 
     fn row(asset: &str, net: f64) -> Value {
         json!({"asset":asset,"open_qty":1000.0+net,"hedge_qty":-1000.0,
-            "open_usdt":1000.0+net,"hedge_usdt":-1000.0,"net_qty":net,"net_usdt":net,"is_total":false,"arb_hedge_net_qty":0.0})
+            "open_usdt":1000.0+net,"hedge_usdt":-1000.0,"net_qty":net,"net_usdt":net,"is_total":false,"arb_hedge_net_qty":0.0,"limits":{"symbol_limit_usdt":1000.0,"order_amount_usdt":(100.0/1.5),"maker_buy_orders":1,"maker_sell_orders":1,"min_hedge_usdt":10.0}})
     }
 
     fn snapshot(rows: Vec<Value>, now: i64) -> Value {
         json!({"entries":[
             {"channel":"pre_trade_exposure","entry":{"ts_ms":now,"rows":rows}},
-            {"channel":"pre_trade_risk","entry":{"ts_ms":now,"account_risks":[{"ts_ms":now}],"total_position":0.0,"open_leg":{"venue":"gate-margin"}}}
+            {"channel":"pre_trade_risk","entry":{"ts_ms":now,"account_risks":[{"ts_ms":now}],"total_exposure_limit_usdt":500.0,"total_position":0.0,"open_leg":{"venue":"gate-margin"}}}
         ]})
     }
 
@@ -727,6 +948,293 @@ mod tests {
             .unwrap();
         assert_eq!(observation.title, "gate_fr_arb04 持仓数据");
         observation.problem
+    }
+
+    fn building_row(asset: &str, net: f64) -> Value {
+        let mut value = row(asset, net);
+        value["limits"] = json!({"symbol_limit_usdt":2000.0,"order_amount_usdt":100.0,
+            "maker_buy_orders":10,"maker_sell_orders":2,"min_hedge_usdt":10.0});
+        value
+    }
+
+    #[test]
+    fn hard_limits_alert_on_first_snapshot_even_at_exact_boundary_and_inside_buffer() {
+        for net in [400.0, -400.0] {
+            let mut m = Monitor::new(Settings::default());
+            let mut value = building_row("ON", net);
+            value["limits"]["symbol_limit_usdt"] = json!(400.0);
+            apply(&mut m, vec![value], NOW);
+            let a = account(&m, NOW);
+            let b = &a.breaches["asset:ON"];
+            assert!(b.confirmed);
+            assert_eq!(b.kind, BreachKind::HardLimit);
+        }
+        let mut m = Monitor::new(Settings::default());
+        apply(
+            &mut m,
+            vec![building_row("A", 250.0), building_row("B", -250.0)],
+            NOW,
+        );
+        let a = account(&m, NOW);
+        assert_eq!(a.net_usdt, Some(0.0));
+        assert!(a.breaches["total"].confirmed);
+        assert_eq!(a.breaches["total"].kind, BreachKind::HardLimit);
+    }
+
+    #[test]
+    fn normal_construction_with_real_hedge_progress_does_not_alert() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=360_000).step_by(10_000) {
+            let mut value = building_row("IDOL", 400.0);
+            let filled = t as f64 / 100.0;
+            value["open_qty"] = json!(1400.0 + filled);
+            value["open_usdt"] = value["open_qty"].clone();
+            value["hedge_qty"] = json!(-1000.0 - filled);
+            value["hedge_usdt"] = value["hedge_qty"].clone();
+            apply(&mut m, vec![value], NOW + t);
+            let a = account(&m, NOW + t);
+            assert!(a.breaches.is_empty());
+            assert_eq!(a.risk_abs_usdt, Some(400.0));
+            assert_eq!(a.rows[0].normal_buffer_usdt, Some(1500.0));
+            assert_eq!(a.rows[0].stalled_since_ms, Some(NOW + t));
+        }
+    }
+
+    #[test]
+    fn frozen_on_exposure_under_both_limits_alerts_after_three_minutes_despite_repricing_plans() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=180_000).step_by(10_000) {
+            let mut value = building_row("ON", 400.0);
+            let price = 1.0 + t as f64 / 1_000_000.0;
+            for key in ["open_usdt", "hedge_usdt", "net_usdt"] {
+                value[key] = json!(value[key].as_f64().unwrap() * price);
+            }
+            value["arb_hedge_net_qty"] = json!(400.0 + t as f64);
+            value["arb_pending_hedge_qty"] = json!(t / 1000);
+            apply(&mut m, vec![value], NOW + t);
+            let a = account(&m, NOW + t);
+            assert_eq!(a.risk_status, if t < 180_000 { "ok" } else { "alert" });
+            assert_eq!(a.rows[0].stalled_since_ms, Some(NOW));
+        }
+        let b = &account(&m, NOW + 180_000).breaches["asset:ON"];
+        assert_eq!(b.kind, BreachKind::Stalled);
+        assert!(b.confirmed);
+        // A real hedge fill clears the stalled incident even while new opens keep net unchanged.
+        let mut filled = building_row("ON", 400.0);
+        filled["open_qty"] = json!(1500.0);
+        filled["open_usdt"] = json!(1500.0);
+        filled["hedge_qty"] = json!(-1100.0);
+        filled["hedge_usdt"] = json!(-1100.0);
+        apply(&mut m, vec![filled], NOW + 190_000);
+        assert!(account(&m, NOW + 190_000).breaches.is_empty());
+    }
+
+    #[test]
+    fn maker_buffer_uses_direction_and_symbol_order_amount() {
+        let mut m = Monitor::new(Settings::default());
+        let mut short = building_row("SHORT", -400.0);
+        short["limits"]["order_amount_usdt"] = json!(80.0);
+        for t in [0, 10_000, 20_000, 30_000] {
+            apply(&mut m, vec![short.clone()], NOW + t);
+        }
+        let a = account(&m, NOW + 30_000);
+        assert_eq!(a.rows[0].normal_buffer_usdt, Some(240.0));
+        assert_eq!(a.breaches["asset:SHORT"].kind, BreachKind::MakerBuffer);
+        assert!(a.breaches["asset:SHORT"].confirmed);
+    }
+
+    #[test]
+    fn tiny_fills_accumulate_but_wrong_way_changes_do_not_reset_stall_timer() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=180_000).step_by(10_000) {
+            let mut value = building_row("ON", 400.0);
+            // The hedge moves in the direction that increases this long exposure.
+            let wrong = t as f64 / 1000.0;
+            value["open_qty"] = json!(1400.0 - wrong);
+            value["open_usdt"] = value["open_qty"].clone();
+            value["hedge_qty"] = json!(-1000.0 + wrong);
+            value["hedge_usdt"] = value["hedge_qty"].clone();
+            apply(&mut m, vec![value], NOW + t);
+        }
+        assert_eq!(
+            account(&m, NOW + 180_000).breaches["asset:ON"].kind,
+            BreachKind::Stalled
+        );
+        for (t, fill, recovered) in [(190_000, 5.0, false), (200_000, 10.0, true)] {
+            let mut value = building_row("ON", 400.0 - fill);
+            value["open_qty"] = json!(1400.0);
+            value["open_usdt"] = json!(1400.0);
+            value["hedge_qty"] = json!(-1000.0 - fill);
+            value["hedge_usdt"] = value["hedge_qty"].clone();
+            apply(&mut m, vec![value], NOW + t);
+            assert_eq!(account(&m, NOW + t).breaches.is_empty(), recovered);
+        }
+    }
+
+    #[test]
+    fn unpriced_gap_restarts_pending_stall_and_cannot_recover_confirmed_stall() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=180_000).step_by(10_000) {
+            let mut value = building_row("ON", 400.0);
+            if t == 100_000 {
+                for k in ["open_usdt", "hedge_usdt", "net_usdt"] {
+                    value[k] = json!(0.0);
+                }
+            }
+            apply(&mut m, vec![value], NOW + t);
+        }
+        assert!(account(&m, NOW + 180_000).breaches.is_empty());
+        for t in (190_000..=290_000).step_by(10_000) {
+            apply(&mut m, vec![building_row("ON", 400.0)], NOW + t);
+        }
+        assert!(account(&m, NOW + 290_000).breaches["asset:ON"].confirmed);
+        let mut missing = building_row("ON", 400.0);
+        missing.as_object_mut().unwrap().remove("limits");
+        apply(&mut m, vec![missing], NOW + 300_000);
+        assert!(!account(&m, NOW + 300_000).complete);
+        assert!(account(&m, NOW + 300_000).breaches["asset:ON"].confirmed);
+        apply(&mut m, vec![building_row("ON", 400.0)], NOW + 310_000);
+        assert!(account(&m, NOW + 310_000).breaches["asset:ON"].confirmed);
+    }
+
+    #[test]
+    fn untradeable_dust_is_not_stalled_but_never_exempt_from_hard_limit() {
+        let mut m = Monitor::new(Settings::default());
+        for t in (0..=180_000).step_by(10_000) {
+            apply(&mut m, vec![building_row("TAIL", 1.0)], NOW + t);
+        }
+        assert!(account(&m, NOW + 180_000).breaches.is_empty());
+        let mut value = building_row("TAIL", 1.0);
+        value["limits"]["symbol_limit_usdt"] = json!(1.0);
+        apply(&mut m, vec![value], NOW + 190_000);
+        assert_eq!(
+            account(&m, NOW + 190_000).breaches["asset:TAIL"].kind,
+            BreachKind::HardLimit
+        );
+    }
+
+    #[test]
+    fn first_snapshot_cannot_recover_old_stall_and_hard_limit_escalates_separately() {
+        let mut m = Monitor::new(Settings::default());
+        apply(&mut m, vec![building_row("ON", 400.0)], NOW);
+        let observations = super::super::notifications::exposure_observations(&m.report(NOW, true));
+        let normal_key = "exposure/gate_fr_arb04/ON";
+        assert_eq!(
+            observations
+                .iter()
+                .find(|o| o.key == normal_key)
+                .unwrap()
+                .problem,
+            None
+        );
+        for t in (10_000..=180_000).step_by(10_000) {
+            apply(&mut m, vec![building_row("ON", 400.0)], NOW + t);
+        }
+        let observations =
+            super::super::notifications::exposure_observations(&m.report(NOW + 180_000, true));
+        assert_eq!(
+            observations
+                .iter()
+                .find(|o| o.key == normal_key)
+                .unwrap()
+                .problem,
+            Some(true)
+        );
+        let mut limited = building_row("ON", 400.0);
+        limited["limits"]["symbol_limit_usdt"] = json!(400.0);
+        apply(&mut m, vec![limited], NOW + 190_000);
+        let observations =
+            super::super::notifications::exposure_observations(&m.report(NOW + 190_000, true));
+        assert_eq!(
+            observations
+                .iter()
+                .find(|o| o.key == normal_key)
+                .unwrap()
+                .problem,
+            None
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .find(|o| o.key == "exposure_limit/gate_fr_arb04/ON")
+                .unwrap()
+                .problem,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn repeated_snapshot_cannot_confirm_stall_and_disabled_caps_do_not_disable_stall_monitoring() {
+        let mut value = building_row("ON", 400.0);
+        value["limits"]["symbol_limit_usdt"] = json!(0.0);
+        let sample = parse(
+            &snapshot(vec![value.clone()], NOW),
+            NOW,
+            &Settings::default(),
+        )
+        .unwrap();
+        let mut m = Monitor::new(Settings::default());
+        m.apply(
+            &[spec("gate_fr_arb04", RedisSite::Jp)],
+            vec![("gate_fr_arb04".into(), Ok(sample))],
+            NOW,
+            true,
+        );
+        for t in [
+            10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000,
+        ] {
+            let sample = parse(&snapshot(vec![value.clone()], NOW), NOW + t, &m.settings).unwrap();
+            m.apply(
+                &[spec("gate_fr_arb04", RedisSite::Jp)],
+                vec![("gate_fr_arb04".into(), Ok(sample))],
+                NOW + t,
+                true,
+            );
+        }
+        for t in (90_000..=270_000).step_by(10_000) {
+            apply(&mut m, vec![value.clone()], NOW + t);
+        }
+        let a = account(&m, NOW + 270_000);
+        assert_eq!(a.breaches["asset:ON"].since_ms, NOW + 90_000);
+        assert!(a.breaches["asset:ON"].confirmed);
+    }
+
+    #[test]
+    fn unlimited_maker_count_is_valid_and_still_has_stagnation_protection() {
+        let mut m = Monitor::new(Settings::default());
+        let mut value = building_row("ON", 400.0);
+        value["limits"]["maker_buy_orders"] = Value::Null;
+        for t in (0..=180_000).step_by(10_000) {
+            apply(&mut m, vec![value.clone()], NOW + t);
+            assert!(account(&m, NOW + t).complete);
+        }
+        let a = account(&m, NOW + 180_000);
+        assert_eq!(a.rows[0].normal_buffer_usdt, None);
+        assert_eq!(a.breaches["asset:ON"].kind, BreachKind::Stalled);
+    }
+
+    #[test]
+    fn flat_position_does_not_require_obsolete_symbol_limits_to_prove_recovery() {
+        let mut m = Monitor::new(Settings::default());
+        let mut limited = building_row("ON", 400.0);
+        limited["limits"]["symbol_limit_usdt"] = json!(400.0);
+        apply(&mut m, vec![limited], NOW);
+        let mut flat = row("ON", 0.0);
+        flat.as_object_mut().unwrap().remove("limits");
+        apply(&mut m, vec![flat], NOW + 10_000);
+        assert!(account(&m, NOW + 10_000).complete);
+        assert!(account(&m, NOW + 10_000).breaches.is_empty());
+        assert!(account(&m, NOW + 10_000).progress.is_empty());
+        let observations =
+            super::super::notifications::exposure_observations(&m.report(NOW + 10_000, true));
+        assert_eq!(
+            observations
+                .iter()
+                .find(|o| o.key == "exposure_limit/gate_fr_arb04/ON")
+                .unwrap()
+                .problem,
+            Some(false)
+        );
     }
 
     #[test]
@@ -851,7 +1359,7 @@ mod tests {
         let mut building = row("ON", 600.0);
         building["arb_hedge_net_qty"] = serde_json::json!(600.0);
         apply(&mut m, vec![building], NOW);
-        assert_eq!(account(&m, NOW).risk_status, "pending");
+        assert_eq!(account(&m, NOW).risk_status, "alert");
         apply(&mut m, vec![row("ON", 0.0)], NOW + 10_000);
         apply(&mut m, vec![row("ON", 0.0)], NOW + 30_000);
         assert!(account(&m, NOW + 30_000).breaches.is_empty());
@@ -1259,7 +1767,7 @@ mod tests {
                 ..Settings::default()
             },
             Settings {
-                asset_limit_usdt: f64::NAN,
+                maker_buffer_factor: f64::NAN,
                 ..Settings::default()
             },
             Settings {

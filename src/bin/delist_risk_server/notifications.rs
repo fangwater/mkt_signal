@@ -605,13 +605,13 @@ impl Notifications {
             .iter()
             .filter(|a| a.complete && a.data_status == "fresh")
         {
-            let prefix = format!("exposure/{}/", account.slug);
-            for (key, issue) in book
-                .issues
-                .iter()
-                .filter(|(key, _)| key.starts_with(&prefix))
-            {
-                let asset = &key[prefix.len()..];
+            for (key, issue) in book.issues.iter() {
+                let Some(asset) = key
+                    .strip_prefix(&format!("exposure/{}/", account.slug))
+                    .or_else(|| key.strip_prefix(&format!("exposure_limit/{}/", account.slug)))
+                else {
+                    continue;
+                };
                 if asset != "total" && !account.rows.iter().any(|row| row.asset == asset) {
                     observations.push(Observation {
                         key: key.clone(),
@@ -742,30 +742,63 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
                 continue;
             }
             let key = format!("asset:{}", row.asset);
-            let confirmed = account.breaches.get(&key).is_some_and(|b| b.confirmed);
-            let problem = row.uncovered_usdt.filter(|_| fresh).and_then(|value| {
-                if value.abs() <= report.settings.asset_limit_usdt {
-                    Some(false)
-                } else if confirmed {
-                    Some(true)
-                } else {
+            let breach = account.breaches.get(&key);
+            let hard = breach.is_some_and(|b| b.kind == super::exposure::BreachKind::HardLimit);
+            let problem = if !fresh {
+                None
+            } else if hard {
+                // A hard-limit incident has its own identity so an earlier maker/stall
+                // warning cannot deduplicate away the escalation. Do not fake recovery.
+                None
+            } else if breach.is_some_and(|b| b.confirmed) {
+                Some(true)
+            } else if breach.is_none()
+                && row.assessable()
+                && (row.stalled_since_ms.is_none() || row.made_progress)
+            {
+                Some(false)
+            } else {
+                None
+            };
+            observations.push(Observation {
+                key: format!("exposure_limit/{}/{}", account.slug, row.asset),
+                title: format!("{} {} 达到策略敞口硬限额", account.slug, row.asset),
+                problem: if !fresh
+                    || row.uncovered_usdt.is_none()
+                    || row.limits.is_none() && row.net_qty.abs() > 1e-12
+                {
                     None
-                }
+                } else {
+                    Some(hard)
+                },
+                detail: format!(
+                    "实际净敞口 {} USDT；策略硬限额 {} USDT；首次观察即报警",
+                    row.uncovered_usdt
+                        .map(|v| format!("{v:+.2}"))
+                        .unwrap_or_else(|| "未知".into()),
+                    row.limits
+                        .as_ref()
+                        .map(|l| format!("{:.2}", l.symbol_limit_usdt))
+                        .unwrap_or_else(|| "未知".into())
+                ),
             });
             observations.push(Observation {
                 key: format!("exposure/{}/{}", account.slug, row.asset),
                 title: format!("{} {} 实际净敞口", account.slug, row.asset),
                 problem,
                 detail: format!(
-                    "实际净敞口 {} USDT；单币阈值 {:.2} USDT；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）",
+                    "{}；实际净敞口 {} USDT；策略硬限额 {}，正常 maker 缓冲 {} USDT；实际净量 {:.8}，策略对冲计划净量 {}（仅参考，不抵扣风险）{}",
+                    breach.map(|b| b.kind.label()).unwrap_or("未触发异常条件"),
                     row.uncovered_usdt
                         .map(|v| format!("{v:+.2}"))
                         .unwrap_or_else(|| "未知".into()),
-                    report.settings.asset_limit_usdt,
+                    row.limits.as_ref().map(|l| if l.symbol_limit_usdt > 0.0 { format!("{:.2} USDT", l.symbol_limit_usdt) } else { "未启用".into() }).unwrap_or_else(|| "未知".into()),
+                    row.normal_buffer_usdt.map(|v| format!("{v:.2}")).unwrap_or_else(|| "未知".into()),
                     row.net_qty,
                     row.hedge_plan_qty
                         .map(|v| format!("{v:.8}"))
-                        .unwrap_or_else(|| "未知".into())
+                        .unwrap_or_else(|| "未知".into()),
+                    row.stalled_since_ms.map(|since| format!("；距上次实际进展 {} 秒", account.checked_ms.saturating_sub(since) / 1000)).unwrap_or_default()
                 ),
             });
         }
@@ -773,20 +806,27 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
             key: format!("exposure/{}/total", account.slug),
             title: format!("{} 实际净敞口合计", account.slug),
             problem: account.risk_abs_usdt.filter(|_| fresh).and_then(|value| {
-                if value > report.settings.account_limit_usdt
-                    && account.breaches.get("total").is_some_and(|b| b.confirmed)
-                {
+                if account.breaches.get("total").is_some_and(|b| b.confirmed) {
                     Some(true)
-                } else if account.complete && value <= report.settings.account_limit_usdt {
+                } else if account.complete
+                    && account.limit_usdt.is_some_and(|l| l == 0.0 || value < l)
+                {
                     Some(false)
                 } else {
                     None
                 }
             }),
             detail: format!(
-                "实际净敞口逐币绝对值合计 {:.2} USDT；账户阈值 {:.2} USDT{}",
+                "实际净敞口逐币绝对值合计 {:.2} USDT；策略账户硬限额 {}{}",
                 account.risk_abs_usdt.unwrap_or(0.0),
-                report.settings.account_limit_usdt,
+                account
+                    .limit_usdt
+                    .map(|l| if l > 0.0 {
+                        format!("{l:.2} USDT")
+                    } else {
+                        "未启用".into()
+                    })
+                    .unwrap_or_else(|| "未知".into()),
                 if account.complete {
                     ""
                 } else {
@@ -801,10 +841,7 @@ pub fn exposure_observations(report: &super::exposure::Report) -> Vec<Observatio
 pub fn unimmr_observation(slug: &str, risk: Option<&serde_json::Value>) -> Observation {
     let assessed = (|| -> Option<(Option<bool>, String)> {
         let risk = risk?;
-        let trigger = risk["unimmr_trigger_line"]
-            .as_f64()
-            .filter(|v| v.is_finite())?;
-        let recover = risk["unimmr_recover_line"]
+        let recover = risk["unimmr_force_close_recover_line"]
             .as_f64()
             .filter(|v| v.is_finite())?;
         let force = risk["unimmr_force_close_line"]
@@ -823,10 +860,8 @@ pub fn unimmr_observation(slug: &str, risk: Option<&serde_json::Value>) -> Obser
                 return None;
             }
             let ratio = account["margin_ratio"].as_f64().filter(|v| v.is_finite())?;
-            bad |= state != "free_trade"
-                || trigger > 0.0 && ratio < trigger
-                || force > 0.0 && ratio < force;
-            healthy &= state == "free_trade" && (recover <= 0.0 || ratio >= recover.max(trigger));
+            bad |= state != "free_trade" || force > 0.0 && ratio <= force;
+            healthy &= state == "free_trade" && (force <= 0.0 || ratio >= recover.max(force));
             values.push(format!("UniMMR={ratio:.4} ({state})"));
         }
         Some((
@@ -838,7 +873,7 @@ pub fn unimmr_observation(slug: &str, risk: Option<&serde_json::Value>) -> Obser
                 None
             },
             format!(
-                "{}；开仓触发线 {trigger:.4}，恢复线 {recover:.4}，强制平仓线 {force:.4}",
+                "{}；强制平仓线 {force:.4}，强平恢复线 {recover:.4}；算法限仓不作为风险报警",
                 values.join("；")
             ),
         ))
@@ -1077,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn dingtalk_hmac_matches_independent_vector_and_unimmr_uses_recovery_line() {
+    fn dingtalk_hmac_matches_independent_vector_and_unimmr_uses_force_recovery_line() {
         let mut sender = DingTalk::test_sender(
             reqwest::Url::parse("https://oapi.dingtalk.com/robot/send?access_token=test").unwrap(),
         );
@@ -1088,11 +1123,34 @@ mod tests {
             query["sign"],
             "YaoDhyN8cSsTib7CZYidXNi4q6x+gMdZvxGPnn6+jZQ="
         );
-        for (ratio, expected) in [(2.9, Some(true)), (3.55, None), (3.6, Some(false))] {
-            let risk = serde_json::json!({"unimmr_trigger_line":3.5,"unimmr_recover_line":3.6,"unimmr_force_close_line":3.0,"account_risks":[{"state":"free_trade","margin_ratio":ratio}]});
+        for (ratio, expected) in [
+            (2.9, Some(true)),
+            (3.0, Some(true)),
+            (3.05, None),
+            (3.1, Some(false)),
+            (3.4, Some(false)),
+        ] {
+            let risk = serde_json::json!({"unimmr_trigger_line":3.5,"unimmr_recover_line":3.6,"unimmr_force_close_line":3.0,"unimmr_force_close_recover_line":3.1,"account_risks":[{"state":"free_trade","margin_ratio":ratio}]});
             assert_eq!(unimmr_observation("test", Some(&risk)).problem, expected);
         }
         assert_eq!(unimmr_observation("test", None).problem, None);
+    }
+
+    #[test]
+    fn normal_unimmr_position_control_is_quiet_but_exchange_risk_still_alerts() {
+        let mut risk = serde_json::json!({"unimmr_trigger_line":50.0,"unimmr_recover_line":65.0,
+            "unimmr_force_close_line":2.8,"unimmr_force_close_recover_line":2.9,
+            "account_risks":[{"state":"free_trade","margin_ratio":42.9}]});
+        let mut book = Book::default();
+        book.observe(vec![unimmr_observation("test", Some(&risk))], 1)
+            .unwrap();
+        assert!(book.outbox.is_empty());
+        for state in ["warning", "reduce_only", "liquidation"] {
+            risk["account_risks"][0]["state"] = serde_json::json!(state);
+            assert_eq!(unimmr_observation("test", Some(&risk)).problem, Some(true));
+        }
+        risk["account_risks"][0]["state"] = serde_json::json!("unrecognized");
+        assert_eq!(unimmr_observation("test", Some(&risk)).problem, None);
     }
 
     #[tokio::test]
@@ -1366,6 +1424,7 @@ mod tests {
             data_incomplete_confirmed: false,
             abs_usdt: Some(0.0),
             risk_abs_usdt: Some(0.0),
+            limit_usdt: Some(500.0),
             ignored_spot_tail_n: 0,
             net_usdt: Some(0.0),
             largest_asset: None,
@@ -1373,6 +1432,7 @@ mod tests {
             rows: vec![],
             errors: vec!["unpriced".into()],
             breaches: BTreeMap::new(),
+            progress: BTreeMap::new(),
         };
         let mut report = super::super::exposure::Report {
             as_of_ms: now_ms(),

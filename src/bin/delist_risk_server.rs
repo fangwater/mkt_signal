@@ -181,10 +181,10 @@ struct Args {
     exposure_persistence_secs: u64,
     #[arg(long, default_value_t = 60)]
     data_persistence_secs: u64,
-    #[arg(long, default_value_t = 100.0)]
-    exposure_asset_limit_usdt: f64,
-    #[arg(long, default_value_t = 500.0)]
-    exposure_account_limit_usdt: f64,
+    #[arg(long, default_value_t = 1.5)]
+    exposure_maker_buffer_factor: f64,
+    #[arg(long, default_value_t = 180)]
+    exposure_stalled_secs: u64,
 
     /// Explicit bounded exceptions for operator-confirmed spot tails.
     #[arg(long, default_value = "config/fr_exposure_ignored_spot_tails.json")]
@@ -554,8 +554,8 @@ async fn main() -> Result<()> {
         max_age_secs: args.exposure_max_age_secs,
         persistence_secs: args.exposure_persistence_secs,
         data_persistence_secs: args.data_persistence_secs,
-        asset_limit_usdt: args.exposure_asset_limit_usdt,
-        account_limit_usdt: args.exposure_account_limit_usdt,
+        maker_buffer_factor: args.exposure_maker_buffer_factor,
+        stalled_secs: args.exposure_stalled_secs,
         catalog_max_age_secs: args.nav_strategy_interval_secs.saturating_mul(3).max(90),
         ignored_spot_tails: exposure::load_ignored_spot_tails(&args.exposure_ignored_spot_tails)?,
     };

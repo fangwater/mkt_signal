@@ -23,9 +23,80 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 use viz_common::resample::{
-    PreTradeAccountRiskView, PreTradeExposureResampleEntry, PreTradeExposureRow,
-    PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
+    PreTradeAccountRiskView, PreTradeExposureLimits, PreTradeExposureResampleEntry,
+    PreTradeExposureRow, PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
 };
+
+fn directional_maker_capacity(total: i32, open: i32, close: i32) -> Option<u32> {
+    let open = match (total > 0, open > 0) {
+        (true, true) => total.min(open),
+        (true, false) => total,
+        (false, true) => open,
+        (false, false) => return None,
+    };
+    // Opening and closing use distinct limits; use the larger operating budget.
+    (close > 0).then_some(open.max(close) as u32)
+}
+
+fn exposure_limit_usdt(base: f64, ratio: f64) -> Option<f64> {
+    if !ratio.is_finite() {
+        return None;
+    }
+    if ratio <= 0.0 {
+        return Some(0.0);
+    }
+    let limit = base * ratio;
+    (base.is_finite() && base > 0.0 && limit.is_finite() && limit > 0.0).then_some(limit)
+}
+
+fn exposure_limits(
+    mon: &MonitorChannel,
+    symbol: &str,
+    mark: f64,
+) -> Option<PreTradeExposureLimits> {
+    let params = PreTradeParamsLoader::instance();
+    let symbol_limit_usdt = exposure_limit_usdt(
+        params.max_pos_u_for_symbol(mon.open_venue(), symbol),
+        params.max_symbol_exposure_ratio(),
+    )?;
+    let order_amount_usdt = params.arb_amount_u_for_symbol(symbol);
+    if !order_amount_usdt.is_finite() || order_amount_usdt <= 0.0 {
+        return None;
+    }
+    let min_hedge_usdt = (|| {
+        if !mark.is_finite() || mark <= 0.0 {
+            return None;
+        }
+        let venue = mon.hedge_venue();
+        let table = mon.venue_min_qty_table(venue)?;
+        let multiplier = mon
+            .qty_multiplier_for_venue_at_price(venue, symbol, mark)
+            .ok()?;
+        let step = table.step_size(symbol)?;
+        let required_qty = table
+            .min_qty(symbol)?
+            .max(step)
+            .max(table.min_notional(symbol).unwrap_or(0.0) / (multiplier * mark));
+        let qty = (required_qty / step).ceil() * step;
+        let value = qty * multiplier * mark;
+        (value.is_finite() && value > 0.0).then_some(value)
+    })();
+    Some(PreTradeExposureLimits {
+        symbol_limit_usdt,
+        order_amount_usdt,
+        maker_buy_orders: directional_maker_capacity(
+            params.max_pending_limit_orders(),
+            params.arb_max_pending_limit_buy_orders(),
+            params.arb_close_max_pending_limit_buy_orders(),
+        ),
+        maker_sell_orders: directional_maker_capacity(
+            params.max_pending_limit_orders(),
+            params.arb_max_pending_limit_sell_orders(),
+            params.arb_close_max_pending_limit_sell_orders(),
+        ),
+        min_hedge_usdt,
+    })
+}
 
 fn print_exposure_table(
     ts_ms: i64,
@@ -769,6 +840,7 @@ impl ResampleChannel {
 
                 rows.push(PreTradeExposureRow {
                     asset: asset_upper.clone(),
+                    limits: exposure_limits(&mon, &symbol, mark),
                     open_qty: Some(open_qty),
                     open_usdt: Some(open_usdt),
                     hedge_qty: Some(hedge_qty),
@@ -796,6 +868,7 @@ impl ResampleChannel {
             if !rows.is_empty() {
                 rows.push(PreTradeExposureRow {
                     asset: "TOTAL".to_string(),
+                    limits: None,
                     open_qty: None,
                     open_usdt: None,
                     hedge_qty: None,
@@ -882,6 +955,10 @@ impl ResampleChannel {
                 signal_counts,
                 total_equity,
                 total_exposure: total_abs_exposure,
+                total_exposure_limit_usdt: exposure_limit_usdt(
+                    total_equity,
+                    params.max_total_exposure_ratio(),
+                ),
                 total_position,
                 spot_equity_usd,
                 borrowed_usd,
@@ -932,6 +1009,20 @@ impl ResampleChannel {
 #[cfg(test)]
 mod tests {
     use super::{arb_hedge_snapshot_asset_key, hedge_snapshot_symbol_key, sum_position_usd};
+
+    #[test]
+    fn exposure_limits_respect_direction_total_and_disabled_caps() {
+        assert_eq!(super::directional_maker_capacity(20, 10, 10), Some(10));
+        assert_eq!(super::directional_maker_capacity(4, 10, 3), Some(4));
+        assert_eq!(super::directional_maker_capacity(0, 2, 5), Some(5));
+        assert_eq!(super::directional_maker_capacity(0, 0, 10), None);
+        assert_eq!(super::directional_maker_capacity(20, 10, 0), None);
+        assert_eq!(super::exposure_limit_usdt(100_000.0, 0.008), Some(800.0));
+        assert_eq!(super::exposure_limit_usdt(750_000.0, 0.005), Some(3750.0));
+        assert_eq!(super::exposure_limit_usdt(0.0, 0.0), Some(0.0));
+        assert_eq!(super::exposure_limit_usdt(0.0, 0.01), None);
+        assert_eq!(super::exposure_limit_usdt(f64::MAX, 2.0), None);
+    }
     use crate::common::min_qty_table::MinQtyTable;
     use crate::pre_trade::{basic_um_manager::BasicUmManager, price_table::PriceTable};
     use mkt_parsers::msg::basic_account_msg::BasicPositionMsg;

@@ -1,6 +1,6 @@
 # Delist Risk Server
 
-最后更新：2026-11-12 11:05 UTC（本地改为借款错误码冷却并移除开仓状态展示，尚未发布）
+最后更新：2026-11-12 11:45 UTC（本地敞口报警分离硬限额、maker 缓冲和 3 分钟停滞；发布继续暂停）
 
 2026-11-11 09:04 UTC，SG 已无运行交易策略，JP Delist 停用 SG Redis、远程平仓、
 备份 SSH 主机及三路端口隧道；Bybit FR 使用 JP 本地快照。通过环境本地脚本重启
@@ -457,9 +457,9 @@ Exposure alarms use **actual account net positions**. Strategy hedge plans,
 pending work and working orders remain diagnostic fields and never offset risk:
 a plan can be rejected or stalled indefinitely without producing a hedge fill.
 Missing or invalid plan metadata does not prevent evaluating valid account
-positions. The existing 30-second persistence window filters transient leg
-imbalances during normal construction; an actual hedge fill, not a refreshed
-plan, can clear an exposure breach.
+positions. Limits and sizing come from the parameters actually loaded by
+`pre_trade`, including venue-scoped `max_pos_u` and per-symbol `amount_u`
+overrides. Delist does not independently reinterpret Redis configuration.
 
 The monitor sums **absolute per-asset actual net exposures** within each account;
 different assets and accounts cannot cancel each other's risk. The signed
@@ -469,12 +469,40 @@ represent the factual net quantity / valuation without plan subtraction.
 all priced rows for diagnostics. Two-leg positions, strategy plan and pending
 quantities remain visible separately.
 
-Default thresholds are **100 USDT per asset**, **500 USDT per account**, and
-**30 seconds** of observed excess before a persistent warning. Initial excess
-is shown immediately as pending. These are monitoring thresholds, independent
-of trading, delisting, automatic dump and flatten thresholds. The collector
-neither changes Redis lists nor submits orders; the independently configured FR
-DingTalk channel below consumes its observations.
+Current exposure policy (implemented locally on 2026-11-12; **not published**,
+publication remains paused):
+
+- Reaching the strategy single-symbol limit (`max_pos_u_for_symbol ×
+  max_symbol_exposure_ratio`) or account limit (`equity ×
+  max_total_exposure_ratio`) alerts on the first fresh observation, including
+  equality. With the default poll interval, this means the next 10-second check,
+  not an exchange-event-time push. Zero published limits mean disabled.
+- Normal construction buffer is the exposure direction's maker capacity ×
+  effective per-symbol order amount × **1.5**. The opening direction cap is
+  bounded by the general pending-order cap; the larger of opening and closing
+  directional capacities covers both normal modes. An unlimited capacity skips
+  only this buffer check; hard-limit and stagnation checks remain active.
+  No count of 10 is invented. Excess over this buffer must persist
+  **30 seconds**. Hard limits always take precedence over this buffer.
+- A still-tradable residual with no actual reducing progress for **180 seconds**
+  alerts even below both limits. Progress uses base-quantity anchors: a hedge-leg
+  change in the reducing direction, or an actual net-quantity reduction of at
+  least the venue's minimum hedge order. Small fills accumulate against the
+  anchor. Opening more exposure, quote/mark changes, cancel/reprice and plan
+  refreshes never reset the clock. An exposure direction reversal begins a new
+  observation. Residuals below the venue minimum hedge notional are exempt only
+  from stagnation detection, never from hard limits.
+- Missing/invalid limits, sizing or hedge rules are incomplete data;
+  known hard limits can still alert. No fixed 100/500 USDT fallback masks missing
+  configuration. A first snapshot after restart cannot recover an old stalled
+  incident without observed quantity progress or a below-minimum residual.
+
+The collector does not modify Redis, submit orders, or change trading guards.
+The independent FR DingTalk channel consumes its observations. The fixed asset
+and account CLI limits were removed. Publishing this policy requires matching
+`pre_trade`, `viz_server` and any running `fr_signal_dashboard` artifacts for
+the updated existing resample IPC contract, plus Delist and its start wrapper; there is no alternate wire format
+or rolling mixed-codec compatibility path.
 
 The exposure entry, risk entry and every underlying account-monitor timestamp
 must be no older than 90 seconds and at most five seconds in the future.
@@ -510,7 +538,8 @@ excluded tails are retired as a policy change, not sent as price-data recoveries
 
 The wrapper accepts `DELIST_EXPOSURE_INTERVAL_SECS`,
 `DELIST_EXPOSURE_MAX_AGE_SECS`, `DELIST_EXPOSURE_PERSISTENCE_SECS`,
-`DELIST_EXPOSURE_ASSET_LIMIT_USDT` and `DELIST_EXPOSURE_ACCOUNT_LIMIT_USDT`.
+`DELIST_EXPOSURE_MAKER_BUFFER_FACTOR` (default `1.5`) and
+`DELIST_EXPOSURE_STALLED_SECS` (default `180`).
 `DELIST_DATA_PERSISTENCE_SECS` (default `60`) requires continuously incomplete
 FR position data before alerting; complete data recovers immediately.
 The identical report is atomically saved beside the risk book as
@@ -548,11 +577,16 @@ one explicit setup test and exits. No extra scheduler or GPT model is introduced
   newly/recurrently tradable and removed/inactive symbols. The initial baseline
   and an absent venue never manufacture mass listing/delisting notices. No new
   symbols are automatically added to strategies.
-- UniMMR uses the live account state and configured trigger/recovery lines;
-  the gap between those lines is unknown for recovery. Confirmed asset/account
+- UniMMR alerts on exchange-reported account risk or the configured force-close
+  line, and uses the force-close recovery line for hysteresis. Normal strategy
+  algorithmic close/position-control thresholds do not generate risk notices;
+  the gap between force-close and recovery lines is unknown for recovery. Confirmed asset/account
   actual net exposure, incomplete data, provider failures and empty UniMMR close lists send
   once on first detection and once on confirmed recovery. There is no periodic
-  repeat or severity-change repeat. Unknown/missing/stale data never recover a
+  repeat. Hard single-symbol exposure limits have separate incident identities
+  (`exposure_limit/<env>/<asset>`) so an earlier maker/stall notice cannot suppress
+  immediate escalation; ordinary maker/stall incidents retain their existing
+  `exposure/<env>/<asset>` identity. Unknown/missing/stale data never recover a
   prior issue. A fully closed asset requires complete fresh coverage to recover.
   Provider/FR backup source notices are scoped to FR and the current FR catalog;
   retired FR accounts and old CTA backup history are excluded. Current shared

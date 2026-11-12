@@ -94,6 +94,7 @@ def main():
                         row = {'asset': 'TEST', 'open_qty': 1000+qty, 'hedge_qty': -1000,
                                'open_usdt': (1000+qty)*price, 'hedge_usdt': -1000*price,
                                'net_qty': qty, 'net_usdt': qty*price, 'is_total': False,
+                               'limits': {'symbol_limit_usdt': 1000, 'order_amount_usdt': 100/1.5, 'maker_buy_orders': 1, 'maker_sell_orders': 1, 'min_hedge_usdt': 10},
                                'arb_hedge_net_qty': qty if mode['gate'] == 'building' and slug == slugs[0] else 0}
                         rows = [row]
                         if slug == slugs[0]:
@@ -102,7 +103,7 @@ def main():
                                          'net_usdt': 0, 'is_total': False, 'arb_hedge_net_qty': 0})
                         entries.extend([
                             {'namespace': slug, 'channel': 'pre_trade_exposure', 'entry': {'ts_ms': timestamp, 'rows': rows}},
-                            {'namespace': slug, 'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000}}
+                            {'namespace': slug, 'channel': 'pre_trade_risk', 'entry': {'ts_ms': now, 'account_risks': [{'ts_ms': timestamp}], 'total_position': 2000, 'total_exposure_limit_usdt': 500}}
                         ])
                     return self.respond({'entries': entries})
                 # Keep the existing navigation and backups populated: an empty board
@@ -315,7 +316,7 @@ def main():
                 page.locator('#exposure-panel > summary').click()
                 page.wait_for_selector('[data-exposure-account="gate_fr_arb01"]')
                 assert page.locator('[data-exposure-account]').count() == 4
-                assert '持续超限' in page.locator('#exposures').inner_text()
+                assert '敞口异常' in page.locator('#exposures').inner_text()
                 assert page.locator('#exposures img').count() == 0
                 assert page.locator('#exposures a[href*="gate_fr_arb04"]').count() == 1
                 details = page.locator('details[data-env="gate_fr_arb01"]')

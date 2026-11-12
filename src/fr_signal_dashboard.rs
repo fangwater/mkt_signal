@@ -1434,6 +1434,7 @@ mod tests {
         is_total: bool,
     ) -> PreTradeExposureRow {
         PreTradeExposureRow {
+            limits: None,
             asset: asset.to_string(),
             open_qty,
             open_usdt: None,
