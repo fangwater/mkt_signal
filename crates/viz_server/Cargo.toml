@@ -3,16 +3,25 @@ name = "viz_server"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "cn-futures-viz"
+path = "src/bin/cn_futures_viz.rs"
+
 [dependencies]
 anyhow.workspace = true
 axum = { version = "0.7", features = ["ws"] }
 bincode = "1.3"
+clap = { version = "4.0", features = ["derive"] }
+cn_futures_pbs = { path = "../cn_futures_pbs" }
 env_logger = "0.10"
 futures-util = "0.3"
 iceoryx2 = "0.8.1"
 ipc_common = { path = "../ipc_common" }
 log = "0.4"
 order_common = { path = "../order_common" }
+persist_common = { path = "../persist_common" }
+persist_manager = { path = "../persist_manager", features = ["embedded"] }
+rocksdb = { version = "0.25", default-features = false, features = ["lz4"] }
 reqwest = { version = "0.12.19", default-features = false }
 runtime_common = { path = "../runtime_common" }
 serde = { version = "1.0", features = ["derive"] }
@@ -20,3 +29,7 @@ serde_json.workspace = true
 tokio = { version = "1.0", features = ["full"] }
 toml = "0.8"
 viz_common = { path = "../viz_common" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-tungstenite = "0.24"

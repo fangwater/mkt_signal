@@ -201,6 +201,20 @@ pub async fn serve_http(
     exec_dashboard: Option<String>,
     config_proxy_url: Option<String>,
 ) -> Result<()> {
+    let dashboard = exec_dashboard
+        .as_deref()
+        .map(exec_dashboard_html)
+        .transpose()?;
+    serve_dashboard(cfg, hub, dashboard, config_proxy_url).await
+}
+
+/// Shared observation transport. A native dashboard has no config/trading proxy.
+pub async fn serve_dashboard(
+    cfg: HttpCfg,
+    hub: WsHub,
+    dashboard: Option<&'static str>,
+    config_proxy_url: Option<String>,
+) -> Result<()> {
     hub.spawn_flush_loop();
 
     let config_proxy = config_proxy_url
@@ -217,8 +231,7 @@ pub async fn serve_http(
         )
         .route("/snapshot", get(snapshot_route))
         .route(&ws_path, get(ws_route));
-    if let Some(venue) = exec_dashboard {
-        let html = exec_dashboard_html(&venue)?;
+    if let Some(html) = dashboard {
         app = app.route("/", get(move || async move { Html(html) }));
     }
     if config_proxy_enabled {

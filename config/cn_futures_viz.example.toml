@@ -1,0 +1,48 @@
+# SDK-free, read-only domestic futures dashboard. No trading/front credentials.
+# Copy to config/cn_futures_viz.toml and select the sources on the Viz host.
+poll_interval_ms = 1000
+stale_after_ms = 15000
+row_limit = 200
+
+[http]
+bind = "127.0.0.1"
+port = 8811
+ws_path = "/ws"
+
+# This is the company-intranet Tonglian relay, not a public or colo feed.
+# Start cn-futures-pbs independently with the matching service_root.
+[[market_data]]
+id = "company-intranet"
+label = "公司内网 · 通联期货 L2"
+environment = "company_intranet"
+service_root = "cn_futures_pbs/company_intranet"
+venues = ["CFFEX", "SHFE", "INE", "CZCE", "DCE", "GFEX"]
+symbols = []
+max_symbols = 2000
+stale_after_ms = 15000
+
+# Configure the existing normalized execution RocksDB, not the SDK flow files.
+# All paths must be absolute. Each secondary must be outside every primary
+# and outside other secondary directories. Never share a secondary with Manager.
+# account is a display alias; do not put credentials/native investor IDs here.
+# expected_account_hash can pin cn_trading_meta/identity.account_hash (optional).
+# [[counters]]
+# id = "ctp-sim"
+# label = "CTP 仿真柜台"
+# account = "ctp-observe"
+# adapter = "ctp"
+# rocksdb_path = "/absolute/ctp-env/flow/persist_manager"
+# secondary_path = "/absolute/viz-state/ctp-sim"
+# expected_account_hash = "<64-character hash from existing store identity>"
+
+# [[counters]]
+# id = "yida-sim"
+# label = "易达仿真柜台"
+# account = "yida-observe"
+# adapter = "yida"
+# rocksdb_path = "/absolute/yida-env/flow/persist_manager"
+# secondary_path = "/absolute/viz-state/yida-sim"
+
+# Future colo/public publishers use the same MarketDataMsg contract, with
+# their own service_root and environment = "colo" / "public_network".
+# These labels do not implement or start upstream adapters.
