@@ -945,6 +945,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cn_futures_pbs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "cn_futures",
+ "iceoryx2",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+ "zmq",
+]
+
+[[package]]
 name = "cn_futures_trim"
 version = "0.1.0"
 dependencies = [

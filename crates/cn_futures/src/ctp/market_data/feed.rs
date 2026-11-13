@@ -31,15 +31,30 @@ pub struct Feed {
 }
 impl Feed {
     pub fn new(config: &Config, placement: &Placement) -> Result<Self> {
+        Self::create(config, || {
+            placement.on_market_data_sdk(|| {
+                let native = Native::new(config, placement.market_data_callback()?)?;
+                native.start(config)?;
+                Ok(native)
+            })
+        })
+    }
+    /// Independent IPC publisher: the SDK uses the standalone MD SDK domain.
+    pub fn standalone(config: &Config, placement: &Placement) -> Result<Self> {
+        Self::create(config, || {
+            placement.on_sdk(|| {
+                let native = Native::new(config, placement.callback())?;
+                native.start(config)?;
+                Ok(native)
+            })
+        })
+    }
+    fn create(config: &Config, create_native: impl FnOnce() -> Result<Native>) -> Result<Self> {
         config.validate()?;
         let flow = crate::runtime::lock_flow(&config.flow_directory)?;
         let user = super::native::credential(&config.user_id_env, 16)?;
         let password = super::native::credential(&config.password_env, 41)?;
-        let native = placement.on_market_data_sdk(|| {
-            let native = Native::new(config, placement.market_data_callback()?)?;
-            native.start(config)?;
-            Ok(native)
-        })?;
+        let native = create_native()?;
         Ok(Self {
             native,
             session: Session::new(config),
