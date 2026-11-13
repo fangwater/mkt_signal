@@ -8,5 +8,7 @@ pub mod deadline;
 pub mod model;
 pub mod persistence;
 pub mod placement;
+#[cfg(any(feature = "ctp-sdk", feature = "yida-sdk"))]
+mod position_ipc;
 pub mod runtime;
 pub mod yida;

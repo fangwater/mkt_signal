@@ -845,6 +845,19 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             credentials.investor.as_bytes(),
         ],
     );
+    let mut position_ipc = placement.on_background(|| {
+        config
+            .position_ipc
+            .as_ref()
+            .map(|cfg| {
+                cn_futures_state::publisher::Producer::start(
+                    cfg,
+                    cn_futures_state::Adapter::Ctp,
+                    &identity.account_hash,
+                )
+            })
+            .transpose()
+    })?;
     let mut journal = placement.on_background(|| {
         Journal::start(
             &config.journal,
@@ -872,6 +885,14 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     let input = placement.on_background(input_commands)?;
     let sdk_version = placement.on_sdk(|| ctp::sdk::version(&config.sdk_library))?;
     journal.record(json!({"type":"runtime_start","execute":execute,"exchanges":crate::model::Venue::ALL.map(|v|v.as_str()),"production_mode":config.production_mode,"sdk":sdk_version}), true)?;
+    crate::position_ipc::publish(
+        &mut position_ipc,
+        &runtime.core,
+        false,
+        false,
+        cn_futures_state::RuntimeStatus::Running,
+        true,
+    );
     placement.on_sdk(|| {
         runtime.trader.start(
             &std::iter::once(config.front.as_str())
@@ -1243,6 +1264,21 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
+            let md_ready = feed
+                .as_ref()
+                .is_none_or(|md| md.ready() && !md.has_backlog());
+            crate::position_ipc::publish(
+                &mut position_ipc,
+                &runtime.core,
+                transport_online,
+                runtime.execute
+                    && runtime.core.is_ready()
+                    && transport_online
+                    && md_ready
+                    && runtime.trader.events.is_empty(),
+                cn_futures_state::RuntimeStatus::Running,
+                false,
+            );
             if !work {
                 std::hint::spin_loop();
             }
@@ -1289,6 +1325,18 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     }
     journal.state(&core, &[])?;
     let shutdown_ok = !fault.load(Ordering::Acquire);
+    crate::position_ipc::publish(
+        &mut position_ipc,
+        &core,
+        false,
+        false,
+        if outcome.is_ok() && shutdown_ok {
+            cn_futures_state::RuntimeStatus::Stopped
+        } else {
+            cn_futures_state::RuntimeStatus::Failed
+        },
+        true,
+    );
     journal.record(
         serde_json::json!({"type":"runtime_stopped","venue_orders_cancelled":false}),
         true,
@@ -1296,6 +1344,9 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
     journal.close_async()?;
     while !journal.poll_closed()? {
         std::hint::spin_loop();
+    }
+    if let Some(publisher) = position_ipc {
+        publisher.finish()?;
     }
     anyhow::ensure!(
         shutdown_ok,

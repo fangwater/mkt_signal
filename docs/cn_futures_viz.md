@@ -1,62 +1,88 @@
 # 国内期货 Viz
 
-`cn-futures-viz` 复用现有 crypto `viz_server` 的 Axum、HTTP 快照、WebSocket 缓存重放、每秒合并发送与慢客户端超时。独立入口与页面位于同一 crate，原 crypto 入口保持现有配置。国内端共用一套观察逻辑：`adapter = "ctp"` / `"yida"` 选择并校验执行数据库身份，行情统一读取 `cn_futures_pbs::msg::MarketDataMsg`。
+`cn-futures-viz` 复用 crypto `viz_server` 的 HTTP、WebSocket 缓存重放、每秒合并发送与慢客户端超时。**持仓、连接、恢复状态和本地预算由交易进程通过 IPC 定时推送；委托与事实成交继续读取归一化 RocksDB。** 行情读取独立 `cn-futures-pbs` 的统一行情 IPC。CTP 与易达使用同一份当前内部契约。
 
-## 启动
+## 启动与配置
 
 ```bash
 cargo build --release -p viz_server --bin cn-futures-viz
 cp config/cn_futures_viz.example.toml config/cn_futures_viz.toml
-# 修改柜台数据库与独立 secondary 路径；只看行情可以不配置 counters。
+# 填写柜台源、账户摘要和独立 secondary 路径。
 target/release/cn-futures-viz --config config/cn_futures_viz.toml --check-config
 target/release/cn-futures-viz --config config/cn_futures_viz.toml
 ```
 
-浏览 `http://127.0.0.1:8811/`。默认只监听本地；远程观察可经现有受控反向代理转发 HTTP 与 WebSocket。服务本身不提供登录，需要暴露到其他机器时由部署环境提供访问控制。
+默认浏览 `http://127.0.0.1:8811/`。原 crypto 入口与配置保持独立。默认只监听本地；远程观察可经现有受控代理转发 HTTP 和 WebSocket，访问控制由部署环境提供。
 
-`--check-config` 只解析配置和校验路径布局，不打开 RocksDB、IPC 或 SDK。二进制不依赖 `cn_futures` 交易 crate，不链接或加载 CTP / 易达 SDK，也不使用交易账户凭据。可以在当前开发机运行 SDK-free Viz、原生数据库与行情 IPC 的测试；CTP 客户端运行仍须用户指定并授权的外部主机。本页不构成任何 CTP 部署或执行授权。
+交易配置在根级增加：
 
-## 数据来源
+```toml
+# CTP / 易达各自使用独立 namespace；同账户风险域只配置一个发布者。
+position_ipc = { namespace = "cn_yida_sim", interval_ms = 1000 }
+```
 
-每个 `[[counters]]` 指向执行进程已生成的归一化 RocksDB。使用 `persist_common::cn_futures` 的现有订单与事实成交类型，以及 `persist_manager::cn_futures` 的列族、证据类型；不创建另一套执行记录格式。独立读线程打开 RocksDB secondary，只写配置中的 secondary 目录。主库及任意 secondary 路径不得重叠，不能复用 Manager 正在使用的 secondary。
+对应 Viz 配置：
 
-每轮只 catch up 一次，读取期间不推进句柄；RocksDB secondary 不支持 `snapshot()`，因此不调用它。初次扫描所有证据，之后按序号增量处理；主库序号变化时扫描订单／成交投影，内存仅保留 `row_limit` 行。未决委托优先显示，已隐藏行数独立返回，汇总数量覆盖全部存储记录。数据库或投影读取失败显示 `unavailable`，不把旧读取结果继续当作新快照。读线程超过过期阈值未更新时独立返回 `observer_stale=true`。
+```toml
+[[counters]]
+id = "yida-sim"
+label = "易达仿真柜台"
+account = "simulation-observe" # 展示别名
+adapter = "yida"              # 另一适配器为 "ctp"
+position_namespace = "cn_yida_sim"
+expected_account_hash = "<cn_trading_meta 中 identity.account_hash 的 64 字符值>"
+rocksdb_path = "/absolute/yida-env/flow/persist_manager"
+secondary_path = "/absolute/viz-state/yida-sim"
+```
 
-每个 `[[market_data]]` 订阅 `<service_root>/<venue>/l2`，仅打开现有服务，不创建行情发布者。发布者晚启动时每秒重试。公司内网示例读取独立 `cn-futures-pbs --zmq` 进程产出的六交易所行情，**这是公司内网接入方式**，配置见 [行情发布器](cn_futures_pbs.md)。不在 Viz 内直连通联、CTP 或易达行情。Colo／公网部署用各自的 service_root 和 environment 标识，继续使用同一消息处理逻辑；这不代表上游 Colo／公网适配器已经实现。
+`position_namespace` 必须匹配交易进程，`expected_account_hash` 同时绑定 IPC 与数据库的账户／适配器／柜台摘要；它是摘要，不是凭据。每个源独立配置，两账户不能共享命名空间或 secondary。持仓接收不依赖 RocksDB 可读；数据库出错时委托／成交显示不可用，正确绑定的持仓 IPC 仍能正常更新。
 
-行情按来源、交易所、原生大小写合约隔离。进程 epoch／源 generation 改变、重置标记或 IPC 序号缺口都会清除该交易所旧盘口；收到新盘口不代表历史成交或因子连续性恢复。缺失浮点和数量输出 null，显式零数量保留，所有行情 u64 序号与数量用十进制字符串输出，避免浏览器精度损失。`symbols` 是精确合约过滤，空数组表示全部；超过 `max_symbols` 不加入新合约，累计丢弃消息数可见。
+没有启用交易端 `position_ipc` 时，Viz 等待持仓 IPC；**不回退到数据库里的历史持仓**。交易配置省略该项则不创建观察发布线程。示例配置已给出 CTP 与易达各自的命名空间。
 
-## 状态与口径
+`--check-config` 只解析配置与路径，不打开数据库、IPC 或 SDK。Viz 和 `cn_futures_state` 均不依赖交易 SDK。CTP 客户端仍只能在用户明确指定并授权的外部主机执行，本机和所有内网机器仅允许 CTP 编辑及编译；本实现没有运行 CTP。
 
-- 委托保留交易日、交易所、完整原生会话与引用、系统号；这些原生 ID 始终为字符串。已发送撤单显示 `cancel_pending`，收到撤单终态后才显示已撤。终态但事实成交数与回报累计数不同显示 `settling`。发送结果未明始终显示 `uncertain`。
-- `filled` 是事实成交，`reported_filled` 是订单回报累计量；不相互代替。手续费未知输出 null，易达已报 CNY 费用与真实零值原样保留；CTP 未报费用不估算。SDK `native_time` 原样展示，不当作 Unix 时间。
-- 持仓按交易所／合约／方向展示今昨仓和冻结今昨仓。持仓只来自最后一份 `state` / `reconciled` 快照，之后若有事实成交返回 `positions_may_lag`。Viz 不靠成交自行重建持仓。
-- 现有交易进程在恢复完成或收到 `state` 请求时记录完整状态，**目前没有周期性状态心跳**。Viz 不发送 `state` 命令；仅收到订单／成交不刷新持仓快照时间。页面分别标注最新事件与快照时间；运行中长期没有新快照会显示 stale。这一版没有改交易业务循环。
-- 恢复成功仅证明那一刻完成恢复。后续 CTP／易达断线、恢复中、交易阻断、传输失败、重启与停止证据覆盖旧状态。传输恢复回报本身不清除之前的执行阻断，仍等待新的执行状态／恢复快照。旧进程快照可以留作历史展示，但 `snapshot_current_runtime=false`。投影冲突计数保留，仅在后续完整恢复证据后解除观察侧的错误阻断。
-- `reported_can_trade` 是执行进程显式报告值；`reconciled` 不会生成 true，也不替代行情就绪、权限或传输门控。`observing` 表示近期有可观察状态，不是交易授权。`/healthz` 仅表示 HTTP 服务在线。
-- `available_local_budget` 单独标成本地执行预算，不能当账户权益／保证金。CTP `state` 证据若包含 account，则只输出财务字段及记录时间；这不是新一次柜台资金查询。易达当前未归一化提供的账户权益显示未知。历史本地来源与当前进程 owned 字段均不能证明策略归属。
+## 持仓 IPC 与刷新语义
 
-## HTTP 与 WebSocket
+唯一消息定义在 SDK-free `crates/cn_futures_state`。服务名是 `<namespace>/viz_pubs/cn_futures_positions`，使用与 Exec 相同思路的长度前缀 bincode／Iceoryx2 全量状态消息，每条固定 IPC 容量 1 MiB、历史 1 条、订阅缓冲 2 条、单发布者和安全覆盖。默认每秒采集一次，Viz 开启服务后在下次发布时接收快照。
+
+消息保留账户摘要、适配器、进程 epoch、单调序号、**业务线程采集时间**、柜台交易日、持仓恢复标记、连接／核心就绪／交易传输／可交易状态、本地执行预算，以及按交易所、合约、多空方向隔离的今仓、昨仓、冻结今仓、冻结昨仓。
+
+交易核心根据真实柜台恢复与实时事实成交维护仓位，报撤单维护冻结；快照直接复制这些当前值，不通过订单／成交历史另算一份仓位，也不按策略目标推导。每帧整体替换：已平仓行的消失或显式零值能清除旧显示，空的已恢复快照代表当前账户为空。`position_ready=false` 表示尚未取得完整初始持仓，不能当成空仓。断线时保留核心已知仓位并标记 disconnected；重启的新 epoch 在恢复前清除上个进程的展示。
+
+业务线程仅在定时到期时复制轻量状态到三个冷初始化缓冲之一，使用非阻塞队列替换后台尚未处理的旧快照。不扫描订单、构造 JSON、等待磁盘、消费者或发布确认。后台线程继承配置的 background CPU／NUMA 放置，负责编码和 IPC 发送。最多 8192 条多空持仓行；超限或采集失败整帧标为失败，不截断成部分账户。显式配置的发布器初始化失败会在 SDK 启动前返回错误；运行中发布故障不改变交易状态或重试订单，Viz 依据最后采集时间显示不可用／过期。
+
+Viz 校验账户摘要、适配器、完整帧、数量与冻结关系、重复身份和同 epoch 序号；拒绝跨账户或倒退数据。超过 `stale_after_ms` 未收到新采集，显示 stale。旧 IPC 值可留作历史展示，但不会用数据库快照刷新其时效。正常退出尽力发送 stopped，异常退出尽力发送 failed；PUB/SUB 是有损观察通道，进程被杀或终态丢失时依靠心跳过期识别。HTTP 连接在线与持仓新鲜度分别显示。
+
+## 委托、成交与行情
+
+每个柜台由独立读线程打开 RocksDB secondary，只写配置中的 secondary 目录。每轮 catch up 一次，扫描期间固定句柄；不调用 RocksDB secondary 不支持的 `snapshot()`。证据增量读取，主库序号变化时扫描订单／成交投影；`row_limit` 限制返回行数，未决委托优先，隐藏条数与全库汇总单独返回。读取失败不会影响持仓订阅。
+
+委托保留交易日、交易所、完整原生会话／引用和系统号，ID 始终为字符串。撤单发送不代表已撤；终态但事实成交未齐显示 settling；发送结果未明显示 uncertain。`filled` 只统计事实成交，`reported_filled` 是订单回报累计量。手续费未知是 null，易达已报 CNY 费用与零值原样保留，CTP 未报费用不估算。原生 `native_time` 不当作 Unix 时间。
+
+账户权益仅在数据库中的 CTP account 证据提供时展示，带独立记录时间；它不是最新主动查询。实时 IPC 的 `available_local_budget` 明确标为本地执行预算，不作为权益／保证金。当前观察账户持仓，不推定策略归属；`can_trade` 仅转发执行进程当前的全局门控报告，不替代逐合约风险检查。
+
+行情订阅 `<service_root>/<venue>/l2`，只打开现有服务，源晚启动时自动重试。公司内网示例是独立 `cn-futures-pbs --zmq` 产出的六交易所行情，**明确属于公司内网通联接入方式**，详见 [发布器](cn_futures_pbs.md)。Colo／公网部署使用独立 root 和 environment，继续复用同一消息处理；上游适配器是否可用以发布器文档为准。
+
+行情按来源／交易所／原生大小写合约隔离。epoch、generation、reset 或序号缺口清除该交易所旧盘口；新的完整盘口不修复历史成交／因子连续性。缺失值输出 null，显式零数量保留，u64 序号和数量输出十进制字符串。`symbols` 精确过滤，`max_symbols` 限制缓存并显示容量丢弃数。
+
+## HTTP 与验证
 
 | 路径 | 行为 |
 | --- | --- |
-| `/` | 中文观察页；柜台、交易所、合约与行情来源筛选，点击查看完整身份和五档 |
-| `/healthz` | HTTP 进程健康 |
+| `/` | 中文观察页，筛选柜台／交易所／合约／行情源，查看原生记录及五档 |
+| `/healthz` | 只表示 HTTP 进程在线 |
 | `/snapshot` | 与 crypto 相同的 `{ts_ms, entries}` 缓存结构 |
-| 配置 `ws_path`，默认 `/ws` | 连接先重放最新消息，此后每秒合并发送 |
+| 配置 `ws_path`，默认 `/ws` | 首次重放最新 HTTP 消息，后续每秒合并发送 |
 
-当前消息类型为 `cn_execution`（含各柜台 sources、生命周期、订单和成交）与 `cn_market`（各行情来源的 channels、quotes）。两类均含微秒 `ts_us`。执行消息给出 `ws_path` 与 `update_interval_ms`，页面据此连接并检测观察链路停更。只提供 GET 观察接口，不代理配置或交易命令。
-
-页面的持仓与行情过期按各自事实时间判断。停止的柜台显示 stopped；其历史记录仍可查看。实盘与仿真必须使用不同源 ID、数据库、secondary 与行情 service_root；服务不会在柜台间自动切换或汇总账户风险。
-
-## 验证
+`cn_execution` 包含每个源独立的 `position_state`（实时 IPC）、`lifecycle`（持久化证据）及订单／成交；`cn_market` 包含行情 channels／quotes。前端持仓表和运行状态卡片只读 `position_state.snapshot`。只提供 GET 观察接口，不代理配置或交易命令。
 
 ```bash
-cargo fmt -p viz_server --check
-cargo test -p viz_server --lib
-cargo clippy -p viz_server --all-targets --no-deps -- -D warnings
+cargo fmt -p cn_futures_state -p cn_futures -p viz_server --check
+# 仅 SDK-free 契约、IPC、Viz 测试；不运行 cn_futures/CTP 测试。
+cargo test -p cn_futures_state -p viz_server --lib
+cargo clippy -p cn_futures_state -p viz_server --all-targets --no-deps -- -D warnings
 ```
 
-上述 Viz 测试仅使用 SDK-free 共享类型、测试 RocksDB 与独立测试 IPC，不执行 CTP 代码。覆盖迟到成交、撤单确认、重启／断线／传输／过期证据，活主库 secondary 追平和主库字节不变，64 位字符串身份、行情缺失值／零值及重置／缺口，以及 HTTP／WS 只读传输。
+覆盖全量替换、平仓清除、冻结更新、账户绑定、重启／断线／过期、容量、帧校验、读库不回退持仓、数据库不可用时继续接收 IPC，以及原有订单／成交与 HTTP／WS 行为。业务侧发布队列的 1000 次捕获实测零堆分配，编码及完整消息初始化在后台执行。CTP／易达运行时集成仅做双 SDK 编译检查，不以 SDK-free 测试代替真实柜台验收。
 
-2026-11-13 验证：14 项后端测试、针对本 crate 的 Clippy、格式和 release 构建通过。SDK-free 观察器读取既有易达仿真数据库的 17 笔委托与 10 笔成交，状态正确显示 stopped；公司内网 ZMQ→独立测试 IPC→Viz 收到六交易所 383 个合约快照，发布器正常退出后旧盘口清空。浏览器验证桌面／手机布局、筛选、原生记录详情、五档与自定义 WS 路径，未出现 JS 错误；主库 14 个文件 SHA-256 保持不变。收据位于 Git 忽略目录 `data/ops/cn_futures_viz_20261113T065745Z/`。测试进程已退出，没有常驻部署或 CTP SDK 执行。
+2026-11-13 验证：6 项 `cn_futures_state` 与 16 项 Viz 测试通过，两个 SDK 的 all-targets 编译／Clippy 和本地 release 构建通过。独立 SDK-free 合成持仓源→IPC→Viz→HTTP／WS→桌面／手机页面联测覆盖恢复前未知、今昨仓／冻结更新、空仓清除、断线和心跳过期；另一个 Viz 在数据库不可用时仍持续收到同一持仓源。原易达仿真历史的 17 笔委托和 10 笔成交保持可读，主库 14 个文件 SHA-256 不变。收据：`data/ops/cn_positions_ipc_20261113T073735Z/receipt.json`（Git 忽略）。本轮未运行交易客户端，未连接柜台，也未常驻部署。

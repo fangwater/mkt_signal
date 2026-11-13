@@ -16,7 +16,6 @@ pub struct Reader {
     total_orders: usize,
     active_orders: usize,
     total_fills: usize,
-    last_fill_sequence: u64,
     loaded: bool,
 }
 impl Reader {
@@ -51,7 +50,6 @@ impl Reader {
             total_orders: 0,
             active_orders: 0,
             total_fills: 0,
-            last_fill_sequence: 0,
             loaded: false,
         };
         reader.validate_identity(source)?;
@@ -71,12 +69,10 @@ impl Reader {
             identity.adapter == source.adapter.as_str(),
             "configured adapter does not match execution store"
         );
-        if let Some(expected) = &source.expected_account_hash {
-            ensure!(
-                &identity.account_hash == expected,
-                "configured account binding does not match execution store"
-            );
-        }
+        ensure!(
+            identity.account_hash == source.expected_account_hash,
+            "configured account binding does not match execution store"
+        );
         Ok(())
     }
     pub fn read(
@@ -139,7 +135,6 @@ impl Reader {
             "id":source.id, "label":source.label, "account":source.account, "adapter":source.adapter,
             "read_at_us":now, "read_error":null, "sequence":sequence.to_string(),
             "lifecycle":self.lifecycle.view(now, stale_ms),
-            "positions_may_lag":self.last_fill_sequence > self.lifecycle.state_sequence,
             "total_orders":self.total_orders, "active_orders":self.active_orders, "total_fills":self.total_fills,
             "orders_omitted":self.total_orders.saturating_sub(self.orders.len()),
             "fills_omitted":self.total_fills.saturating_sub(self.fills.len()),
@@ -152,7 +147,6 @@ impl Reader {
         self.total_orders = 0;
         self.active_orders = 0;
         self.total_fills = 0;
-        self.last_fill_sequence = 0;
         for item in self.db.iterator_cf(
             self.db.cf_handle(ORDERS).context("native orders handle")?,
             IteratorMode::Start,
@@ -183,7 +177,6 @@ impl Reader {
                 fill.commission.is_none_or(f64::is_finite),
                 "invalid reported commission"
             );
-            self.last_fill_sequence = self.last_fill_sequence.max(fill.evidence_seq);
             self.total_fills += 1;
             fills.push(fill);
             if fills.len() > limit * 2 {

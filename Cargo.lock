@@ -915,6 +915,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cc",
+ "cn_futures_state",
  "crossbeam-channel",
  "encoding_rs",
  "libc",
@@ -957,6 +958,19 @@ dependencies = [
  "serde_json",
  "toml 0.8.23",
  "zmq",
+]
+
+[[package]]
+name = "cn_futures_state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "crossbeam-channel",
+ "iceoryx2",
+ "persist_common",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7051,6 +7065,7 @@ dependencies = [
  "bincode",
  "clap",
  "cn_futures_pbs",
+ "cn_futures_state",
  "env_logger 0.10.2",
  "futures-util",
  "iceoryx2",

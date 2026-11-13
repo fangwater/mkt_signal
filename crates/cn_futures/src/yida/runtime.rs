@@ -43,6 +43,19 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let endpoint = serde_json::to_vec(&endpoint)?;
     let identity =
         crate::persistence::store_identity("yida", &[&endpoint, credentials.user.as_bytes()]);
+    let mut position_ipc = on_background(placement.as_ref(), || {
+        config
+            .position_ipc
+            .as_ref()
+            .map(|cfg| {
+                cn_futures_state::publisher::Producer::start(
+                    cfg,
+                    cn_futures_state::Adapter::Yida,
+                    &identity.account_hash,
+                )
+            })
+            .transpose()
+    })?;
     let journal = on_background(placement.as_ref(), || {
         Journal::start(
             &config.journal,
@@ -70,6 +83,14 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     let mut session = Session::default();
     let input = on_background(placement.as_ref(), input_commands)?;
     journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"placement":config.placement,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
+    crate::position_ipc::publish(
+        &mut position_ipc,
+        &runtime.core,
+        false,
+        false,
+        cn_futures_state::RuntimeStatus::Running,
+        true,
+    );
     on_sdk(placement.as_ref(), || runtime.trader.start())?;
     let mut stopping = false;
     let mut transport_seen_ready = false;
@@ -272,6 +293,18 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
+            let transport_ready = runtime.trader.transport_ready();
+            crate::position_ipc::publish(
+                &mut position_ipc,
+                &runtime.core,
+                transport_ready,
+                runtime.execute
+                    && runtime.core.is_ready()
+                    && transport_ready
+                    && runtime.trader.events.is_empty(),
+                cn_futures_state::RuntimeStatus::Running,
+                false,
+            );
             if !work {
                 if config.idle_sleep_us == 0 {
                     std::hint::spin_loop();
@@ -319,11 +352,26 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
     }
     journal.state(&core, &[])?;
     let shutdown_ok = !fault.load(Ordering::Acquire);
+    crate::position_ipc::publish(
+        &mut position_ipc,
+        &core,
+        false,
+        false,
+        if outcome.is_ok() && shutdown_ok {
+            cn_futures_state::RuntimeStatus::Stopped
+        } else {
+            cn_futures_state::RuntimeStatus::Failed
+        },
+        true,
+    );
     journal.record(
         json!({"type":"runtime_stopped","venue_orders_cancelled":false}),
         true,
     )?;
     journal.finish()?;
+    if let Some(publisher) = position_ipc {
+        publisher.finish()?;
+    }
     anyhow::ensure!(
         shutdown_ok,
         "Yida callback pipeline/destruction failed on shutdown; evidence retained"

@@ -1,8 +1,6 @@
 //! Observation derives from durable facts; it never advances the trading OMS.
 use anyhow::{ensure, Context, Result};
-use persist_common::cn_futures::{
-    NativeOrderRecord, OrderStatus, Position, SendState, Side, Venue,
-};
+use persist_common::cn_futures::{NativeOrderRecord, OrderStatus, SendState};
 use persist_manager::cn_futures::Evidence;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,20 +78,12 @@ pub fn observe(record: NativeOrderRecord) -> Result<ObservedOrder> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PositionRow {
-    pub venue: Venue,
-    pub symbol: String,
-    pub side: Side,
-    pub position: Position,
-}
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StateSnapshot {
     pub ready: bool,
     pub connected: bool,
     pub reason: String,
     pub trading_day: String,
     pub available_local_budget: f64,
-    pub positions: Vec<PositionRow>,
 }
 #[derive(Debug, Default)]
 pub struct Lifecycle {
@@ -167,14 +157,6 @@ impl Lifecycle {
                     state.available_local_budget.is_finite() && state.available_local_budget >= 0.0,
                     "invalid local execution budget"
                 );
-                let mut identities = std::collections::HashSet::new();
-                for p in &state.positions {
-                    p.position.validate()?;
-                    ensure!(
-                        !p.symbol.is_empty() && identities.insert((p.venue, &p.symbol, p.side)),
-                        "invalid/duplicate native position"
-                    );
-                }
                 self.state = Some(state);
                 self.state_us = Some(e.received_us);
                 self.state_sequence = e.sequence;

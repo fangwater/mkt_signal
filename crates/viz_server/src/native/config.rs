@@ -64,20 +64,7 @@ fn venues_default() -> Vec<String> {
         .map(|s| s.to_string())
         .collect()
 }
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Adapter {
-    Ctp,
-    Yida,
-}
-impl Adapter {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Ctp => "ctp",
-            Self::Yida => "yida",
-        }
-    }
-}
+pub use cn_futures_state::Adapter;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Counter {
@@ -86,9 +73,10 @@ pub struct Counter {
     /// Display alias, never a credential or native investor ID.
     pub account: String,
     pub adapter: Adapter,
+    pub position_namespace: String,
     pub rocksdb_path: PathBuf,
     pub secondary_path: PathBuf,
-    pub expected_account_hash: Option<String>,
+    pub expected_account_hash: String,
 }
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -194,12 +182,8 @@ impl Config {
                 !counter.label.trim().is_empty() && !counter.account.trim().is_empty(),
                 "counter labels cannot be empty"
             );
-            if let Some(hash) = &counter.expected_account_hash {
-                ensure!(
-                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "invalid expected_account_hash"
-                );
-            }
+            cn_futures_state::validate_hash(&counter.expected_account_hash)?;
+            cn_futures_state::service_name(&counter.position_namespace)?;
             for p in &primary {
                 ensure!(
                     disjoint(p, &secondary[i]),
@@ -217,6 +201,15 @@ impl Config {
                 );
             }
         }
+        let position_namespaces: HashSet<_> = self
+            .counters
+            .iter()
+            .map(|c| &c.position_namespace)
+            .collect();
+        ensure!(
+            position_namespaces.len() == self.counters.len(),
+            "duplicate position IPC namespace"
+        );
         let mut roots = HashSet::new();
         for md in &self.market_data {
             cn_futures_pbs::ipc::validate_root(&md.service_root)?;

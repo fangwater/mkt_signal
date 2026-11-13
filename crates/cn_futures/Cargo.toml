@@ -10,6 +10,7 @@ yida-sdk = ["dep:cc"]
 latency-metrics = []
 
 [dependencies]
+cn_futures_state = { path = "../cn_futures_state" }
 persist_common = { path = "../persist_common" }
 persist_manager = { path = "../persist_manager", features = ["embedded"] }
 anyhow.workspace = true

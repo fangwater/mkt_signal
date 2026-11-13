@@ -228,6 +228,40 @@ impl TradingCore {
             .map(|id| self.position_id(id, side))
             .unwrap_or_default()
     }
+    /// Copy only account state/positions into a cold-preallocated observation
+    /// buffer. No order/instrument projection, JSON, I/O or mutable-core borrow
+    /// crosses into the publisher thread.
+    pub fn capture_positions(&self, snapshot: &mut cn_futures_state::Snapshot) -> Result<()> {
+        use cn_futures_state::{PositionRow, Text, MAX_POSITIONS};
+        snapshot.position_ready = !self.day.is_empty();
+        snapshot.ready = self.is_ready();
+        snapshot.connected = self.connected;
+        snapshot.trading_day = Text::new(&self.day)?;
+        snapshot.reason = Text::new(if self.recovery_pending && self.ready {
+            "recovery persistence pending"
+        } else {
+            &self.reason
+        })?;
+        snapshot.available_local_budget = self.cash;
+        snapshot.positions.clear();
+        for (index, sides) in self.positions.iter().enumerate() {
+            for (side, position) in sides.iter().enumerate() {
+                let Some(position) = position else { continue };
+                ensure!(
+                    snapshot.positions.len() < MAX_POSITIONS,
+                    "position IPC capacity exceeded; no partial snapshot published"
+                );
+                let (venue, symbol) = self.symbols.identity(SymbolId(index));
+                snapshot.positions.push(PositionRow {
+                    venue,
+                    symbol: Text::new(symbol)?,
+                    side: if side == 0 { Side::Buy } else { Side::Sell },
+                    position: position.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
     pub fn view(&self) -> CoreView<'_> {
         CoreView {
             instruments: self

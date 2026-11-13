@@ -1,5 +1,6 @@
 pub mod config;
 pub mod market;
+pub mod positions;
 pub mod reader;
 pub mod state;
 
@@ -82,13 +83,17 @@ pub async fn run(cfg: Config) -> Result<()> {
         let hub = WsHub::new(128);
         let mut counters = Vec::new();
         let mut workers = Vec::new();
+        let mut positions = Vec::new();
+        let mut listeners = Vec::new();
         for source in cfg.counters {
+            let (state,listener)=positions::spawn(source.clone());
+            positions.push(state);
+            listeners.push(listener);
             let (rx, stop, handle) = spawn_counter(source, cfg.row_limit, cfg.poll_interval_ms, cfg.stale_after_ms);
             counters.push(rx);
             workers.push((stop, handle));
         }
         let markets: Vec<_> = cfg.market_data.into_iter().map(|md| Rc::new(RefCell::new(market::Market::new(md)))).collect();
-        let mut listeners = Vec::new();
         for market in &markets {
             for venue in market.borrow().config.venues.clone() {
                 let market = market.clone();
@@ -128,9 +133,10 @@ pub async fn run(cfg: Config) -> Result<()> {
             loop {
                 interval.tick().await;
                 let now = now_us();
-                let sources: Vec<_> = counters.iter().map(|rx| {
+                let sources: Vec<_> = counters.iter().zip(&positions).map(|(rx,positions)| {
                     let mut value = rx.borrow().clone();
                     value["observer_stale"] = json!(state::stale(now, value["read_at_us"].as_u64(), observer_stale_ms));
+                    value["position_state"] = positions.borrow().view(now,observer_stale_ms);
                     value
                 }).collect();
                 hub.broadcast(json!({"type":"cn_execution","ts_us":now,"ws_path":ws_path,"update_interval_ms":cfg.poll_interval_ms,"sources":sources}).to_string());

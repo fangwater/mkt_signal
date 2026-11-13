@@ -3,6 +3,7 @@
 sdk_library = "/opt/ctp/6.7.11/libthosttraderapi_se.so"
 flow_directory = "/tmp/mkt_ctp_sim/flow"
 journal = "/tmp/mkt_ctp_sim/events.jsonl"
+position_ipc = { namespace = "cn_ctp_sim", interval_ms = 1000 }
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
 front = "tcp://127.0.0.1:1"
 fallback_fronts = []

@@ -1,6 +1,6 @@
 # 国内原生订单回报与持久化
 
-CTP / 易达交易进程直接使用 `persist_manager` 的嵌入式 RocksDB 存储。业务线程负责解析、风控和 OMS；原始回报与发送前审计的 JSON 构造在后台完成；有界队列把发送意图、原始回报、归一化订单、事实成交交给后台写盘线程。这个入口不启动 IPC、Redis、Tokio runtime 或独立 persist_manager 进程。
+CTP / 易达交易进程直接使用 `persist_manager` 的嵌入式 RocksDB 存储。业务线程负责解析、风控和 OMS；原始回报与发送前审计的 JSON 构造在后台完成；有界队列把发送意图、原始回报、归一化订单、事实成交交给后台写盘线程。持久化入口不启动 Redis、Tokio runtime 或独立 persist_manager 进程。交易进程可通过 `position_ipc` 配置启用独立后台 Iceoryx2 持仓快照推送；它直接观察核心当前状态，不等待写盘，见 [国内期货 Viz](cn_futures_viz.md)。
 
 交易与持久化共享 `persist_common::cn_futures` 的唯一数据契约，`cn_futures::model` 重导出这些类型。原有加密市场的 binary `uniform_orders` 编码保持原状；国内记录保留交易日、交易所、完整会话／报单组、字符串原生系统号、开平标志、手数和期权元数据，不借用 crypto venue 编号、策略来源或费用字段表达这些信息。
 

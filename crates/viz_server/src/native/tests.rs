@@ -24,9 +24,10 @@ fn counter(path: &Path, secondary: &Path) -> Counter {
         label: "仿真柜台".into(),
         account: "test-alias".into(),
         adapter: Adapter::Ctp,
+        position_namespace: "test_ctp_positions".into(),
         rocksdb_path: path.into(),
         secondary_path: secondary.into(),
-        expected_account_hash: Some("a".repeat(64)),
+        expected_account_hash: "a".repeat(64),
     }
 }
 fn record() -> NativeOrderRecord {
@@ -211,10 +212,7 @@ fn live_primary_secondary_reads_atomic_facts_without_changing_primary_or_id_prec
     let mut reader = reader::Reader::open(&source).unwrap();
     let first = reader.read(&source, 10, 1_000_100, 1000).unwrap();
     assert_eq!(first["total_orders"], 1);
-    assert_eq!(
-        first["lifecycle"]["state"]["positions"][0]["venue"],
-        "CFFEX"
-    );
+    assert!(first["lifecycle"]["state"].get("positions").is_none());
     assert_eq!(
         first["orders"][0]["record"]["identity"]["native"]["order_ref"],
         "18446744073709551614"
@@ -261,7 +259,7 @@ fn live_primary_secondary_reads_atomic_facts_without_changing_primary_or_id_prec
     let before = tree(&path);
     let second = reader.read(&source, 10, 1_000_100, 1000).unwrap();
     assert_eq!(second["total_fills"], 1);
-    assert_eq!(second["positions_may_lag"], true);
+    assert!(second.get("positions_may_lag").is_none());
     assert_eq!(second["orders"][0]["record"]["order"]["filled"], 1);
     assert!(second["fills"][0]["commission"].is_null());
     assert_eq!(before, tree(&path));
@@ -382,6 +380,119 @@ fn config_rejects_symlink_to_primary_and_shared_secondary_or_market_namespace() 
     cfg.market_data = vec![market_config("same/root"), market_config("same/root")];
     cfg.market_data[1].id = "another".into();
     assert!(cfg.validate().is_err());
+}
+
+fn position_snapshot(source: &Counter, epoch: u64, sequence: u64) -> cn_futures_state::Snapshot {
+    use cn_futures_state::{PositionRow, Snapshot, Text};
+    let mut snapshot = Snapshot::empty(source.adapter, &source.expected_account_hash).unwrap();
+    snapshot.publisher_epoch = epoch;
+    snapshot.sequence = sequence;
+    snapshot.observed_us = 1_000_000;
+    snapshot.trading_day = Text::new("20261113").unwrap();
+    snapshot.position_ready = true;
+    snapshot.ready = true;
+    snapshot.connected = true;
+    snapshot.transport_ready = true;
+    snapshot.positions.push(PositionRow {
+        venue: Venue::Cffex,
+        symbol: Text::new("IF2612").unwrap(),
+        side: Side::Buy,
+        position: Position {
+            today: 2,
+            yesterday: 3,
+            frozen_today: 1,
+            frozen_yesterday: 0,
+        },
+    });
+    snapshot
+}
+#[test]
+fn live_positions_replace_rows_handle_disconnect_restart_and_expire_without_db_fallback() {
+    let source = counter(
+        Path::new("/missing/native-primary"),
+        Path::new("/missing/native-secondary"),
+    );
+    let mut observed = positions::Positions::new(source.clone());
+    assert!(observed.view(1_000_100, 1000)["snapshot"].is_null());
+    observed.apply(position_snapshot(&source, 100, 1)).unwrap();
+    let mut updated = position_snapshot(&source, 100, 2);
+    updated.positions[0].position.today = 1;
+    updated.positions[0].position.frozen_today = 0;
+    observed.apply(updated).unwrap();
+    assert_eq!(
+        observed.view(1_000_100, 1000)["snapshot"]["positions"][0]["position"]["today"],
+        1
+    );
+    let mut flat = position_snapshot(&source, 100, 3);
+    flat.positions.clear();
+    observed.apply(flat).unwrap();
+    assert!(observed.view(1_000_100, 1000)["snapshot"]["positions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let mut disconnected = position_snapshot(&source, 100, 4);
+    disconnected.connected = false;
+    disconnected.ready = false;
+    disconnected.transport_ready = false;
+    observed.apply(disconnected).unwrap();
+    assert_eq!(observed.view(1_000_100, 1000)["status"], "disconnected");
+    let mut restarted = position_snapshot(&source, 200, 1);
+    restarted.positions.clear();
+    restarted.position_ready = false;
+    restarted.ready = false;
+    restarted.connected = false;
+    restarted.transport_ready = false;
+    observed.apply(restarted).unwrap();
+    assert_eq!(observed.view(1_000_100, 1000)["status"], "recovering");
+    assert!(observed.view(1_000_100, 1000)["snapshot"]["positions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    observed.apply(position_snapshot(&source, 200, 2)).unwrap();
+    assert_eq!(observed.view(4_000_000, 1000)["status"], "stale");
+    let mut wrong = position_snapshot(&source, 200, 3);
+    wrong.account_hash = cn_futures_state::Text::new(&"b".repeat(64)).unwrap();
+    assert!(observed.apply(wrong).is_err());
+    assert_eq!(observed.view(1_000_100, 1000)["snapshot"]["sequence"], "2");
+    assert!(observed.apply(position_snapshot(&source, 200, 1)).is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn position_listener_receives_ipc_with_missing_database_and_binds_account() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut source = counter(
+                Path::new("/missing/native-primary"),
+                Path::new("/missing/native-secondary"),
+            );
+            source.position_namespace = format!("native_viz_positions_{}", now_us());
+            let publisher =
+                cn_futures_state::transport::StatePublisher::new(&source.position_namespace)
+                    .unwrap();
+            let (observed, handle) = positions::spawn(source.clone());
+            let mut snapshot = position_snapshot(&source, 100, 1);
+            snapshot.observed_us = now_us();
+            publisher.publish(&snapshot).unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while observed.borrow().view(now_us(), 1000)["snapshot"].is_null() {
+                    // A periodic publisher also discovers late subscribers on its
+                    // next send, which is when iceoryx transfers retained history.
+                    snapshot.sequence += 1;
+                    snapshot.observed_us = now_us();
+                    publisher.publish(&snapshot).unwrap();
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                observed.borrow().view(now_us(), 1000)["snapshot"]["positions"][0]["position"]
+                    ["frozen_today"],
+                1
+            );
+            handle.abort();
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

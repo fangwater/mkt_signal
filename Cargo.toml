@@ -8,6 +8,7 @@ members = [
     "crates/cn_futures_l2",
     "crates/cn_futures",
     "crates/cn_futures_pbs",
+    "crates/cn_futures_state",
     "crates/usstock_lseg_mbp_replay",
     "crates/usstock_lseg_raw_replay",
     "crates/usstock_lseg_rawll2_replay",

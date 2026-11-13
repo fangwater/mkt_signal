@@ -9,6 +9,7 @@ public_simulation = false # explicit official-simulator-only, one-lot test mode
 # Configure the strict [placement] example below for a trading host.
 flow_directory = "/tmp/mkt_yida_sim/flow"
 journal = "/tmp/mkt_yida_sim/events.jsonl"
+position_ipc = { namespace = "cn_yida_sim", interval_ms = 1000 }
 # persistence_directory defaults to flow_directory/persist_manager; one account/adapter/front per store.
 sync_before_send = false # true: wait for synced RocksDB intent before calling the SDK
 user_id_env = "YIDA_USER_ID"

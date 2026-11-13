@@ -1,6 +1,6 @@
 # CTP 单业务核固定布局
 
-最后更新：2026-11-12
+最后更新：2026-11-13
 
 本布局用于行情驱动交易的同进程接入接口。策略规则尚未配置，默认 `NoStrategy` 不产生订单。**当前开发机和所有内网机器禁止执行 CTP**，包括配置检查程序、离线 SDK、测试、探针和基准；本轮仅编辑和编译。运行限制见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
 
@@ -11,7 +11,7 @@
 | 业务 B | 0 | 消费行情与委托/成交回报、策略回调、风控、OMS、报撤单 SDK 调用 |
 | Trader SDK T | 1 | Trader SDK 内部网络与回报工作线程 |
 | Md SDK M | 2 | Md SDK 内部网络与行情回调工作线程 |
-| 后台 I/O | 3 | Journal、JSON/脱敏、RocksDB WAL/flush/compaction、stdin 读取 |
+| 后台 I/O | 3 | Journal、JSON/脱敏、RocksDB WAL/flush/compaction、stdin 读取、可选持仓 IPC 编码/发送 |
 
 四个域在同一允许使用的 NUMA 节点，每个域一个逻辑 CPU，且四个 CPU 必须来自不同物理核。示例 ID 不是实际部署分配；外部主机确定后按其拓扑填写。SMT 兄弟核不应承载其他忙任务，系统和网卡 IRQ/softirq 另留 housekeeping CPU；本实现不修改内核中断亲和性。SDK 内部线程数量由官方库决定，多个 SDK 工作线程共享本域的一个核。
 
@@ -60,6 +60,8 @@ CTP 的 `sync_before_send`、`idle_sleep_us` 和交易端 `reconnect_backoff_ms`
 异步发送存在崩溃窗口：SDK 已收到请求时，审计尾部可能尚未落盘。不能同时保证“发送不等待落盘”和“每个已发送请求都已持久化”。重启继续依赖柜台完整追平和数据库未决请求校验，详见[持久化保证](cn_order_persistence.md)。
 
 初始化时打开文件/数据库、加载与初始化 SDK，以及退出主循环后的 SDK Release 和最终刷盘属于生命周期工作，可能阻塞。恢复落盘不会阻塞正在运行的业务循环；退出后用完成状态轮询排空后台。SDK 自带传输重连保留；需要重建对象的传输/控制响应超时会输出 `restart_required` 并退出，外部监管负责重启，业务循环不做 Release/Init。
+
+`position_ipc = { namespace = "cn_ctp_sim", interval_ms = 1000 }` 可启用与 Exec 相同思路的全量持仓观察通道。定时到期后，业务线程把今昨仓、冻结量及连接/恢复状态复制到冷初始化的三个缓冲之一，以 `try_recv` / `try_send` 替换尚未消费的旧快照；不会构造 JSON、扫描订单或等待后台。编码、1 MiB IPC 消息初始化和发送由继承后台域放置的独立线程执行。命名空间显式配置，消息绑定账户摘要、进程 epoch、序号和业务采集时间。容量为 8192 条多空持仓行，超限整帧失效，不发布部分持仓；观察发布失败不重试交易请求，Viz 最迟在心跳过期后显示不可用。该通道不替代委托/成交持久化。详见 [Viz](cn_futures_viz.md)。
 
 CTP 的 Req 系列本身是厂商同步函数调用，不能在没有证据时保证库内部从不拿锁、触发缺页或阻塞。当前保证是应用业务路径没有阻塞式队列收发、文件 I/O、持久化确认等待或 sleep。全链路硬实时、零分配和确定的 p99 尚未获得验证。
 

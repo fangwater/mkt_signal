@@ -16,6 +16,7 @@ pub struct Config {
     pub journal: PathBuf,
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
+    pub position_ipc: Option<cn_futures_state::Config>,
     #[serde(default)]
     pub preallocated_orders: usize,
     pub front: String,
@@ -124,6 +125,9 @@ impl Config {
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(ipc) = &self.position_ipc {
+            ipc.validate()?;
+        }
         self.placement.validate_fixed()?;
         ensure!(
             (1024..=2_000_000).contains(&self.preallocated_requests),
