@@ -2,7 +2,7 @@
 
 最后更新：2026-11-13 UTC。
 
-统一 IPC 的观察页面、CTP／易达柜台记录与 HTTP／WS 接口见 [国内期货 Viz](cn_futures_viz.md)。
+CTP／易达持仓 IPC 与 WebSocket 观察接口见 [国内期货 Viz](cn_futures_viz.md)。该页面只转发交易进程持仓，行情发布器独立运行。
 
 `crates/cn_futures_pbs` 提供一个 `cn-futures-pbs` 入口。`--zmq`、`--ctp`、`--colo` 互斥选择来源；连接和裸解析留在适配器内，输出共用一个 `MarketDataMsg` 和 Iceoryx2 IPC 发布层。行情是完整五档快照，不拆 Crypto 的 ticker、spread、trade 等消息种类。
 

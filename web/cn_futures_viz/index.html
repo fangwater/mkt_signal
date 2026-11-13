@@ -1,63 +1,413 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CN Futures · 运行观察</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>国内期货 Exec 执行监控</title>
 <style>
-:root{color-scheme:dark;--bg:#0c121c;--panel:#141e2d;--line:#27374d;--text:#e6eef9;--muted:#99abc3;--blue:#6daeff;--good:#6dd7b1;--bad:#ff8e90;--warn:#eac17d;font:14px/1.55 system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}main{max-width:1640px;margin:auto;padding:28px}header{display:flex;align-items:center;gap:24px;justify-content:space-between;margin-bottom:22px}h1{font-size:24px;margin:0;letter-spacing:.03em}h2{font-size:16px;margin:0 0 15px}.eyebrow{color:var(--blue);font-size:11px;letter-spacing:.18em}.muted,small{color:var(--muted)}.toolbar{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}input,select,button{background:#18263a;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:9px 12px;font:inherit}input{min-width:235px}button{cursor:pointer}button:hover{border-color:var(--blue)}.badge{display:inline-block;padding:3px 9px;border-radius:20px;background:#23344c;color:var(--muted);font-size:12px;white-space:nowrap}.good{color:var(--good);background:#17382f}.warn{color:var(--warn);background:#3a3021}.bad{color:var(--bad);background:#3c252e}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}.card,section{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:18px}.card header{margin-bottom:14px;gap:8px}.card h2{margin:0}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}.metric b{display:block;font-size:21px;font-variant-numeric:tabular-nums}.metric span{color:var(--muted);font-size:12px}.card p{margin:6px 0;font-size:12px}.banner{padding:11px 15px;border:1px solid var(--line);border-radius:8px;margin:14px 0;color:var(--muted)}section{margin-top:18px}.scroll{overflow:auto;max-height:530px}table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}th{text-align:left;color:var(--muted);font-weight:500;position:sticky;top:0;background:var(--panel);z-index:1}th,td{padding:10px 12px;border-bottom:1px solid #233247}tbody tr:hover{background:#1a2a3f;cursor:pointer}.num{text-align:right;font-variant-numeric:tabular-nums}.empty{text-align:center;color:var(--muted);padding:30px}a{color:var(--blue)}.source{font-size:11px;color:var(--muted)}.stale{opacity:.48}dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;width:min(980px,90vw);max-height:85vh}dialog::backdrop{background:#0009}pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.dialog-top{display:flex;justify-content:space-between;align-items:center}.buy{color:var(--good)}.sell{color:var(--bad)}.book{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:16px}.book table{font-size:14px}footer{margin:20px 0;color:var(--muted);font-size:12px}@media(max-width:700px){main{padding:14px}header{align-items:flex-start}h1{font-size:19px}.metrics{gap:5px}input{min-width:180px}.cards{grid-template-columns:1fr}}
-</style>
-</head>
-<body><main>
-<header><div><div class="eyebrow">NATIVE FUTURES / OBSERVATION</div><h1>国内期货 · 运行观察</h1><div class="muted">CTP / 易达柜台 · 委托、成交、今昨仓与五档行情</div></div><div><span id="connection" class="badge warn">正在连接</span><div id="updated" class="source">等待首个快照</div></div></header>
-<div id="notice" class="banner">等待数据。柜台记录与行情按来源独立展示。</div>
-<div class="toolbar"><select id="counter" aria-label="柜台来源"><option value="">全部柜台</option></select><select id="venue" aria-label="交易所"><option value="">全部交易所</option><option>CFFEX</option><option>SHFE</option><option>INE</option><option>CZCE</option><option>DCE</option><option>GFEX</option></select><input id="symbol" placeholder="筛选合约（保留原生大小写）" aria-label="合约筛选"><button id="refresh">刷新快照</button><a href="/snapshot" target="_blank" rel="noopener">JSON</a></div>
-<div id="counters" class="cards"></div>
-<section><h2>持仓 <small id="position-note"></small></h2><div class="scroll"><table><thead><tr><th>柜台 / 账户</th><th>交易所</th><th>合约</th><th>方向</th><th class="num">今仓 / 手</th><th class="num">昨仓 / 手</th><th class="num">冻结今仓</th><th class="num">冻结昨仓</th><th>快照时间</th></tr></thead><tbody id="positions"></tbody></table></div></section>
-<section><h2>委托 <small id="order-note"></small></h2><div class="scroll"><table><thead><tr><th>柜台</th><th>交易日</th><th>交易所 / 合约</th><th>原生引用 / 系统号</th><th>买卖 / 开平</th><th>类型 / 有效方式</th><th class="num">价格</th><th class="num">委托 / 手</th><th class="num">事实成交</th><th class="num">回报累计</th><th class="num">已撤</th><th>观察状态</th><th>更新</th></tr></thead><tbody id="orders"></tbody></table></div></section>
-<section><h2>事实成交 <small id="fill-note"></small></h2><div class="scroll"><table><thead><tr><th>柜台</th><th>交易日</th><th>交易所 / 合约</th><th>成交号 / 系统号</th><th>买卖 / 开平</th><th class="num">手数</th><th class="num">价格</th><th class="num">手续费</th><th>记录时间</th></tr></thead><tbody id="fills"></tbody></table></div></section>
-<section><h2>行情来源 <small>点击行情行查看五档</small></h2><div class="toolbar"><select id="market-source" aria-label="行情来源"><option value="">全部行情来源</option></select></div><div id="channels" class="cards"></div><div class="scroll"><table><thead><tr><th>来源 / 环境</th><th>交易所</th><th>合约</th><th>交易日 / 自然日</th><th class="num">最新价</th><th class="num">买一 / 手</th><th class="num">卖一 / 手</th><th class="num">累计成交 / 手</th><th class="num">累计成交额</th><th class="num">持仓量</th><th>行情时间（上海）</th><th>新鲜度</th></tr></thead><tbody id="quotes"></tbody></table></div></section>
-<footer>数量单位为手。持仓由执行进程定时通过 IPC 推送，断线与停更会标记；本地预算与柜台权益分别展示。观察状态不作为交易授权。原生身份、费用和详细证据可点击对应行查看。</footer>
-<dialog id="detail"><div class="dialog-top"><h2 id="detail-title">记录详情</h2><button id="close">关闭</button></div><div id="depth"></div><pre id="raw"></pre></dialog>
-</main>
-<script>
-"use strict";
-(()=>{
- const $=id=>document.getElementById(id), esc=v=>String(v??"—").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const names={waiting:"等待数据",unavailable:"来源不可用",stopped:"已停止",failed:"执行失败",recovering:"恢复中",disconnected:"已断线",blocked:"已阻断",transport_unavailable:"交易传输不可用",stale:"数据过期",observing:"观察中",prepared:"发送前登记",pending:"待确认",working:"已挂单",partially_filled:"部分成交",cancel_pending:"撤单待确认",settling:"成交待补齐",filled:"已成交",cancelled:"已撤单",rejected:"已拒绝",uncertain:"结果未明"};
- const envs={company_intranet:"公司内网",colo:"Colo",public_network:"公网"};
- const offsets={open:"开仓",close:"平仓",close_today:"平今",close_yesterday:"平昨"};
- let execution={sources:[]}, market={sources:[]}, socket=null, lastMessage=0, updateMs=1000, records=[];
- const fmt=v=>v==null?"—":typeof v==="number"?v.toLocaleString('zh-CN',{maximumFractionDigits:6}):esc(v);
- const time=us=>us?new Date(Number(us)/1000).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'}):"—";
- const badge=s=>`<span class="badge ${['observing','filled'].includes(s)?'good':['blocked','disconnected','unavailable','uncertain'].includes(s)?'bad':'warn'}">${esc(names[s]||s)}</span>`;
- const direction=s=>`<span class="${s==='buy'?'buy':'sell'}">${s==='buy'?'买 / 多':'卖 / 空'}</span>`;
- const yn=v=>v==null?'未知':v?'是':'否';
- function options(id,sources,label){const select=$(id),old=select.value;select.replaceChildren(new Option(label,''),...sources.map(s=>new Option(s.label,s.id)));select.value=old;}
- function register(record,title,depth){const i=records.push({record,title,depth})-1;return `data-record="${i}"`;}
- function rows(id,content,n){$(id).innerHTML=content||`<tr><td colspan="${n}" class="empty">暂无匹配数据</td></tr>`;}
- function match(venue,symbol){return (!$('venue').value||venue===$('venue').value)&&String(symbol).includes($('symbol').value.trim());}
- function render(){
-  records=[];
-  const sources=execution.sources.filter(s=>!$('counter').value||s.id===$('counter').value);
-  const frozen=lastMessage>0&&Date.now()-lastMessage>Math.max(5000,updateMs*4);
-  $('notice').textContent=frozen?'观察连接已过期，页面保留最后快照。':sources.some(s=>!s.position_state?.snapshot?.position_ready)?'等待执行进程通过 IPC 发布已恢复的完整持仓。':'持仓由交易进程通过 IPC 推送全量快照，委托与成交读取持久化记录。';
-  $('notice').className='banner '+(frozen?'warn':'');
-  $('counters').innerHTML=sources.map(s=>{const l=s.position_state||{status:"waiting"},v=l.snapshot||{},a=s.lifecycle?.account||{};return `<article class="card"><header><div><h2>${esc(s.label)}</h2><span class="source">${esc(s.adapter?.toUpperCase())} · ${esc(s.account)} · ${esc(s.id)}</span></div>${badge(frozen?'stale':l.status)}</header><div class="metrics"><div class="metric"><b>${fmt(s.active_orders)}</b><span>未决委托</span></div><div class="metric"><b>${fmt(s.total_fills)}</b><span>事实成交笔数</span></div><div class="metric"><b>${fmt(v.available_local_budget)}</b><span>本地执行预算 / CNY</span></div></div><p>交易日 ${esc(v.trading_day)} · 持仓已恢复 ${yn(v.position_ready)}</p><p>柜台权益 ${fmt(a.balance)} / 可用 ${fmt(a.available)} ${esc(a.currency??'')}</p><p>快照报告就绪 ${yn(v.ready)} · 报告可交易 ${yn(v.can_trade)} · 最近交易传输报告 ${yn(v.transport_ready)}</p><p>持仓快照 ${time(v.observed_us)} ${l.data_stale?' · 已过期':''}</p><p>持久化事件 ${time(s.lifecycle?.last_event_us)} ${s.lifecycle?.data_stale?' · 已过期':''}</p><p>柜台资金记录 ${time(s.lifecycle?.account_recorded_us)}</p><p class="${s.read_error?'sell':'muted'}">${esc([l.error,s.read_error,v.reason].filter(Boolean).join(' · '))}</p></article>`;}).join('')||'<div class="banner">尚未配置柜台来源</div>';
-  $('position-note').textContent=sources.some(s=>!s.position_state?.snapshot?.position_ready)?'等待持仓 IPC / 完整恢复':'IPC 全量快照';
-  rows('positions',sources.flatMap(s=>(s.position_state?.snapshot?.positions||[]).filter(p=>match(p.venue,p.symbol)).map(p=>`<tr ${register(p,s.label+' · 持仓快照')} class="${s.position_state.data_stale||s.position_state.error||s.position_state.status!=='observing'||frozen?'stale':''}"><td>${esc(s.label)} / ${esc(s.account)}</td><td>${esc(p.venue)}</td><td>${esc(p.symbol)}</td><td>${direction(p.side)}</td>${['today','yesterday','frozen_today','frozen_yesterday'].map(k=>`<td class="num">${fmt(p.position[k])}</td>`).join('')}<td>${time(s.position_state.snapshot.observed_us)}</td></tr>`)).join(''),9);
-  $('order-note').textContent='优先显示未决委托；隐藏 '+sources.reduce((n,s)=>n+(s.orders_omitted||0),0)+' 条';
-  rows('orders',sources.flatMap(s=>(s.orders||[]).filter(x=>match(x.record.identity.venue,x.record.order.request.symbol)).map(x=>{const r=x.record,o=r.order,q=o.request;return `<tr ${register(x,s.label+' · 原生委托')}><td>${esc(s.label)}</td><td>${esc(r.identity.trading_day)}</td><td>${esc(q.venue)} / ${esc(q.symbol)}</td><td>${esc(r.identity.native.order_ref)}<br><small>${esc(o.system_id)}</small></td><td>${direction(q.side)} / ${esc(offsets[q.offset]||q.offset)}</td><td>${q.price_type==='market'?'市价':'限价'} / ${esc(q.time_in_force.toUpperCase())}</td><td class="num">${q.price_type==='market'?'—':fmt(o.limit_price)}</td>${[q.lots,o.filled,o.reported_filled,o.cancelled].map(n=>`<td class="num">${fmt(n)}</td>`).join('')}<td>${badge(x.phase)}</td><td>${time(r.updated_us)}</td></tr>`;})).join(''),13);
-  $('fill-note').textContent='显示最近记录；隐藏 '+sources.reduce((n,s)=>n+(s.fills_omitted||0),0)+' 条';
-  rows('fills',sources.flatMap(s=>(s.fills||[]).filter(r=>match(r.fill.identity.venue,r.fill.identity.symbol)).map(r=>{const f=r.fill,i=f.identity;return `<tr ${register(r,s.label+' · 事实成交')}><td>${esc(s.label)}</td><td>${esc(i.trading_day)}</td><td>${esc(i.venue)} / ${esc(i.symbol)}</td><td>${esc(i.trade_id)}<br><small>${esc(f.system_id)}</small></td><td>${direction(i.side)} / ${esc(offsets[f.offset]||f.offset)}</td><td class="num">${fmt(f.lots)}</td><td class="num">${fmt(f.price)}</td><td class="num">${r.commission==null?'未知':fmt(r.commission)+' '+esc(r.commission_currency||'币种未知')}</td><td>${time(r.received_us)}</td></tr>`;})).join(''),9);
-  const markets=market.sources.filter(s=>!$('market-source').value||s.id===$('market-source').value);
-  $('channels').innerHTML=markets.map(s=>`<article class="card"><h2>${esc(s.label)} <small>${esc(envs[s.environment]||s.environment)}</small></h2>${s.channels.filter(c=>!$('venue').value||c.venue===$('venue').value).map(c=>`<p>${esc(c.venue)} ${badge(frozen?'stale':c.status)} <small>${time(c.last_quote_us)} · 重置 ${fmt(c.reset_count)} · 序号缺口 ${fmt(c.sequence_gap_count)}</small></p>`).join('')}<p class="muted">显示 ${s.quotes.length} / ${s.max_symbols} 个合约 · 容量丢弃 ${fmt(s.dropped_symbol_messages)} 条</p></article>`).join('');
-  rows('quotes',markets.flatMap(s=>s.quotes.filter(q=>match(q.venue,q.symbol)).map(q=>`<tr ${register(q,s.label+' · '+q.venue+' / '+q.symbol,true)} class="${q.data_stale||frozen?'stale':''}"><td>${esc(s.label)}<br><small>${esc(envs[s.environment]||s.environment)}</small></td><td>${esc(q.venue)}</td><td>${esc(q.symbol)}</td><td>${esc(q.trading_day)} / ${esc(q.action_day)}</td><td class="num">${fmt(q.last_price)}</td><td class="num buy">${fmt(q.bid[0].price)} / ${fmt(q.bid[0].lots)}</td><td class="num sell">${fmt(q.ask[0].price)} / ${fmt(q.ask[0].lots)}</td><td class="num">${fmt(q.volume_lots)}</td><td class="num">${fmt(q.turnover)}</td><td class="num">${fmt(q.open_interest)}</td><td>${time(q.exchange_ts_us)}</td><td>${badge(q.data_stale||frozen?'stale':'observing')}</td></tr>`)).join(''),12);
- }
- function accept(entry){if(entry.type==='cn_execution'){execution=entry;updateMs=entry.update_interval_ms||1000;options('counter',entry.sources,'全部柜台');}else if(entry.type==='cn_market'){market=entry;options('market-source',entry.sources,'全部行情来源');}else return;lastMessage=Date.now();$('updated').textContent='快照 '+time(entry.ts_us);render();}
- async function snapshot(){const r=await fetch('/snapshot',{cache:'no-store'});if(!r.ok)throw Error('snapshot HTTP '+r.status);const data=await r.json();data.entries.forEach(accept);return execution.ws_path||'/ws';}
- function connect(path){socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+path);socket.onopen=()=>{$('connection').textContent='观察连接在线';$('connection').className='badge good';};socket.onmessage=e=>{try{accept(JSON.parse(e.data));}catch(err){console.error(err);}};socket.onerror=()=>socket.close();socket.onclose=()=>{$('connection').textContent='重连中';$('connection').className='badge warn';setTimeout(()=>start(),2000);};}
- async function start(){try{connect(await snapshot());}catch(err){$('connection').textContent='连接失败，重试中';$('connection').className='badge bad';setTimeout(start,2000);}}
- document.addEventListener('click',e=>{const row=e.target.closest('[data-record]');if(!row)return;const item=records[Number(row.dataset.record)];if(!item)return;$('detail-title').textContent=item.title;$('raw').textContent=JSON.stringify(item.record,null,2);$('depth').innerHTML=item.depth?`<div class="book">${[['bid','买盘'],['ask','卖盘']].map(([key,label])=>`<div><h2>${label}</h2><table>${item.record[key].map((l,i)=>`<tr><td>${i+1}</td><td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.lots)} 手</td></tr>`).join('')}</table></div>`).join('')}</div>`:'';$('detail').showModal();});
- $('close').onclick=()=>$('detail').close();$('refresh').onclick=()=>snapshot().catch(()=>{$('notice').textContent='读取快照失败';});['counter','venue','market-source'].forEach(id=>$(id).onchange=render);$('symbol').oninput=render;setInterval(()=>{if(lastMessage&&Date.now()-lastMessage>Math.max(5000,updateMs*4)){$('connection').textContent='观察连接过期';$('connection').className='badge warn';render();}},1000);start();
-})();
-</script></body></html>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "PingFang SC", sans-serif;
+        --bg: #0b0f14;
+        --surface: #121820;
+        --surface-2: #171f29;
+        --line: #2a3441;
+        --text: #edf2f7;
+        --muted: #91a0b2;
+        --green: #4ade80;
+        --red: #fb7185;
+        --amber: #fbbf24;
+        --cyan: #38bdf8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        letter-spacing: 0;
+      }
+      header {
+        min-height: 62px;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+        background: #0e141b;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      h1 { margin: 0; font-size: 18px; font-weight: 650; }
+      .connection {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+      .dot.ok { background: var(--green); }
+      .dot.err { background: var(--red); }
+      .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .strategy-updates {
+        order: 3;
+        flex: 1 0 100%;
+        min-width: 0;
+        display: flex;
+        gap: 18px;
+        padding-top: 9px;
+        border-top: 1px solid var(--line);
+        overflow-x: auto;
+        color: var(--muted);
+        font-size: 12px;
+        scrollbar-width: thin;
+      }
+      .strategy-update { display: inline-flex; align-items: baseline; gap: 7px; flex: 0 0 auto; }
+      .strategy-update-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .strategy-update time { color: var(--text); font-variant-numeric: tabular-nums; }
+      .strategy-update.unknown time { color: var(--amber); }
+      select, input, button {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 10px;
+        font: inherit;
+        font-size: 13px;
+      }
+      select { min-width: 190px; }
+      input { width: 180px; }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--cyan); }
+      main { padding: 16px 18px 28px; display: grid; gap: 16px; }
+      .risk-band {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(130px, 1fr));
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--surface);
+      }
+      .metric { padding: 14px; border-right: 1px solid var(--line); min-width: 0; }
+      .metric:last-child { border-right: 0; }
+      .metric label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+      .metric strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+      .section { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+      .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+      .section-head h2 { margin: 0; font-size: 14px; }
+      .view-switch {
+        display: inline-flex;
+        padding: 2px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+      }
+      .view-switch button {
+        height: 27px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--muted);
+      }
+      .view-switch button[aria-pressed="true"] {
+        background: #263341;
+        color: var(--text);
+      }
+      .meta { color: var(--muted); font-size: 12px; }
+      .meta.stale { color: var(--red); }
+      .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+      .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
+      .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+      table { width: 100%; min-width: 1160px; border-collapse: collapse; }
+      thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+      th, td {
+        height: 40px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: right;
+        white-space: nowrap;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      th { color: var(--muted); font-weight: 550; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      tbody tr:last-child td { border-bottom: 0; }
+      tbody tr:hover { background: #18212b; }
+      .aggregate-row { background: #151e27; font-weight: 600; }
+      .aggregate-row td { border-top: 1px solid #3b4857; }
+      .detail-row td:first-child { padding-left: 36px; position: relative; }
+      .detail-row td:first-child::before {
+        content: "";
+        position: absolute;
+        left: 20px;
+        top: 12px;
+        width: 6px;
+        height: 12px;
+        border-left: 1px solid #526174;
+        border-bottom: 1px solid #526174;
+      }
+      .group-label { display: inline-flex; align-items: center; gap: 7px; }
+      button.group-toggle {
+        width: 24px;
+        min-width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        display: inline-grid;
+        place-items: center;
+      }
+      button.group-toggle::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid var(--muted);
+        border-bottom: 2px solid var(--muted);
+        transform: rotate(-45deg);
+        transition: transform 120ms ease;
+      }
+      button.group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
+      button.group-toggle:hover::before { border-color: var(--cyan); }
+      .scope-label { color: var(--cyan); }
+      .positive { color: var(--green); }
+      .negative { color: var(--red); }
+      .muted { color: var(--muted); }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 74px;
+        height: 23px;
+        padding: 0 7px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .status.done { color: var(--green); border-color: #287a45; }
+      .status.wait { color: var(--amber); border-color: #82661d; }
+      .empty { padding: 42px; text-align: center; color: var(--muted); }
+      @media (max-width: 980px) {
+        .risk-band { grid-template-columns: repeat(3, 1fr); }
+        .metric:nth-child(3) { border-right: 0; }
+        .metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+        .toolbar { margin-left: 0; width: 100%; }
+        select, input { flex: 1; min-width: 130px; }
+      }
+      @media (max-width: 560px) {
+        header, main { padding-left: 10px; padding-right: 10px; }
+        .strategy-update-name { max-width: 210px; }
+        #budget { font-size:14px; }
+        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .metric { border-bottom: 1px solid var(--line); }
+        .metric:nth-child(2n) { border-right: 0; }
+        .metric:nth-last-child(-n+2) { border-bottom: 0; }
+      }
+
+      /* Same shell and table styling as the USD-M Exec dashboard. */
+      [hidden] { display:none !important; }
+      .toolbar select { min-width:140px; max-width:250px; }
+      .check { display:inline-flex; align-items:center; gap:5px; }
+      .check input { width:auto; min-width:0; flex:0 0 auto; height:auto; margin:0; }
+      .status.error { color:var(--red); border-color:#8c3e50; }
+      .positions-wrap { max-height:62vh; }
+      .table-note { margin-top:8px; font-size:11px; }
+      .account-label { font-size:11px; font-weight:400; }
+      .retained td { color:var(--muted); }
+      .group-label { max-width:520px; }
+      .group-label .account-label { overflow:hidden; text-overflow:ellipsis; }
+      .contract-code { color:var(--muted); margin-left:6px; font-weight:400; }
+      @media(max-width:560px) { .toolbar select,.toolbar input { max-width:none; flex:1 1 130px; } }
+</style></head>
+<body>
+  <header>
+    <h1>国内期货 Exec 执行监控</h1>
+    <div class="connection"><span id="conn-dot" class="dot"></span><span id="connection">连接中</span><span id="mode" class="status wait">账户持仓</span><span id="updated">--</span></div>
+    <div class="toolbar">
+      <select id="counter" aria-label="账户筛选"><option value="">全部账户</option></select>
+      <select id="venue" aria-label="交易所筛选"><option value="">全部交易所</option><option>CFFEX</option><option>SHFE</option><option>INE</option><option>CZCE</option><option>DCE</option><option>GFEX</option></select>
+      <input id="symbol" placeholder="中文名称 / 合约代码" aria-label="合约筛选">
+      <button id="refresh" type="button">重新连接</button>
+    </div>
+    <div id="account-updates" class="strategy-updates" aria-label="账户状态和更新时间"></div>
+  </header>
+  <main>
+    <section class="risk-band" aria-label="账户与持仓概览">
+      <div class="metric"><label>本地预算 · 人民币元 <span title="执行端本地保守预算，不是账户权益">ⓘ</span></label><strong id="budget">--</strong></div>
+      <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
+      <div class="metric"><label>多头持仓 · 手</label><strong id="long-lots">--</strong></div>
+      <div class="metric"><label>空头持仓 · 手</label><strong id="short-lots">--</strong></div>
+      <div class="metric"><label>冻结持仓 · 手</label><strong id="frozen-lots">--</strong></div>
+      <div class="metric"><label>最近采集 · 北京时间</label><strong id="last-capture">--</strong></div>
+    </section>
+    <div id="notice" class="meta" role="status" hidden></div>
+    <section class="section">
+      <div class="section-head">
+        <h2>账户实际持仓</h2>
+        <div class="view-switch" role="group" aria-label="持仓分组方式"><button data-position-view="symbol" aria-pressed="true">按合约</button><button data-position-view="side" aria-pressed="false">分方向</button></div>
+        <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位</label>
+        <span id="position-note" class="meta">等待持仓数据</span>
+        <div class="summary"><span>合约 <strong id="filtered-contracts">--</strong></span><span>多头 <strong id="filtered-long">--</strong></span><span>空头 <strong id="filtered-short">--</strong></span></div>
+      </div>
+      <div class="table-wrap positions-wrap"><table><thead id="position-head"></thead><tbody id="positions"></tbody></table></div>
+      <div class="meta table-note">数量单位：手；金额单位：人民币元。多空分别保留，净仓按同账户、同交易所、同合约计算。持仓金额需有估值价和合约乘数后计算。</div>
+    </section>
+  </main>
+  <script>
+  (() => {
+    "use strict";
+    const WS_PATH = __CN_FUTURES_WS_PATH__;
+    const $ = id => document.getElementById(id);
+    const escape = value => String(value ?? "--").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const qty = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+    const cash = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmt = value => value == null ? "--" : qty.format(value);
+    const yuan = value => Number.isFinite(value) ? '¥ ' + cash.format(value) : '--';
+    const time = (us, date = false) => us ? new Date(Number(us) / 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false, ...(date ? {} : { hour: "2-digit", minute: "2-digit", second: "2-digit" }) }) : "--";
+    // Display names only. Contract quantities and money are never derived from this catalog.
+    const products = {
+      CFFEX: {IF:'沪深300股指',IH:'上证50股指',IC:'中证500股指',IM:'中证1000股指',IO:'沪深300股指',HO:'上证50股指',MO:'中证1000股指',T:'10年期国债',TF:'5年期国债',TS:'2年期国债',TL:'30年期国债'},
+      SHFE: {CU:'沪铜',AL:'沪铝',ZN:'沪锌',PB:'沪铅',NI:'沪镍',SN:'沪锡',AO:'氧化铝',AD:'铸造铝合金',AU:'沪金',AG:'沪银',RB:'螺纹钢',HC:'热轧卷板',SS:'不锈钢',WR:'线材',FU:'燃料油',BU:'石油沥青',RU:'天然橡胶',SP:'纸浆',BR:'丁二烯橡胶',OP:'胶版印刷纸'},
+      INE: {SC:'原油',NR:'20号胶',LU:'低硫燃料油',BC:'国际铜',EC:'集运指数（欧线）'},
+      DCE: {A:'豆一',B:'豆二',M:'豆粕',Y:'豆油',P:'棕榈油',C:'玉米',CS:'玉米淀粉',RR:'粳米',JD:'鸡蛋',LH:'生猪',I:'铁矿石',J:'焦炭',JM:'焦煤',L:'聚乙烯',V:'聚氯乙烯',PP:'聚丙烯',EG:'乙二醇',EB:'苯乙烯',PG:'液化石油气',FB:'纤维板',BB:'胶合板',LG:'原木',BZ:'纯苯'},
+      CZCE: {WH:'强麦',PM:'普麦',RI:'早籼稻',LR:'晚籼稻',JR:'粳稻',CF:'棉花',CY:'棉纱',SR:'白糖',OI:'菜籽油',RO:'菜籽油',RM:'菜籽粕',RS:'油菜籽',TA:'PTA',MA:'甲醇',ME:'甲醇',FG:'玻璃',SA:'纯碱',PF:'短纤',PX:'对二甲苯',SH:'烧碱',PR:'瓶片',ZC:'动力煤',TC:'动力煤',SF:'硅铁',SM:'锰硅',AP:'苹果',CJ:'红枣',PK:'花生'},
+      GFEX: {SI:'工业硅',LC:'碳酸锂',PS:'多晶硅',PT:'铂',PD:'钯'}
+    };
+    function contractName(venue, symbol, tradingDay) {
+      const match = /^([a-z]+)([0-9]{3,4})(?:-?([cp])-?([0-9]+(?:\.[0-9]+)?))?$/i.exec(symbol);
+      if (!match) return symbol;
+      const [, product, code, option, strike] = match, name = products[venue]?.[product.toUpperCase()];
+      const month = Number(code.slice(-2));
+      if (!name || month < 1 || month > 12) return symbol;
+      const yearCode = Number(code.slice(0,-2));
+      let year;
+      if (code.length === 4) year = 2000 + yearCode;
+      else {
+        // CZCE's YMM uses the producer's trading year, including decade rollover.
+        if (!/^[0-9]{8}$/.test(tradingDay || '')) return name + ' · ' + code + '（合约年月码）';
+        const reference = Number(tradingDay.slice(0,4)), decade = Math.floor(reference / 10) * 10;
+        year = [decade-10+yearCode,decade+yearCode,decade+10+yearCode].sort((a,b)=>Math.abs(a-reference)-Math.abs(b-reference))[0];
+      }
+      return name + ' · ' + year + '年' + String(month).padStart(2,'0') + '月' + (option ? ' · ' + (option.toUpperCase()==='C'?'看涨':'看跌') + ' · 行权价 ' + strike : '');
+    }
+    const contractLabel = g => {
+      const name=contractName(g.venue,g.symbol,g.source.entry?.trading_day);
+      return `<span class="scope-label">${escape(name)}</span>${name===g.symbol?'':`<span class="contract-code">${escape(g.symbol)}</span>`}`;
+    };
+    const state = { sources:new Map(), ws:null, timer:null, view:'symbol', expanded:new Set(), groups:[] };
+    const status = source => {
+      const s = source.entry;
+      if (source.error) return s ? 'unavailable' : 'waiting';
+      if (!s) return 'waiting';
+      if (s.runtime_status !== 'running') return s.runtime_status;
+      const age = Date.now() - Number(s.observed_us) / 1000;
+      if (age < 0 || age > source.stale_after_ms) return 'stale';
+      if (!s.position_ready) return 'recovering';
+      if (!s.connected) return 'disconnected';
+      if (!s.ready || !s.transport_ready) return 'unavailable';
+      return 'observing';
+    };
+    const names = {waiting:'等待数据',unavailable:'来源不可用',stopped:'已停止',failed:'执行失败',recovering:'恢复中',disconnected:'已断线',stale:'数据延迟',observing:'已同步'};
+    const badge = phase => `<span class="status ${phase==='observing'?'done':['failed','disconnected','unavailable'].includes(phase)?'error':'wait'}">${escape(names[phase] || phase)}</span>`;
+    const side = value => `<span class="${value==='buy'?'positive':'negative'}">${value==='buy'?'多头':'空头'}</span>`;
+    const match = (venue,symbol,day) => (!$('venue').value || venue===$('venue').value) && (symbol+' '+contractName(venue,symbol,day)).toLowerCase().includes($('symbol').value.trim().toLowerCase());
+    function selectedSources() { return [...state.sources.values()].filter(s=>!$('counter').value || s.source_id===$('counter').value); }
+    function options() {
+      const select=$('counter'), old=select.value, sources=[...state.sources.values()], signature=JSON.stringify(sources.map(s=>[s.source_id,s.label]));
+      if (select.dataset.options===signature) return;
+      select.replaceChildren(new Option('全部账户',''),...sources.map(s=>new Option(s.label,s.source_id)));
+      select.value=sources.some(s=>s.source_id===old)?old:''; select.dataset.options=signature;
+    }
+    function rows(id, content, columns, empty) { $(id).innerHTML=content || `<tr><td class="empty" colspan="${columns}">${escape(empty)}</td></tr>`; }
+    function connection(text,kind) { $('connection').textContent=text; $('conn-dot').className='dot '+(kind||''); }
+    function positionGroups(sources, filtered = true) {
+      const groups = new Map();
+      for (const source of sources) {
+        const snapshot = source.entry;
+        for (const p of snapshot?.positions || []) {
+          if (!snapshot.position_ready || (filtered && !match(p.venue, p.symbol, snapshot.trading_day))) continue;
+          const key = JSON.stringify([source.source_id, p.venue, p.symbol]);
+          if (!groups.has(key)) groups.set(key, {key,source,symbol:p.symbol,venue:p.venue,positions:[],long:0,short:0,frozenLong:0,frozenShort:0,todayLong:0,todayShort:0,yesterdayLong:0,yesterdayShort:0});
+          const g = groups.get(key), value = p.position, long = p.side === "buy";
+          g.positions.push(p);
+          g[long ? "long" : "short"] += value.today + value.yesterday;
+          g[long ? "frozenLong" : "frozenShort"] += value.frozen_today + value.frozen_yesterday;
+          g[long ? "todayLong" : "todayShort"] += value.today;
+          g[long ? "yesterdayLong" : "yesterdayShort"] += value.yesterday;
+        }
+      }
+      for (const group of groups.values()) group.positions = group.positions.filter(p => $('show-zero').checked || p.position.today || p.position.yesterday || p.position.frozen_today || p.position.frozen_yesterday);
+      return [...groups.values()].filter(g => $('show-zero').checked || g.long || g.short || g.frozenLong || g.frozenShort).sort((a,b) => a.source.source_id.localeCompare(b.source.source_id) || a.venue.localeCompare(b.venue) || a.symbol.localeCompare(b.symbol));
+    }
+
+    function renderAccounts(sources,groups) {
+      const known=sources.length && sources.every(s=>s.entry?.position_ready);
+      $('contract-count').textContent=known?fmt(groups.length):'--';
+      $('long-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.long,0)):'--';
+      $('short-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.short,0)):'--';
+      $('frozen-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.frozenLong+g.frozenShort,0)):'--';
+      $('budget').textContent=sources.length===1?yuan(sources[0].entry?.available_local_budget):sources.length?'按账户查看':'--';
+      $('budget').title=$('budget').textContent+' 人民币元';
+      const captured=sources.map(s=>s.entry?.observed_us).filter(Boolean);
+      $('last-capture').textContent=captured.length?time(Math.min(...captured)):'--';
+      $('updated').textContent=captured.length?'更新于 '+time(Math.min(...captured),true):'--';
+      $('mode').textContent=sources.length && sources.every(s=>s.entry && !s.entry.can_trade)?'当前不可交易':'账户持仓';
+      $('account-updates').innerHTML=sources.map(s=>`<div class="strategy-update"><span class="strategy-update-name">${escape(s.label)}</span>${badge(status(s))}<span>交易日 ${escape(s.entry?.trading_day)}</span><time>${time(s.entry?.observed_us)}</time></div>`).join('');
+      const problems=sources.flatMap(s=>[s.error,status(s)==='observing'?null:s.entry?.reason,status(s)==='stale'?'持仓心跳过期，保留最后已知仓位':null].filter(Boolean).map(reason=>s.label+'：'+reason));
+      $('notice').hidden=!problems.length; $('notice').textContent=problems.join(' · '); $('notice').className='meta stale';
+    }
+    function renderPositions(sources, groups) {
+      state.groups = groups;
+      const sums = {long:0,short:0}; groups.forEach(g => {sums.long+=g.long;sums.short+=g.short;});
+      const known = sources.length && sources.every(s => s.entry?.position_ready);
+      $('filtered-contracts').textContent = known ? fmt(groups.length) : '--'; $('filtered-long').textContent = known ? fmt(sums.long) + ' 手' : '--'; $('filtered-short').textContent = known ? fmt(sums.short) + ' 手' : '--';
+      const ready = sources.length && sources.every(s => s.entry?.position_ready);
+      $('position-note').textContent = !ready ? "等待账户恢复" : `${groups.length} 个合约 · ${groups.reduce((n,g)=>n+g.positions.length,0)} 条多空记录`;
+      let content = '';
+      if (state.view === "symbol") {
+        $('position-head').innerHTML = '<tr><th>品种 / 账户</th><th>交易所</th><th>状态</th><th>净持仓 · 手</th><th>多头 · 手</th><th>空头 · 手</th><th>今仓 多 / 空 · 手</th><th>昨仓 多 / 空 · 手</th><th>冻结 多 / 空 · 手</th><th>可平 多 / 空 · 手</th><th>更新时间</th></tr>';
+        groups.forEach((g,index) => {
+          const open=state.expanded.has(g.key), net=g.long-g.short;
+          content += `<tr class="aggregate-row ${status(g.source)!=='observing'?'retained':''}"  data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="展开 ${escape(g.symbol)}"></button>${contractLabel(g)}<span class="muted account-label">${escape(g.source.account)}</span></span></td><td>${escape(g.venue)}</td><td>${badge(status(g.source))}</td><td class="${net>0?'positive':net<0?'negative':''}">${fmt(net)}</td><td class="positive">${fmt(g.long)}</td><td class="negative">${fmt(g.short)}</td><td>${fmt(g.todayLong)} / ${fmt(g.todayShort)}</td><td>${fmt(g.yesterdayLong)} / ${fmt(g.yesterdayShort)}</td><td>${fmt(g.frozenLong)} / ${fmt(g.frozenShort)}</td><td>${fmt(g.long-g.frozenLong)} / ${fmt(g.short-g.frozenShort)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
+          if (open) content += g.positions.map(p => {const v=p.position;return `<tr class="detail-row" ><td>${side(p.side)}</td><td>${escape(g.venue)}</td><td>${badge(status(g.source))}</td><td>${p.side==='buy'?'':'−'}${fmt(v.today+v.yesterday)}</td><td>${p.side==='buy'?fmt(v.today+v.yesterday):'--'}</td><td>${p.side==='sell'?fmt(v.today+v.yesterday):'--'}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today+v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;}).join('');
+        });
+      } else {
+        $('position-head').innerHTML = '<tr><th>合约</th><th>账户</th><th>交易所</th><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th><th>状态</th><th>更新时间</th></tr>';
+        content = groups.flatMap(g=>g.positions.map(p=>{const v=p.position;return `<tr  data-symbol="${escape(g.symbol)}" class="${status(g.source)!=='observing'?'retained':''}"><td>${contractLabel(g)}</td><td>${escape(g.source.account)}</td><td>${escape(p.venue)}</td><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${badge(status(g.source))}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;})).join('');
+      }
+      const empty = !sources.length ? "等待账户数据" : !ready ? "等待柜台完成持仓恢复" : sources.some(s=>status(s)!=='observing') ? "账户数据未就绪，等待更新" : $('symbol').value || $('venue').value ? "当前筛选没有持仓" : "当前账户无持仓";
+      rows('positions',content,state.view==='symbol'?11:12,empty);
+    }
+
+    function render() {
+      const sources=selectedSources(), allGroups=positionGroups(sources,false).filter(g=>g.long||g.short||g.frozenLong||g.frozenShort);
+      renderAccounts(sources,allGroups); renderPositions(sources,positionGroups(sources));
+    }
+    function accept(frame) {
+      if (frame.type!=='cn_futures_state' || !frame.source_id) return;
+      state.sources.set(frame.source_id,frame); options(); render();
+    }
+    function connect() {
+      clearTimeout(state.timer);
+      if(state.ws){state.ws.onclose=null;state.ws.close();}
+      connection('连接中','');
+      const ws=state.ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+WS_PATH);
+      ws.onopen=()=>connection('实时连接','ok');
+      ws.onmessage=event=>{try{accept(JSON.parse(event.data));}catch(error){console.error(error);}};
+      ws.onerror=()=>ws.close();
+      ws.onclose=()=>{connection('重连中','err');state.timer=setTimeout(connect,2000);};
+    }
+    document.addEventListener('click',event=>{
+      const button=event.target.closest('[data-group]'); if(!button)return;
+      const key=state.groups[Number(button.dataset.group)]?.key; if(!key)return;
+      state.expanded.has(key)?state.expanded.delete(key):state.expanded.add(key);render();
+    });
+    document.querySelectorAll('[data-position-view]').forEach(button=>button.onclick=()=>{state.view=button.dataset.positionView;document.querySelectorAll('[data-position-view]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));render();});
+    ['counter','venue','show-zero'].forEach(id=>$(id).onchange=render);$('symbol').oninput=render;
+    $('refresh').onclick=connect;
+    render();setInterval(render,1000);connect();
+  })();
+  </script>
+</body></html>

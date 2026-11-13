@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use viz_server::native::{self, config::Config};
 
 #[derive(Parser)]
-#[command(about = "Read-only domestic futures Viz for CTP/Yida stores and native market IPC")]
+#[command(about = "Relay CTP/Yida execution-state IPC directly to a read-only WebSocket dashboard")]
 struct Args {
     #[arg(long, default_value = "config/cn_futures_viz.toml")]
     config: PathBuf,
