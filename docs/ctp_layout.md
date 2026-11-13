@@ -2,7 +2,7 @@
 
 最后更新：2026-11-13
 
-本布局用于行情驱动交易的同进程接入接口。策略规则尚未配置，默认 `NoStrategy` 不产生订单。**当前开发机和所有内网机器禁止执行 CTP**，包括配置检查程序、离线 SDK、测试、探针和基准；本轮仅编辑和编译。运行限制见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
+本布局用于行情驱动交易的同进程接入接口。策略规则尚未配置，默认 `NoStrategy` 不产生订单。**用户已指定外部部署／执行主机 `sh_dev`（`ssh sh_dev`）；当前开发机和所有内网机器禁止执行 CTP**，包括配置检查程序、离线 SDK、测试、探针和基准。主机登记不代表已部署或已运行；运行限制见 [AGENTS.md](../AGENTS.md#ctp-execution-location-restriction)。
 
 ## 固定四个物理核
 
@@ -13,7 +13,7 @@
 | Md SDK M | 2 | Md SDK 内部网络与行情回调工作线程 |
 | 后台 I/O | 3 | Journal、JSON/脱敏、RocksDB WAL/flush/compaction、stdin 读取、可选持仓 IPC 编码/发送 |
 
-四个域在同一允许使用的 NUMA 节点，每个域一个逻辑 CPU，且四个 CPU 必须来自不同物理核。示例 ID 不是实际部署分配；外部主机确定后按其拓扑填写。SMT 兄弟核不应承载其他忙任务，系统和网卡 IRQ/softirq 另留 housekeeping CPU；本实现不修改内核中断亲和性。SDK 内部线程数量由官方库决定，多个 SDK 工作线程共享本域的一个核。
+四个域在同一允许使用的 NUMA 节点，每个域一个逻辑 CPU，且四个 CPU 必须来自不同物理核。示例 ID 不是实际部署分配；在 `sh_dev` 上核对实际拓扑后填写，不能直接套用 0/1/2/3。SMT 兄弟核不应承载其他忙任务，系统和网卡 IRQ/softirq 另留 housekeeping CPU；本实现不修改内核中断亲和性。SDK 内部线程数量由官方库决定，多个 SDK 工作线程共享本域的一个核。
 
 ```mermaid
 flowchart LR

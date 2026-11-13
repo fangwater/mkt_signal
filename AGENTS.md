@@ -315,12 +315,19 @@ code are allowed here. Do not run CTP binaries, `cargo run`, CTP tests or smoke
 scripts, SDK-version queries, or mixed test/benchmark suites that execute CTP
 code on these machines.
 
-CTP execution requires an external host explicitly designated and authorized by
-the user. Until such a host is specified, do not deploy, start, or test CTP.
-Existing credentials, configuration files, historical test instructions, and
-permission to implement or build CTP do not authorize execution on a prohibited
-machine. This restriction takes precedence over generic build/test and runtime
-examples elsewhere in the repository.
+The user designated `sh_dev` (`ssh sh_dev`) as the external CTP deployment and
+execution environment on 2026-11-13. Use this host for CTP deployment and
+authorized runtime validation. Build artifacts locally in the maintained
+`arbmm` worktree, then publish the exact artifacts with checksum verification;
+do not compile them on `sh_dev`. Keep the raw SSH endpoint and credentials out
+of repository files. Host designation does not imply an already running CTP
+deployment.
+
+The current development machine and all intranet machines remain prohibited
+CTP execution locations. Existing credentials, configuration files, historical
+test instructions, and permission to implement or build CTP do not authorize
+execution on a prohibited machine. This restriction takes precedence over
+generic build/test and runtime examples elsewhere in the repository.
 
 ## Coding Conventions
 

@@ -39,7 +39,7 @@ secondary_path = "/absolute/viz-state/yida-sim"
 
 没有启用交易端 `position_ipc` 时，Viz 等待持仓 IPC；**不回退到数据库里的历史持仓**。交易配置省略该项则不创建观察发布线程。示例配置已给出 CTP 与易达各自的命名空间。
 
-`--check-config` 只解析配置与路径，不打开数据库、IPC 或 SDK。Viz 和 `cn_futures_state` 均不依赖交易 SDK。CTP 客户端仍只能在用户明确指定并授权的外部主机执行，本机和所有内网机器仅允许 CTP 编辑及编译；本实现没有运行 CTP。
+`--check-config` 只解析配置与路径，不打开数据库、IPC 或 SDK。Viz 和 `cn_futures_state` 均不依赖交易 SDK。用户已指定 CTP 外部部署／执行主机为 `sh_dev`（`ssh sh_dev`），见 [部署说明](ctp_trade.md)；本机和所有内网机器仅允许 CTP 编辑及编译。本次主机登记没有部署或运行 CTP。
 
 ## 持仓 IPC 与刷新语义
 
