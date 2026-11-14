@@ -47,3 +47,17 @@ int cn_yida_transport_ready(void*);
 int cn_yida_public_simulation_target(void*);
 void cn_yida_disconnect(void*);
 }
+
+// Lossy observation callback; independent of reliable order/trade ingress.
+struct CnYidaL1 {
+    uint64_t generation;
+    int32_t initial, connected, product_class, contract_multiple, trading_day;
+    int32_t native_timestamp, last_trade_timestamp, bid_lots, ask_lots, market_flags;
+    double last_price, bid_price, ask_price;
+    char symbol[64], exchange[12], native_time[24], last_trade_time[24];
+};
+using CnYidaL1Callback = void (*)(void*, const CnYidaL1*);
+extern "C" {
+size_t cn_yida_l1_size();
+int cn_yida_observe_l1(void*, CnYidaL1Callback, void*);
+}

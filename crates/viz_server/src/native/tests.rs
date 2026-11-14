@@ -52,6 +52,7 @@ fn relay_preserves_producer_fields_replaces_full_state_and_pins_identity() {
     expected["publisher_epoch"] = json!(u64::MAX.to_string());
     expected["sequence"] = json!("1");
     expected["replaced_snapshots"] = json!("0");
+    expected["l1_dropped"] = json!("0");
     hub.apply(&source, s).unwrap();
     assert_eq!(frame(&hub)["entry"], expected);
     assert!(!hub.latest()[0].contains(&source.expected_account_hash));

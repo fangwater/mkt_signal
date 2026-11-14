@@ -8,13 +8,19 @@ use std::{
     ptr::NonNull,
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 extern "C" {
     fn cn_yida_event_size() -> usize;
+    fn cn_yida_l1_size() -> usize;
+    fn cn_yida_observe_l1(
+        handle: *mut c_void,
+        callback: unsafe extern "C" fn(*mut c_void, *const super::observation::NativeL1),
+        context: *mut c_void,
+    ) -> i32;
     fn cn_yida_order_request_size() -> usize;
     fn cn_yida_cancel_request_size() -> usize;
     fn cn_yida_version(path: *const c_char, out: *mut c_char, cap: usize) -> i32;
@@ -128,6 +134,9 @@ pub struct Received {
 }
 struct ContextData {
     sender: Sender<Received>,
+    l1_sender: Sender<super::observation::ReceivedL1>,
+    l1_connected: Arc<AtomicBool>,
+    l1_dropped: Arc<AtomicU64>,
     fault: Arc<AtomicBool>,
     placement: Option<Arc<crate::placement::CallbackPlacement>>,
     placement_fault: Arc<AtomicBool>,
@@ -163,6 +172,31 @@ unsafe extern "C" fn callback(context: *mut c_void, event: *const RawEvent) {
         context.fault.store(true, Ordering::Release);
     }
 }
+unsafe extern "C" fn l1_callback(context: *mut c_void, event: *const super::observation::NativeL1) {
+    if context.is_null() || event.is_null() {
+        return;
+    }
+    let context = unsafe { &*context.cast::<ContextData>() };
+    if context.placement.as_ref().is_some_and(|p| !p.enforce()) {
+        context.placement_fault.store(true, Ordering::Release);
+        return;
+    }
+    let event = unsafe { *event };
+    if event.symbol[0] == 0 {
+        context
+            .l1_connected
+            .store(event.connected != 0, Ordering::Release);
+        return;
+    }
+    let received = super::observation::ReceivedL1 {
+        event,
+        received_us: cn_futures_state::publisher::now_us(),
+    };
+    if context.l1_sender.try_send(received).is_err() {
+        context.l1_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct PendingIdentity {
     venue: Venue,
@@ -200,6 +234,9 @@ pub struct YidaTrader {
     last_insert_ns: Option<u64>,
     context: Option<Box<ContextData>>,
     pub events: Receiver<Received>,
+    pub l1_events: Receiver<super::observation::ReceivedL1>,
+    pub l1_connected: Arc<AtomicBool>,
+    pub l1_dropped: Arc<AtomicU64>,
     pub fault: Arc<AtomicBool>,
     pub placement_fault: Arc<AtomicBool>,
     credentials: config::Credentials,
@@ -238,11 +275,21 @@ impl YidaTrader {
                 && unsafe { cn_yida_cancel_request_size() } == std::mem::size_of::<NativeCancel>(),
             "Yida FFI request layout mismatch"
         );
+        ensure!(
+            unsafe { cn_yida_l1_size() } == std::mem::size_of::<super::observation::NativeL1>(),
+            "Yida L1 FFI layout mismatch"
+        );
         let (sender, events) = crossbeam_channel::bounded(config.event_capacity);
+        let (l1_sender, l1_events) = crossbeam_channel::bounded(1024);
+        let l1_connected = Arc::new(AtomicBool::new(false));
+        let l1_dropped = Arc::new(AtomicU64::new(0));
         let fault = Arc::new(AtomicBool::new(false));
         let placement_fault = Arc::new(AtomicBool::new(false));
         let mut context = Box::new(ContextData {
             sender,
+            l1_sender,
+            l1_connected: l1_connected.clone(),
+            l1_dropped: l1_dropped.clone(),
             fault: fault.clone(),
             placement,
             placement_fault: placement_fault.clone(),
@@ -274,6 +321,9 @@ impl YidaTrader {
             last_insert_ns: None,
             context: Some(context),
             events,
+            l1_events,
+            l1_connected,
+            l1_dropped,
             fault,
             placement_fault,
             credentials,
@@ -284,6 +334,22 @@ impl YidaTrader {
             ack_timeout_reported: false,
             _single_owner: PhantomData,
         };
+        if config.observation_l1 {
+            let context = trader
+                .context
+                .as_ref()
+                .expect("new trader owns callback context");
+            ensure!(
+                unsafe {
+                    cn_yida_observe_l1(
+                        trader.handle.as_ptr(),
+                        l1_callback,
+                        (&**context as *const ContextData).cast_mut().cast(),
+                    )
+                } == 0,
+                "configure read-only Yida L1 callback"
+            );
+        }
         for contract in &config.symbols {
             let venue = CString::new(contract.venue.as_str())?;
             let symbol = CString::new(contract.symbol.as_str())?;
@@ -691,9 +757,15 @@ mod tests {
     #[test]
     fn callback_overflow_latches_fault() {
         let (sender, receiver) = crossbeam_channel::bounded(1);
+        let (l1_sender, _l1_receiver) = crossbeam_channel::bounded(1);
+        let l1_connected = Arc::new(AtomicBool::new(false));
+        let l1_dropped = Arc::new(AtomicU64::new(0));
         let fault = Arc::new(AtomicBool::new(false));
         let mut context = ContextData {
             sender,
+            l1_sender,
+            l1_connected: l1_connected.clone(),
+            l1_dropped: l1_dropped.clone(),
             fault: fault.clone(),
             placement: None,
             placement_fault: Arc::new(AtomicBool::new(false)),
@@ -705,5 +777,47 @@ mod tests {
         }
         assert!(fault.load(Ordering::Acquire));
         assert_eq!(receiver.len(), 1);
+    }
+    #[test]
+    fn l1_overflow_drops_observation_without_faulting_reliable_ingress() {
+        let (sender, _receiver) = crossbeam_channel::bounded(1);
+        let (l1_sender, l1_receiver) = crossbeam_channel::bounded(1);
+        let fault = Arc::new(AtomicBool::new(false));
+        let l1_dropped = Arc::new(AtomicU64::new(0));
+        let l1_connected = Arc::new(AtomicBool::new(false));
+        let mut context = ContextData {
+            sender,
+            l1_sender,
+            l1_connected: l1_connected.clone(),
+            l1_dropped: l1_dropped.clone(),
+            fault: fault.clone(),
+            placement: None,
+            placement_fault: Arc::new(AtomicBool::new(false)),
+        };
+        let mut event: super::super::observation::NativeL1 = unsafe { std::mem::zeroed() };
+        event.symbol[0] = b'c';
+        event.connected = 1;
+        let mut status = event;
+        status.symbol.fill(0);
+        unsafe {
+            l1_callback((&mut context as *mut ContextData).cast(), &status);
+        }
+        unsafe {
+            l1_callback((&mut context as *mut ContextData).cast(), &event);
+            l1_callback((&mut context as *mut ContextData).cast(), &event);
+        }
+        assert!(!fault.load(Ordering::Acquire));
+        assert!(l1_connected.load(Ordering::Acquire));
+        assert_eq!(l1_dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(l1_receiver.len(), 1);
+        status.connected = 0;
+        unsafe {
+            l1_callback((&mut context as *mut ContextData).cast(), &status);
+            l1_callback((&mut context as *mut ContextData).cast(), &event);
+        }
+        assert!(
+            !l1_connected.load(Ordering::Acquire),
+            "an older quote must not undo a disconnect"
+        );
     }
 }

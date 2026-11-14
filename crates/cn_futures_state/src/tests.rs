@@ -162,6 +162,25 @@ fn snapshot_capture_does_not_allocate_or_wait_for_encoding() {
     for _ in 0..1000 {
         producer
             .capture(true, |s| {
+                s.marks.push(InstrumentMark {
+                    venue: Venue::Shfe,
+                    symbol: Text::new("cu2612")?,
+                    kind: InstrumentKind::Future,
+                    contract_multiple: 5,
+                    last_price: Some(80000.0),
+                    bid_price: None,
+                    ask_price: None,
+                    bid_lots: Some(0),
+                    ask_lots: None,
+                    trading_day: 20261113,
+                    native_timestamp: None,
+                    last_trade_timestamp: None,
+                    native_time: Text::default(),
+                    last_trade_time: Text::default(),
+                    received_us: s.observed_us,
+                    initial: true,
+                    paused: false,
+                });
                 s.position_ready = true;
                 s.trading_day = Text::new("20261113")?;
                 s.positions.push(PositionRow {
@@ -221,6 +240,25 @@ fn maximum_full_snapshot_fits_one_complete_ipc_message() {
     let mut s = sample();
     s.positions.clear();
     for i in 0..MAX_POSITIONS {
+        s.marks.push(InstrumentMark {
+            venue: Venue::Shfe,
+            symbol: Text::new(&format!("{:0>81}", i)).unwrap(),
+            kind: InstrumentKind::Future,
+            contract_multiple: 5,
+            last_price: Some(80000.0),
+            bid_price: Some(79990.0),
+            ask_price: Some(80010.0),
+            bid_lots: Some(1),
+            ask_lots: Some(0),
+            trading_day: 20261113,
+            native_timestamp: Some(100),
+            last_trade_timestamp: Some(99),
+            native_time: Text::new("21:00:01.500").unwrap(),
+            last_trade_time: Text::new("21:00:01.499").unwrap(),
+            received_us: s.observed_us,
+            initial: true,
+            paused: false,
+        });
         s.positions.push(PositionRow {
             venue: Venue::Shfe,
             symbol: Text::new(&format!("{:0>81}", i)).unwrap(),
@@ -230,4 +268,38 @@ fn maximum_full_snapshot_fits_one_complete_ipc_message() {
     }
     s.validate().unwrap();
     assert!(bincode::serialized_size(&s).unwrap() < (PAYLOAD - 4) as u64);
+}
+
+#[test]
+fn native_marks_are_validated_without_guessing_prices_or_multipliers() {
+    let mut s = sample();
+    let mark = InstrumentMark {
+        venue: Venue::Shfe,
+        symbol: Text::new("cu2612").unwrap(),
+        kind: InstrumentKind::Future,
+        contract_multiple: 5,
+        last_price: Some(80000.0),
+        bid_price: None,
+        ask_price: None,
+        bid_lots: Some(0),
+        ask_lots: None,
+        trading_day: 20261113,
+        native_timestamp: None,
+        last_trade_timestamp: None,
+        native_time: Text::default(),
+        last_trade_time: Text::default(),
+        received_us: s.observed_us,
+        initial: true,
+        paused: false,
+    };
+    s.marks.push(mark);
+    s.validate().unwrap();
+    s.marks[0].contract_multiple = 0;
+    assert!(s.validate().is_err());
+    s.marks[0] = mark;
+    s.marks[0].last_price = Some(f64::MAX);
+    assert!(s.validate().is_err());
+    s.marks[0] = mark;
+    s.marks.push(mark);
+    assert!(s.validate().is_err());
 }

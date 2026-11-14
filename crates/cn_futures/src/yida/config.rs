@@ -28,6 +28,9 @@ pub struct Config {
     /// Defaults to flow_directory/persist_manager. Never shared across accounts.
     pub persistence_directory: Option<PathBuf>,
     pub position_ipc: Option<cn_futures_state::Config>,
+    /// Read-only L1 for held/configured contracts, independent of trading permissions.
+    #[serde(default)]
+    pub observation_l1: bool,
     #[serde(default)]
     pub preallocated_orders: usize,
     #[serde(default)]
@@ -203,7 +206,10 @@ impl Config {
         );
         for (key, expected) in [
             ("TradingProtocol", self.trading_protocol.native_name()),
-            ("ConnectTCPMarketData", "no"),
+            (
+                "ConnectTCPMarketData",
+                if self.observation_l1 { "yes" } else { "no" },
+            ),
             ("ReceiveUDPMarketData", "no"),
             ("RecalcMode", "off"),
         ] {
@@ -239,6 +245,7 @@ impl Config {
                             | "ReceiveUDPMarketData"
                             | "RecalcMode"
                             | "TradingServerTimeout"
+                            | "TCPMarketDataCPUID"
                             | "TCPTradingCPUID"
                             | "XTCPTradingCPUID"
                             | "TimerCPUID"
@@ -262,6 +269,9 @@ impl Config {
             let mut keys = vec!["TCPTradingCPUID", "TimerCPUID"];
             if self.trading_protocol == TradingProtocol::Xtcp {
                 keys.push("XTCPTradingCPUID");
+            }
+            if self.observation_l1 {
+                keys.push("TCPMarketDataCPUID");
             }
             for key in keys {
                 let sdk_core = values

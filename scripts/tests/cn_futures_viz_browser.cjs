@@ -25,17 +25,18 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.goto('http://cn-viz.test/');
     assert.equal(await page.evaluate(()=>window.__sockets[0].url),'ws://cn-viz.test/observe/live');
     const row=(venue,symbol,side,today,yesterday=0,frozen_today=0)=>({venue,symbol,side,position:{today,yesterday,frozen_today,frozen_yesterday:0}});
+    const mark=(symbol,kind,multiple,price)=>({venue:'SHFE',symbol,kind,contract_multiple:multiple,last_price:price,bid_price:null,ask_price:null,bid_lots:0,ask_lots:0,trading_day:20261113,native_timestamp:100,last_trade_timestamp:100,native_time:'21:00:01.500',last_trade_time:'21:00:01.500',received_us:Date.now()*1000,initial:false});
     const frame={type:'cn_futures_state',source_id:'paper',label:'易达 paper',account:'paper-observe',adapter:'yida',namespace:'test',stale_after_ms:10000,error:null,
-      entry:{publisher_epoch:'18446744073709551615',sequence:'1',observed_us:Date.now()*1000,adapter:'yida',runtime_status:'running',position_ready:true,connected:true,ready:true,transport_ready:true,can_trade:false,trading_day:'20261112',reason:'',available_local_budget:1234567.89,positions:[
+      entry:{publisher_epoch:'18446744073709551615',sequence:'1',observed_us:Date.now()*1000,adapter:'yida',runtime_status:'running',position_ready:true,connected:true,ready:true,transport_ready:true,can_trade:false,trading_day:'20261112',reason:'',available_local_budget:1234567.89,marks:[mark('cu2612','future',5,80000)],l1_connected:true,l1_dropped:'0',positions:[
         row('SHFE','cu2612','buy',2,3,1),row('SHFE','cu2612','sell',1),row('SHFE','cu2612','sell',0),
       ]}};
     // Native contract has one row per side: keep a distinct zero contract in this fixture.
     frame.entry.positions[2].symbol='ag2612';
     await page.evaluate(f=>window.__push(f),frame);
     assert.equal(await page.locator('#budget').innerText(),'¥ 1,234,567.89');
-    assert.equal(await page.locator('#net-long-contracts').innerText(),'1');
-    assert.equal(await page.locator('#net-short-contracts').innerText(),'0');
-    assert.equal(await page.locator('#frozen-lots').innerText(),'1');
+    assert.equal(await page.locator('#futures-amount').innerText(),'¥ 1,600,000.00');
+    assert.equal(await page.locator('#options-amount').innerText(),'¥ 0.00');
+    assert.equal(await page.locator('#valuation-coverage').innerText(),'1 / 1');
     assert.equal(await page.locator('#positions .aggregate-row').count(),1);
     assert.match(await page.locator('#positions').innerText(),/沪铜 · 2026年12月/);
     await page.locator('[data-group]').first().click();
@@ -50,6 +51,32 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(await page.locator('#positions tr[data-symbol]').count(),2);
     await page.locator('#show-zero').uncheck();
     assert.equal(await page.locator('#positions tr[data-symbol]').count(),1);
+    // Futures notional and option premium use native multipliers and signed net lots.
+    frame.entry.positions=[row('SHFE','cu2612','buy',2,3),row('SHFE','cu2612','sell',1),row('SHFE','cu2612C106000','sell',2)];
+    frame.entry.marks.push(mark('cu2612C106000','option',5,20));
+    await page.evaluate(f=>window.__push(f),frame);
+    assert.equal(await page.locator('#futures-amount').innerText(),'¥ 1,600,000.00');
+    assert.equal(await page.locator('#options-amount').innerText(),'¥ -200.00');
+    frame.entry.marks[1].last_price=null;frame.entry.marks[1].bid_price=19;frame.entry.marks[1].ask_price=21;
+    await page.evaluate(f=>window.__push(f),frame);
+    assert.equal(await page.locator('#options-amount').innerText(),'--');
+    assert.equal(await page.locator('#valuation-coverage').innerText(),'1 / 2');
+    frame.entry.marks[1].last_price=20;frame.entry.marks[1].contract_multiple=0;
+    await page.evaluate(f=>window.__push(f),frame);
+    assert.equal(await page.locator('#options-amount').innerText(),'--');
+    frame.entry.marks[1].contract_multiple=5;frame.entry.marks[1].initial=true;
+    await page.evaluate(f=>window.__push(f),frame);
+    assert.match(await page.locator('#options-basis').innerText(),/历史/);
+    assert.match(await page.locator('#positions').innerText(),/初始快照/);
+    frame.entry.marks[1].initial=false;frame.entry.marks[1].received_us=(Date.now()-20000)*1000;frame.entry.observed_us=Date.now()*1000;
+    await page.evaluate(f=>window.__push(f),frame);
+    assert.match(await page.locator('#options-basis').innerText(),/历史/);
+    assert.match(await page.locator('#positions').innerText(),/行情停更/);
+    // Fresh receipt timestamps do not make an older native quote current.
+    frame.entry.marks[1].received_us=Date.now()*1000;frame.entry.marks[1].trading_day=20200101;
+    await page.evaluate(f=>window.__push(f),frame);
+    assert.match(await page.locator('#options-basis').innerText(),/历史/);
+    assert.match(await page.locator('#positions').innerText(),/20200101/);
     // Multi-venue names, CZCE decade rollover from native trading day, unknown fallback.
     frame.entry.positions=[row('CZCE','SR701','buy',1),row('CZCE','TA912','buy',2),row('CFFEX','IF2612','sell',3),row('INE','sc2701','buy',4),row('GFEX','lc2612','buy',5),row('DCE','m2701','buy',6),row('SHFE','unknown2612','buy',7),row('INE','sc2612C780','buy',1),row('DCE','m2701-P-3000','sell',1),row('CZCE','SR701C6000','buy',1),row('CFFEX','IO2612-C-4000','buy',1)];
     await page.evaluate(f=>window.__push(f),frame);
@@ -61,11 +88,11 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     // Initial recovery and flat are distinct, even across a publisher restart.
     frame.entry.positions=[];frame.entry.position_ready=false;frame.entry.publisher_epoch='2';
     await page.evaluate(f=>window.__push(f),frame);
-    assert.equal(await page.locator('#net-long-contracts').innerText(),'--');
+    assert.equal(await page.locator('#futures-amount').innerText(),'--');
     assert.match(await page.locator('#positions').innerText(),/等待柜台完成持仓恢复/);
     frame.entry.position_ready=true;
     await page.evaluate(f=>window.__push(f),frame);
-    assert.equal(await page.locator('#net-long-contracts').innerText(),'0');
+    assert.equal(await page.locator('#futures-amount').innerText(),'¥ 0.00');
     assert.match(await page.locator('#positions').innerText(),/当前无持仓/);
     frame.entry.positions=[row('SHFE','cu2612','buy',2)];frame.entry.observed_us=(Date.now()-20000)*1000;
     await page.evaluate(f=>window.__push(f),frame);

@@ -15,6 +15,7 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include <limits>
 
 namespace {
 constexpr int invalid = -9901;
@@ -63,6 +64,41 @@ public:
     YDExtendedApi* api = nullptr;
     CnYidaCallback callback;
     void* context;
+    CnYidaL1Callback l1_callback = nullptr;
+    void* l1_context = nullptr;
+    std::atomic<bool> l1_online{false};
+    std::atomic<uint64_t> l1_generation{0};
+    void l1_status(bool connected) noexcept {
+        l1_online=connected;
+        if (l1_callback) { CnYidaL1 e{}; e.connected=connected; l1_callback(l1_context,&e); }
+    }
+    void l1(const YDInstrument* i, bool initial) noexcept {
+        if (!l1_callback || !i || !i->m_pExchange) return;
+        if ((std::strcmp(i->m_pExchange->ExchangeID,"SHFE") && std::strcmp(i->m_pExchange->ExchangeID,"INE")) || (i->ProductClass!=YD_PC_Futures && i->ProductClass!=YD_PC_Options)) return;
+        try {
+            CnYidaL1 e{}; e.generation=l1_generation.load(); e.initial=initial; e.connected=l1_online;
+            field(e.symbol,i->InstrumentID); field(e.exchange,i->m_pExchange->ExchangeID);
+            e.product_class=i->ProductClass; e.contract_multiple=i->Multiple;
+            e.trading_day=api->getTradingDay();
+            e.last_price=e.bid_price=e.ask_price=std::numeric_limits<double>::quiet_NaN();
+            e.native_timestamp=e.last_trade_timestamp=e.bid_lots=e.ask_lots=-1;
+            if (const auto* m=i->m_pMarketData) {
+                e.trading_day=m->TradingDay; e.native_timestamp=m->TimeStamp;
+                e.last_trade_timestamp=m->LastTradeTimeStamp;
+                char time_buffer[64]{};
+                if (m->TimeStamp>=0) text(e.native_time,api->timeStamp2String(static_cast<unsigned>(m->TimeStamp),time_buffer));
+                if (m->LastTradeTimeStamp>=0) text(e.last_trade_time,api->timeStamp2String(static_cast<unsigned>(m->LastTradeTimeStamp),time_buffer));
+                e.last_price=m->LastPrice; e.bid_price=m->BidPrice; e.ask_price=m->AskPrice;
+                e.bid_lots=m->BidVolume; e.ask_lots=m->AskVolume; e.market_flags=m->MarketDataFlag;
+            }
+            l1_callback(l1_context,&e);
+        } catch (...) { /* An invalid quote must never fault reliable trade ingress. */ }
+    }
+    void observe(const YDInstrument* i) {
+        if (!l1_callback || !i) return;
+        api->subscribe(i);
+        l1(i,true);
+    }
     std::atomic<bool> destroying{false}, initialized{false}, logged_in{false};
     std::atomic<bool> tcp_connected{false}, xtcp_connected{false}, caught_up{false};
     std::atomic<int> trading_port{0};
@@ -173,6 +209,7 @@ public:
     void snapshot() {
         // Called on the vendor's caught-up notification thread, never by the business
         // loop concurrently with live state reads. Live interleaving is rejected in Rust.
+        ++l1_generation;
         CnYidaEvent begin{}; begin.kind=Begin; begin.day=api->getTradingDay(); begin.reference=max_ref; send(begin);
         account(true);
         for(int k=0;k<api->getExchangeCount();++k) {
@@ -186,7 +223,7 @@ public:
             CnYidaEvent e{}; e.kind=Instrument; base(e,i); e.tick=i->Tick;
             e.minimum=i->MinLimitOrderVolume; e.maximum=i->MaxLimitOrderVolume; e.expiry=i->ExpireDate;
             e.market_minimum=i->MinMarketOrderVolume; e.market_maximum=i->MaxMarketOrderVolume;
-            e.right=right(i); send(e);
+            e.right=right(i); send(e); observe(i);
         }
         YDExtendedPositionFilter pf{}; pf.PositionDate=pf.PositionDirection=pf.HedgeFlag=-1;
         Query<YDExtendedPosition> ps(api->findExtendedPositions(&pf));
@@ -200,6 +237,7 @@ public:
             if (p->ExecFrozen) throw std::runtime_error("unsupported execution frozen position");
             e.date=p->PositionDate; e.position_direction=p->PositionDirection; e.hedge=p->HedgeFlag;
             e.lots=p->Position; e.frozen=p->CloseFrozen; send(e);
+            if (p->Position || p->CloseFrozen) observe(p->m_pAccountInstrumentInfo->m_pInstrument);
         }
         YDOrderFilter of{}; of.StartTime=of.EndTime=-1; of.YDOrderFlags=-1;
         Query<YDExtendedOrder> os(api->findOrders(&of));
@@ -220,7 +258,10 @@ public:
     void start_destroy() { if (!destroying.exchange(true)) api->startDestroy(); }
     void notifyAfterApiDestroy() override { std::lock_guard<std::mutex> lock(destroy_mutex); destroyed=true; destroyed_cv.notify_all(); }
     void notifyEvent(int event) override { guarded([&] {
-        if (event==YD_AE_ServerRestarted) { logged_in=false; caught_up=false; fatal(); start_destroy(); return; }
+        if (event==YD_AE_TCPMarketDataConnected || event==YD_AE_TCPMarketDataDisconnected) {
+            l1_status(event==YD_AE_TCPMarketDataConnected); return;
+        }
+        if (event==YD_AE_ServerRestarted) { l1_status(false); logged_in=false; caught_up=false; fatal(); start_destroy(); return; }
         CnYidaEvent e{};
         if (event==YD_AE_XTCPTradeConnected || event==YD_AE_XTCPTradeDisconnected) {
             xtcp_connected=event==YD_AE_XTCPTradeConnected; transport_event(); return;
@@ -251,6 +292,7 @@ public:
         if (!initialized || !logged_in || max_ref<0) throw std::runtime_error("caught up before initialization/login");
         read_trading_port(); snapshot(); caught_up=true; transport_event();
     }); }
+    void notifyMarketData(const YDMarketData* m) override { if (m) l1(m->m_pInstrument,false); }
     void notifyOrder(const YDOrder* o,const YDInstrument* i,const YDAccount* a) override { guarded([&] { if (mine(a)) order(o,i); }); }
     void notifyTrade(const YDTrade* t,const YDInstrument* i,const YDAccount* a) override { guarded([&] { if (mine(a)) trade(t,i); }); }
     void notifyFailedCancelOrder(const YDFailedCancelOrder* o,const YDExchange* x,const YDAccount* a) override { guarded([&] {
@@ -413,4 +455,9 @@ int cn_yida_cancel_batch(void* p,const CnYidaCancelRequest* r,int count,int* fai
     *failed=-1; return b->api->cancelMultiOrders(count,orders,exchanges)?0:invalid;
 } catch(...) { return invalid; } }
 void cn_yida_disconnect(void* p) { try { get(p)->api->disconnect(); } catch(...) {} }
+}
+
+extern "C" size_t cn_yida_l1_size() { return sizeof(CnYidaL1); }
+extern "C" int cn_yida_observe_l1(void* p,CnYidaL1Callback cb,void* context) {
+    try { auto* b=get(p); b->l1_callback=cb; b->l1_context=context; return 0; } catch (...) { return invalid; }
 }

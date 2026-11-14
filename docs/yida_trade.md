@@ -1,8 +1,8 @@
 # 易达原生交易：SHFE / INE 期货与普通期权
 
-最后更新：2026-11-13 UTC。
+最后更新：2026-11-14 UTC。
 
-`crates/cn_futures` 的 `ctp-trader` 和 `yida-trader` 共用一个交易核心。易达入口支持 SHFE / INE 普通投机期货与期权；CTP 的国内期货范围见 [CTP 接入说明](ctp_trade.md)。易达直接调用 Hanlin **YDExtendedApi**，没有通过易达的 CTP 兼容接口。行情独立，尚未接入易达行情。SDK 本身的 `YDMarketData` 支持订阅、行情回调和买卖一档 BBO；本轮仿真只读探针已收到过这种盘口，不是五档 L2。按 2026-11-13 的范围要求，这路易达自带行情仅作审计备份参考，不新增采集器、不增加 `--yd`，交易运行时继续关闭行情连接。统一主行情入口见 [cn-futures-pbs](cn_futures_pbs.md)，当前 ZMQ 接法明确限定为公司内网通联转发。
+`crates/cn_futures` 的 `ctp-trader` 和 `yida-trader` 共用一个交易核心。易达入口支持 SHFE / INE 普通投机期货与期权；CTP 的国内期货范围见 [CTP 接入说明](ctp_trade.md)。易达直接调用 Hanlin **YDExtendedApi**，没有通过易达的 CTP 兼容接口。SDK 的 `YDMarketData` 提供最新价与买卖一档 BBO，不是五档 L2。默认仍关闭行情连接；2026-11-14 按用户新要求增加 `observation_l1=true`，在现有登录内只订阅持仓及原白名单的 L1，用于 Viz 的人民币持仓估值。没有独立行情登录／进程，不扩大可交易白名单，详见 [Viz 估值口径](cn_futures_viz.md)。统一主行情入口见 [cn-futures-pbs](cn_futures_pbs.md)，当前 ZMQ 接法明确限定为公司内网通联转发。
 
 实现已完成本地单元测试、按真实原生头文件编译的合成 SDK 桥接联测，以及官网公共仿真的真实 SDK 联调。TCP / UDP / XTCP 在 SHFE `cu2612`、INE `sc2612` 上均已验证非零组回报前撤单、席位选择、原生批量报撤、限价报撤单、限价 FAK / FOK 开平仓、原生市价 Day / FAK / FOK 开平仓、事实成交和重连对账。没有生产部署或真实柜台延迟测量；完整本地适配器链路的离线结果见[性能记录](cn_futures_performance.md)。
 
@@ -75,7 +75,7 @@ UDP / XTCP 发单仍由 SDK `insertOrder` / `cancelOrder` 在调用线程完成�
 
 厂商 SDK 在 XTCP 断线时自身可以退回 TCP，未提供原子“只允许 XTCP”发送接口。桥接在每笔 SDK 调用前检查连接状态，但无法消除检查与 SDK 内部断线处理之间的竞态，不能承诺从未发生 TCP 回退。必须在配套柜台上验证连接事件、重连及实际网络发单路径。
 
-交易运行时关闭所有易达行情连接，联调的盘口与涨跌停价通过独立的只读行情探针取得。`RecalcMode=off` 避免在缺少行情时假装持续重算保证金 / 浮盈亏；因此 SDK 本地 `Available` / `usable()` 不能当作独立、实时的柜台风险模型。需要按实际保证金、手续费和价格风险配置保守 `cash_budget_per_open_lot`，并在仿真中核对。资金事件只收紧本地预算，完整恢复才建立新基准。
+默认交易运行时关闭易达行情连接；显式启用 `observation_l1=true` 时，原生配置使用 `ConnectTCPMarketData=yes` 并在 SDK CPU 域配置 `TCPMarketDataCPUID`，UDP 行情仍为 no。L1 使用独立有损队列，只服务持仓观察；原交易回报、白名单与执行门控独立保留。`RecalcMode=off` 避免在缺少行情时假装持续重算保证金 / 浮盈亏；因此 SDK 本地 `Available` / `usable()` 不能当作独立、实时的柜台风险模型。需要按实际保证金、手续费和价格风险配置保守 `cash_budget_per_open_lot`，并在仿真中核对。资金事件只收紧本地预算，完整恢复才建立新基准。
 
 `idle_sleep_us=0` 使用忙轮询。统一的 `[placement]` 包含 `numa_node`、`business_cpu`、`sdk_cpus`、`background_cpus`，替代原来的 `business_core`。部署时按目标主机拓扑配置；省略 placement 时保留操作系统默认调度，不能声称已隔离或绑定 NUMA。配置后会在创建队列、核心与数据库前绑定线程和后续分配的内存页：业务、SDK、后台三域在同一 NUMA 节点，且不同域不共享 SMT 物理核。SDK 创建、启动、登录、重连和销毁在 SDK CPU 集合中进行，输入与写盘线程继承后台集合；同步报单回调保持业务核，原生工作线程回调强制进入 SDK 域。任一拓扑、亲和性或 `MPOL_BIND` 失败立即返回错误，没有降级。已有内存页不会自动迁移。
 
@@ -128,7 +128,7 @@ target/release/yida-trader --config /absolute/path/yida-sim.toml --connect
 target/release/yida-trader --config /absolute/path/yida-sim.toml --connect --execute
 ```
 
-可复用的实际联调脚本为 `crates/cn_futures/tests/yida_public_sim_smoke.py`。它从环境变量读取凭据，默认只登录观察；`--execute` 要求 release 二进制和调用方明确提供三个限价的整数 ticks。执行前验证目标合约为空仓，结束时仅处理本次订单和新增的一手仓位，再完整对账。默认测试期货；`--option` 明确选择期权，配置买入资金缓冲并核对原生类别，验证限价 Day / FAK / FOK 的买开卖平、卖开买平。额外提供 `--market` 时，再验证对应市价开平。`--native-controls` 另测回报前按组号撤单、固定／首选／顺序优先席位及两笔原生批量报撤；六组实际审计均确认立即撤单时 `prepared_cancel.system_id` 为空，随后收到成功撤单回报。审计、stdout、stderr 与 `summary.json` 放在显式指定的新输出目录中。每次执行必须重新确认实际合约与价格，不能照搬历史测试价格。可用 `--quotes-file` 接入独立只读行情进程写入的最新盘口快照，仅用于联调时选择可成交的限价；交易运行时仍关闭行情连接。期权的 FAK / FOK 零成交撤销作为正常终态记录；为了继续覆盖对应平仓指令而额外进行的市价建仓／清理会单列为 `auxiliary_orders`，不计入该被测指令的 `target_factual_fills`。
+可复用的实际联调脚本为 `crates/cn_futures/tests/yida_public_sim_smoke.py`。它从环境变量读取凭据，默认只登录观察；`--execute` 要求 release 二进制和调用方明确提供三个限价的整数 ticks。执行前验证目标合约为空仓，结束时仅处理本次订单和新增的一手仓位，再完整对账。默认测试期货；`--option` 明确选择期权，配置买入资金缓冲并核对原生类别，验证限价 Day / FAK / FOK 的买开卖平、卖开买平。额外提供 `--market` 时，再验证对应市价开平。`--native-controls` 另测回报前按组号撤单、固定／首选／顺序优先席位及两笔原生批量报撤；六组实际审计均确认立即撤单时 `prepared_cancel.system_id` 为空，随后收到成功撤单回报。审计、stdout、stderr 与 `summary.json` 放在显式指定的新输出目录中。每次执行必须重新确认实际合约与价格，不能照搬历史测试价格。可用 `--quotes-file` 接入独立只读行情进程写入的最新盘口快照，仅用于联调时选择可成交的限价；未启用 `observation_l1` 的交易运行时仍关闭行情连接。期权的 FAK / FOK 零成交撤销作为正常终态记录；为了继续覆盖对应平仓指令而额外进行的市价建仓／清理会单列为 `auxiliary_orders`，不计入该被测指令的 `target_factual_fills`。
 
 ```bash
 python3 crates/cn_futures/tests/yida_public_sim_smoke.py \

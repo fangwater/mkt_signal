@@ -892,6 +892,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
         false,
         cn_futures_state::RuntimeStatus::Running,
         true,
+        crate::position_ipc::MarketState::default(),
     );
     placement.on_sdk(|| {
         runtime.trader.start(
@@ -1278,6 +1279,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
                     && runtime.trader.events.is_empty(),
                 cn_futures_state::RuntimeStatus::Running,
                 false,
+                crate::position_ipc::MarketState::default(),
             );
             if !work {
                 std::hint::spin_loop();
@@ -1336,6 +1338,7 @@ pub fn run_with_strategy<S: crate::ctp::strategy::Strategy>(
             cn_futures_state::RuntimeStatus::Failed
         },
         true,
+        crate::position_ipc::MarketState::default(),
     );
     journal.record(
         serde_json::json!({"type":"runtime_stopped","venue_orders_cancelled":false}),

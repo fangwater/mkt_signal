@@ -3,6 +3,13 @@
 use crate::core::TradingCore;
 use cn_futures_state::{publisher::Producer, RuntimeStatus};
 
+#[derive(Default)]
+pub struct MarketState<'a> {
+    pub marks: &'a [cn_futures_state::InstrumentMark],
+    pub connected: bool,
+    pub dropped: u64,
+}
+
 pub(crate) fn publish(
     publisher: &mut Option<Producer>,
     core: &TradingCore,
@@ -10,11 +17,15 @@ pub(crate) fn publish(
     can_trade: bool,
     status: RuntimeStatus,
     force: bool,
+    market: MarketState<'_>,
 ) {
     let failed = publisher.as_mut().is_some_and(|publisher| {
         publisher
             .capture(force, |snapshot| {
                 core.capture_positions(snapshot)?;
+                snapshot.marks.extend_from_slice(market.marks);
+                snapshot.l1_connected = market.connected;
+                snapshot.l1_dropped = market.dropped;
                 snapshot.transport_ready = transport_ready;
                 snapshot.can_trade = can_trade && status == RuntimeStatus::Running;
                 snapshot.runtime_status = status;

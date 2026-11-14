@@ -1,5 +1,6 @@
 //! Native Hanlin YDApi (not the vendor's CTP-compatible adapter).
 pub mod config;
+pub mod observation;
 #[cfg(feature = "yida-sdk")]
 pub mod runtime;
 #[cfg(feature = "yida-sdk")]

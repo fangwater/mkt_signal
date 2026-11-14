@@ -96,6 +96,7 @@ impl Producer {
             },
         };
         snapshot.positions.clear();
+        snapshot.marks.clear();
         self.sequence = self
             .sequence
             .checked_add(1)
@@ -107,6 +108,7 @@ impl Producer {
         if let Err(error) = fill(&mut snapshot) {
             // Invalidate the entire snapshot rather than publishing a partial book.
             snapshot.positions.clear();
+            snapshot.marks.clear();
             snapshot.position_ready = false;
             snapshot.ready = false;
             snapshot.can_trade = false;

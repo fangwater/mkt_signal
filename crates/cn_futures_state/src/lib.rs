@@ -8,7 +8,7 @@ pub use persist_common::cn_futures::{Position, Side, Venue};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const MAX_POSITIONS: usize = 8192;
-pub const PAYLOAD: usize = 1024 * 1024;
+pub const PAYLOAD: usize = 4 * 1024 * 1024;
 pub const BUFFER: usize = 2;
 pub const CHANNEL: &str = "cn_futures_positions";
 
@@ -93,6 +93,70 @@ pub struct PositionRow {
     pub position: Position,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstrumentKind {
+    Future,
+    Option,
+}
+
+/// Native L1 and catalog values. Initial snapshots never become live ticks by
+/// being copied into a later position heartbeat. Native timestamps stay native.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct InstrumentMark {
+    pub venue: Venue,
+    pub symbol: Text<81>,
+    pub kind: InstrumentKind,
+    pub contract_multiple: i32,
+    pub last_price: Option<f64>,
+    pub bid_price: Option<f64>,
+    pub ask_price: Option<f64>,
+    pub bid_lots: Option<i32>,
+    pub ask_lots: Option<i32>,
+    pub trading_day: u32,
+    pub native_timestamp: Option<i32>,
+    pub last_trade_timestamp: Option<i32>,
+    pub native_time: Text<24>,
+    pub last_trade_time: Text<24>,
+    pub received_us: u64,
+    pub initial: bool,
+    pub paused: bool,
+}
+impl InstrumentMark {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.symbol.as_str().is_empty() && self.contract_multiple > 0 && self.received_us > 0,
+            "invalid native valuation identity/multiplier/time"
+        );
+        ensure!(
+            self.trading_day == 0 || (19000101..=29991231).contains(&self.trading_day),
+            "invalid L1 trading day"
+        );
+        for price in [self.last_price, self.bid_price, self.ask_price]
+            .into_iter()
+            .flatten()
+        {
+            ensure!(
+                price.is_finite() && price > 0.0 && price < f64::MAX,
+                "invalid L1 price"
+            );
+        }
+        ensure!(
+            [
+                self.bid_lots,
+                self.ask_lots,
+                self.native_timestamp,
+                self.last_trade_timestamp
+            ]
+            .into_iter()
+            .flatten()
+            .all(|v| v >= 0),
+            "invalid L1 quantity/time"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Snapshot {
     pub publisher_epoch: u64,
@@ -112,6 +176,9 @@ pub struct Snapshot {
     pub available_local_budget: f64,
     pub replaced_snapshots: u64,
     pub positions: Vec<PositionRow>,
+    pub marks: Vec<InstrumentMark>,
+    pub l1_connected: bool,
+    pub l1_dropped: u64,
 }
 impl Snapshot {
     pub fn empty(adapter: Adapter, account_hash: &str) -> Result<Self> {
@@ -133,6 +200,9 @@ impl Snapshot {
             available_local_budget: 0.0,
             replaced_snapshots: 0,
             positions: Vec::with_capacity(MAX_POSITIONS),
+            marks: Vec::with_capacity(MAX_POSITIONS),
+            l1_connected: false,
+            l1_dropped: 0,
         })
     }
     pub fn validate(&self) -> Result<()> {
@@ -179,6 +249,18 @@ impl Snapshot {
                 "invalid/duplicate native position identity"
             );
             p.position.validate()?;
+        }
+        ensure!(
+            self.marks.len() <= MAX_POSITIONS,
+            "native mark capacity exceeded"
+        );
+        let mut marks = std::collections::HashSet::new();
+        for mark in &self.marks {
+            mark.validate()?;
+            ensure!(
+                marks.insert((mark.venue, mark.symbol.as_str())),
+                "duplicate native valuation mark"
+            );
         }
         Ok(())
     }

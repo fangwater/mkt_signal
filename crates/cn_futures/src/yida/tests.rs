@@ -1137,3 +1137,18 @@ fn placement_validates_domains_and_rejects_obsolete_business_core() {
     ))
     .is_err());
 }
+
+#[test]
+fn read_only_l1_is_explicit_and_does_not_expand_the_trading_allowlist() {
+    let mut c = config();
+    let count = c.symbols.len();
+    let native = native_config("XTCP");
+    c.validate_sdk_config_text(&native).unwrap();
+    c.observation_l1 = true;
+    assert!(c.validate_sdk_config_text(&native).is_err());
+    c.validate_sdk_config_text(
+        &native.replace("ConnectTCPMarketData=no", "ConnectTCPMarketData=yes"),
+    )
+    .unwrap();
+    assert_eq!(c.symbols.len(), count);
+}

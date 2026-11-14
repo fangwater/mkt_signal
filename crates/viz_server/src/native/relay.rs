@@ -72,6 +72,7 @@ impl Hub {
         entry["publisher_epoch"] = json!(snapshot.publisher_epoch.to_string());
         entry["sequence"] = json!(snapshot.sequence.to_string());
         entry["replaced_snapshots"] = json!(snapshot.replaced_snapshots.to_string());
+        entry["l1_dropped"] = json!(snapshot.l1_dropped.to_string());
         frame.value["entry"] = entry;
         frame.value["error"] = Value::Null;
         frame.raw = frame.value.to_string();
@@ -108,7 +109,8 @@ impl Hub {
                 "observed_us":e["observed_us"], "runtime_status":e["runtime_status"],
                 "position_ready":e["position_ready"], "connected":e["connected"], "ready":e["ready"],
                 "can_trade":e["can_trade"], "transport_ready":e["transport_ready"],
-                "trading_day":e["trading_day"], "position_rows":e["positions"].as_array().map(Vec::len)})
+                "trading_day":e["trading_day"], "position_rows":e["positions"].as_array().map(Vec::len),
+                "l1_connected":e["l1_connected"], "mark_rows":e["marks"].as_array().map(Vec::len)})
         }).collect();
         json!({"ok":true, "sources":sources})
     }

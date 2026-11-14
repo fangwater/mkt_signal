@@ -81,6 +81,7 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         execute,
     };
     let mut session = Session::default();
+    let mut market = observation::MarketBook::default();
     let input = on_background(placement.as_ref(), input_commands)?;
     journal.record(json!({"type":"runtime_start","adapter":"yida","sdk_reference":SDK_REFERENCE,"trading_protocol":config.trading_protocol,"public_simulation":config.public_simulation,"placement":config.placement,"idle_sleep_us":config.idle_sleep_us,"execute":execute,"venues":["SHFE","INE"]}),true)?;
     crate::position_ipc::publish(
@@ -90,9 +91,15 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
         false,
         cn_futures_state::RuntimeStatus::Running,
         true,
+        crate::position_ipc::MarketState {
+            marks: market.marks(),
+            connected: runtime.trader.l1_connected.load(Ordering::Acquire),
+            dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
+        },
     );
     on_sdk(placement.as_ref(), || runtime.trader.start())?;
     let mut stopping = false;
+    let mut next_l1_warning = Instant::now();
     let mut transport_seen_ready = false;
     let mut recovery_since = Instant::now();
     let outcome = (|| -> Result<()> {
@@ -293,6 +300,20 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     Err(crossbeam_channel::TryRecvError::Empty) => {}
                 }
             }
+            // L1 has its own bounded lossy queue; never shares reliable trade ingress.
+            for _ in 0..256 {
+                let Ok(quote) = runtime.trader.l1_events.try_recv() else {
+                    break;
+                };
+                work = true;
+                if let Err(error) = market.apply(quote) {
+                    runtime.trader.l1_dropped.fetch_add(1, Ordering::Relaxed);
+                    if Instant::now() >= next_l1_warning {
+                        eprintln!("Yida L1 observation skipped: {error:#}");
+                        next_l1_warning = Instant::now() + Duration::from_secs(5);
+                    }
+                }
+            }
             let transport_ready = runtime.trader.transport_ready();
             crate::position_ipc::publish(
                 &mut position_ipc,
@@ -304,6 +325,11 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
                     && runtime.trader.events.is_empty(),
                 cn_futures_state::RuntimeStatus::Running,
                 false,
+                crate::position_ipc::MarketState {
+                    marks: market.marks(),
+                    connected: runtime.trader.l1_connected.load(Ordering::Acquire),
+                    dropped: runtime.trader.l1_dropped.load(Ordering::Relaxed),
+                },
             );
             if !work {
                 if config.idle_sleep_us == 0 {
@@ -363,6 +389,11 @@ pub fn run(config: Config, execute: bool) -> Result<()> {
             cn_futures_state::RuntimeStatus::Failed
         },
         true,
+        crate::position_ipc::MarketState {
+            marks: market.marks(),
+            connected: false,
+            dropped: 0,
+        },
     );
     journal.record(
         json!({"type":"runtime_stopped","venue_orders_cancelled":false}),
