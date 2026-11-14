@@ -96,31 +96,12 @@
       .section { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
       .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
       .section-head h2 { margin: 0; font-size: 14px; }
-      .view-switch {
-        display: inline-flex;
-        padding: 2px;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        background: var(--surface);
-      }
-      .view-switch button {
-        height: 27px;
-        padding: 0 10px;
-        border: 0;
-        border-radius: 4px;
-        background: transparent;
-        color: var(--muted);
-      }
-      .view-switch button[aria-pressed="true"] {
-        background: #263341;
-        color: var(--text);
-      }
       .meta { color: var(--muted); font-size: 12px; }
       .meta.stale { color: var(--red); }
       .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
       .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
       .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-      table { width: 100%; min-width: 1160px; border-collapse: collapse; }
+      table { width: 100%; min-width: 720px; border-collapse: collapse; }
       thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
       th, td {
         height: 40px;
@@ -137,17 +118,12 @@
       tbody tr:hover { background: #18212b; }
       .aggregate-row { background: #151e27; font-weight: 600; }
       .aggregate-row td { border-top: 1px solid #3b4857; }
-      .detail-row td:first-child { padding-left: 36px; position: relative; }
-      .detail-row td:first-child::before {
-        content: "";
-        position: absolute;
-        left: 20px;
-        top: 12px;
-        width: 6px;
-        height: 12px;
-        border-left: 1px solid #526174;
-        border-bottom: 1px solid #526174;
-      }
+      .detail-row > td { padding:12px 18px 14px 36px; background:var(--bg); }
+      .position-detail { border:1px solid var(--line); border-radius:6px; overflow:auto; }
+      .position-detail table { min-width:580px; }
+      .position-detail thead { position:static; }
+      .position-detail th, .position-detail td { text-align:right; }
+      .position-detail th:first-child, .position-detail td:first-child { text-align:left; }
       .group-label { display: inline-flex; align-items: center; gap: 7px; }
       button.group-toggle {
         width: 24px;
@@ -234,22 +210,21 @@
     <section class="risk-band" aria-label="持仓概览">
       <div class="metric"><label>本地预算 · 人民币元 <span title="执行端本地保守预算，不是账户权益">ⓘ</span></label><strong id="budget">--</strong></div>
       <div class="metric"><label>持仓合约数</label><strong id="contract-count">--</strong></div>
-      <div class="metric"><label>多头持仓 · 手</label><strong id="long-lots">--</strong></div>
-      <div class="metric"><label>空头持仓 · 手</label><strong id="short-lots">--</strong></div>
+      <div class="metric"><label>净多合约数</label><strong id="net-long-contracts">--</strong></div>
+      <div class="metric"><label>净空合约数</label><strong id="net-short-contracts">--</strong></div>
       <div class="metric"><label>冻结持仓 · 手</label><strong id="frozen-lots">--</strong></div>
       <div class="metric"><label>最近采集 · 北京时间</label><strong id="last-capture">--</strong></div>
     </section>
     <div id="notice" class="meta" role="status" hidden></div>
     <section class="section">
       <div class="section-head">
-        <h2>实际持仓</h2>
-        <div class="view-switch" role="group" aria-label="持仓分组方式"><button data-position-view="symbol" aria-pressed="true">按合约</button><button data-position-view="side" aria-pressed="false">分方向</button></div>
+        <h2>合约净持仓</h2>
         <label class="meta check"><input id="show-zero" type="checkbox">显示零仓位</label>
         <span id="position-note" class="meta">等待持仓数据</span>
-        <div class="summary"><span>合约 <strong id="filtered-contracts">--</strong></span><span>多头 <strong id="filtered-long">--</strong></span><span>空头 <strong id="filtered-short">--</strong></span></div>
+        <div class="summary"><span>合约 <strong id="filtered-contracts">--</strong></span><span>净多合约 <strong id="filtered-net-long">--</strong></span><span>净空合约 <strong id="filtered-net-short">--</strong></span></div>
       </div>
       <div class="table-wrap positions-wrap"><table><thead id="position-head"></thead><tbody id="positions"></tbody></table></div>
-      <div class="meta table-note">数量单位：手；金额单位：人民币元。多空分别保留，净仓按同账户、同交易所、同合约计算。持仓金额需有估值价和合约乘数后计算。</div>
+      <div class="meta table-note">数量单位：手；金额单位：人民币元。净持仓＝多头－空头，按同账户、同交易所、同合约计算；正数为净多、负数为净空。展开查看多空、今昨及冻结明细。持仓金额需有估值价和合约乘数后计算。</div>
     </section>
   </main>
   <script>
@@ -293,7 +268,7 @@
       const name=contractName(g.venue,g.symbol,g.source.entry?.trading_day);
       return `<span class="scope-label">${escape(name)}</span>${name===g.symbol?'':`<span class="contract-code">${escape(g.symbol)}</span>`}`;
     };
-    const state = { sources:new Map(), ws:null, timer:null, view:'symbol', expanded:new Set(), groups:[] };
+    const state = { sources:new Map(), ws:null, timer:null, expanded:new Set(), groups:[] };
     const status = source => {
       const s = source.entry;
       if (source.error) return s ? 'unavailable' : 'waiting';
@@ -321,13 +296,11 @@
         for (const p of snapshot?.positions || []) {
           if (!snapshot.position_ready || (filtered && !match(p.venue, p.symbol, snapshot.trading_day))) continue;
           const key = JSON.stringify([source.source_id, p.venue, p.symbol]);
-          if (!groups.has(key)) groups.set(key, {key,source,symbol:p.symbol,venue:p.venue,positions:[],long:0,short:0,frozenLong:0,frozenShort:0,todayLong:0,todayShort:0,yesterdayLong:0,yesterdayShort:0});
+          if (!groups.has(key)) groups.set(key, {key,source,symbol:p.symbol,venue:p.venue,positions:[],long:0,short:0,frozenLong:0,frozenShort:0});
           const g = groups.get(key), value = p.position, long = p.side === "buy";
           g.positions.push(p);
           g[long ? "long" : "short"] += value.today + value.yesterday;
           g[long ? "frozenLong" : "frozenShort"] += value.frozen_today + value.frozen_yesterday;
-          g[long ? "todayLong" : "todayShort"] += value.today;
-          g[long ? "yesterdayLong" : "yesterdayShort"] += value.yesterday;
         }
       }
       for (const group of groups.values()) group.positions = group.positions.filter(p => $('show-zero').checked || p.position.today || p.position.yesterday || p.position.frozen_today || p.position.frozen_yesterday);
@@ -337,8 +310,8 @@
     function renderOverview(sources,groups) {
       const known=sources.length && sources.every(s=>s.entry?.position_ready);
       $('contract-count').textContent=known?fmt(groups.length):'--';
-      $('long-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.long,0)):'--';
-      $('short-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.short,0)):'--';
+      $('net-long-contracts').textContent=known?fmt(groups.filter(g=>g.long>g.short).length):'--';
+      $('net-short-contracts').textContent=known?fmt(groups.filter(g=>g.short>g.long).length):'--';
       $('frozen-lots').textContent=known?fmt(groups.reduce((n,g)=>n+g.frozenLong+g.frozenShort,0)):'--';
       $('budget').textContent=sources.length===1?yuan(sources[0].entry?.available_local_budget):'--';
       $('budget').title=$('budget').textContent+' 人民币元';
@@ -352,25 +325,26 @@
     }
     function renderPositions(sources, groups) {
       state.groups = groups;
-      const sums = {long:0,short:0}; groups.forEach(g => {sums.long+=g.long;sums.short+=g.short;});
-      const known = sources.length && sources.every(s => s.entry?.position_ready);
-      $('filtered-contracts').textContent = known ? fmt(groups.length) : '--'; $('filtered-long').textContent = known ? fmt(sums.long) + ' 手' : '--'; $('filtered-short').textContent = known ? fmt(sums.short) + ' 手' : '--';
       const ready = sources.length && sources.every(s => s.entry?.position_ready);
-      $('position-note').textContent = !ready ? "等待持仓恢复" : `${groups.length} 个合约 · ${groups.reduce((n,g)=>n+g.positions.length,0)} 条多空记录`;
-      let content = '';
-      if (state.view === "symbol") {
-        $('position-head').innerHTML = '<tr><th>合约</th><th>交易所</th><th>状态</th><th>净持仓 · 手</th><th>多头 · 手</th><th>空头 · 手</th><th>今仓 多 / 空 · 手</th><th>昨仓 多 / 空 · 手</th><th>冻结 多 / 空 · 手</th><th>可平 多 / 空 · 手</th><th>更新时间</th></tr>';
-        groups.forEach((g,index) => {
-          const open=state.expanded.has(g.key), net=g.long-g.short;
-          content += `<tr class="aggregate-row ${status(g.source)!=='observing'?'retained':''}"  data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="展开 ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td>${escape(venueName(g.venue))}</td><td>${badge(status(g.source))}</td><td class="${net>0?'positive':net<0?'negative':''}">${fmt(net)}</td><td class="positive">${fmt(g.long)}</td><td class="negative">${fmt(g.short)}</td><td>${fmt(g.todayLong)} / ${fmt(g.todayShort)}</td><td>${fmt(g.yesterdayLong)} / ${fmt(g.yesterdayShort)}</td><td>${fmt(g.frozenLong)} / ${fmt(g.frozenShort)}</td><td>${fmt(g.long-g.frozenLong)} / ${fmt(g.short-g.frozenShort)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
-          if (open) content += g.positions.map(p => {const v=p.position;return `<tr class="detail-row" ><td>${side(p.side)}</td><td>${escape(venueName(g.venue))}</td><td>${badge(status(g.source))}</td><td>${p.side==='buy'?'':'−'}${fmt(v.today+v.yesterday)}</td><td>${p.side==='buy'?fmt(v.today+v.yesterday):'--'}</td><td>${p.side==='sell'?fmt(v.today+v.yesterday):'--'}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today+v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;}).join('');
-        });
-      } else {
-        $('position-head').innerHTML = '<tr><th>合约</th><th>交易所</th><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th><th>状态</th><th>更新时间</th></tr>';
-        content = groups.flatMap(g=>g.positions.map(p=>{const v=p.position;return `<tr  data-symbol="${escape(g.symbol)}" class="${status(g.source)!=='observing'?'retained':''}"><td>${contractLabel(g)}</td><td>${escape(venueName(p.venue))}</td><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td><td>${badge(status(g.source))}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;})).join('');
-      }
+      $('filtered-contracts').textContent = ready ? fmt(groups.length) : '--';
+      $('filtered-net-long').textContent = ready ? fmt(groups.filter(g=>g.long>g.short).length) : '--';
+      $('filtered-net-short').textContent = ready ? fmt(groups.filter(g=>g.short>g.long).length) : '--';
+      $('position-note').textContent = !ready ? "等待持仓恢复" : `${groups.length} 个合约 · 展开查看明细`;
+      $('position-head').innerHTML = '<tr><th>合约</th><th>交易所</th><th>净持仓 · 手</th><th>状态</th><th>更新时间</th></tr>';
+      const content = groups.map((g,index) => {
+        const open=state.expanded.has(g.key), net=g.long-g.short;
+        let html = `<tr class="aggregate-row ${status(g.source)!=='observing'?'retained':''}" data-symbol="${escape(g.symbol)}"><td><span class="group-label"><button class="group-toggle" data-group="${index}" aria-expanded="${open}" aria-label="${open?'收起':'展开'} ${escape(g.symbol)}"></button>${contractLabel(g)}</span></td><td>${escape(venueName(g.venue))}</td><td class="${net>0?'positive':net<0?'negative':''}">${net>0?'+':''}${fmt(net)}</td><td>${badge(status(g.source))}</td><td>${time(g.source.entry?.observed_us)}</td></tr>`;
+        if (open) {
+          const details = g.positions.map(p => {
+            const v=p.position;
+            return `<tr><td>${side(p.side)}</td><td>${fmt(v.today+v.yesterday)}</td><td>${fmt(v.today)}</td><td>${fmt(v.yesterday)}</td><td>${fmt(v.frozen_today)}</td><td>${fmt(v.frozen_yesterday)}</td><td>${fmt(v.today+v.yesterday-v.frozen_today-v.frozen_yesterday)}</td></tr>`;
+          }).join('');
+          html += `<tr class="detail-row"><td colspan="5"><div class="position-detail"><table aria-label="${escape(g.symbol)} 多空与今昨明细"><thead><tr><th>方向</th><th>持仓 · 手</th><th>今仓 · 手</th><th>昨仓 · 手</th><th>冻结今仓 · 手</th><th>冻结昨仓 · 手</th><th>可平 · 手</th></tr></thead><tbody>${details}</tbody></table></div></td></tr>`;
+        }
+        return html;
+      }).join('');
       const empty = !sources.length ? "等待持仓数据" : !ready ? "等待柜台完成持仓恢复" : sources.some(s=>status(s)!=='observing') ? "持仓数据未就绪，等待更新" : $('symbol').value || $('venue').value ? "当前筛选没有持仓" : "当前无持仓";
-      rows('positions',content,11,empty);
+      rows('positions',content,5,empty);
     }
 
     function render() {
@@ -396,7 +370,7 @@
       const key=state.groups[Number(button.dataset.group)]?.key; if(!key)return;
       state.expanded.has(key)?state.expanded.delete(key):state.expanded.add(key);render();
     });
-    document.querySelectorAll('[data-position-view]').forEach(button=>button.onclick=()=>{state.view=button.dataset.positionView;document.querySelectorAll('[data-position-view]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));render();});
+
     ['venue','show-zero'].forEach(id=>$(id).onchange=render);$('symbol').oninput=render;
     $('refresh').onclick=connect;
     render();setInterval(render,1000);connect();
