@@ -177,6 +177,8 @@ pub struct DeliveryStore {
 }
 impl DeliveryStore {
     pub fn open(dir: &Path, portfolio: &str, exchange: &str) -> Result<Self> {
+        let directory = std::path::absolute(dir)?;
+        let dir = directory.as_path();
         ensure!(
             !portfolio.is_empty()
                 && portfolio.bytes().all(|b| b.is_ascii_digit())
