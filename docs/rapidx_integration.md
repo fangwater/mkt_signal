@@ -1,5 +1,7 @@
 # RapidX Integration
 
+最后更新: 2026-11-14 12:20 UTC。
+
 RapidX/LTP is an execution and market-data provider, not a new `TradingVenue`.
 Binance and OKX retain their existing strategy venue identities and internal symbols.
 Authenticated account actions must be smoke-tested for each deployed portfolio.
@@ -199,7 +201,8 @@ backpressure. The venue's existing 90-day history limit still applies; an expire
 or incomplete recovery window fails closed without advancing its checkpoint.
 
 Every page is checked for scope, time, duplicate IDs and stable pagination. Each
-window has a 100-page bound with 2.1-second inter-page spacing. Facts are saved
+window has a 100-page bound; execution pages are spaced by 2.1 seconds and
+statement pages by 1.5 seconds. Facts are saved
 before their progress checkpoint; neither incomplete pagination nor a malformed
 record can skip an unprocessed interval. WS signed fees and REST split fees and
 rebates remain separate observations of the same fill.
@@ -281,6 +284,52 @@ The read-only execution/statement exporters remain available; select one fee
 observation source or reconcile both before summing. Exporting does not alter
 source facts, and a failed partial stdout export is not a complete report.
 
+### jp-meta deployment receipt
+
+The IPC/outbox replacement from production `arbmm` commits `bba62aa4` and
+`585a1d7d` was deployed on 2026-11-14. Locally built binaries were uploaded,
+SHA-256 verified and atomically installed; only the three persistence owners
+and account monitors were replaced through their environment-local scripts.
+Trading, Viz, Config and source-IP settings were preserved.
+
+| Environment | Persistence PID | Monitor PID | Preserved CPU mask |
+| --- | --- | --- | --- |
+| binance_exec_rx01 | 376822 | 413434 | 0-5,48-95 |
+| binance_exec_rx03 | 388029 | 415832 | 0-5,48-95 |
+| binance_exec_rx04_5m05 | 327610 | 364231 | 0-5,48-95 |
+
+Monitor SHA-256 is
+`d1b23e3c666fef3a9939e00dd692bb8478bf8f8493290c590f04a646b14dd2a7`;
+persistence owner SHA-256 is
+`5ea37317b7db3f7e20f1e86e51ad70695a6014001cfdda17d5e5b0bbb0b50577`.
+The absolute-path follow-up was required to create a previously absent delivery
+directory durably. The isolated owner rehearsal verified readiness before SIGINT.
+RX04's first stop wrapper exceeded its caller's 45-second deadline; repeating
+that same wrapper detected and stopped the remaining old monitor before cutover.
+
+First and stopped-tail imports validated 14,033,126 complete legacy rows and
+drained exact persistence ACKs. All 13,109,928,015 bytes of legacy JSONL were
+retained; frozen sizes and modification times stayed unchanged. A read-only
+Manager IPC probe confirmed all three sources recovered with fresh account and
+financial observations and finite frozen margin. Manager `08fad46` was deployed
+separately as `20261114T105203Z`, PID438574, CPU24; all eight NAV sources loaded.
+
+All 145 sampled configuration hashes, four immutable position snapshot tables
+and 180 sampled long-lived protected process identities/CPU masks matched.
+An additional baseline finite NAV `sync_history` PID289921 disappeared; its exit
+status is unavailable and successful completion is not certified. The original
+audit records this exception. Focused tests passed: trade_engine LTP88,
+mkt_parsers193, persist_common18 and persist_manager runtime library79; no CTP
+execution occurred. The outbox's four tests passed again after the path fix.
+
+A 30-second sample counted two fsync calls per monitor, versus approximately
+100/sec in the earlier RX03 sample. This reduces observed write frequency but
+does not certify the Redis publication incident resolved: warm Manager timeouts
+still occurred at 11:18 and 11:55 UTC. Redis error counters stayed ERR1/NOPERM1;
+the exact residual cause remains unproven. Host-only receipts and rollback files:
+`~/crypto_cta_manager/backups/rapidx-ipc-20261114/`. Preserve the old archives;
+do not blindly restore a pre-cutover database over newly accepted facts.
+
 ## Execution Reconciliation
 
 Add `--reconcile` to `rapidx_execution_export` to produce one JSON report with
@@ -317,9 +366,9 @@ and other-scope liquidation observation counts are reported; other portfolios
 on `LiquidationPositionByUser` never enter the selected portfolio's totals.
 Whole liquidation order lifetimes inside the
 window without any selected fill appear in `unmatched_liquidations` and cause
-an error, never synthetic fills. Corrupt and unterminated journal lines fail in
-this offline audit, unlike live journal recovery. Retry after the writer finishes
-or use a closed snapshot. These are read-only inputs, not live actions.
+an error, never synthetic fills. Corrupt and unterminated legacy journal lines
+fail in this offline audit. Use a complete closed archive. The replacement
+monitor does not append these journals. These are read-only inputs, not live actions.
 
 ## Settlement Ledger
 
@@ -327,25 +376,27 @@ The account monitor recovers `FUNDING_FEE`, `DEDUCT_INTEREST`,
 `LIQUIDATION_FEE` and `LIQ_COMPENSATION` through the documented REST statement
 endpoint. There is no invented statement WS subscription. Recovery uses
 one-hour windows, a separate durable `statement_history_end_ms` checkpoint and
-a 60-second overlap; initial lookback defaults to 24 hours and must fit within
-the endpoint's 90-day retention. Tail refresh runs every 30 seconds. Requests
+a 60-second overlap. A new collector begins at the current time; imported
+collectors resume their durable checkpoint within the endpoint's 90-day
+retention. Tail refresh runs every 30 seconds. Requests
 within pagination and catch-up windows are spaced by 1.5 seconds; multiple
 deployments sharing credentials still need coordinated rate budgets.
 
-Statement recovery is required for account readiness. The financial inspection
-snapshot includes its checkpoint and `statement_persistence_pending`. Records
-are journaled and synced before checkpoint advancement, then retried through
-the existing durable ACK mechanism. Restart replays the journal; stable
+Statement recovery is required for account readiness. The live financial IPC
+frame includes its checkpoint and `statement_persistence_pending`. Records
+enter the synchronized bounded outbox before checkpoint advancement, then retry
+through the durable ACK mechanism. Restart replays pending facts; stable
 portfolio/venue/statement identities deduplicate unchanged records and reject
 conflicts. Pagination inconsistencies and cross-portfolio rows fail closed.
 
 An overlapping REST read may revise both available-balance context fields by
 the same tiny amount (RX01 observed 1e-20 USDT on interest statements). The
-monitor accepts an absolute shift up to 1e-18 only when exact decimal arithmetic
+durable persistence owner accepts an absolute shift up to 1e-18 only when exact
+decimal arithmetic
 confirms that the before/after shifts are identical and all other fields,
 including identity, settlement amount and debt, remain unchanged. It preserves
-the original statement and ACK bytes and journals the subsequent observation as
-`statement_balance_reobservation`. Larger shifts, changed available deltas,
+the original statement bytes and saves the exact subsequent observation in
+`rapidx_statement_observations` before ACK. Larger shifts, changed available deltas,
 scientific-notation comparisons and actual settlement/debt conflicts still fail
 closed. The IPC contract and persisted statement keys are unchanged.
 
@@ -452,8 +503,9 @@ reject RapidX sources rather than touching native accounts.
   totals against account snapshots and a normalized strategy PNL view remain
   incomplete. In
   particular, REST's reported cumulative rebate is not apportioned to fills.
-  Journal rotation/retention needs operational
-  policy. Late venue corrections beyond the one-minute overlap require a wider
+  Legacy archive retention needs an operational policy; the current monitor
+  outbox compacts acknowledged entries. Late venue corrections beyond the
+  one-minute overlap require a wider
   recovery, and endpoint retention/completeness still needs authenticated testing.
 - Financial/loan inspection is implemented, but accrued interest, collateral
   tier rules and all strategy-facing financial fields are not at full OKX parity.

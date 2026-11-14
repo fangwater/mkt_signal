@@ -1,6 +1,19 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-12 15:36 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-14 12:20 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-14，JP RapidX 账户监控改为内存/IPC实时状态和有界事实投递箱，
+源码`arbmm bba62aa4/585a1d7d`；本机构建、SCP/SHA-256核验后原子安装，
+经环境本地脚本仅替换三路monitor/persist：rx01 PID413434/376822、
+rx03 PID415832/388029、rx04_5m05 PID364231/327610，均继续CPU0-5,48-95。
+Manager `08fad46`单独发布为PID438574，继续CPU24；Redis7.4.12 PID4100946
+继续CPU28，交易/Viz/Config与源IP保持。旧档案14033126行已导入并收齐ACK，
+原13.11GB JSONL保留且停止增长；三路IPC新鲜度与恢复就绪验证通过。
+145配置散列、四张不可变快照表和180个受保护常驻进程身份/CPU保持；
+另一个有限期NAV sync_history PID289921已退出现场，退出码不可得，审计保留例外。
+监控fsync采样每路2次/30秒；热运行仍有少量Redis推送超时，未宣称根治。
+详情见`docs/rapidx_integration.md`；现场回执
+`~/crypto_cta_manager/backups/rapidx-ipc-20261114/`。
 
 2026-11-12 15:34 UTC，JP `bybit_fr_arb01`完成整套重发：7个本地release产物源自
 `arbmm 87bf37fb`，SCP/SHA-256核验、原子安装后，经本环境脚本恢复8服务含signal。
