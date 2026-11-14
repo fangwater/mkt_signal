@@ -1,61 +1,32 @@
-use crate::msg::{day, number, timestamp, unsigned, MarketDataMsg, ParseError};
+use crate::msg::{MarketDataMsg, ParseError};
 use anyhow::{Context, Result};
+use cn_futures_core::mdl;
 
-pub const TOPICS: [&str; 6] = [
-    "mdl.21.1.*",
-    "mdl.22.1.*",
-    "mdl.22.3.*",
-    "mdl.23.1.*",
-    "mdl.24.1.*",
-    "mdl.26.1.*",
-];
+pub use cn_futures_core::mdl::TOPICS;
 
-/// Bare fixed-field MDL CSV parser: borrowed bytes, stack slots, no heap or JSON.
+/// Bare fixed-field MDL CSV parser (cn_futures_core::mdl): borrowed bytes,
+/// stack slots, no heap or JSON. Only the IPC struct fill happens here.
 pub fn parse(frame: &[u8], received_us: u64) -> Result<MarketDataMsg, ParseError> {
-    if frame.get(10..14) != Some(b" || ") {
-        return Err(ParseError("invalid single-frame delimiter"));
-    }
-    // count, symbol, action date, last/volume/turnover/OI, bid start, ask start, stride.
-    let (venue, count, symbol, action, last, volume, turnover, oi, bid, ask, stride) =
-        match &frame[..10] {
-            b"mdl.21.1.*" => ("CFFEX", 43, 3, 0, 4, 8, 9, 10, 19, 29, 2),
-            b"mdl.22.1.*" => ("SHFE", 43, 0, 2, 4, 11, 12, 13, 21, 31, 2),
-            b"mdl.22.3.*" => ("INE", 43, 0, 2, 4, 11, 12, 13, 21, 31, 2),
-            b"mdl.23.1.*" => ("CZCE", 59, 3, 0, 4, 8, 9, 10, 23, 38, 3),
-            b"mdl.24.1.*" => ("DCE", 59, 3, 0, 4, 9, 10, 11, 23, 38, 3),
-            b"mdl.26.1.*" => ("GFEX", 59, 3, 0, 4, 9, 10, 11, 23, 38, 3),
-            _ => return Err(ParseError("not a supported futures L2 topic")),
-        };
-    let mut fields: [&[u8]; 59] = [b""; 59];
-    let mut len = 0;
-    for (index, value) in frame[14..].split(|b| *b == b',').enumerate() {
-        if index < 59 {
-            fields[index] = value;
-        }
-        len = index + 1;
-    }
-    if len < count {
-        return Err(ParseError("truncated futures quote"));
-    }
+    let q = mdl::parse_frame(frame)?;
     let mut msg = MarketDataMsg {
         received_us,
         ..MarketDataMsg::default()
     };
-    msg.set_symbol(fields[symbol])?;
-    msg.set_venue(venue)?;
-    msg.trading_day = day(fields[1])?;
-    msg.action_day = day(fields[action])?;
-    msg.exchange_ts_us = timestamp(msg.action_day, fields[if symbol == 0 { 3 } else { 2 }], 0)?;
-    msg.source_sequence = unsigned(fields[count - 1])?;
-    msg.last_price = number(fields[last])?;
-    msg.volume = unsigned(fields[volume])?;
-    msg.turnover = number(fields[turnover])?;
-    msg.open_interest = number(fields[oi])?;
+    msg.set_symbol(q.symbol)?;
+    msg.set_venue(q.venue)?;
+    msg.trading_day = q.trading_day;
+    msg.action_day = q.action_day;
+    msg.exchange_ts_us = q.exchange_ts_us;
+    msg.source_sequence = q.source_sequence;
+    msg.last_price = q.last_price;
+    msg.volume = q.volume;
+    msg.turnover = q.turnover;
+    msg.open_interest = q.open_interest;
     for level in 0..5 {
-        msg.bid[level].price = number(fields[bid + level * stride])?;
-        msg.bid[level].quantity = unsigned(fields[bid + level * stride + 1])?;
-        msg.ask[level].price = number(fields[ask + level * stride])?;
-        msg.ask[level].quantity = unsigned(fields[ask + level * stride + 1])?;
+        msg.bid[level].price = q.bid[level].price;
+        msg.bid[level].quantity = q.bid[level].quantity;
+        msg.ask[level].price = q.ask[level].price;
+        msg.ask[level].quantity = q.ask[level].quantity;
     }
     Ok(msg)
 }

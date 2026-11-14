@@ -5,8 +5,6 @@ members = [
     "crates/account_common",
     "crates/cme_tas_replay",
     "crates/cme_roll_metadata",
-    "crates/cn_futures_trim",
-    "crates/cn_futures_l2",
     "crates/cn_futures",
     "crates/cn_futures_pbs",
     "crates/cn_futures_state",

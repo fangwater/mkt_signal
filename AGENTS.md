@@ -204,24 +204,27 @@ SID_MARKETS = {
 - Factor frequency is 10s. Trade baseline is stored at 5s, 10s, and 1m (`60s` table name). Orderbook is stored as `{venue}_5s_depth` only.
 - Ylabel is its own ClickHouse table, not a column suffix on the market table. Benchmarks are `twap`, `vwap`, `midp`. Horizons are 5s, 10s, 30s, 1m, 5m. The 5s row `ts=t` stores the closed bucket `[t-5s, t)`.
 
-## Domestic Futures Baseline Replay
+## Domestic Futures Post-Market Pipeline (moved out)
 
-`crates/cn_futures_l2` is the only maintained Tonglian domestic-futures replay
-and export implementation. It writes the production RocksDB and derives 1s,
-1min, ylabel, and HFQ parquet outputs. The former root binary
-`tonglian_baseline_replay` and its ClickHouse staging configuration were removed
-when this crate replaced them; do not restore or run that path.
+The Tonglian domestic-futures replay and export pipeline (`cn_futures_l2`:
+RocksDB, 1s / 1min / ylabel / HFQ parquet) and the continuous-session trimmer
+(`cn_futures_trim`) moved to the post-market repository `market_replay`
+(GitHub `fangwater/market_replay`, local `/home/fanghaizhou/cn_futures_db`) on
+2026-11-14. Do not restore them here; production runs and their rules
+(PostgreSQL multipliers only, no inline maps, panic on missing product) are
+documented there. The former root binary `tonglian_baseline_replay` stays
+retired.
 
-`cn_futures_l2` loads `volume_multiple` values and their `verified` state only
-from the read-only PostgreSQL table
-`market_metadata.public.domestic_future_product_multipliers` through Unix socket
-`/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not
-restore inline product maps, DataGateway or exchange-API calls, turnover
-inference, or a default of `1`. A product missing from the loaded catalog must
-panic with identifying context. This explicit batch-tool rule is an exception
-to the long-running-service panic guidance below. Never write to this metadata
-instance and never use the read-only PostgreSQL standby on port `5432` for this
-workflow.
+Logic shared between live trading and the post-market pipeline lives in that
+repository's IO-free crate `cn_futures_core` (MDL frame parser, sessions,
+universe, snapshot-to-trade state machine, 1-minute aggregation).
+`cn_futures_pbs` depends on it by `git` + pinned `rev`; private-repo fetches use
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Never re-implement
+those rules locally. To take a core change: land and push it in
+`market_replay` (with its equivalence checks), bump `rev`, then run
+`cargo test -p cn_futures_pbs` here. For simultaneous local edits use a
+temporary `[patch."ssh://git@github.com/fangwater/market_replay.git"]` path
+override and remove it before committing.
 
 The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
 
