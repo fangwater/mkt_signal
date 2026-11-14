@@ -1,6 +1,24 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新: 2026-11-14 12:20 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新: 2026-11-14 13:45 UTC。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+
+2026-11-14，按授权对 JP `gate_fr_arb04` 撤单、重发最新7个二进制并以合约taker对齐。
+仅将本盘`env.sh`的`ENABLE_IPC_FAST_POLL`从1改为off；全部运行进程确认fast poll关闭。
+本机构建基线`arbmm 483937e8`，包含已记录的现有工作区补丁（SHA前缀910adcc）；
+经`publish-jp-meta-fr.sh --skip-build`发布6个产物，dashboard独立SCP/SHA核验原子安装，
+全部生命周期操作经环境本地脚本；信号已恢复。新PID：config799918、Viz800500、
+persist801270（CPU15）、engine803309、pre_trade803614、account_monitor803896、
+dashboard806697、signal806797；其余保持原CPU mask0-5,48-95（有效在线0-5）。
+撤单后挂单复核为0；4笔合约SELL IOC（MUBARAK两笔、CTR和O各一笔）共302.36290U，
+均有taker成交和持仓确认，单笔不足100U、提交间隔至少5.612秒；现货和BNB保持。
+恢复信号前可估价非BNB单币残余最大4.88344U，另3项历史零碎各5e-9未动；
+恢复策略后新成交会再次形成策略敞口，不将该检查点当作持续零敞口保证。
+四个原高负载进程采样合计CPU由约243%降至7.16%；Redis30秒29次同步最大6.242ms。
+7项fast-poll相关回归和全部release构建通过；145份配置指纹仅本盘env变化，
+179个已记录其他常驻进程身份/CPU保持；2个独立NAV有限期sync_history任务消失，
+退出码不可得，原始审计保留例外。源IP、策略参数、账户模式和杠杆未手工改动。
+回执：本机`data/ops/gate_fr04_fast_poll_20261114/`；主机
+`~/gate_fr_arb04/backups/fast-poll-off-20261114T1314Z/`（含凭据的原env仅留主机0600备份）。
 
 2026-11-14，JP RapidX 账户监控改为内存/IPC实时状态和有界事实投递箱，
 源码`arbmm bba62aa4/585a1d7d`；本机构建、SCP/SHA-256核验后原子安装，
