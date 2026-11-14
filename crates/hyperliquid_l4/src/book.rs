@@ -103,7 +103,8 @@ impl State {
         ensure!(event.price == node.event.price, "mutation price mismatch");
         ensure!(
             event.flags & HAS_USER == 0
-                || (node.event.flags & HAS_USER != 0 && node.event.user == event.user),
+                || node.event.flags & HAS_USER == 0
+                || node.event.user == event.user,
             "mutation user mismatch"
         );
         let key = (node.event.side, node.event.price);
@@ -115,6 +116,10 @@ impl State {
             );
             level.size = level.size - node.event.size as u128 + event.size as u128;
             self.nodes[slot].event.size = event.size;
+            if event.flags & HAS_USER != 0 && node.event.flags & HAS_USER == 0 {
+                self.nodes[slot].event.user = event.user;
+                self.nodes[slot].event.flags |= HAS_USER;
+            }
         } else {
             if let Some(previous) = node.previous {
                 self.nodes[previous].next = node.next;

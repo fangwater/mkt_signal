@@ -223,6 +223,38 @@ fn new_epoch_recovers_missing_reset_and_freshness_is_explicit() {
 }
 
 #[test]
+fn missing_optional_snapshot_user_is_enriched_by_a_later_diff() {
+    let (_, _, mut snapshot) = decode(SNAPSHOT);
+    let (_, _, updates) = decode(UPDATES);
+    snapshot[0].flags &= !HAS_USER;
+    snapshot[0].user = [0; 20];
+    snapshot[2].flags &= !HAS_USER;
+    snapshot[2].user = [0; 20];
+    let mut book = OrderBook::new(Coin::new("BTC").unwrap(), 100, 100).unwrap();
+    book.ingest(&encode(header(Kind::Snapshot, 1, 100, 0), &snapshot))
+        .unwrap();
+    book.ingest(&encode(header(Kind::Update, 2, 105, 100), &updates))
+        .unwrap();
+    assert_eq!(book.order(1001).unwrap().user, [0x11; 20]);
+    assert_ne!(book.order(1001).unwrap().flags & HAS_USER, 0);
+    assert!(book.order(2001).is_none());
+    let bad = Event {
+        oid: 1001,
+        price: decimal("106000").unwrap(),
+        size: 1,
+        original_size: 125_000_000,
+        user: [0x99; 20],
+        flags: HAS_USER,
+        op: Op::Update,
+        ..Event::default()
+    };
+    assert!(book
+        .ingest(&encode(header(Kind::Update, 3, 106, 105), &[bad]))
+        .is_err());
+    assert!(!book.is_ready());
+}
+
+#[test]
 fn generated_queue_mutations_match_independent_vector_reference() {
     use std::collections::BTreeMap;
     let mut book = OrderBook::new(Coin::new("BTC").unwrap(), 1000, 1000).unwrap();
